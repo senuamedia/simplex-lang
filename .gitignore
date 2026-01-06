@@ -35,3 +35,8 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.bak
+build/
+*.o
+*.ll
+hello
+hello.sx

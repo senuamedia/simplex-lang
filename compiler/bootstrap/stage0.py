@@ -2412,7 +2412,7 @@ class CodeGen:
     def generate(self, items):
         # Header
         self.emit('; ModuleID = "simplex_program"')
-        self.emit('target triple = "x86_64-apple-macosx15.0.0"')
+        self.emit('target triple = "x86_64-pc-linux-gnu"')
         self.emit('')
 
         # External declarations

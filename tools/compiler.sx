@@ -1552,7 +1552,7 @@ fn gen_item(cg: i64, item: i64) -> i64 {
 // Generate program header
 fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "; ModuleID = 'simplex_program'");
-    emit_line(cg, "target triple = \"x86_64-apple-macosx14.0.0\"");
+    emit_line(cg, "target triple = \"x86_64-pc-linux-gnu\"");
     emit_line(cg, "");
     emit_line(cg, "declare ptr @malloc(i64)");
     emit_line(cg, "declare void @intrinsic_println(ptr)");

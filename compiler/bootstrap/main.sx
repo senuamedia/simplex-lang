@@ -514,7 +514,7 @@ fn compile_file_force(path: i64, output_path: i64, verbose: i64, emit_type: i64,
             asm_path = string_replace_ext(path, ".s");
         }
         // Run: llc -o <asm_path> <ll_path>
-        let cmd: i64 = string_concat(string_from("/usr/local/opt/llvm/bin/llc -o "), asm_path);
+        let cmd: i64 = string_concat(string_from("/usr/bin/llc -o "), asm_path);
         cmd = string_concat(cmd, string_from(" "));
         cmd = string_concat(cmd, ll_path);
         let result: i64 = process_run(cmd);
@@ -535,7 +535,7 @@ fn compile_file_force(path: i64, output_path: i64, verbose: i64, emit_type: i64,
             obj_path = string_replace_ext(path, ".o");
         }
         // Run: llc -filetype=obj -o <obj_path> <ll_path>
-        let cmd: i64 = string_concat(string_from("/usr/local/opt/llvm/bin/llc -filetype=obj -o "), obj_path);
+        let cmd: i64 = string_concat(string_from("/usr/bin/llc -filetype=obj -o "), obj_path);
         cmd = string_concat(cmd, string_from(" "));
         cmd = string_concat(cmd, ll_path);
         let result: i64 = process_run(cmd);
@@ -558,7 +558,7 @@ fn compile_file_force(path: i64, output_path: i64, verbose: i64, emit_type: i64,
         }
         // First compile to object
         let obj_path: i64 = string_replace_ext(path, ".o");
-        let cmd: i64 = string_concat(string_from("/usr/local/opt/llvm/bin/llc -filetype=obj -o "), obj_path);
+        let cmd: i64 = string_concat(string_from("/usr/bin/llc -filetype=obj -o "), obj_path);
         cmd = string_concat(cmd, string_from(" "));
         cmd = string_concat(cmd, ll_path);
         let result: i64 = process_run(cmd);
@@ -567,10 +567,10 @@ fn compile_file_force(path: i64, output_path: i64, verbose: i64, emit_type: i64,
             return 1;
         }
         // Then link with clang
-        cmd = string_concat(string_from("clang -o "), exe_path);
+        cmd = string_concat(string_from("clang -no-pie -o "), exe_path);
         cmd = string_concat(cmd, string_from(" "));
         cmd = string_concat(cmd, obj_path);
-        cmd = string_concat(cmd, string_from(" standalone_runtime.o"));
+        cmd = string_concat(cmd, string_from(" standalone_runtime.o -lm -lssl -lcrypto -lsqlite3 -lpthread"));
         result = process_run(cmd);
         if result != 0 {
             println(string_from("Error: linking failed"));
@@ -590,7 +590,7 @@ fn compile_file_force(path: i64, output_path: i64, verbose: i64, emit_type: i64,
         }
         // First compile to object with PIC (position-independent code)
         let obj_path: i64 = string_replace_ext(path, ".o");
-        let cmd: i64 = string_concat(string_from("/usr/local/opt/llvm/bin/llc -filetype=obj -relocation-model=pic -o "), obj_path);
+        let cmd: i64 = string_concat(string_from("/usr/bin/llc -filetype=obj -relocation-model=pic -o "), obj_path);
         cmd = string_concat(cmd, string_from(" "));
         cmd = string_concat(cmd, ll_path);
         let result: i64 = process_run(cmd);

@@ -428,7 +428,7 @@ fn replace_string_labels(state: i64) -> i64 {
 // Write output file
 fn write_output(state: i64, output_path: i64) -> i64 {
     let result: i64 = string_from("; ModuleID = \"simplex_program\"\n");
-    result = string_concat(result, "target triple = \"x86_64-apple-macosx14.0.0\"\n\n");
+    result = string_concat(result, "target triple = \"x86_64-pc-linux-gnu\"\n\n");
 
     // Write declarations (sorted would be nice but not critical)
     let decls: i64 = merge_declarations(state);
