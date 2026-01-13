@@ -3,7 +3,7 @@
 //
 // Copyright (c) 2025-2026 Rod Higgins
 // Licensed under MIT License - see LICENSE file
-// https://github.com/senuamedia/simplex-lang
+// https://github.com/senuamedia/simplex
 
 fn VERSION() -> i64 { string_from("0.9.2") }
 
@@ -25,64 +25,6 @@ fn show_help() -> i64 {
 fn show_version() -> i64 {
     println(string_concat(string_from("sxdoc "), VERSION()));
     0
-}
-
-// ========================================
-// Cross-Platform Support
-// ========================================
-
-/// Detect the operating system
-/// Returns: "windows", "linux", or "macos"
-fn get_os_name() -> i64 {
-    // Check for Windows via WINDIR environment variable
-    let windir: i64 = cli_getenv("WINDIR");
-    if windir != 0 {
-        if string_len(windir) > 0 {
-            return string_from("windows");
-        }
-    }
-    // Check for macOS via OSTYPE or uname
-    let ostype: i64 = cli_getenv("OSTYPE");
-    if ostype != 0 {
-        if string_starts_with(ostype, string_from("darwin")) {
-            return string_from("macos");
-        }
-    }
-    // Default to linux (covers most Unix-like systems)
-    string_from("linux")
-}
-
-/// Get the path separator character code for the current platform
-/// Returns 47 ('/') for Unix or 92 ('\') for Windows
-fn get_path_separator_char() -> i64 {
-    let os: i64 = get_os_name();
-    if string_eq(os, string_from("windows")) {
-        return 92;  // '\'
-    }
-    47  // '/'
-}
-
-/// Check if a character is a path separator (handles both / and \ for Windows compatibility)
-fn is_path_separator(c: i64) -> i64 {
-    if c == 47 { return 1; }  // '/'
-    if c == 92 { return 1; }  // '\'
-    0
-}
-
-/// Join two path components with platform-appropriate separator
-fn path_join(dir: i64, name: i64) -> i64 {
-    let sb: i64 = sb_new();
-    sb_append(sb, dir);
-    let sep_char: i64 = get_path_separator_char();
-    let dir_len: i64 = string_len(dir);
-    if dir_len > 0 {
-        let last_char: i64 = string_char_at(dir, dir_len - 1);
-        if is_path_separator(last_char) == 0 {
-            sb_append_char(sb, sep_char);
-        }
-    }
-    sb_append(sb, name);
-    sb_to_string(sb)
 }
 
 // ========================================
@@ -781,12 +723,12 @@ fn main() -> i64 {
 fn get_module_name_from_path(path: i64) -> i64 {
     let len: i64 = string_len(path);
 
-    // Find last path separator (handles both '/' and '\' for cross-platform)
+    // Find last slash
     let start: i64 = 0;
     let i: i64 = 0;
     while i < len {
         let c: i64 = string_char_at(path, i);
-        if is_path_separator(c) == 1 {
+        if c == 47 {
             start = i + 1;
         }
         i = i + 1;

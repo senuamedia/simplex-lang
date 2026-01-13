@@ -2,10 +2,10 @@
 // Self-hosted compiler driver for Simplex
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under AGPL-3.0 - see LICENSE file
+// Licensed under MIT License - see LICENSE file
 // https://github.com/senuamedia/simplex
 
-fn VERSION() -> i64 { string_from("0.9.1") }
+fn VERSION() -> i64 { string_from("0.9.2") }
 
 // ========================================
 // Platform Detection and Cross-Platform Paths

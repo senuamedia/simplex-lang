@@ -6,7 +6,7 @@
 // - struct literals with lookahead disambiguation
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under AGPL-3.0 - see LICENSE file
+// Licensed under MIT License - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
 // Token types enum - duplicated from lexer.sx for standalone compilation

@@ -2,10 +2,6 @@
 """
 Simple LLVM IR merger for Simplex bootstrap compiler
 Merges multiple .ll files while deduplicating declarations and renaming string constants.
-
-Copyright (c) 2025-2026 Rod Higgins
-Licensed under AGPL-3.0 - see LICENSE file
-https://github.com/senuamedia/simplex-lang
 """
 
 import sys

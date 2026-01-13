@@ -5,7 +5,7 @@
 // - struct literals and field access
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under AGPL-3.0 - see LICENSE file
+// Licensed under MIT License - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
 // AST tags - duplicated from parser.sx for standalone compilation

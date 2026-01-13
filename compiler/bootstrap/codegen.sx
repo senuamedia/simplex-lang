@@ -5,7 +5,7 @@
 // - struct literals and field access
 //
 // Copyright (c) 2025-2026 Rod Higgins
-// Licensed under AGPL-3.0 - see LICENSE file
+// Licensed under MIT License - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
 // AST tags - duplicated from parser.sx for standalone compilation
@@ -112,6 +112,50 @@ fn str_unique(name: i64, id: i64) -> i64 {
 // Build label: str_label("arm", 3) -> "arm_3"
 fn str_label(base: i64, suffix: i64) -> i64 {
     str_join3(base, "_", int_to_string(suffix))
+}
+
+// =============================================================================
+// Platform Detection for Cross-Platform Compilation
+// Fixes GitHub issue #56 - target triple was hardcoded to macOS
+// =============================================================================
+
+// Detect current operating system
+// Returns: "windows", "linux", "macos", or "unknown"
+fn get_os_name() -> i64 {
+    // Check for Windows-specific environment variable
+    let windir: i64 = intrinsic_getenv("WINDIR");
+    if windir != 0 {
+        if string_len(windir) > 0 {
+            return "windows";
+        }
+    }
+
+    // Check for macOS by looking for Darwin-specific paths
+    if intrinsic_file_exists("/System/Library") != 0 {
+        return "macos";
+    }
+
+    // Check for Linux by looking for /proc (Linux-specific)
+    if intrinsic_file_exists("/proc/version") != 0 {
+        return "linux";
+    }
+
+    // Default to linux for other Unix-like systems
+    "linux"
+}
+
+// Get LLVM target triple for current platform
+fn get_target_triple() -> i64 {
+    let os: i64 = get_os_name();
+
+    if string_eq(os, "windows") {
+        return "x86_64-pc-windows-msvc";
+    }
+    if string_eq(os, "macos") {
+        return "x86_64-apple-macosx14.0.0";
+    }
+    // Linux and other Unix-like systems
+    "x86_64-unknown-linux-gnu"
 }
 
 // Codegen state
@@ -4840,7 +4884,9 @@ fn gen_item(cg: i64, item: i64) -> i64 {
 // Generate program header
 fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "; ModuleID = 'simplex_program'");
-    emit_line(cg, "target triple = \"x86_64-apple-macosx14.0.0\"");
+    // Dynamic target triple based on current platform (fixes GitHub issue #56)
+    let triple_line: i64 = str_join3("target triple = \"", get_target_triple(), "\"");
+    emit_line(cg, triple_line);
     emit_line(cg, "");
     emit_line(cg, "declare ptr @malloc(i64)");
     emit_line(cg, "declare void @free(ptr)");
@@ -4891,6 +4937,7 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare void @intrinsic_sb_free(ptr)");
     emit_line(cg, "declare i64 @intrinsic_sb_len(ptr)");
     emit_line(cg, "; File I/O intrinsics");
+    emit_line(cg, "declare ptr @intrinsic_getenv(ptr)");
     emit_line(cg, "declare i64 @intrinsic_file_exists(ptr)");
     emit_line(cg, "declare i64 @intrinsic_is_file(ptr)");
     emit_line(cg, "declare i64 @intrinsic_is_directory(ptr)");

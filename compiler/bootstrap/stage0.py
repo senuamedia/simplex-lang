@@ -5,7 +5,7 @@ This compiles a subset of Simplex to LLVM IR without depending on Simplex itself
 Rewritten to avoid dataclasses for Python 3.14 compatibility.
 
 Copyright (c) 2025-2026 Rod Higgins
-Licensed under AGPL-3.0 - see LICENSE file
+Licensed under MIT License - see LICENSE file
 https://github.com/senuamedia/simplex-lang
 """
 
@@ -2724,6 +2724,7 @@ class CodeGen:
         self.emit('declare i64 @intrinsic_process_run(ptr)')
         self.emit('declare ptr @intrinsic_process_output(ptr)')
         self.emit('; File system intrinsics')
+        self.emit('declare ptr @intrinsic_getenv(ptr)')
         self.emit('declare i64 @intrinsic_file_exists(ptr)')
         self.emit('declare i64 @intrinsic_is_file(ptr)')
         self.emit('declare i64 @intrinsic_is_directory(ptr)')

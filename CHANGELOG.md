@@ -5,6 +5,21 @@ All notable changes to the Simplex language and toolchain will be documented in 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.2] - 2026-01-14
+
+### Bug Fixes
+
+- **Cross-Platform Compilation**: Fixed GitHub issue #56 - LLVM target triple was hardcoded to `x86_64-apple-macosx14.0.0`, causing compilation failures on Linux systems. The compiler now dynamically detects the host platform and generates the appropriate target triple:
+  - macOS: `x86_64-apple-macosx14.0.0`
+  - Linux: `x86_64-unknown-linux-gnu`
+  - Windows: `x86_64-pc-windows-msvc`
+
+### Internal
+
+- Added `get_os_name()` and `get_target_triple()` platform detection functions to codegen
+- Added `intrinsic_getenv` declaration to Python bootstrap for platform detection
+- Updated all toolchain binaries to version 0.9.2
+
 ## [0.9.1] - 2026-01-12
 
 ### Bug Fixes
@@ -60,5 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[0.9.2]: https://github.com/senuamedia/simplex-lang/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/senuamedia/simplex-lang/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/senuamedia/simplex-lang/releases/tag/v0.9.0

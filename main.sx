@@ -3,7 +3,7 @@
 //
 // Copyright (c) 2025-2026 Rod Higgins
 // Licensed under MIT License - see LICENSE file
-// https://github.com/senuamedia/simplex-lang
+// https://github.com/senuamedia/simplex
 
 // Version
 fn VERSION() -> i64 { string_from("0.9.2") }
@@ -68,64 +68,7 @@ fn show_version() -> i64 {
     0
 }
 
-// Command constants
-fn CMD_BUILD() -> i64 { 0 }
-fn CMD_RUN() -> i64 { 1 }
-fn CMD_CHECK() -> i64 { 2 }
-fn CMD_HELP() -> i64 { 3 }
-fn CMD_VERSION() -> i64 { 4 }
-fn CMD_REPL() -> i64 { 5 }
-fn CMD_FMT() -> i64 { 6 }
-
-// Emit type constants
-fn EMIT_LLVM_IR() -> i64 { 0 }
-fn EMIT_OBJ() -> i64 { 1 }
-fn EMIT_EXE() -> i64 { 2 }
-fn EMIT_ASM() -> i64 { 3 }
-fn EMIT_DYLIB() -> i64 { 4 }
-
-// Parse emit type string to constant
-fn parse_emit_type(s: i64) -> i64 {
-    if string_eq(s, string_from("llvm-ir")) { return EMIT_LLVM_IR(); }
-    if string_eq(s, string_from("obj")) { return EMIT_OBJ(); }
-    if string_eq(s, string_from("exe")) { return EMIT_EXE(); }
-    if string_eq(s, string_from("asm")) { return EMIT_ASM(); }
-    if string_eq(s, string_from("dylib")) { return EMIT_DYLIB(); }
-    -1  // Unknown
-}
-
-// Parse command string to constant
-fn parse_command(s: i64) -> i64 {
-    if string_eq(s, string_from("build")) { return CMD_BUILD(); }
-    if string_eq(s, string_from("run")) { return CMD_RUN(); }
-    if string_eq(s, string_from("check")) { return CMD_CHECK(); }
-    if string_eq(s, string_from("repl")) { return CMD_REPL(); }
-    if string_eq(s, string_from("fmt")) { return CMD_FMT(); }
-    -1  // Not a command
-}
-
-// Check if argument is a boolean flag, return flag type or -1
-fn parse_flag(arg: i64) -> i64 {
-    if string_eq(arg, string_from("-h")) { return 1; }      // help
-    if string_eq(arg, string_from("--help")) { return 1; }  // help
-    if string_eq(arg, string_from("--version")) { return 2; } // version
-    if string_eq(arg, string_from("-v")) { return 3; }      // verbose
-    if string_eq(arg, string_from("--verbose")) { return 3; }
-    if string_eq(arg, string_from("-f")) { return 4; }      // force
-    if string_eq(arg, string_from("--force")) { return 4; }
-    if string_eq(arg, string_from("--deps")) { return 5; }  // show deps
-    if string_eq(arg, string_from("--auto-deps")) { return 6; } // auto deps
-    -1  // Not a flag
-}
-
-// Check if argument takes a value
-fn arg_takes_value(arg: i64) -> i64 {
-    if string_eq(arg, string_from("-o")) { return 1; }
-    if string_eq(arg, string_from("--emit")) { return 2; }
-    0  // No value needed
-}
-
-// Parse CLI arguments (refactored - no deep nesting)
+// Parse CLI arguments
 fn parse_args(args: i64) -> i64 {
     let cli: i64 = cli_new();
     let argc: i64 = vec_len(args);
@@ -134,74 +77,118 @@ fn parse_args(args: i64) -> i64 {
     while i < argc {
         let arg: i64 = vec_get(args, i);
 
-        // Check for immediate-return flags first
-        let flag: i64 = parse_flag(arg);
-        if flag == 1 {
-            cli_set_command(cli, CMD_HELP());
+        // Check for flags
+        if string_eq(arg, string_from("-h")) {
+            cli_set_command(cli, 3);
             return cli;
         }
-        if flag == 2 {
-            cli_set_command(cli, CMD_VERSION());
+        if string_eq(arg, string_from("--help")) {
+            cli_set_command(cli, 3);
             return cli;
         }
-        if flag == 3 {
+        if string_eq(arg, string_from("--version")) {
+            cli_set_command(cli, 4);
+            return cli;
+        }
+        if string_eq(arg, string_from("-v")) {
             cli_set_verbose(cli, 1);
             i = i + 1;
-            continue;
-        }
-        if flag == 4 {
+        } else {
+        if string_eq(arg, string_from("--verbose")) {
+            cli_set_verbose(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("-f")) {
             cli_set_force(cli, 1);
             i = i + 1;
-            continue;
-        }
-        if flag == 5 {
+        } else {
+        if string_eq(arg, string_from("--force")) {
+            cli_set_force(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--deps")) {
             cli_set_show_deps(cli, 1);
             i = i + 1;
-            continue;
-        }
-        if flag == 6 {
+        } else {
+        if string_eq(arg, string_from("--auto-deps")) {
             cli_set_auto_deps(cli, 1);
             i = i + 1;
-            continue;
-        }
-
-        // Check for arguments that take values
-        let val_type: i64 = arg_takes_value(arg);
-        if val_type == 1 {
-            // -o <file>
+        } else {
+        if string_eq(arg, string_from("-o")) {
+            // Next arg is output file
             if i + 1 < argc {
                 i = i + 1;
                 cli_set_output(cli, vec_get(args, i));
             }
             i = i + 1;
-            continue;
-        }
-        if val_type == 2 {
-            // --emit <type>
+        } else {
+        if string_eq(arg, string_from("--emit")) {
+            // Next arg is emit type
+            // 0=llvm-ir, 1=obj, 2=exe, 3=asm
             if i + 1 < argc {
                 i = i + 1;
-                let emit: i64 = parse_emit_type(vec_get(args, i));
-                if emit >= 0 {
-                    cli_set_emit(cli, emit);
+                let emit_arg: i64 = vec_get(args, i);
+                if string_eq(emit_arg, string_from("llvm-ir")) {
+                    cli_set_emit(cli, 0);
                 } else {
-                    println(string_concat(string_from("Unknown emit type: "), vec_get(args, i)));
+                if string_eq(emit_arg, string_from("obj")) {
+                    cli_set_emit(cli, 1);
+                } else {
+                if string_eq(emit_arg, string_from("exe")) {
+                    cli_set_emit(cli, 2);
+                } else {
+                if string_eq(emit_arg, string_from("asm")) {
+                    cli_set_emit(cli, 3);
+                } else {
+                if string_eq(emit_arg, string_from("dylib")) {
+                    cli_set_emit(cli, 4);
+                } else {
+                    println(string_concat(string_from("Unknown emit type: "), emit_arg));
+                }
+                }
+                }
+                }
                 }
             }
             i = i + 1;
-            continue;
-        }
-
+        } else {
         // Check for commands
-        let cmd: i64 = parse_command(arg);
-        if cmd >= 0 {
-            cli_set_command(cli, cmd);
+        if string_eq(arg, string_from("build")) {
+            cli_set_command(cli, 0);
             i = i + 1;
-            continue;
+        } else {
+        if string_eq(arg, string_from("run")) {
+            cli_set_command(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("check")) {
+            cli_set_command(cli, 2);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("repl")) {
+            cli_set_command(cli, 5);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("fmt")) {
+            cli_set_command(cli, 6);
+            i = i + 1;
+        } else {
+            // Must be an input file
+            vec_push(cli_input_files(cli), arg);
+            i = i + 1;
         }
-
-        // Must be an input file
-        vec_push(cli_input_files(cli), arg);
-        i = i + 1;
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
     }
 
     cli

@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.9.0**
+**Version 0.9.2**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 

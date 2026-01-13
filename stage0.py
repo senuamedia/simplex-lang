@@ -5,7 +5,7 @@ This compiles a subset of Simplex to LLVM IR without depending on Simplex itself
 Rewritten to avoid dataclasses for Python 3.14 compatibility.
 
 Copyright (c) 2025-2026 Rod Higgins
-Licensed under AGPL-3.0 - see LICENSE file
+Licensed under MIT License - see LICENSE file
 https://github.com/senuamedia/simplex
 """
 
