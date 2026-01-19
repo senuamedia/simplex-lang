@@ -669,9 +669,9 @@ simplex costs --watch
 
 ---
 
-## Developer Tools (v0.10.0)
+## Developer Tools (v0.11.0)
 
-Simplex 0.10.0 introduces a comprehensive suite of developer tools to help you write better code, catch bugs early, and optimize performance.
+Simplex 0.11.0 introduces a comprehensive suite of developer tools to help you write better code, catch bugs early, and optimize performance.
 
 ### Code Formatter (sxfmt)
 

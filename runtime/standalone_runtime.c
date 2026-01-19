@@ -364,6 +364,7 @@ static const char* sx_demangle_name(const char* mangled) {
 }
 
 // Try to resolve source location using dladdr
+__attribute__((unused))
 static int sx_resolve_address(void* addr, SxSourceLocation* loc) {
     if (!loc) return 0;
 
@@ -381,6 +382,7 @@ static int sx_resolve_address(void* addr, SxSourceLocation* loc) {
 }
 
 // Check if address is in Simplex user code (not runtime/libc)
+__attribute__((unused))
 static int sx_is_user_code(const SxSourceLocation* loc) {
     if (!loc) return 0;
 
@@ -645,6 +647,17 @@ SxString* intrinsic_string_from_char(int64_t c) {
     return s;
 }
 
+// String::from(ptr) - just returns the string pointer as-is
+int64_t String_from(int64_t str) {
+    return str;
+}
+
+// String.len() - returns the length of a string
+int64_t String_len(int64_t str_ptr) {
+    SxString* str = (SxString*)str_ptr;
+    return str ? str->len : 0;
+}
+
 // Helper to convert string pointer to i64 for passing to functions
 // When called from Simplex, the compiler wraps string literals in intrinsic_string_new first,
 // so 'data' is actually an SxString*, not a char*. We just return it as i64.
@@ -824,6 +837,11 @@ int64_t intrinsic_println(SxString* str) {
         printf("\n");
     }
     return 0;
+}
+
+// Print an integer (convenience function used by tests)
+void print_i64(int64_t val) {
+    printf("%lld", (long long)val);
 }
 
 SxString* intrinsic_read_file(SxString* path) {
@@ -7541,6 +7559,18 @@ int64_t executor_run(int64_t main_future) {
         if (ASYNC_IS_READY(result)) break;
     }
     return 0;
+}
+
+// block_on - Run an async function synchronously and return the result
+int64_t block_on(int64_t main_future) {
+    if (main_future == 0) return 0;
+
+    while (1) {
+        int64_t result = future_poll(main_future);
+        if (ASYNC_IS_READY(result)) {
+            return result >> 1;  // Extract the value from Ready(value)
+        }
+    }
 }
 
 // ============================================================================

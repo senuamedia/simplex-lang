@@ -1,12 +1,38 @@
 # Simplex Overview and Philosophy
 
-**Version 0.10.0**
+**Version 0.11.0**
 
 ---
 
 ## Vision
 
 Simplex is built on a singular premise: modern software runs on distributed, ephemeral infrastructure and increasingly relies on AI capabilities. The language should embrace these realities as first-class concerns, not afterthoughts.
+
+---
+
+## What's New in v0.11.0
+
+### Cross-Module Function Imports
+
+v0.11.0 delivers a complete module system with automatic function declaration generation:
+
+```simplex
+// mathlib.sx - a utility module
+fn add(a: i64, b: i64) -> i64 { a + b }
+fn multiply(a: i64, b: i64) -> i64 { a * b }
+
+// main.sx - using the module
+use mathlib;
+fn main() -> i64 { add(10, multiply(3, 4)) }  // Uses imported functions
+```
+
+**How It Works:**
+1. Compile modules: `sxc mathlib.sx -o mathlib.ll`
+2. The compiler parses `.ll` files and extracts function signatures
+3. LLVM `declare` statements are auto-generated for imported functions
+4. Link all `.ll` files together for the final executable
+
+See [RELEASE-0.11.0.md](../RELEASE-0.11.0.md) for complete release notes.
 
 ---
 

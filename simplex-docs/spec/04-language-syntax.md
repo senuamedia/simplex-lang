@@ -1,6 +1,6 @@
 # Simplex Language Syntax
 
-**Version 0.10.0**
+**Version 0.11.0**
 
 Complete syntax reference for the Simplex programming language.
 

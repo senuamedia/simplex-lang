@@ -6,7 +6,7 @@
 // - Secure session establishment
 // - Enhanced connection state machine with security states
 //
-// Protocol Version: 0.10.0
+// Protocol Version: 0.11.0
 
 // =============================================================================
 // Secure Connection States

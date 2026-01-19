@@ -1,6 +1,6 @@
 # Tutorial 14: Self-Learning Annealing
 
-Simplex v0.10.0 introduces **self-learning annealing** - temperature schedules that optimize themselves through gradient descent. This tutorial teaches you how to build systems where the cooling rate learns alongside the model.
+Simplex v0.11.0 introduces **self-learning annealing** - temperature schedules that optimize themselves through gradient descent. This tutorial teaches you how to build systems where the cooling rate learns alongside the model.
 
 ---
 

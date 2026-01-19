@@ -1,6 +1,6 @@
 # Simplex Compiler Toolchain
 
-**Version 0.10.0**
+**Version 0.11.0**
 
 This document describes the Simplex compiler toolchain, which is **self-hosted** and compiles to native binaries via LLVM.
 
@@ -12,13 +12,13 @@ The Simplex toolchain consists of the following components:
 
 | Component | Binary | Version | Description |
 |-----------|--------|---------|-------------|
-| **sxc** | `sxc` | v0.10.0 | Simplex Compiler - compiles `.sx` source to native executables |
-| **sxpm** | `sxpm` | v0.10.0 | Package manager with dependency resolution |
-| **cursus** | `cursus` | v0.10.0 | Bytecode VM with garbage collection |
-| **sxdoc** | `sxdoc` | v0.10.0 | Documentation generator |
-| **sxlsp** | `sxlsp` | v0.10.0 | Language Server Protocol implementation |
-| **sxfmt** | `sxfmt` | v0.10.0 | Code formatter with configurable styles |
-| **sxlint** | `sxlint` | v0.10.0 | Static linter with extensible rules |
+| **sxc** | `sxc` | v0.11.0 | Simplex Compiler - compiles `.sx` source to native executables |
+| **sxpm** | `sxpm` | v0.11.0 | Package manager with dependency resolution |
+| **cursus** | `cursus` | v0.11.0 | Bytecode VM with garbage collection |
+| **sxdoc** | `sxdoc` | v0.11.0 | Documentation generator |
+| **sxlsp** | `sxlsp` | v0.11.0 | Language Server Protocol implementation |
+| **sxfmt** | `sxfmt` | v0.11.0 | Code formatter with configurable styles |
+| **sxlint** | `sxlint` | v0.11.0 | Static linter with extensible rules |
 
 All components are written in **Simplex** and compile to native binaries.
 
@@ -447,6 +447,7 @@ tests/
 | 0.8.0 | 2026-01 | Native dual numbers for automatic differentiation |
 | 0.9.0 | 2026-01 | Self-learning annealing, test suite restructure, llama.cpp integration |
 | 0.10.0 | 2026-01 | sxfmt, sxlint, benchmarking, coverage, error explanations, incremental compilation, source-level stack traces |
+| 0.11.0 | 2026-01 | Cross-module function imports via `use` statements, automatic LLVM declaration generation |
 
 ---
 

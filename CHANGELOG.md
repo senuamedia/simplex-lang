@@ -5,6 +5,54 @@ All notable changes to Simplex will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-01-19
+
+### Highlights
+
+**Module System Release** - This release delivers a complete cross-module import system, enabling multi-file Simplex projects with proper function declarations across module boundaries.
+
+### Added
+
+#### Cross-Module Function Imports
+- **`use module;` statement** now automatically imports functions from compiled modules
+  - Compiler parses `.ll` files and extracts function signatures
+  - Generates LLVM `declare` statements for imported functions
+  - Enables proper linking of multi-file projects
+
+#### Multi-File Project Support
+- Source directory awareness for module resolution
+- Automatic declaration generation from compiled LLVM IR
+- Proper function visibility across compilation units
+
+#### Example Usage
+```simplex
+// mathlib.sx
+fn add(a: i64, b: i64) -> i64 { a + b }
+fn multiply(a: i64, b: i64) -> i64 { a * b }
+
+// main.sx
+use mathlib;
+fn main() -> i64 { add(10, multiply(3, 4)) }
+```
+
+### Changed
+
+- All tools updated to version 0.11.0
+- Compiler now tracks source file directory for module imports
+- Test runner updated to link module dependencies automatically
+
+### Fixed
+
+- Module imports now generate proper LLVM declarations
+- `print_i64` added to standalone runtime
+
+### Known Limitations
+
+- `&mut self` syntax not yet supported (planned for 0.12.0)
+- Parser error recovery can loop on unrecognized tokens
+
+---
+
 ## [0.10.0] - 2026-01-18
 
 ### Highlights

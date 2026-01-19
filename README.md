@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.10.0**
+**Version 0.11.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -293,15 +293,40 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.10.0 | Simplex Compiler with Neural IR and Dual Numbers |
-| **sxpm** | 0.10.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.10.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.10.0 | Documentation Generator |
-| **sxlsp** | 0.10.0 | Language Server Protocol |
-| **sxfmt** | 0.10.0 | Code Formatter |
-| **sxlint** | 0.10.0 | Static Linter |
+| **sxc** | 0.11.0 | Simplex Compiler with Neural IR, Dual Numbers, and Module System |
+| **sxpm** | 0.11.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.11.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.11.0 | Documentation Generator |
+| **sxlsp** | 0.11.0 | Language Server Protocol |
+| **sxfmt** | 0.11.0 | Code Formatter |
+| **sxlint** | 0.11.0 | Static Linter |
 
 ## Release History
+
+### v0.11.0 (2026-01-19) - Module System
+
+**Cross-Module Function Imports:**
+- `use module;` now automatically imports functions from compiled `.ll` files
+- Compiler parses `.ll` files and generates LLVM `declare` statements
+- Enables multi-file Simplex projects with proper function declarations
+
+**How to Use:**
+```simplex
+// mathlib.sx
+fn add(a: i64, b: i64) -> i64 { a + b }
+
+// main.sx
+use mathlib;
+fn main() -> i64 { add(10, 20) }
+```
+
+```bash
+sxc mathlib.sx -o mathlib.ll
+sxc main.sx -o main.ll
+# Link both .ll files together
+```
+
+See [RELEASE-0.11.0.md](simplex-docs/RELEASE-0.11.0.md) for details.
 
 ### v0.10.0 (2026-01-18) - Developer Experience
 
@@ -641,6 +666,7 @@ sxc run tests/learning/unit_dual_numbers.sx
 - [Tutorial](simplex-docs/tutorial/)
 - [Testing Documentation](simplex-docs/testing/)
 - [Getting Started Guide](simplex-docs/guides/getting-started.md)
+- [Release Notes v0.11.0](simplex-docs/RELEASE-0.11.0.md) - Module System
 - [Release Notes v0.10.0](simplex-docs/RELEASE-0.10.0.md) - Developer Experience
 - [Release Notes v0.9.9](simplex-docs/RELEASE-0.9.9.md) - Runtime Stability
 - [Release Notes v0.9.7](simplex-docs/RELEASE-0.9.7.md) - Distributed Validation

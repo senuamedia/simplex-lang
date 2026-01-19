@@ -34,6 +34,7 @@ fn STMT_RETURN() -> i64 { 2 }
 fn STMT_ASSIGN() -> i64 { 3 }
 fn STMT_BREAK() -> i64 { 4 }
 fn STMT_CONTINUE() -> i64 { 5 }
+fn STMT_FIELD_ASSIGN() -> i64 { 6 }  // Field assignment: expr.field = value
 
 // Expr tags
 fn EXPR_INT() -> i64 { 0 }
@@ -78,6 +79,8 @@ fn EXPR_DERIVATIVE() -> i64 { 36 }    // expr.derivative
 fn EXPR_BELIEF_GUARD() -> i64 { 37 }  // belief_expr cmp value
 fn EXPR_BELIEF_AND() -> i64 { 38 }    // guard && guard
 fn EXPR_BELIEF_OR() -> i64 { 39 }     // guard || guard
+fn EXPR_SEND() -> i64 { 40 }          // send(actor, Message(args))
+fn EXPR_ASK() -> i64 { 41 }           // ask(actor, Message(args))
 
 // Binary operators - must match parser.sx
 fn OP_ADD() -> i64 { 0 }
@@ -183,8 +186,9 @@ fn get_target_triple() -> i64 {
 fn codegen_new() -> i64 {
     // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28), type_aliases(29), closures(30), closure_counter(31), defined_fns(32), messages(33)
     // Debug info slots: debug_enabled(34), debug_file(35), debug_dir(36), debug_metadata_id(37), debug_subprograms(38), current_subprogram(39), current_line(40)
+    // Module system: source_dir(41)
     // Note: slot 0 is now a StringBuilder for O(n) instead of O(n²) string building
-    let cg: i64 = malloc(328);
+    let cg: i64 = malloc(336);
     store_ptr(cg, 0, sb_new_cap(65536));
     store_i64(cg, 1, 0);
     store_i64(cg, 2, 0);
@@ -227,6 +231,8 @@ fn codegen_new() -> i64 {
     store_ptr(cg, 38, vec_new()); // debug_subprograms: vec of (fn_name, metadata_id, line) for DISubprogram
     store_i64(cg, 39, 0);         // current_subprogram: metadata ID of current function's DISubprogram
     store_i64(cg, 40, 1);         // current_line: current source line number for debug locations
+    // Module system
+    store_ptr(cg, 41, string_from(".")); // source_dir: directory of current source file
     cg
 }
 
@@ -275,6 +281,88 @@ fn cg_has_defined_fn(cg: i64, name: i64) -> bool {
         i = i + 1;
     }
     false
+}
+
+// ========================================
+// Module System - Source Directory
+// ========================================
+
+fn cg_source_dir(cg: i64) -> i64 { load_ptr(cg, 41) }
+fn cg_set_source_dir(cg: i64, d: i64) -> i64 { store_ptr(cg, 41, d); 0 }
+
+// Parse an LLVM .ll file and extract function declarations for exported functions
+// Returns a string containing declare statements for all functions defined in the module
+fn parse_ll_file_for_declarations(ll_content: i64) -> i64 {
+    let result: i64 = sb_new();
+    // Split by newlines
+    let newline: i64 = string_from_char(10);
+    let lines: i64 = string_split(ll_content, newline);
+    let n: i64 = vec_len(lines);
+    let i: i64 = 0;
+    while i < n {
+        let line: i64 = vec_get(lines, i);
+        // Look for lines starting with "define "
+        if string_starts_with(line, string_from("define ")) {
+            // Convert "define i64 @func(args) {" to "declare i64 @func(args)"
+            // Find the opening brace
+            let brace_pos: i64 = string_find(line, string_from("{"), 0);
+            if brace_pos > 0 {
+                // Extract everything up to the brace and trim
+                let decl_part: i64 = string_trim(string_slice(line, 0, brace_pos));
+                // Replace "define" with "declare"
+                let declare_line: i64 = string_concat(string_from("declare "), string_slice(decl_part, 7, string_len(decl_part)));
+                sb_append(result, declare_line);
+                sb_append_char(result, 10);
+            }
+        }
+        i = i + 1;
+    }
+    sb_to_string(result)
+}
+
+// Process a USE node and emit declarations for the imported module
+fn gen_use_declarations(cg: i64, use_node: i64) -> i64 {
+    // The path is a Vec of path segments at offset 1
+    // For "use mathlib;", path = ["mathlib"]
+    let path_vec: i64 = load_ptr(use_node, 1);
+    if vec_len(path_vec) == 0 {
+        return 0;
+    }
+
+    // Get the first segment as the module name
+    // For simple imports like "use mathlib;", this is the module name
+    let module_name: i64 = vec_get(path_vec, 0);
+
+    // Construct path to .ll file: source_dir/module_name.ll
+    let source_dir: i64 = cg_source_dir(cg);
+    // Join paths: source_dir + module_name + ".ll" (source_dir already has trailing /)
+    let ll_path: i64 = 0;
+    if string_ends_with(source_dir, string_from("/")) {
+        ll_path = string_concat(source_dir, string_concat(module_name, string_from(".ll")));
+    } else {
+        ll_path = string_concat(source_dir, string_concat(string_from("/"), string_concat(module_name, string_from(".ll"))));
+    }
+
+    // Check if file exists
+    if file_exists(ll_path) == 0 {
+        // No .ll file found, skip
+        return 0;
+    }
+
+    // Read the .ll file
+    let ll_content: i64 = read_file(ll_path);
+    if ll_content == 0 {
+        return 0;
+    }
+
+    // Parse and emit declarations
+    let declarations: i64 = parse_ll_file_for_declarations(ll_content);
+    if string_len(declarations) > 0 {
+        emit_line(cg, string_concat(string_from("; Imported from "), module_name));
+        emit(cg, declarations);
+    }
+
+    0
 }
 
 // ========================================
@@ -351,7 +439,7 @@ fn cg_next_async_state(cg: i64) -> i64 {
 }
 
 fn cg_reset_async_state(cg: i64) -> i64 {
-    store_i64(cg, 23, 0);
+    store_i64(cg, 23, 1);  // Start at 1 since state 0 is the initial state
     0
 }
 
@@ -3833,12 +3921,125 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             }
 
             if string_eq(method_name, string_from("get")) {
-                // vec.get(idx) -> intrinsic_vec_get(vec, idx)
+                // vec.get(idx) -> Option wrapping intrinsic_vec_get result
                 let idx_val: i64 = string_from("0");
                 if vec_len(arg_values) > 0 {
                     idx_val = vec_get(arg_values, 0);
                 }
-                return emit_intrinsic_ptr_ptr_i64(cg, "intrinsic_vec_get", obj_val, idx_val);
+
+                // Convert obj_val (i64) to ptr
+                let obj_ptr_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(obj_ptr_t));
+                emit(cg, " = inttoptr i64 ");
+                emit(cg, obj_val);
+                emit_line(cg, " to ptr");
+
+                // Call intrinsic_vec_get to get the raw pointer
+                let raw_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(raw_t));
+                emit(cg, " = call ptr @intrinsic_vec_get(ptr %t");
+                emit(cg, int_to_string(obj_ptr_t));
+                emit(cg, ", i64 ");
+                emit(cg, idx_val);
+                emit_line(cg, ")");
+
+                // Check if NULL
+                let is_null_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(is_null_t));
+                emit(cg, " = icmp eq ptr %t");
+                emit(cg, int_to_string(raw_t));
+                emit_line(cg, ", null");
+
+                // Create labels
+                let lbl_num: i64 = cg_next_label(cg);
+                let none_lbl: i64 = string_concat("vec_get_none", int_to_string(lbl_num));
+                let some_lbl: i64 = string_concat("vec_get_some", int_to_string(lbl_num));
+                let end_lbl: i64 = string_concat("vec_get_end", int_to_string(lbl_num));
+
+                // Branch on NULL
+                emit(cg, "  br i1 %t");
+                emit(cg, int_to_string(is_null_t));
+                emit(cg, ", label %");
+                emit(cg, none_lbl);
+                emit(cg, ", label %");
+                emit_line(cg, some_lbl);
+
+                // None case: allocate Option with tag=0
+                emit(cg, none_lbl);
+                emit_line(cg, ":");
+                let none_ptr_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(none_ptr_t));
+                emit_line(cg, " = call ptr @malloc(i64 16)");
+                let none_tag_t: i64 = cg_next_temp(cg);
+                emit(cg, "  store i64 0, ptr %t");
+                emit_line(cg, int_to_string(none_ptr_t));
+                let none_val_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(none_val_t));
+                emit(cg, " = ptrtoint ptr %t");
+                emit(cg, int_to_string(none_ptr_t));
+                emit_line(cg, " to i64");
+                emit(cg, "  br label %");
+                emit_line(cg, end_lbl);
+
+                // Some case: allocate Option with tag=1 and value
+                emit(cg, some_lbl);
+                emit_line(cg, ":");
+                let some_ptr_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(some_ptr_t));
+                emit_line(cg, " = call ptr @malloc(i64 16)");
+                // Store tag=1
+                emit(cg, "  store i64 1, ptr %t");
+                emit_line(cg, int_to_string(some_ptr_t));
+                // Get value (dereference the raw pointer as i64 for Vec<i64>)
+                let val_ptr_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(val_ptr_t));
+                emit(cg, " = ptrtoint ptr %t");
+                emit(cg, int_to_string(raw_t));
+                emit_line(cg, " to i64");
+                // Store value at offset 8
+                let payload_ptr_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(payload_ptr_t));
+                emit(cg, " = getelementptr i8, ptr %t");
+                emit(cg, int_to_string(some_ptr_t));
+                emit_line(cg, ", i64 8");
+                emit(cg, "  store i64 %t");
+                emit(cg, int_to_string(val_ptr_t));
+                emit(cg, ", ptr %t");
+                emit_line(cg, int_to_string(payload_ptr_t));
+                let some_val_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(some_val_t));
+                emit(cg, " = ptrtoint ptr %t");
+                emit(cg, int_to_string(some_ptr_t));
+                emit_line(cg, " to i64");
+                emit(cg, "  br label %");
+                emit_line(cg, end_lbl);
+
+                // End block with phi
+                emit(cg, end_lbl);
+                emit_line(cg, ":");
+                let result_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(result_t));
+                emit(cg, " = phi i64 [ %t");
+                emit(cg, int_to_string(none_val_t));
+                emit(cg, ", %");
+                emit(cg, none_lbl);
+                emit(cg, " ], [ %t");
+                emit(cg, int_to_string(some_val_t));
+                emit(cg, ", %");
+                emit(cg, some_lbl);
+                emit_line(cg, " ]");
+
+                return string_concat("%t", int_to_string(result_t));
             }
 
             if string_eq(method_name, string_from("pop")) {
@@ -3983,6 +4184,7 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             // Inside async function - generate state machine transition
             let state_num: i64 = cg_next_async_state(cg);
             let resume_label: i64 = string_concat("await_resume_", int_to_string(state_num));
+            let poll_label: i64 = string_concat("await_poll_", int_to_string(state_num));
 
             // Save current state number
             emit(cg, "  store i64 ");
@@ -3994,22 +4196,36 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             emit(cg, future_val);
             emit_line(cg, ", ptr %async_inner_future");
 
-            // Record this await point for the dispatch switch
-            cg_add_await_point(cg, state_num, resume_label);
+            // Record this await point - switch jumps to poll_label for re-entry
+            cg_add_await_point(cg, state_num, poll_label);
+
+            // Jump to poll label (fall through for first entry, switch target for resume)
+            emit(cg, "  br label %");
+            emit_line(cg, poll_label);
+
+            // Poll label - this is where we poll (both fresh and resume)
+            emit(cg, poll_label);
+            emit_line(cg, ":");
+
+            // Load the inner future (in case we're resuming)
+            let inner_future_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(inner_future_t));
+            emit_line(cg, " = load i64, ptr %async_inner_future");
 
             // Poll the inner future
             let poll_t: i64 = cg_next_temp(cg);
             emit(cg, "  %t");
             emit(cg, int_to_string(poll_t));
-            emit(cg, " = call i64 @future_poll(i64 ");
-            emit(cg, future_val);
+            emit(cg, " = call i64 @future_poll(i64 %t");
+            emit(cg, int_to_string(inner_future_t));
             emit_line(cg, ")");
 
             // Check poll result: 0 = Pending, 1 = Ready(value)
             let is_ready: i64 = cg_next_temp(cg);
             emit(cg, "  %t");
             emit(cg, int_to_string(is_ready));
-            emit_line(cg, " = and i64 %t");
+            emit(cg, " = and i64 %t");
             emit(cg, int_to_string(poll_t));
             emit_line(cg, ", 1");
 
@@ -4107,6 +4323,110 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         emit(cg, ctor_name);
         emit_line(cg, "\"()");
         return string_concat("%t", int_to_string(result_t));
+    }
+
+    // EXPR_SEND - send message to actor
+    if tag == EXPR_SEND() {
+        let target: i64 = load_ptr(expr, 1);
+        let msg_name: i64 = load_ptr(expr, 2);
+        let args: i64 = load_ptr(expr, 3);
+
+        // Generate target value
+        let target_val: i64 = gen_expr(cg, target);
+
+        // Try to get actor type from target
+        let actor_name: i64 = 0;
+        let target_tag: i64 = load_i64(target, 0);
+        if target_tag == EXPR_IDENT() {
+            let var_name: i64 = load_ptr(target, 1);
+            actor_name = lookup_var_type(cg, var_name);
+        }
+
+        // Generate args
+        let arg_vals: i64 = vec_new();
+        if args != 0 {
+            let n: i64 = vec_len(args);
+            let i: i64 = 0;
+            while i < n {
+                let arg: i64 = vec_get(args, i);
+                vec_push(arg_vals, gen_expr(cg, arg));
+                i = i + 1;
+            }
+        }
+
+        // Generate call to handler
+        if actor_name != 0 {
+            emit(cg, "  call void @\"");
+            emit(cg, actor_name);
+            emit(cg, "_handle_");
+            emit(cg, msg_name);
+            emit(cg, "\"(i64 ");
+            emit(cg, target_val);
+            // Add args
+            let n: i64 = vec_len(arg_vals);
+            let i: i64 = 0;
+            while i < n {
+                emit(cg, ", i64 ");
+                emit(cg, vec_get(arg_vals, i));
+                i = i + 1;
+            }
+            emit_line(cg, ")");
+        }
+        return string_from("0");
+    }
+
+    // EXPR_ASK - ask actor for response
+    if tag == EXPR_ASK() {
+        let target: i64 = load_ptr(expr, 1);
+        let msg_name: i64 = load_ptr(expr, 2);
+        let args: i64 = load_ptr(expr, 3);
+
+        // Generate target value
+        let target_val: i64 = gen_expr(cg, target);
+
+        // Try to get actor type from target
+        let actor_name: i64 = 0;
+        let target_tag: i64 = load_i64(target, 0);
+        if target_tag == EXPR_IDENT() {
+            let var_name: i64 = load_ptr(target, 1);
+            actor_name = lookup_var_type(cg, var_name);
+        }
+
+        // Generate args
+        let arg_vals: i64 = vec_new();
+        if args != 0 {
+            let n: i64 = vec_len(args);
+            let i: i64 = 0;
+            while i < n {
+                let arg: i64 = vec_get(args, i);
+                vec_push(arg_vals, gen_expr(cg, arg));
+                i = i + 1;
+            }
+        }
+
+        // Generate call to handler and return result
+        let result_t: i64 = cg_next_temp(cg);
+        if actor_name != 0 {
+            emit(cg, "  %t");
+            emit(cg, int_to_string(result_t));
+            emit(cg, " = call i64 @\"");
+            emit(cg, actor_name);
+            emit(cg, "_handle_");
+            emit(cg, msg_name);
+            emit(cg, "\"(i64 ");
+            emit(cg, target_val);
+            // Add args
+            let n: i64 = vec_len(arg_vals);
+            let i: i64 = 0;
+            while i < n {
+                emit(cg, ", i64 ");
+                emit(cg, vec_get(arg_vals, i));
+                i = i + 1;
+            }
+            emit_line(cg, ")");
+            return string_concat("%t", int_to_string(result_t));
+        }
+        return string_from("0");
     }
 
     // EXPR_INFER - AI model inference
@@ -4554,14 +4874,16 @@ fn gen_if(cg: i64, expr: i64) -> i64 {
     cg_set_terminated(cg, false);
     let then_val: i64 = gen_block(cg, then_block);
     let then_terminated: bool = cg_is_terminated(cg);
-    // Even if terminated, emit dead branch for phi predecessor consistency
-    emit(cg, "  br label %");
-    emit_line(cg, then_end_lbl);
-    // Then end block
-    emit(cg, then_end_lbl);
-    emit_line(cg, ":");
-    emit(cg, "  br label %");
-    emit_line(cg, end_lbl);
+    // Only emit branch if block didn't terminate early (via return)
+    if then_terminated == false {
+        emit(cg, "  br label %");
+        emit_line(cg, then_end_lbl);
+        // Then end block
+        emit(cg, then_end_lbl);
+        emit_line(cg, ":");
+        emit(cg, "  br label %");
+        emit_line(cg, end_lbl);
+    }
 
     // Else block
     emit(cg, else_lbl);
@@ -4572,34 +4894,57 @@ fn gen_if(cg: i64, expr: i64) -> i64 {
         else_val = gen_expr(cg, else_block);
     }
     let else_terminated: bool = cg_is_terminated(cg);
-    // Even if terminated, emit dead branch for phi predecessor consistency
-    emit(cg, "  br label %");
-    emit_line(cg, else_end_lbl);
-    // Else end block
-    emit(cg, else_end_lbl);
-    emit_line(cg, ":");
-    emit(cg, "  br label %");
-    emit_line(cg, end_lbl);
+    // Only emit branch if block didn't terminate early (via return)
+    if else_terminated == false {
+        emit(cg, "  br label %");
+        emit_line(cg, else_end_lbl);
+        // Else end block
+        emit(cg, else_end_lbl);
+        emit_line(cg, ":");
+        emit(cg, "  br label %");
+        emit_line(cg, end_lbl);
+    }
+
+    // If both branches terminated, propagate termination
+    if then_terminated {
+        if else_terminated {
+            cg_set_terminated(cg, true);
+            return string_from("0");
+        }
+    }
 
     // End block with phi
     emit(cg, end_lbl);
     emit_line(cg, ":");
     cg_set_terminated(cg, false);
 
-    // Phi with proper predecessor blocks
+    // Phi with only non-terminated predecessor blocks
     let t: i64 = cg_next_temp(cg);
     let temp: i64 = string_concat("%t", int_to_string(t));
     emit(cg, "  ");
     emit(cg, temp);
-    emit(cg, " = phi i64 [ ");
-    emit(cg, then_val);
-    emit(cg, ", %");
-    emit(cg, then_end_lbl);
-    emit(cg, " ], [ ");
-    emit(cg, else_val);
-    emit(cg, ", %");
-    emit(cg, else_end_lbl);
-    emit_line(cg, " ]");
+    emit(cg, " = phi i64 ");
+
+    let need_comma: bool = false;
+    if then_terminated == false {
+        emit(cg, "[ ");
+        emit(cg, then_val);
+        emit(cg, ", %");
+        emit(cg, then_end_lbl);
+        emit(cg, " ]");
+        need_comma = true;
+    }
+    if else_terminated == false {
+        if need_comma {
+            emit(cg, ", ");
+        }
+        emit(cg, "[ ");
+        emit(cg, else_val);
+        emit(cg, ", %");
+        emit(cg, else_end_lbl);
+        emit(cg, " ]");
+    }
+    emit_line(cg, "");
 
     temp
 }
@@ -5693,17 +6038,21 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
         }
 
         let arm_val: i64 = gen_expr(cg, result);
-        emit(cg, "  br label %");
-        emit_line(cg, arm_end_lbl);
 
-        // Arm end block for phi
-        emit(cg, arm_end_lbl);
-        emit_line(cg, ":");
-        emit(cg, "  br label %");
-        emit_line(cg, end_lbl);
+        // Only emit branch and phi entry if the arm didn't terminate (e.g., via return)
+        if cg_is_terminated(cg) == false {
+            emit(cg, "  br label %");
+            emit_line(cg, arm_end_lbl);
 
-        vec_push(arm_labels, arm_end_lbl);
-        vec_push(arm_results, arm_val);
+            // Arm end block for phi
+            emit(cg, arm_end_lbl);
+            emit_line(cg, ":");
+            emit(cg, "  br label %");
+            emit_line(cg, end_lbl);
+
+            vec_push(arm_labels, arm_end_lbl);
+            vec_push(arm_results, arm_val);
+        }
 
         i = i + 1;
     }
@@ -5718,28 +6067,42 @@ fn gen_match(cg: i64, expr: i64) -> i64 {
     emit(cg, end_lbl);
     emit_line(cg, ":");
 
+    // Get the number of arms that actually contributed to the phi
+    let num_phi_arms: i64 = vec_len(arm_labels);
+
     let result_t: i64 = cg_next_temp(cg);
     let result_temp: i64 = string_concat("%t", int_to_string(result_t));
-    emit(cg, "  ");
-    emit(cg, result_temp);
-    emit(cg, " = phi i64 ");
 
-    i = 0;
-    while i < num_arms {
-        if i > 0 {
-            emit(cg, ", ");
+    // Only emit phi if there are any incoming edges (arms that didn't return early)
+    if num_phi_arms > 0 {
+        emit(cg, "  ");
+        emit(cg, result_temp);
+        emit(cg, " = phi i64 ");
+
+        i = 0;
+        while i < num_phi_arms {
+            if i > 0 {
+                emit(cg, ", ");
+            }
+            emit(cg, "[ ");
+            emit(cg, vec_get(arm_results, i));
+            emit(cg, ", %");
+            emit(cg, vec_get(arm_labels, i));
+            emit(cg, " ]");
+            i = i + 1;
         }
-        emit(cg, "[ ");
-        emit(cg, vec_get(arm_results, i));
-        emit(cg, ", %");
-        emit(cg, vec_get(arm_labels, i));
-        emit(cg, " ]");
-        i = i + 1;
+        // Add fail case with default value of 0
+        emit(cg, ", [ 0, %");
+        emit(cg, fail_lbl);
+        emit_line(cg, " ]");
+        // Execution continues after match, reset terminated flag
+        cg_set_terminated(cg, false);
+    } else {
+        // All arms terminated early (returned), so just emit a dummy ret
+        // The code after match is unreachable
+        emit_line(cg, "  unreachable");
+        cg_set_terminated(cg, true);
     }
-    // Add fail case with default value of 0
-    emit(cg, ", [ 0, %");
-    emit(cg, fail_lbl);
-    emit_line(cg, " ]");
 
     result_temp
 }
@@ -5803,6 +6166,13 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
         if init_expr != 0 {
             // Check if init is a closure - register it for inline expansion
             let init_tag: i64 = load_i64(init_expr, 0);
+
+            // If init is a spawn expression, record the actor type
+            if init_tag == EXPR_SPAWN() {
+                let actor_type: i64 = load_ptr(init_expr, 1);
+                add_var_type(cg, name, actor_type);
+            }
+
             if init_tag == EXPR_CLOSURE() {
                 let params: i64 = load_ptr(init_expr, 1);
                 let body: i64 = load_ptr(init_expr, 2);
@@ -5857,6 +6227,46 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
         emit(cg, val);
         emit(cg, ", ptr %local.");
         emit_line(cg, unique_name);
+        return 0;
+    }
+
+    // Field assignment statement: expr.field = value
+    if tag == STMT_FIELD_ASSIGN() {
+        let target: i64 = load_ptr(stmt, 1);  // EXPR_FIELD node
+        let value: i64 = load_ptr(stmt, 2);
+
+        // Get object and field from EXPR_FIELD
+        let object: i64 = load_ptr(target, 1);
+        let field_name: i64 = load_ptr(target, 2);
+
+        // Generate value to store
+        let val: i64 = gen_expr(cg, value);
+
+        // Generate object pointer
+        let obj_val: i64 = gen_expr(cg, object);
+
+        // Convert i64 to ptr
+        let ptr_temp: i64 = emit_i64_to_ptr(cg, obj_val);
+
+        // Lookup field offset
+        let field_idx: i64 = lookup_field_in_all_structs(cg, field_name);
+        let offset: i64 = field_idx * 8;
+
+        // GEP to field
+        let gep_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(gep_t));
+        emit(cg, " = getelementptr i8, ptr ");
+        emit(cg, ptr_temp);
+        emit(cg, ", i64 ");
+        emit_line(cg, int_to_string(offset));
+
+        // Store value to field
+        emit(cg, "  store i64 ");
+        emit(cg, val);
+        emit(cg, ", ptr %t");
+        emit_line(cg, int_to_string(gep_t));
+
         return 0;
     }
 
@@ -6592,15 +7002,20 @@ fn gen_actor(cg: i64, item: i64) -> i64 {
 
     // Register actor state as a struct
     if state_fields != 0 {
+        let fields_vec: i64 = vec_new();
         let n: i64 = vec_len(state_fields);
         let i: i64 = 0;
         while i < n {
             let field: i64 = vec_get(state_fields, i);
             let fname: i64 = load_ptr(field, 0);
             let ftype: i64 = load_ptr(field, 1);
-            register_struct(cg, name, fname, ftype, i);
+            let field_entry: i64 = malloc(16);
+            store_ptr(field_entry, 0, fname);
+            store_ptr(field_entry, 1, ftype);
+            vec_push(fields_vec, field_entry);
             i = i + 1;
         }
+        register_struct(cg, name, fields_vec);
     }
 
     // Generate actor_new function
@@ -6609,6 +7024,31 @@ fn gen_actor(cg: i64, item: i64) -> i64 {
     emit_line(cg, "_new\"() {");
     emit_line(cg, "entry:");
     emit_line(cg, "  %actor = call ptr @malloc(i64 64)");
+
+    // Initialize state fields with default values
+    if state_fields != 0 {
+        let n: i64 = vec_len(state_fields);
+        let i: i64 = 0;
+        while i < n {
+            let field: i64 = vec_get(state_fields, i);
+            let fname: i64 = load_ptr(field, 0);
+            let ftype: i64 = load_ptr(field, 1);
+            let init_val: i64 = load_ptr(field, 2);  // Default value expression
+
+            let offset: i64 = i * 8;
+            emit(cg, "  %field_ptr_");
+            emit(cg, int_to_string(i));
+            emit(cg, " = getelementptr i8, ptr %actor, i64 ");
+            emit_line(cg, int_to_string(offset));
+
+            // Initialize to 0 or default value
+            emit(cg, "  store i64 0, ptr %field_ptr_");
+            emit_line(cg, int_to_string(i));
+
+            i = i + 1;
+        }
+    }
+
     emit_line(cg, "  %ret = ptrtoint ptr %actor to i64");
     emit_line(cg, "  ret i64 %ret");
     emit_line(cg, "}");
@@ -6623,7 +7063,8 @@ fn gen_actor(cg: i64, item: i64) -> i64 {
             let handler: i64 = vec_get(handlers, i);
             let msg_name: i64 = load_ptr(handler, 0);
             let params: i64 = load_ptr(handler, 1);
-            let body: i64 = load_ptr(handler, 2);
+            let ret_type: i64 = load_ptr(handler, 2);
+            let body: i64 = load_ptr(handler, 3);
 
             // Generate handler function: ActorName_handle_MsgName
             emit(cg, "define i64 @\"");
@@ -6899,7 +7340,8 @@ fn gen_specialist(cg: i64, item: i64) -> i64 {
             let handler: i64 = vec_get(handlers, i);
             let msg_name: i64 = load_ptr(handler, 0);
             let params: i64 = load_ptr(handler, 1);
-            let body: i64 = load_ptr(handler, 2);
+            let ret_type: i64 = load_ptr(handler, 2);
+            let body: i64 = load_ptr(handler, 3);
 
             // Generate handler function
             emit(cg, "define i64 @\"");
@@ -7624,6 +8066,9 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @intrinsic_string_char_at(ptr, i64)");
     emit_line(cg, "declare i1 @intrinsic_string_eq(ptr, ptr)");
     emit_line(cg, "declare i64 @intrinsic_string_to_int(ptr)");
+    // String methods
+    emit_line(cg, "declare i64 @\"String_from\"(i64)");
+    emit_line(cg, "declare i64 @\"String_len\"(i64)");
     emit_line(cg, "declare ptr @intrinsic_vec_new()");
     emit_line(cg, "declare void @intrinsic_vec_push(ptr, ptr)");
     emit_line(cg, "declare ptr @intrinsic_vec_get(ptr, i64)");
@@ -7732,6 +8177,7 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i64 @future_pending()");
     emit_line(cg, "declare void @executor_run(i64)");
     emit_line(cg, "declare i64 @executor_spawn(i64)");
+    emit_line(cg, "declare i64 @block_on(i64)");
 
     // Async combinators
     emit_line(cg, "declare i64 @async_join(i64, i64)");
@@ -8134,8 +8580,14 @@ fn emit_string_constant(cg: i64, idx: i64, value: i64) -> i64 {
 
 // Generate entire program with module name for unique string prefixes
 fn gen_program_with_module(items: i64, module_name: i64) -> i64 {
+    return gen_program_with_module_and_dir(items, module_name, string_from("."));
+}
+
+// Generate entire program with module name and source directory
+fn gen_program_with_module_and_dir(items: i64, module_name: i64, source_dir: i64) -> i64 {
     let cg: i64 = codegen_new();
     cg_set_module_name(cg, module_name);
+    cg_set_source_dir(cg, source_dir);
     register_builtin_enums(cg);  // Phase 36: Pre-register Option and Result
 
     // Pre-pass: collect all user-defined function names to prevent stdlib declaration conflicts
@@ -8153,6 +8605,17 @@ fn gen_program_with_module(items: i64, module_name: i64) -> i64 {
 
     gen_header(cg);
 
+    // Process USE nodes to emit declarations for imported modules
+    i = 0;
+    while i < n {
+        let item: i64 = vec_get(items, i);
+        let tag: i64 = load_i64(item, 0);
+        if tag == TAG_USE() {
+            gen_use_declarations(cg, item);
+        }
+        i = i + 1;
+    }
+
     // First pass: register enums and structs
     i = 0;
     while i < n {
@@ -8167,7 +8630,7 @@ fn gen_program_with_module(items: i64, module_name: i64) -> i64 {
         i = i + 1;
     }
 
-    // Second pass: generate functions, impl blocks, and trait impls
+    // Second pass: generate functions, impl blocks, trait impls, and actors
     i = 0;
     while i < n {
         let item: i64 = vec_get(items, i);
@@ -8180,6 +8643,23 @@ fn gen_program_with_module(items: i64, module_name: i64) -> i64 {
         }
         if tag == TAG_IMPL_TRAIT() {
             gen_impl_trait(cg, item);
+        }
+        if tag == TAG_ACTOR() {
+            gen_actor(cg, item);
+        }
+        if tag == TAG_SPECIALIST() {
+            gen_specialist(cg, item);
+        }
+        if tag == TAG_HIVE() {
+            gen_hive(cg, item);
+        }
+        if tag == TAG_ANIMA() {
+            gen_anima(cg, item);
+        }
+        if tag == TAG_TYPE_ALIAS() {
+            let alias_name: i64 = load_ptr(item, 1);
+            let target_type: i64 = load_ptr(item, 2);
+            cg_register_type_alias(cg, alias_name, target_type);
         }
         // Note: TAG_TRAIT() doesn't generate code (trait definitions are just declarations)
         i = i + 1;
@@ -8328,7 +8808,7 @@ fn gen_debug_info_footer(cg: i64) -> i64 {
 
     // !0 = DICompileUnit
     emit(cg, "!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !4, producer: \"sxc ");
-    emit(cg, "0.10.0");
+    emit(cg, "0.11.0");
     emit_line(cg, "\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !5)");
 
     // !1 = Module flag for DWARF Version
@@ -8338,7 +8818,7 @@ fn gen_debug_info_footer(cg: i64) -> i64 {
     emit_line(cg, "!2 = !{i32 2, !\"Debug Info Version\", i32 3}");
 
     // !3 = llvm.ident
-    emit_line(cg, "!3 = !{!\"Simplex Compiler 0.10.0\"}");
+    emit_line(cg, "!3 = !{!\"Simplex Compiler 0.11.0\"}");
 
     // !4 = DIFile
     emit(cg, "!4 = !DIFile(filename: \"");

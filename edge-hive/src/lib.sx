@@ -142,7 +142,7 @@
 // =============================================================================
 
 fn EDGE_HIVE_VERSION_MAJOR() -> i64 { 0 }
-fn EDGE_HIVE_VERSION_MINOR() -> i64 { 9 }
+fn EDGE_HIVE_VERSION_MINOR() -> i64 { 11 }
 fn EDGE_HIVE_VERSION_PATCH() -> i64 { 0 }
 
 fn edge_hive_version() -> i64 {
@@ -151,7 +151,7 @@ fn edge_hive_version() -> i64 {
 }
 
 fn edge_hive_version_string() -> i64 {
-    string_from("0.10.0")
+    string_from("0.11.0")
 }
 
 // =============================================================================

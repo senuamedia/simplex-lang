@@ -59,6 +59,9 @@ echo "  lexer.sx -> lexer.ll"
 python3 stage0.py parser.sx
 echo "  parser.sx -> parser.ll"
 
+python3 stage0.py error.sx
+echo "  error.sx -> error.ll"
+
 python3 stage0.py codegen.sx
 echo "  codegen.sx -> codegen.ll"
 
@@ -115,6 +118,7 @@ def get_base_header(content):
 
 with open('lexer.ll') as f: lexer = f.read()
 with open('parser.ll') as f: parser = f.read()
+with open('error.ll') as f: error = f.read()
 with open('codegen.ll') as f: codegen = f.read()
 with open('main.ll') as f: main = f.read()
 
@@ -122,7 +126,7 @@ header = get_base_header(lexer)
 all_strings = {}
 all_funcs = {}
 
-for content in [lexer, parser, codegen, main]:
+for content in [lexer, parser, error, codegen, main]:
     all_strings.update(extract_strings(content))
     for fn, body in extract_function_defs(content).items():
         if fn not in all_funcs:
@@ -142,7 +146,7 @@ print(f"  Created sxc_combined.ll ({len(all_funcs)} functions)")
 MERGE_SCRIPT
 
 # Clean up intermediate files
-rm -f lexer.ll parser.ll codegen.ll main.ll
+rm -f lexer.ll parser.ll error.ll codegen.ll main.ll
 
 cd ../..
 

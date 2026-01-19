@@ -6,15 +6,15 @@
 // - Message types
 // - Delta operation codes
 //
-// Protocol Version: 0.10.0
+// Protocol Version: 0.11.0
 
 // =============================================================================
 // Protocol Constants
 // =============================================================================
 
 fn NEXUS_VERSION_MAJOR() -> i64 { 0 }
-fn NEXUS_VERSION_MINOR() -> i64 { 9 }
-fn NEXUS_VERSION_PATCH() -> i64 { 5 }
+fn NEXUS_VERSION_MINOR() -> i64 { 11 }
+fn NEXUS_VERSION_PATCH() -> i64 { 0 }
 
 fn NEXUS_MAGIC_BYTE_0() -> i64 { 83 }  // 'S' = 0x53
 fn NEXUS_MAGIC_BYTE_1() -> i64 { 88 }  // 'X' = 0x58

@@ -12,7 +12,7 @@
 //   - codegen.sx: gen_program_with_module, gen_program_with_debug
 
 // Version
-fn VERSION() -> i64 { string_from("0.10.0") }
+fn VERSION() -> i64 { string_from("0.11.0") }
 
 // CLI argument parsing result
 // Layout: command(0), input_files(1), output_file(2), emit_type(3), verbose(4), force(5), show_deps(6), auto_deps(7), debug_info(8)
@@ -537,18 +537,19 @@ fn compile_file_full(path: i64, output_path: i64, verbose: i64, emit_type: i64, 
     // Extract module name from path for unique string prefixes
     let module_name: i64 = get_module_name(path);
 
+    // Get directory from path for module imports
+    let dir: i64 = get_directory(path);
+    if string_len(dir) == 0 {
+        dir = string_from(".");
+    }
+
     // Generate code with module name and optional debug info
     let output: i64 = 0;
     if debug_info == 1 {
-        // Get directory from path for debug info
-        let dir: i64 = get_directory(path);
-        if string_len(dir) == 0 {
-            dir = string_from(".");
-        }
         let filename: i64 = get_basename(path);
         output = gen_program_with_debug(items, module_name, filename, dir);
     } else {
-        output = gen_program_with_module(items, module_name);
+        output = gen_program_with_module_and_dir(items, module_name, dir);
     }
 
     // Determine output path based on emit type
@@ -634,7 +635,7 @@ fn compile_file_full(path: i64, output_path: i64, verbose: i64, emit_type: i64, 
         cmd = string_concat(string_from("clang -o "), exe_path);
         cmd = string_concat(cmd, string_from(" "));
         cmd = string_concat(cmd, obj_path);
-        cmd = string_concat(cmd, string_from(" standalone_runtime.o"));
+        cmd = string_concat(cmd, string_from(" standalone_runtime.o -lm -lssl -lcrypto -lsqlite3 -L/usr/local/opt/openssl/lib -L/usr/local/opt/sqlite/lib"));
         result = process_run(cmd);
         if result != 0 {
             println(string_from("Error: linking failed"));
