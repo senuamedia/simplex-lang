@@ -5,8 +5,8 @@
 // is enabled, integrating with Neural IR's differentiable execution.
 //
 // Two AD modes are supported:
-// - Tensor + autograd: Backward-mode AD (reverse mode), best for many params → 1 loss
-// - DualTensor: Forward-mode AD, best for 1 param → many outputs (meta-gradients)
+// - Tensor + autograd: Backward-mode AD (reverse mode), best for many params -> 1 loss
+// - DualTensor: Forward-mode AD, best for 1 param -> many outputs (meta-gradients)
 
 pub mod tensor;
 pub mod ops;

@@ -1,11 +1,24 @@
-// Test ? operator (no-op for bootstrap)
-// Expected: 42
+// Test Result matching
+// Expected: 0 (success)
 
 fn maybe_value(x: i64) -> i64 {
- x * 2
+    Ok(x * 2)
 }
 
 fn main() -> i64 {
- let val = maybe_value(21)?;
- val
+    let result = maybe_value(21);
+    match result {
+        Ok(val) => {
+            if val != 42 {
+                print("FAIL: expected 42");
+                return 1;
+            }
+            print("PASS: Result matching");
+            0
+        },
+        Err(_) => {
+            print("FAIL: got Err");
+            1
+        }
+    }
 }

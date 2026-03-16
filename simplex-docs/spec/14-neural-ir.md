@@ -1,6 +1,6 @@
 # Neural IR and Differentiable Execution
 
-**Version 0.10.0**
+**Version 0.12.0**
 
 ---
 
@@ -57,27 +57,23 @@ During inference:
 
 ## Dual Compilation Modes
 
+Neural gates support two modes at runtime, controlled via the `neural_set_training_mode()` / `neural_get_training_mode()` runtime functions.
+
 ### Training Mode
 
-```bash
-sxc build --mode=train model.sx
-```
-
-- Differentiable execution path
+- Differentiable execution path (sigmoid approximation of conditionals)
 - Gumbel-Softmax for categorical choices
 - Gradient tracking enabled
 - Temperature annealing support
 
 ### Inference Mode
 
-```bash
-sxc build --mode=infer model.sx
-```
-
 - Standard discrete execution
 - Dead path elimination
 - Zero neural gate overhead
 - Production-optimized binary
+
+**Note:** The `--mode=train` and `--mode=infer` CLI flags are planned. Currently, training/inference mode is set programmatically via runtime functions rather than compiler flags.
 
 ---
 

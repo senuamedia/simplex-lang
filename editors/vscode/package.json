@@ -2,7 +2,7 @@
   "name": "simplex-lang",
   "displayName": "Simplex Language",
   "description": "Full IDE support for the Simplex programming language with LSP integration",
-  "version": "0.10.0",
+  "version": "0.12.0",
   "publisher": "senuamedia",
   "license": "MIT",
   "repository": {

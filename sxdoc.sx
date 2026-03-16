@@ -5,7 +5,7 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex
 
-fn VERSION() -> i64 { string_from("0.10.0") }
+fn VERSION() -> i64 { string_from("0.12.0") }
 
 fn show_help() -> i64 {
     println("sxdoc - Simplex Documentation Generator");

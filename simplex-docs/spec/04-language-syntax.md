@@ -1,6 +1,6 @@
 # Simplex Language Syntax
 
-**Version 0.10.0**
+**Version 0.12.0**
 
 Complete syntax reference for the Simplex programming language.
 
@@ -19,8 +19,9 @@ let name: String = "Alice"
 
 // Mutable with `var` keyword (instead of `let mut`)
 var counter: i64 = 0
-var buffer: List<u8> = []
 ```
+
+**Implementation note:** All types currently compile to `i64` (integers, pointers, strings) or `f64` (floats) at the LLVM IR level. Type annotations are parsed and used for codegen decisions but not yet fully enforced by a type checker.
 
 ### Struct Definitions
 
@@ -41,35 +42,46 @@ struct Container<T> {
 ### Method Receivers
 
 ```simplex
-// Methods use `this: TypeName` (not `self`)
+// Methods use `self` as the receiver (like Rust)
 impl Point {
     // Static method (no receiver)
     pub fn new(x: f64, y: f64) -> Point {
         Point { x: x, y: y }
     }
 
-    // Instance method - explicit `this` receiver
-    pub fn distance(this: Point, other: Point) -> f64 {
-        let dx = other.x - this.x
-        let dy = other.y - this.y
+    // Instance method - bare `self` (implicit Self type)
+    pub fn distance(self, other: Point) -> f64 {
+        let dx = other.x - self.x
+        let dy = other.y - self.y
         (dx * dx + dy * dy).sqrt()
     }
 
-    // Method invocation can use Type::method(instance) style
-    // Point::distance(p1, p2)
-    // Or method call syntax: p1.distance(p2)
+    // Borrowed self: &self, &mut self
+    pub fn magnitude(&self) -> f64 {
+        (self.x * self.x + self.y * self.y).sqrt()
+    }
+
+    // Explicit self type: self: Type
+    pub fn into_tuple(self: Point) -> (f64, f64) {
+        (self.x, self.y)
+    }
 }
 ```
 
 ### Module System
 
 ```simplex
-// Use `use modulus::` for external package imports
-use modulus::simplex_std::collections::Vec
-use modulus::simplex_std::io
+// Import an entire module (makes its public functions available)
+use mathlib;
 
-// Use `use` for same-package imports
-use mymodule::helper_function
+// Import specific items from a module path
+use simplex_std::collections::Vec;
+
+// Import multiple items
+use simplex_std::collections::{HashMap, HashSet};
+
+// Glob import all public items
+use simplex_std::prelude::*;
 ```
 
 ### Intrinsic Functions
@@ -92,47 +104,34 @@ let _ = intrinsic_write_byte(ptr, 0, 42)
 ### Primitives
 
 ```simplex
-// Integers
+// Integers (i64 is the primary integer type in the current compiler)
 let integer: i64 = 42
-let unsigned: u64 = 42
-let small: i32 = 42
-let byte: u8 = 255
 
 // Floating point
 let float: f64 = 3.14
-let float32: f32 = 3.14
 
 // Boolean
-let boolean: Bool = true
-let negated: Bool = false
+let boolean: bool = true
+let negated: bool = false
 
-// Character and String
-let character: Char = 'a'
+// String
 let text: String = "hello"
-let multiline: String = """
-    This is a
-    multiline string
-"""
 ```
+
+**Implementation note:** The current compiler uses `i64` for all integer types and `f64` for all floating-point types at the LLVM IR level. Additional numeric types (`u8`, `u64`, `i32`, `f32`) are recognized in the type system but compile to `i64` or `f64` respectively. The `Char` type and triple-quoted multiline strings (`"""..."""`) are planned but not yet implemented.
 
 ### Collections
 
 ```simplex
-// List (ordered, growable)
-let list: List<i64> = [1, 2, 3]
-let empty_list: List<String> = []
+// Vec (ordered, growable) - built into the runtime
+let list = vec_new()
+vec_push(list, 42)
 
-// Map (key-value)
-let map: Map<String, i64> = {"a": 1, "b": 2}
-let empty_map: Map<String, User> = {}
-
-// Set (unique values)
-let set: Set<i64> = {1, 2, 3}
-
-// Tuple (fixed size, mixed types)
-let tuple: (i64, String) = (42, "answer")
-let triple: (i64, String, Bool) = (1, "yes", true)
+// Array literals
+let items = [1, 2, 3]
 ```
+
+**Implementation note:** The runtime provides `vec_new`, `vec_push`, `vec_get`, `vec_len`, `vec_set`, `vec_clear` as intrinsic functions. Higher-level collection types (`HashMap`, `HashSet`, `Map`, `Set`) are available through the standard library (`simplex-std::collections`). Map/Set literal syntax (`{"a": 1}`, `{1, 2, 3}`) and tuple types are planned but not yet implemented in the compiler.
 
 ### Optional and Result
 
@@ -155,20 +154,24 @@ fn risky() -> Result<i64, Error> {
 }
 ```
 
-### AI-Native Types
+### AI-Native Types -- Planned
+
+The following AI-native types are planned but not yet fully implemented in the compiler:
 
 ```simplex
-// Vector (for embeddings)
+// Vector (for embeddings) -- Planned
 let embedding: Vector<f64, 1536> = ai::embed("text")
 
-// Tensor (for ML)
+// Tensor (for ML) -- Planned
 let tensor: Tensor<f32, [3, 224, 224]> = load_image(path)
 let batch: Tensor<f32, [32, 3, 224, 224]> = stack_images(images)
 
-// Vector operations
+// Vector operations -- Planned
 let similarity = dot(embedding1, embedding2)
 let normalized = normalize(embedding)
 ```
+
+Tensor operations are currently available through the `simplex-learning` library's tensor module rather than as built-in language types.
 
 ### Dual Numbers (v0.8.0)
 
@@ -424,22 +427,9 @@ actor Counter {
         history.clone()
     }
 
-    // Lifecycle hooks
-    on_start() {
-        log::info("Counter started with count: {count}")
-    }
-
-    on_checkpoint() {
-        log::debug("Checkpointing at count: {count}")
-    }
-
-    on_resume() {
-        log::info("Resumed with count: {count}")
-    }
-
-    on_stop() {
-        log::info("Counter stopping")
-    }
+    // Lifecycle hooks (Planned - set via runtime API currently)
+    // on_start(), on_checkpoint(), on_resume(), on_stop()
+    // Use intrinsic_actor_set_on_start() / intrinsic_actor_set_on_stop() at runtime
 }
 ```
 
@@ -490,7 +480,9 @@ actor Coordinator {
 
 ---
 
-## Supervision
+## Supervision -- Planned Syntax
+
+Supervision is currently available through runtime API functions (`supervisor_new`, `supervisor_add_child`, `supervisor_start`, `supervisor_handle_exit`). The following declarative syntax is planned but not yet implemented as a language construct:
 
 ### Supervisor Definition
 
@@ -666,8 +658,8 @@ enum AppError {
 }
 
 impl AppError {
-    fn is_retryable(this: AppError) -> Bool {
-        match this {
+    fn is_retryable(self) -> Bool {
+        match self {
             AppError::Internal(_) => true,
             _ => false
         }
@@ -696,12 +688,13 @@ fn process() -> Result<Output, AppError> {
 
 ### Module Definition
 
+Modules in Simplex are defined by file. Each `.sx` file is a module. Public functions are exported with `pub`:
+
 ```simplex
 // file: math/vectors.sx
-module math::vectors
 
-// Public items
-pub type Vector = List<f64>
+// Public items - accessible when imported
+pub type Vector = List<f64>;
 
 pub fn dot(a: Vector, b: Vector) -> f64 {
     a.iter().zip(b.iter()).map((x, y) => x * y).sum()
@@ -711,46 +704,45 @@ pub fn magnitude(v: Vector) -> f64 {
     dot(v, v).sqrt()
 }
 
-// Private items (default)
+// Private items (default) - only accessible within this file
 fn validate(v: Vector) -> Bool {
     v.len() > 0
 }
 ```
 
+**Note:** The `mod` keyword is recognized by the lexer for submodule declarations (e.g., `mod submodule;`), but the primary module system uses file-based modules imported via `use`.
+
 ### Imports
 
 ```simplex
+// Import a module (makes its public functions available)
+use mathlib;
+
 // Import specific items
-use math::vectors::{dot, Vector}
+use math::vectors::{dot, Vector};
 
 // Import all public items
-use math::vectors::*
-
-// Import with alias
-use math::vectors::dot as dot_product
+use math::vectors::*;
 
 // Nested imports
 use std::{
     collections::{Map, Set},
     time::{Duration, Instant}
-}
+};
 ```
+
+**Note:** Import aliasing (`use X as Y`) is planned but not yet implemented. Semicolons are required after `use` statements.
 
 ### Visibility
 
 ```simplex
-module mylib
-
 // Public - accessible from anywhere
 pub fn public_function() { }
-pub type PublicType { }
+pub struct PublicType { }
 
 // Private (default) - only within module
 fn private_function() { }
-type PrivateType { }
-
-// Pub(modulus) - accessible within modulus only
-pub(modulus) fn internal_function() { }
+struct PrivateType { }
 ```
 
 ---
@@ -836,28 +828,24 @@ let map: Map<String, i64> = pairs.collect()
 
 ## String Formatting
 
+Simplex uses f-strings (prefixed with `f`) for string interpolation:
+
 ```simplex
-// Interpolation
+// F-string interpolation
 let name = "Alice"
-let greeting = "Hello, {name}!"
+let greeting = f"Hello, {name}!"
 
 // Expressions in interpolation
-let message = "Count: {items.len()}, Sum: {items.sum()}"
+let message = f"Count: {items.len()}, Sum: {items.sum()}"
 
-// Formatting specifiers
-let formatted = "Value: {value:.2}"      // 2 decimal places
-let padded = "ID: {id:05}"               // Zero-padded to 5 digits
-let hex = "Address: {addr:x}"            // Hexadecimal
+// Escape braces with backslash
+let json = f"value: \{{name}\}"
 
-// Multiline with interpolation
-let report = """
-    Report for {user.name}
-    ======================
-    Items processed: {stats.processed}
-    Errors: {stats.errors}
-    Duration: {stats.duration}
-"""
+// Regular strings have no interpolation
+let plain = "Hello, {this is literal text}"
 ```
+
+**Note:** Format specifiers (e.g., `{value:.2}`, `{id:05}`) and multiline triple-quoted strings (`"""..."""`) are planned but not yet implemented in the compiler.
 
 ---
 

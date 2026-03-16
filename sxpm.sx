@@ -6,7 +6,7 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-fn SXPM_VERSION() -> i64 { "0.10.0" }
+fn SXPM_VERSION() -> i64 { "0.12.0" }
 
 // ============================================================================
 // Help and Version

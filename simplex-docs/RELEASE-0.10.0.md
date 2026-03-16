@@ -349,10 +349,8 @@ sxc clean                      # Clean build cache
 ### Known Issues
 | Test | Issue | Status |
 |------|-------|--------|
-| spec_actor_basic.sx | Undefined @Add in LLVM IR (actor message dispatch) | Blocked |
-| spec_async_basic.sx | Exit code 128 instead of 42 (async/await state machine) | Blocked |
-
-**Note:** Actor and async codegen require further work in 0.11.0. The syntax compiles but runtime behavior is incomplete.
+| spec_actor_basic.sx | Compiler: undefined variable 'Get' | Blocked |
+| spec_async_basic.sx | Exit code 112 (was 240) | In Progress |
 
 ---
 

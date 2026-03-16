@@ -2,8 +2,9 @@
 fn main() -> i64 {
  let sum: i64 = 0;
  for i in 0..5 {
- sum = sum + i;
+   sum = sum + i;
  }
- sum
+ // Return 0 if test passes (sum == 10), non-zero if it fails
+ if sum == 10 { 0 } else { 1 }
 }
-// Expected: 10 (0+1+2+3+4)
+// Expected: returns 0 on success (sum should be 10 = 0+1+2+3+4)

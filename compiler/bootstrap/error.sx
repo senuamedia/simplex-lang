@@ -1,5 +1,5 @@
 // Simplex Compiler - Error Reporting Module
-// Rust/Elm-style developer-friendly error messages for 0.10.0
+// Rust/Elm-style developer-friendly error messages for 0.12.0
 //
 // Copyright (c) 2025-2026 Rod Higgins
 // Licensed under AGPL-3.0 - see LICENSE file
@@ -366,7 +366,7 @@ fn make_caret(col: i64, length: i64) -> i64 {
 // length: length of the error span
 // message: detailed error message
 // source: the source code (for snippet extraction)
-fn format_error(code: i64, file: i64, line: i64, col: i64, length: i64, message: i64, source: i64) -> i64 {
+fn format_error(code: i64, file: i64, line: i64, col: i64, length: i64, msg: i64, source: i64) -> i64 {
     let sb: i64 = sb_new();
     let use_color: i64 = term_supports_color();
 
@@ -382,13 +382,13 @@ fn format_error(code: i64, file: i64, line: i64, col: i64, length: i64, message:
         sb_append(sb, "]");
         sb_append(sb, COLOR_BOLD());
         sb_append(sb, ": ");
-        sb_append(sb, message);
+        sb_append(sb, msg);
         sb_append(sb, COLOR_RESET());
     } else {
         sb_append(sb, "error[");
         sb_append(sb, format_error_code(code));
         sb_append(sb, "]: ");
-        sb_append(sb, message);
+        sb_append(sb, msg);
     }
     sb_append(sb, "\n");
 
@@ -452,7 +452,7 @@ fn format_error(code: i64, file: i64, line: i64, col: i64, length: i64, message:
 }
 
 // Simplified error formatting when we only have a message (no source location)
-fn format_simple_error(code: i64, message: i64) -> i64 {
+fn format_simple_error(code: i64, msg: i64) -> i64 {
     let sb: i64 = sb_new();
     let use_color: i64 = term_supports_color();
 
@@ -467,20 +467,20 @@ fn format_simple_error(code: i64, message: i64) -> i64 {
         sb_append(sb, "]");
         sb_append(sb, COLOR_BOLD());
         sb_append(sb, ": ");
-        sb_append(sb, message);
+        sb_append(sb, msg);
         sb_append(sb, COLOR_RESET());
     } else {
         sb_append(sb, "error[");
         sb_append(sb, format_error_code(code));
         sb_append(sb, "]: ");
-        sb_append(sb, message);
+        sb_append(sb, msg);
     }
 
     sb_build(sb)
 }
 
 // Format a warning message
-fn format_warning(code: i64, file: i64, line: i64, col: i64, length: i64, message: i64, source: i64) -> i64 {
+fn format_warning(code: i64, file: i64, line: i64, col: i64, length: i64, msg: i64, source: i64) -> i64 {
     let sb: i64 = sb_new();
     let use_color: i64 = term_supports_color();
 
@@ -497,13 +497,13 @@ fn format_warning(code: i64, file: i64, line: i64, col: i64, length: i64, messag
         sb_append(sb, "]");
         sb_append(sb, COLOR_BOLD());
         sb_append(sb, ": ");
-        sb_append(sb, message);
+        sb_append(sb, msg);
         sb_append(sb, COLOR_RESET());
     } else {
         sb_append(sb, "warning[");
         sb_append(sb, format_error_code(code));
         sb_append(sb, "]: ");
-        sb_append(sb, message);
+        sb_append(sb, msg);
     }
     sb_append(sb, "\n");
 
@@ -676,14 +676,14 @@ fn error_msg_expected_token(expected: i64, found: i64) -> i64 {
 // =============================================================================
 
 // Report an error with full source location
-fn report_error(code: i64, file: i64, line: i64, col: i64, length: i64, message: i64, source: i64) -> i64 {
-    let formatted: i64 = format_error(code, file, line, col, length, message, source);
+fn report_error(code: i64, file: i64, line: i64, col: i64, length: i64, msg: i64, source: i64) -> i64 {
+    let formatted: i64 = format_error(code, file, line, col, length, msg, source);
     println(formatted);
     0
 }
 
 // Report an error from a token
-fn report_error_at_token(code: i64, tok: i64, message: i64, file: i64, source: i64) -> i64 {
+fn report_error_at_token(code: i64, tok: i64, msg: i64, file: i64, source: i64) -> i64 {
     let line: i64 = token_line(tok);
     let col: i64 = token_col(tok);
     let text: i64 = token_text(tok);
@@ -691,19 +691,19 @@ fn report_error_at_token(code: i64, tok: i64, message: i64, file: i64, source: i
     if length < 1 {
         length = 1;
     }
-    report_error(code, file, line, col, length, message, source)
+    report_error(code, file, line, col, length, msg, source)
 }
 
 // Report an error with just a message (no location)
-fn report_simple_error(code: i64, message: i64) -> i64 {
-    let formatted: i64 = format_simple_error(code, message);
+fn report_simple_error(code: i64, msg: i64) -> i64 {
+    let formatted: i64 = format_simple_error(code, msg);
     println(formatted);
     0
 }
 
 // Report a warning with full source location
-fn report_warning(code: i64, file: i64, line: i64, col: i64, length: i64, message: i64, source: i64) -> i64 {
-    let formatted: i64 = format_warning(code, file, line, col, length, message, source);
+fn report_warning(code: i64, file: i64, line: i64, col: i64, length: i64, msg: i64, source: i64) -> i64 {
+    let formatted: i64 = format_warning(code, file, line, col, length, msg, source);
     println(formatted);
     0
 }

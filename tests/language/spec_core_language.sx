@@ -81,15 +81,28 @@ fn test_monomorph_distinct() -> i64 {
 // ============================================
 
 fn main() -> i64 {
- // Run all tests and sum results
- // Expected: 2 + 2 + 10 + 12 + 35 + 30 + 15 = 106
- let r1: i64 = test_match_guard_basic(); // Expected: 2
- let r2: i64 = test_match_guard_negative(); // Expected: 2
- let r3: i64 = test_lambda_basic(); // Expected: 10
- let r4: i64 = test_lambda_capture(); // Expected: 12
- let r5: i64 = test_closure_nested_capture(); // Expected: 35
- let r6: i64 = test_monomorph_i64(); // Expected: 30
- let r7: i64 = test_monomorph_struct(); // Expected: 15
+    // Run all tests and check expected values
+    let r1: i64 = test_match_guard_basic();
+    if r1 != 2 { print("FAIL: match_guard_basic"); return 1; }
 
- r1 + r2 + r3 + r4 + r5 + r6 + r7 // Should be 106
+    let r2: i64 = test_match_guard_negative();
+    if r2 != 2 { print("FAIL: match_guard_negative"); return 1; }
+
+    let r3: i64 = test_lambda_basic();
+    if r3 != 10 { print("FAIL: lambda_basic"); return 1; }
+
+    let r4: i64 = test_lambda_capture();
+    if r4 != 12 { print("FAIL: lambda_capture"); return 1; }
+
+    let r5: i64 = test_closure_nested_capture();
+    if r5 != 35 { print("FAIL: closure_nested_capture"); return 1; }
+
+    let r6: i64 = test_monomorph_i64();
+    if r6 != 30 { print("FAIL: monomorph_i64"); return 1; }
+
+    let r7: i64 = test_monomorph_struct();
+    if r7 != 15 { print("FAIL: monomorph_struct"); return 1; }
+
+    print("All core language tests passed!");
+    0
 }

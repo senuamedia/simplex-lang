@@ -1,11 +1,13 @@
 // Test match expression with literal patterns
 fn main() -> i64 {
  let x: i64 = 2;
- match x {
- 1 => 10,
- 2 => 20,
- 3 => 30,
- _ => 0
- }
+ let result: i64 = match x {
+   1 => 10,
+   2 => 20,
+   3 => 30,
+   _ => 0
+ };
+ // Return 0 if test passes (result == 20), non-zero if it fails
+ if result == 20 { 0 } else { 1 }
 }
-// Expected: 20
+// Expected: returns 0 on success

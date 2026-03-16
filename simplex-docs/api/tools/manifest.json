@@ -1,0 +1,30 @@
+{
+  "category": "tools",
+  "description": "Simplex developer tools. All tools are written in pure Simplex and self-compiled.",
+  "modules": [
+    {
+      "name": "sxc",
+      "file": "sxc.html",
+      "description": "The Simplex compiler (sxc). Compiles .sx source files to native executables via LLVM. Supports cross-platform compilation (macOS, Linux, Windows), optimization levels, and debug information.",
+      "items": []
+    },
+    {
+      "name": "sxdoc",
+      "file": "sxdoc.html",
+      "description": "Documentation generator (sxdoc). Extracts doc comments and type signatures from .sx files to generate HTML documentation and JSON manifests.",
+      "items": []
+    },
+    {
+      "name": "sxpm",
+      "file": "sxpm.html",
+      "description": "Package manager (sxpm). Manages dependencies, builds projects, and handles SLM model provisioning. Supports lock files, diamond dependency detection, and build caching.",
+      "items": []
+    },
+    {
+      "name": "sxlsp",
+      "file": "sxlsp.html",
+      "description": "Language server (sxlsp). Provides IDE features via the Language Server Protocol including completions, hover information, go-to-definition, and diagnostics.",
+      "items": []
+    }
+  ]
+}

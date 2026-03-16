@@ -56,7 +56,7 @@ fn args_get(idx: i64) -> i64;
 // Version
 // ========================================
 
-fn VERSION() -> i64 { string_from("0.10.0") }
+fn VERSION() -> i64 { string_from("0.12.0") }
 
 // ========================================
 // Platform Detection and Cross-Platform Paths

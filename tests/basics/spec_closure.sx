@@ -1,7 +1,9 @@
-// Test non-capturing closure with indirect call
+// Test non-capturing closure
 fn main() -> i64 {
- let double = (x: i64) => x * 2;
- let result = call1(double, 21);
- result
+ let double = |x: i64| x * 2;
+ let result: i64 = double(21);
+ if result == 42 {
+  return 0;
+ }
+ 1
 }
-// Expected: 42 (21 * 2)

@@ -4,8 +4,8 @@
 // gradient flow during training while approaching discrete logic at inference.
 //
 // All operations are parameterized by temperature:
-// - Low temperature (→0): Sharp, nearly discrete logic
-// - High temperature (→∞): Soft, continuous approximations
+// - Low temperature (->0): Sharp, nearly discrete logic
+// - High temperature (->∞): Soft, continuous approximations
 //
 // # Operations
 //
@@ -50,7 +50,7 @@ pub enum LogicOp {
 /// Differentiable logic operations
 ///
 /// Provides soft versions of Boolean operations that support gradient flow
-/// during training while converging to discrete logic as temperature → 0.
+/// during training while converging to discrete logic as temperature -> 0.
 pub struct SoftLogic {
     /// Temperature controlling sharpness
     /// Lower = sharper (more discrete), Higher = softer (more continuous)
@@ -89,7 +89,7 @@ impl SoftLogic {
 
     /// Soft AND: product of sigmoids
     ///
-    /// Approximates min(a, b) as temperature → 0
+    /// Approximates min(a, b) as temperature -> 0
     /// Formula: sigmoid(a/T) * sigmoid(b/T)
     pub fn and(&self, a: dual, b: dual) -> dual {
         self.sig(a) * self.sig(b)
@@ -97,7 +97,7 @@ impl SoftLogic {
 
     /// Soft OR: 1 - (1-a)(1-b)
     ///
-    /// Approximates max(a, b) as temperature → 0
+    /// Approximates max(a, b) as temperature -> 0
     /// De Morgan: OR(a,b) = NOT(AND(NOT(a), NOT(b)))
     pub fn or(&self, a: dual, b: dual) -> dual {
         let sig_a = self.sig(a);
@@ -125,7 +125,7 @@ impl SoftLogic {
 
     /// Soft IMPLIES: 1 - a*(1-b)
     ///
-    /// Logical implication: a → b
+    /// Logical implication: a -> b
     /// True unless a is true and b is false
     pub fn implies(&self, a: dual, b: dual) -> dual {
         let sig_a = self.sig(a);
@@ -451,11 +451,11 @@ mod tests {
     fn test_soft_and() {
         let logic = SoftLogic::new(0.1); // Low temp = sharp
 
-        // Both high → high
+        // Both high -> high
         let result = logic.and(dual::constant(3.0), dual::constant(3.0));
         assert!(result.val > 0.9);
 
-        // One low → low
+        // One low -> low
         let result = logic.and(dual::constant(3.0), dual::constant(-3.0));
         assert!(result.val < 0.1);
     }
@@ -464,11 +464,11 @@ mod tests {
     fn test_soft_or() {
         let logic = SoftLogic::new(0.1);
 
-        // Both low → low
+        // Both low -> low
         let result = logic.or(dual::constant(-3.0), dual::constant(-3.0));
         assert!(result.val < 0.1);
 
-        // One high → high
+        // One high -> high
         let result = logic.or(dual::constant(3.0), dual::constant(-3.0));
         assert!(result.val > 0.9);
     }
@@ -477,11 +477,11 @@ mod tests {
     fn test_soft_not() {
         let logic = SoftLogic::new(0.1);
 
-        // High → low
+        // High -> low
         let result = logic.not(dual::constant(3.0));
         assert!(result.val < 0.1);
 
-        // Low → high
+        // Low -> high
         let result = logic.not(dual::constant(-3.0));
         assert!(result.val > 0.9);
     }
@@ -490,11 +490,11 @@ mod tests {
     fn test_soft_xor() {
         let logic = SoftLogic::new(0.1);
 
-        // Same → low
+        // Same -> low
         let result = logic.xor(dual::constant(3.0), dual::constant(3.0));
         assert!(result.val < 0.2);
 
-        // Different → high
+        // Different -> high
         let result = logic.xor(dual::constant(3.0), dual::constant(-3.0));
         assert!(result.val > 0.8);
     }
@@ -503,11 +503,11 @@ mod tests {
     fn test_soft_implies() {
         let logic = SoftLogic::new(0.1);
 
-        // True → False = False
+        // True -> False = False
         let result = logic.implies(dual::constant(3.0), dual::constant(-3.0));
         assert!(result.val < 0.2);
 
-        // False → anything = True
+        // False -> anything = True
         let result = logic.implies(dual::constant(-3.0), dual::constant(-3.0));
         assert!(result.val > 0.8);
     }

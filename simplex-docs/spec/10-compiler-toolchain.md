@@ -1,6 +1,6 @@
 # Simplex Compiler Toolchain
 
-**Version 0.10.0**
+**Version 0.12.0**
 
 This document describes the Simplex compiler toolchain, which is **self-hosted** and compiles to native binaries via LLVM.
 
@@ -12,13 +12,13 @@ The Simplex toolchain consists of the following components:
 
 | Component | Binary | Version | Description |
 |-----------|--------|---------|-------------|
-| **sxc** | `sxc` | v0.10.0 | Simplex Compiler - compiles `.sx` source to native executables |
-| **sxpm** | `sxpm` | v0.10.0 | Package manager with dependency resolution |
-| **cursus** | `cursus` | v0.10.0 | Bytecode VM with garbage collection |
-| **sxdoc** | `sxdoc` | v0.10.0 | Documentation generator |
-| **sxlsp** | `sxlsp` | v0.10.0 | Language Server Protocol implementation |
-| **sxfmt** | `sxfmt` | v0.10.0 | Code formatter with configurable styles |
-| **sxlint** | `sxlint` | v0.10.0 | Static linter with extensible rules |
+| **sxc** | `sxc` | v0.12.0 | Simplex Compiler - compiles `.sx` source to native executables |
+| **sxpm** | `sxpm` | v0.12.0 | Package manager with dependency resolution |
+| **cursus** | `cursus` | v0.12.0 | Bytecode VM with garbage collection |
+| **sxdoc** | `sxdoc` | v0.12.0 | Documentation generator |
+| **sxlsp** | `sxlsp` | v0.12.0 | Language Server Protocol implementation |
+| **sxfmt** | `sxfmt` | v0.12.0 | Code formatter with configurable styles |
+| **sxlint** | `sxlint` | v0.12.0 | Static linter with extensible rules |
 
 All components are written in **Simplex** and compile to native binaries.
 
@@ -37,15 +37,17 @@ Simplex uses a multi-stage bootstrap similar to GCC, Go, and Rust:
 │                                                                              │
 │  Stage 0 (Python)        Stage 1 (Native)        Stage 2 (Self-Hosted)      │
 │  ┌──────────────┐       ┌──────────────┐       ┌──────────────┐             │
-│  │   stage0.py  │ ────► │ sxc-compile  │ ────► │ sxc-compile  │             │
+│  │   stage0.py  │ ────► │  build/sxc   │ ────► │  build/sxc   │             │
 │  │  (bootstrap) │       │   (native)   │       │  (verified)  │             │
 │  └──────────────┘       └──────────────┘       └──────────────┘             │
 │         │                      │                      │                      │
 │         │ compiles             │ compiles             │                      │
 │         ▼                      ▼                      ▼                      │
+│  lexer.sx                lexer.sx                lexer.sx                   │
+│  parser.sx               parser.sx               parser.sx                  │
+│  error.sx                error.sx                error.sx                   │
 │  codegen.sx              codegen.sx              codegen.sx                 │
-│  lexer.sx                lexer.sx                (identical output)         │
-│  parser.sx               parser.sx                                          │
+│  main.sx                 main.sx                 (identical output)         │
 │                                                                              │
 │  ┌───────────────────────────────────────────────────────────────────────┐  │
 │  │ Stage 0: Python bootstrap compiler (generates LLVM IR)                │  │
@@ -89,24 +91,42 @@ Native Binary
 
 ```
 simplex-lang/
-├── sxc                     # Compiler wrapper script (bash)
-├── sxc-compile             # Native self-hosted compiler (387KB)
-├── sxpm                    # Package manager
-├── cursus                  # Bytecode VM (227KB)
-├── sxdoc                   # Documentation generator (225KB)
-├── sxlsp                   # Language server (220KB)
-├── standalone_runtime.c    # C runtime with intrinsics
-├── stage0.py               # Python bootstrap (for rebuilding)
+├── sxc                         # Compiler wrapper script (bash)
+├── build/
+│   ├── sxc                     # Native self-hosted compiler
+│   ├── sxdoc                   # Documentation generator
+│   ├── sxfmt                   # Code formatter
+│   ├── sxlint                  # Static linter
+│   └── sxlsp                   # Language server
+├── runtime/
+│   └── standalone_runtime.c    # C runtime with intrinsics
 │
-├── compiler/bootstrap/     # Compiler source
-│   ├── lexer.sx           # Lexer
-│   ├── parser.sx          # Parser
-│   └── codegen.sx         # Code generator
+├── compiler/bootstrap/         # Compiler source
+│   ├── lexer.sx               # Lexer
+│   ├── parser.sx              # Parser
+│   ├── codegen.sx             # Code generator
+│   ├── error.sx               # Error formatting
+│   ├── main.sx                # Compiler entry point
+│   └── stage0.py             # Python bootstrap (for rebuilding)
 │
-└── tools/                  # Tool source
-    ├── cursus.sx          # Bytecode VM source
-    ├── sxdoc.sx           # Doc generator source
-    └── sxlsp.sx           # LSP source
+├── tools/                      # Tool source
+│   ├── cursus.sx              # Bytecode VM source
+│   ├── sxc.sx                 # Compiler source
+│   ├── sxdoc.sx               # Doc generator source
+│   ├── sxfmt.sx               # Formatter source
+│   ├── sxlint.sx              # Linter source
+│   ├── sxlsp.sx               # LSP source
+│   └── sxpm.sx                # Package manager source
+│
+├── lib/                        # Core library
+│   ├── version.sx             # Version constants (single source of truth)
+│   └── safety.sx              # Safety module
+│
+├── simplex-std/src/            # Standard library
+├── simplex-learning/src/       # Real-time learning library
+├── simplex-training/src/       # Training pipeline library
+├── edge-hive/src/              # Edge hive runtime
+└── nexus/src/                  # Secure connectivity
 ```
 
 ---
@@ -116,20 +136,32 @@ simplex-lang/
 ### Usage
 
 ```bash
-sxc <command> [options] <file>
+sxc [OPTIONS] <FILES...>
+sxc build [OPTIONS] <FILES...>
+sxc run <FILE>
+sxc check <FILES...>
+sxc repl
+sxc fmt <FILES...>
 
 Commands:
-  build <file.sx> [-o output]    Compile to native executable
-  compile <file.sx>              Compile to LLVM IR only
+  build <file.sx> [-o output]    Compile to native executable (default)
   run <file.sx>                  Compile and run immediately
+  check <files...>               Type-check without compiling
+  repl                           Interactive REPL
+  fmt <files...>                 Format source files
   version                        Show version
   help                           Show help
 
 Options:
-  -o <output>         Output file path
-  -O                  Enable optimizations
+  -o <file>           Output file name
+  --emit <type>       Output type: llvm-ir (default), asm, obj, exe, dylib
+  -g                  Emit DWARF debug symbols for LLDB/GDB
   -v, --verbose       Verbose output
-  -g, --debug         Include debug information
+  -f, --force         Force recompilation (ignore timestamps)
+  --deps              Show file dependencies
+  --auto-deps         Auto-compile module dependencies
+  -h, --help          Show this help
+  --version           Show version
 ```
 
 ### Examples
@@ -142,22 +174,28 @@ sxc build hello.sx -o hello
 # Compile and run immediately
 sxc run hello.sx
 
-# Compile to LLVM IR only
-sxc compile hello.sx
+# Compile to LLVM IR only (default emit type)
+sxc build hello.sx
 # Produces: hello.ll
+
+# Compile with debug symbols
+sxc build -g hello.sx -o hello
+
+# Auto-compile module dependencies
+sxc build --auto-deps main.sx -o main
 ```
 
 ### Compilation Process
 
 The `sxc` wrapper script:
-1. Invokes `sxc-compile` to generate LLVM IR (`.ll` file)
-2. Links with `standalone_runtime.c` using clang
+1. Invokes the native compiler to generate LLVM IR (`.ll` file)
+2. Links with `runtime/standalone_runtime.c` using clang
 3. Produces a native executable
 
 ```bash
 # What happens internally:
-./sxc-compile hello.sx          # Generates hello.ll
-clang -O2 hello.ll standalone_runtime.c -o hello -lm
+./build/sxc hello.sx            # Generates hello.ll
+clang -O2 hello.ll runtime/standalone_runtime.c -o hello -lm
 ```
 
 ---
@@ -235,20 +273,28 @@ Options:
 
 ## Runtime System
 
-### standalone_runtime.c
+### runtime/standalone_runtime.c
 
-The C runtime provides:
+The C runtime provides an extensive set of intrinsic functions:
 
 | Category | Functions |
 |----------|-----------|
-| **Memory** | `malloc`, `free`, `load_i64`, `store_i64`, `load_ptr`, `store_ptr` |
-| **Strings** | `string_from`, `string_concat`, `string_slice`, `string_eq`, `string_len` |
-| **Vectors** | `vec_new`, `vec_push`, `vec_get`, `vec_len`, `vec_set` |
-| **I/O** | `print`, `println`, `read_file`, `write_file`, `read_line` |
-| **Files** | `file_exists`, `file_size`, `mkdir`, `list_dir`, `remove_file` |
-| **Process** | `get_args`, `get_env`, `exit_program`, `system_call` |
-| **Time** | `time_now`, `time_sleep` |
-| **Network** | `http_get`, `http_post`, `tcp_connect`, `tcp_listen` |
+| **Memory** | `malloc`, `free`, `load_i64`, `store_i64`, `load_ptr`, `store_ptr`, arena allocator (`arena_reset`, `arena_free`, `arena_used`) |
+| **Memory Debug** | `memory_report`, `memory_current`, `memory_peak`, `memory_alloc_count` (enable with `-DSX_MEMORY_DEBUG=1`) |
+| **Strings** | `string_from`, `string_concat`, `string_slice`, `string_eq`, `string_len`, `string_char_at`, `string_to_int`, StringBuilder API |
+| **Vectors** | `vec_new`, `vec_push`, `vec_get`, `vec_len`, `vec_set`, `vec_clear`, iterators |
+| **I/O** | `println`, `print_i64`, `read_file`, `write_file` |
+| **Process** | `get_args`, `get_env`, `exit_program` |
+| **Time** | `get_time_ms`, `get_time_us`, `get_time_ns`, `sleep_ms` |
+| **HTTP** | `http_request_new`, `http_request_header`, `http_request_body`, `http_request_send`, response handling |
+| **Actors** | `actor_spawn`, `actor_send`, `actor_stop`, `actor_kill`, `actor_link/unlink/monitor`, mailbox API |
+| **Supervisors** | `supervisor_new`, `supervisor_add_child`, `supervisor_start/stop`, `supervisor_handle_exit` |
+| **Hive/Router** | `hive_new`, `hive_add_specialist`, `hive_route`, router strategies (rule, round-robin, random, least-busy, semantic) |
+| **Shared Store** | `shared_store_new`, `shared_store_put`, `shared_store_get`, `shared_store_count` |
+| **Concurrency** | `thread_spawn`, `thread_join`, mutex, condvar, atomic operations |
+| **Resilience** | `circuit_breaker_new/allow/success/failure`, `retry_policy_new/should_retry/next_delay` |
+| **Checkpointing** | `actor_checkpoint_save/load`, `actor_spawn_from_checkpoint` |
+| **Debug** | `print_stack_trace`, `panic`, `panic_at`, `dump_stack`, debug info registration |
 
 ### Intrinsic Mapping
 
@@ -298,20 +344,23 @@ The bootstrap compiler (`stage0.py`) automatically detects the platform and gene
 
 ```bash
 # Clone repository
-git clone https://github.com/user/simplex-lang.git
-cd simplex-lang
+git clone https://github.com/senuamedia/simplex.git
+cd simplex
 
 # Bootstrap from Python (only needed once)
-# Works on macOS, Linux, and Windows
-python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
+# The build.sh script handles the full bootstrap process
+./build.sh
 
-# Self-host verification
-./sxc build compiler/bootstrap/codegen.sx -o sxc-compile-stage2
+# Or manually:
+cd compiler/bootstrap
+python3 stage0.py codegen.sx -o ../../build/sxc
+cd ../..
 
 # Build tools
-./sxc build tools/cursus.sx -o cursus
-./sxc build tools/sxdoc.sx -o sxdoc
-./sxc build tools/sxlsp.sx -o sxlsp
+./sxc build tools/sxdoc.sx -o build/sxdoc
+./sxc build tools/sxlsp.sx -o build/sxlsp
+./sxc build tools/sxfmt.sx -o build/sxfmt
+./sxc build tools/sxlint.sx -o build/sxlint
 ```
 
 ### Platform-Specific Notes
@@ -322,7 +371,7 @@ python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
 xcode-select --install
 
 # Bootstrap
-python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
+./build.sh
 ```
 
 #### Linux
@@ -334,7 +383,7 @@ sudo apt install clang python3
 sudo dnf install clang python3
 
 # Bootstrap
-python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
+./build.sh
 ```
 
 #### Windows
@@ -343,64 +392,77 @@ python3 stage0.py compiler/bootstrap/codegen.sx -o sxc-compile
 # Or install LLVM/Clang directly
 
 # Bootstrap (PowerShell)
-python stage0.py compiler/bootstrap/codegen.sx -o sxc-compile.exe
+cd compiler\bootstrap
+python stage0.py codegen.sx -o ..\..\build\sxc.exe
 ```
 
 ### Quick Build (already bootstrapped)
 
 ```bash
 # Just build tools
-./sxc build tools/cursus.sx -o cursus
-./sxc build tools/sxdoc.sx -o sxdoc
-./sxc build tools/sxlsp.sx -o sxlsp
+./sxc build tools/sxdoc.sx -o build/sxdoc
+./sxc build tools/sxlsp.sx -o build/sxlsp
+./sxc build tools/sxfmt.sx -o build/sxfmt
+./sxc build tools/sxlint.sx -o build/sxlint
 ```
 
 ---
 
 ## Binary Sizes
 
-| Binary | Size | Description |
-|--------|------|-------------|
-| `sxc` | 6.5KB | Wrapper script |
-| `sxc-compile` | 387KB | Native compiler |
-| `cursus` | 227KB | Bytecode VM |
-| `sxdoc` | 225KB | Doc generator |
-| `sxlsp` | 220KB | Language server |
+| Binary | Description |
+|--------|-------------|
+| `sxc` | Wrapper script (bash) |
+| `build/sxc` | Native compiler |
+| `build/sxdoc` | Doc generator |
+| `build/sxfmt` | Code formatter |
+| `build/sxlint` | Static linter |
+| `build/sxlsp` | Language server |
 
-Total toolchain: ~1MB of native binaries.
+**Note:** Binary sizes vary by platform. The toolchain compiles to compact native binaries via LLVM.
 
 ---
 
 ## Test Suite
 
-The test suite has been completely reorganized with 156 tests across 13 categories.
+The test suite covers language features, standard library, AI/cognitive systems, runtime, and toolchain across multiple categories.
 
 ### Directory Structure
 
 ```
 tests/
-├── language/           # Core language features (40 tests)
-│   ├── actors/
-│   ├── async/
-│   ├── basics/
-│   ├── closures/
-│   ├── control/
-│   ├── functions/
-│   ├── modules/
-│   ├── traits/
-│   └── types/
-├── types/              # Type system tests (24 tests)
-├── neural/             # Neural IR and gates (16 tests)
-├── stdlib/             # Standard library (16 tests)
-├── ai/                 # AI/Cognitive tests (17 tests)
-├── toolchain/          # Compiler toolchain (14 tests)
-├── runtime/            # Runtime systems (5 tests)
-├── integration/        # End-to-end tests (7 tests)
-├── basics/             # Basic language tests (6 tests)
-├── async/              # Async/await tests (3 tests)
-├── learning/           # Automatic differentiation (3 tests)
-├── actors/             # Actor model tests (1 test)
-└── observability/      # Metrics and tracing (1 test)
+├── language/           # Core language features
+│   ├── actors/         # Actor model tests
+│   ├── async/          # Async/await tests
+│   ├── basics/         # Basic language constructs (enum, match, for, closures, try)
+│   ├── closures/       # Closure-specific tests
+│   ├── control/        # Control flow (if-let, match binding/patterns)
+│   ├── functions/      # Function features (closures, turbofish, generics)
+│   ├── modules/        # Module system and imports
+│   ├── traits/         # Trait system (impl trait, trait ref, self ref)
+│   └── types/          # Type system (generics, option/result, turbofish)
+├── types/              # Additional type system tests
+├── neural/             # Neural IR and gates
+│   ├── contracts/      # Neural gate contracts and static analysis
+│   ├── gates/          # Gate inference, training, gradients, hardware
+│   └── pruning/        # Structural pruning
+├── stdlib/             # Standard library unit and integration tests
+├── ai/                 # AI/Cognitive tests
+│   ├── anima/          # Anima integration
+│   ├── hive/           # Hive mnemonic and per-hive SLM
+│   ├── inference/      # Memory-augmented inference
+│   ├── memory/         # Cognitive memory and BDI
+│   ├── orchestration/  # Cognitive orchestration
+│   ├── specialists/    # Specialist unit tests
+│   └── tools/          # AI tool tests
+├── training/           # Training pipeline tests (annealing, attention, LoRA, etc.)
+├── toolchain/          # Compiler toolchain integration
+├── runtime/            # Runtime systems (async, I/O, memory, networking)
+├── integration/        # End-to-end workflow tests
+├── basics/             # Basic language tests
+├── async/              # Top-level async tests
+├── learning/           # Automatic differentiation (dual numbers)
+└── observability/      # Metrics and tracing
 ```
 
 ### Naming Convention
@@ -447,6 +509,8 @@ tests/
 | 0.8.0 | 2026-01 | Native dual numbers for automatic differentiation |
 | 0.9.0 | 2026-01 | Self-learning annealing, test suite restructure, llama.cpp integration |
 | 0.10.0 | 2026-01 | sxfmt, sxlint, benchmarking, coverage, error explanations, incremental compilation, source-level stack traces |
+| 0.11.0 | 2026-02 | Module system with `use` imports |
+| 0.12.0 | 2026-03 | Cross-module function imports, automatic LLVM declaration generation, expanded runtime (actors, supervisors, hive, resilience) |
 
 ---
 
@@ -580,7 +644,7 @@ sxlint --format sarif src/ > lint-results.sarif
 
 ---
 
-## Benchmarking Framework (v0.10.0)
+## Benchmarking Framework (v0.10.0) -- Planned
 
 ### Usage
 
@@ -669,7 +733,7 @@ bench_with_setup     ... bench:   121,000 ns/iter (+/- 5,200) [-2.0%]
 
 ---
 
-## Code Coverage (v0.10.0)
+## Code Coverage (v0.10.0) -- Planned
 
 ### Usage
 
@@ -724,7 +788,7 @@ Total                       84.6%    78.1%       93.6%
 
 ---
 
-## Error Explanations (v0.10.0)
+## Error Explanations (v0.10.0) -- Planned
 
 ### Usage
 
@@ -784,7 +848,7 @@ See also:
 
 ---
 
-## Incremental Compilation (v0.10.0)
+## Incremental Compilation (v0.10.0) -- Planned
 
 ### Overview
 
@@ -840,48 +904,37 @@ sxc cache prune --older-than 7d
 
 ### Overview
 
-When compiled with debug symbols, Simplex binaries produce stack traces with source file names, line numbers, and function names, making production debugging much easier.
+When compiled with debug symbols (`-g` flag), Simplex binaries produce stack traces with source file names, line numbers, and function names. The runtime uses DWARF debug info (via `addr2line`) and a registered debug info table.
 
 ### Compilation
 
 ```bash
-# Include debug symbols (default for non-release builds)
-sxc build -g main.sx
-
-# Release build with debug symbols
-sxc build -O -g main.sx
-
-# Release build without debug symbols (smallest binary)
-sxc build -O --strip main.sx
+# Include debug symbols
+sxc build -g main.sx -o main
 ```
 
 ### Stack Trace Output
 
-When a panic or unhandled error occurs:
+When a panic or unhandled error occurs, the runtime calls `intrinsic_print_stack_trace()`:
 
 ```
-thread 'main' panicked at 'index out of bounds: the len is 5 but the index is 10'
+thread 'main' panicked at 'index out of bounds'
 stack trace:
     0: src/processor.sx:142 in process_batch
     1: src/pipeline.sx:87 in run_pipeline
     2: src/main.sx:23 in main
 ```
 
-### Programmatic Stack Traces
+### Runtime Intrinsics
 
-```simplex
-use std::debug::{backtrace, print_backtrace}
+The C runtime provides:
+- `intrinsic_print_stack_trace()` -- prints the current stack trace
+- `intrinsic_panic(message)` -- prints message and stack trace, then exits
+- `intrinsic_panic_at(message, file, line)` -- panic with source location
+- `intrinsic_dump_stack()` -- debug stack dump
+- `sx_register_debug_info(func_start, func_end, name, file, line)` -- registers debug info for a function
 
-fn log_error(msg: String) {
-    print("Error: {msg}")
-    print_backtrace()
-}
-
-// Or capture for later
-fn capture_context() -> Backtrace {
-    backtrace()
-}
-```
+**Note:** A higher-level programmatic API (`std::debug::backtrace`) for capturing and inspecting stack traces is planned.
 
 ### Binary Size Impact
 

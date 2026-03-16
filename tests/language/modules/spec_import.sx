@@ -4,7 +4,7 @@
 // Import from the mathlib module
 use mathlib;
 
-fn main() {
+fn main() -> i64 {
  println("=== Module System Test ===");
  println("");
 
@@ -51,4 +51,5 @@ fn main() {
 
  println("");
  println("=== Module System Test Complete! ===");
+ 0
 }

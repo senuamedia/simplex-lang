@@ -1,0 +1,46 @@
+{
+  "category": "core",
+  "description": "Simplex compiler core. The self-hosted compiler toolchain including lexer, parser, code generator, and standard library bindings. Written in Simplex, bootstrapped via stage0.py.",
+  "modules": [
+    {
+      "name": "main",
+      "file": "main.html",
+      "description": "Compiler entry point. Parses command-line arguments and orchestrates the compilation pipeline.",
+      "items": []
+    },
+    {
+      "name": "lexer",
+      "file": "lexer.html",
+      "description": "Lexical analyzer. Converts source text into a stream of tokens (identifiers, keywords, operators, literals, etc.).",
+      "items": [
+        {"kind": "enum", "name": "TokenKind", "signature": "enum TokenKind { Eof, Ident, Int, String, Float, ... }"}
+      ]
+    },
+    {
+      "name": "parser",
+      "file": "parser.html",
+      "description": "Recursive descent parser. Converts token stream into an AST using the tag-based AST representation defined in lib/ast_defs.sx.",
+      "items": []
+    },
+    {
+      "name": "codegen",
+      "file": "codegen.html",
+      "description": "LLVM IR code generator. Walks the AST and emits LLVM IR text for compilation to native code.",
+      "items": []
+    },
+    {
+      "name": "stdlib",
+      "file": "stdlib.html",
+      "description": "Standard library bindings for the compiler. Provides the built-in functions and types available in every Simplex program.",
+      "items": []
+    },
+    {
+      "name": "compiler",
+      "file": "compiler.html",
+      "description": "Combined compiler module used by the single-file combined.sx compiler. Contains TokenKind and other shared definitions.",
+      "items": [
+        {"kind": "enum", "name": "TokenKind", "signature": "enum TokenKind { Eof, Ident, Int, String, LParen, RParen, LBrace, RBrace, ... }"}
+      ]
+    }
+  ]
+}

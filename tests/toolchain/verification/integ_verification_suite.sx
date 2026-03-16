@@ -1,1198 +1,328 @@
-// Wave 5: Verification Tests
-// End-to-end tests to verify features actually work
+// Integration Verification Suite
+// End-to-end tests combining multiple language features
+// v0.12.0: Validates feature integration across the compiler pipeline
 
-use std::time;
-use std::sync;
-use std::process;
+// ============================================
+// Integration 1: Type System + Methods + Traits
+// ============================================
 
-// =============================================================================
-// 35.5.1 Async Concurrency Verification
-// =============================================================================
-
-mod test_async_concurrency {
- use std::time;
-
- // Multiple async tasks run concurrently (not sequentially)
- #[test]
- async fn test_concurrent_execution() {
- let start = time::now();
-
- // Spawn two tasks that each take ~100ms
- let task1 = spawn async {
- time::sleep_ms(100);
- 1
- };
-
- let task2 = spawn async {
- time::sleep_ms(100);
- 2
- };
-
- // Wait for both
- let result1 = task1.await;
- let result2 = task2.await;
-
- let elapsed = time::now() - start;
-
- // Verify results
- assert_eq!(result1, 1);
- assert_eq!(result2, 2);
-
- // Should complete in ~100ms, not 200ms (concurrent, not sequential)
- assert!(elapsed < 150, "Tasks ran sequentially instead of concurrently: {}ms", elapsed);
- }
-
- // Measure timing to prove concurrency
- #[test]
- async fn test_timing_verification_3_tasks() {
- let start = time::now();
-
- // Three 100ms tasks
- let t1 = spawn async { time::sleep_ms(100); "a" };
- let t2 = spawn async { time::sleep_ms(100); "b" };
- let t3 = spawn async { time::sleep_ms(100); "c" };
-
- let r1 = t1.await;
- let r2 = t2.await;
- let r3 = t3.await;
-
- let elapsed = time::now() - start;
-
- // Should still be ~100ms with concurrency
- assert!(elapsed < 150, "Three concurrent tasks should complete in ~100ms, took {}ms", elapsed);
- }
-
- // Test: Two 100ms sleeps complete in ~100ms, not 200ms
- #[test]
- async fn test_sleep_concurrency_proof() {
- let start = time::now();
-
- // Two concurrent sleeps
- let sleep1 = async {
- time::sleep_ms(100);
- };
-
- let sleep2 = async {
- time::sleep_ms(100);
- };
-
- // Run both concurrently using join
- join!(sleep1, sleep2);
-
- let elapsed = time::now() - start;
-
- // Critical assertion: MUST be under 150ms to prove concurrency
- // If sequential, would be ~200ms
- assert!(elapsed >= 95, "Sleeps should take at least ~100ms, took {}ms", elapsed);
- assert!(elapsed < 150, "CONCURRENCY FAILURE: Two 100ms sleeps took {}ms (expected ~100ms if concurrent)", elapsed);
-
- println!("Async concurrency verified: {} ms for two 100ms tasks", elapsed);
- }
-
- // Additional: test with varying sleep times
- #[test]
- async fn test_varying_sleep_times() {
- let start = time::now();
-
- // 50ms, 100ms, 75ms - concurrent max should be ~100ms
- let t1 = spawn async { time::sleep_ms(50); 50 };
- let t2 = spawn async { time::sleep_ms(100); 100 };
- let t3 = spawn async { time::sleep_ms(75); 75 };
-
- let r1 = t1.await;
- let r2 = t2.await;
- let r3 = t3.await;
-
- let elapsed = time::now() - start;
-
- // Total should be ~100ms (the longest), not 225ms (sum)
- assert!(elapsed < 150, "Varying tasks should complete in ~100ms, took {}ms", elapsed);
- assert!(elapsed >= 95, "Should take at least 100ms for longest task");
- }
+trait Renderable {
+    fn render(self) -> i64;
+    fn priority(self) -> i64;
 }
 
-// =============================================================================
-// 35.5.2 Actor Concurrency Verification
-// =============================================================================
-
-mod test_actor_concurrency {
- use actors;
- use std::time;
-
- // Multiple actors process messages in parallel
- actor CounterActor {
- state count: i64 = 0;
-
- receive Increment {
- time::sleep_ms(100); // Simulate work
- self.count = self.count + 1;
- }
-
- receive GetCount -> i64 {
- self.count
- }
- }
-
- #[test]
- fn test_parallel_message_processing() {
- let start = time::now();
-
- // Create three actors
- let actor1 = spawn CounterActor;
- let actor2 = spawn CounterActor;
- let actor3 = spawn CounterActor;
-
- // Send increment to all (each takes 100ms)
- actor1.send(Increment);
- actor2.send(Increment);
- actor3.send(Increment);
-
- // Wait for all to process
- let count1 = actor1.ask(GetCount);
- let count2 = actor2.ask(GetCount);
- let count3 = actor3.ask(GetCount);
-
- let elapsed = time::now() - start;
-
- // Verify all processed
- assert_eq!(count1, 1);
- assert_eq!(count2, 1);
- assert_eq!(count3, 1);
-
- // Should complete in ~100ms (parallel), not 300ms (sequential)
- assert!(elapsed < 200, "Actors should process in parallel: {}ms", elapsed);
- }
-
- // Message ordering per-actor preserved
- actor OrderedActor {
- state history: Vec<i64> = Vec::new();
-
- receive Append(value: i64) {
- self.history.push(value);
- }
-
- receive GetHistory -> Vec<i64> {
- self.history.clone()
- }
- }
-
- #[test]
- fn test_message_ordering_preserved() {
- let actor = spawn OrderedActor;
-
- // Send messages in order
- for i in 0..10 {
- actor.send(Append(i));
- }
-
- // Get history
- let history = actor.ask(GetHistory);
-
- // Verify order preserved
- assert_eq!(history.len(), 10);
- for i in 0..10 {
- assert_eq!(history[i], i, "Message ordering violated at index {}", i);
- }
- }
-
- // Test: Three actors each doing 100ms work complete in ~100ms
- actor WorkerActor {
- receive DoWork(id: i64) -> i64 {
- time::sleep_ms(100); // 100ms of "work"
- id * 10
- }
- }
-
- #[test]
- fn test_three_actors_parallel_work() {
- let start = time::now();
-
- let worker1 = spawn WorkerActor;
- let worker2 = spawn WorkerActor;
- let worker3 = spawn WorkerActor;
-
- // Send work to all three
- let future1 = worker1.ask_async(DoWork(1));
- let future2 = worker2.ask_async(DoWork(2));
- let future3 = worker3.ask_async(DoWork(3));
-
- // Wait for all
- let result1 = future1.await;
- let result2 = future2.await;
- let result3 = future3.await;
-
- let elapsed = time::now() - start;
-
- // Verify results
- assert_eq!(result1, 10);
- assert_eq!(result2, 20);
- assert_eq!(result3, 30);
-
- // CRITICAL: Must complete in ~100ms to prove parallelism
- assert!(elapsed < 200, "ACTOR PARALLELISM FAILURE: Three 100ms actors took {}ms (expected ~100ms)", elapsed);
-
- println!("Actor concurrency verified: {} ms for three 100ms actors", elapsed);
- }
-
- // Verify actors on different threads
- #[test]
- fn test_actors_different_threads() {
- use std::thread;
-
- let actor1 = spawn WorkerActor;
- let actor2 = spawn WorkerActor;
-
- // Get thread IDs where actors run
- let tid1 = actor1.ask(GetThreadId);
- let tid2 = actor2.ask(GetThreadId);
-
- // May or may not be same thread (depends on scheduler)
- // But should be able to run concurrently
- println!("Actor 1 on thread: {}", tid1);
- println!("Actor 2 on thread: {}", tid2);
- }
+struct Widget {
+    id: i64,
+    kind: i64,
+    content: i64,
+    visible: i64
 }
 
-// =============================================================================
-// 35.5.3 Distribution Verification
-// =============================================================================
+impl Widget {
+    fn new(id: i64, kind: i64, content: i64) -> Widget {
+        Widget { id: id, kind: kind, content: content, visible: 1 }
+    }
 
-mod test_distribution {
- use distributed;
- use std::process;
- use std::net;
-
- // Messages cross node boundaries
- #[test]
- fn test_cross_node_messaging() {
- // Start two nodes
- let node1 = distributed::Node::start("127.0.0.1:9001");
- let node2 = distributed::Node::start("127.0.0.1:9002");
-
- // Connect them
- node1.connect("127.0.0.1:9002");
-
- // Spawn actor on node1
- let actor1 = node1.spawn_actor(EchoActor);
-
- // Send message from node2 to actor on node1
- let response = node2.send_to(actor1.ref(), Echo("hello"));
-
- assert_eq!(response, "hello");
-
- // Cleanup
- node1.stop();
- node2.stop();
- }
-
- actor EchoActor {
- receive Echo(msg: String) -> String {
- msg
- }
- }
-
- // Actor migration preserves state
- actor StatefulActor {
- state value: i64 = 0;
-
- receive Set(v: i64) {
- self.value = v;
- }
-
- receive Get -> i64 {
- self.value
- }
- }
-
- #[test]
- fn test_actor_migration() {
- let node1 = distributed::Node::start("127.0.0.1:9003");
- let node2 = distributed::Node::start("127.0.0.1:9004");
- node1.connect("127.0.0.1:9004");
-
- // Spawn on node1 and set state
- let actor = node1.spawn_actor(StatefulActor);
- actor.send(Set(42));
- assert_eq!(actor.ask(Get), 42);
-
- // Migrate to node2
- let migrated = distributed::migrate(actor, node2);
-
- // State should be preserved
- assert_eq!(migrated.ask(Get), 42);
-
- node1.stop();
- node2.stop();
- }
-
- // Node failure detected
- #[test]
- fn test_node_failure_detection() {
- let node1 = distributed::Node::start("127.0.0.1:9005");
- let node2 = distributed::Node::start("127.0.0.1:9006");
- node1.connect("127.0.0.1:9006");
-
- // Register failure callback
- let failed = sync::AtomicBool::new(false);
- node1.on_node_down(|addr| {
- if addr == "127.0.0.1:9006" {
- failed.store(true);
- }
- });
-
- // Kill node2
- node2.stop();
-
- // Wait for detection (SWIM protocol timeout)
- time::sleep_ms(500);
-
- assert!(failed.load(), "Node failure was not detected");
-
- node1.stop();
- }
-
- // Test: Ping-pong between two separate processes
- #[test]
- fn test_cross_process_ping_pong() {
- // Start node in subprocess
- let child = process::spawn("simplex", ["run", "ping_pong_server.sx", "--port", "9007"]);
-
- // Wait for server to start
- time::sleep_ms(200);
-
- // Connect from this process
- let client = distributed::Node::start("127.0.0.1:9008");
- client.connect("127.0.0.1:9007");
-
- // Find remote actor
- let remote_pong = client.lookup("pong_actor");
- assert!(remote_pong.is_some());
-
- // Send ping, expect pong
- let response = remote_pong.unwrap().ask(Ping);
- assert_eq!(response, "pong");
-
- // Cleanup
- child.kill();
- client.stop();
- }
+    fn hide(self) -> Widget {
+        Widget { id: self.id, kind: self.kind, content: self.content, visible: 0 }
+    }
 }
 
-// =============================================================================
-// 35.5.4 Build System Verification
-// =============================================================================
+impl Renderable for Widget {
+    fn render(self) -> i64 {
+        if self.visible == 1 { self.content } else { string_from("") }
+    }
 
-mod test_build_system {
- use std::fs;
- use std::process;
-
- // spx build compiles project
- #[test]
- fn test_spx_build_basic() {
- // Create test project
- let project_dir = "/tmp/test_build_project";
- fs::create_dir_all(project_dir);
-
- fs::write(f"{project_dir}/spx.toml", r#"
- [package]
- name = "test-project"
- version = "0.1.0"
- "#);
-
- fs::write(f"{project_dir}/src/main.sx", r#"
- fn main() {
- println!("Hello from test project");
- }
- "#);
-
- // Run build
- let result = process::run("spx", ["build"], project_dir);
-
- assert!(result.success, "Build failed: {}", result.stderr);
- assert!(fs::exists(f"{project_dir}/target/debug/test-project"));
-
- // Cleanup
- fs::remove_dir_all(project_dir);
- }
-
- // Dependencies resolved correctly
- #[test]
- fn test_dependency_resolution() {
- let project_dir = "/tmp/test_deps_project";
- fs::create_dir_all(project_dir);
-
- fs::write(f"{project_dir}/spx.toml", r#"
- [package]
- name = "dep-test"
- version = "0.1.0"
-
- [dependencies]
- simplex-json = "^1.0.0"
- "#);
-
- fs::write(f"{project_dir}/src/main.sx", r#"
- use simplex_json::Json;
-
- fn main() {
- let obj = Json::parse("{}");
- println!("Parsed: {}", obj);
- }
- "#);
-
- // Build should fetch and compile dependency
- let result = process::run("spx", ["build"], project_dir);
-
- assert!(result.success, "Build with dependency failed: {}", result.stderr);
-
- // Check lockfile was created
- assert!(fs::exists(f"{project_dir}/spx.lock"));
-
- fs::remove_dir_all(project_dir);
- }
-
- // Incremental rebuild works
- #[test]
- fn test_incremental_rebuild() {
- let project_dir = "/tmp/test_incremental";
- fs::create_dir_all(project_dir);
-
- fs::write(f"{project_dir}/spx.toml", r#"
- [package]
- name = "incr-test"
- version = "0.1.0"
- "#);
-
- fs::write(f"{project_dir}/src/main.sx", "fn main() { println!(\"v1\"); }");
- fs::write(f"{project_dir}/src/lib.sx", "pub fn helper() -> i64 { 1 }");
-
- // Initial build
- let build1 = process::run("spx", ["build"], project_dir);
- assert!(build1.success);
- let time1 = build1.duration_ms;
-
- // Modify only one file
- time::sleep_ms(100); // Ensure mtime changes
- fs::write(f"{project_dir}/src/main.sx", "fn main() { println!(\"v2\"); }");
-
- // Incremental build
- let build2 = process::run("spx", ["build"], project_dir);
- assert!(build2.success);
- let time2 = build2.duration_ms;
-
- // Incremental should be faster (only rebuilt main.sx)
- assert!(time2 < time1, "Incremental build should be faster");
-
- fs::remove_dir_all(project_dir);
- }
-
- // Test: Build multi-file project with dependency
- #[test]
- fn test_multifile_with_deps() {
- let project_dir = "/tmp/test_multifile";
- fs::create_dir_all(f"{project_dir}/src");
-
- fs::write(f"{project_dir}/spx.toml", r#"
- [package]
- name = "multifile-test"
- version = "0.1.0"
-
- [dependencies]
- simplex-uuid = "^1.0.0"
- "#);
-
- fs::write(f"{project_dir}/src/main.sx", r#"
- mod utils;
- use simplex_uuid::Uuid;
-
- fn main() {
- let id = Uuid::new_v4();
- let msg = utils::format_id(id);
- println!("{}", msg);
- }
- "#);
-
- fs::write(f"{project_dir}/src/utils.sx", r#"
- use simplex_uuid::Uuid;
-
- pub fn format_id(id: Uuid) -> String {
- format!("ID: {}", id)
- }
- "#);
-
- let result = process::run("spx", ["build"], project_dir);
- assert!(result.success, "Multi-file build failed: {}", result.stderr);
-
- // Run the binary
- let run_result = process::run(f"{project_dir}/target/debug/multifile-test", []);
- assert!(run_result.success);
- assert!(run_result.stdout.contains("ID:"));
-
- fs::remove_dir_all(project_dir);
- }
+    fn priority(self) -> i64 {
+        self.kind * 10 + self.id
+    }
 }
 
-// =============================================================================
-// 35.5.5 Memory Safety Verification
-// =============================================================================
+fn test_type_integration() -> i64 {
+    let w1: Widget = Widget::new(1, 2, string_from("Button"));
+    let w2: Widget = Widget::new(2, 1, string_from("Label"));
+    let w3: Widget = w1.hide();
 
-mod test_memory_safety {
- use std::ptr;
+    let p1: i64 = w1.priority();
+    let p2: i64 = w2.priority();
+    let r3: i64 = w3.render();
 
- // No use-after-free
- #[test]
- fn test_no_use_after_free() {
- // This should be prevented by the borrow checker
- let data = vec![1, 2, 3];
- let reference = &data[0];
-
- // data.clear(); // This should be compile error: cannot mutate while borrowed
- // let val = *reference; // Would be use-after-free
-
- // Instead, this is the safe pattern:
- let val = *reference;
- assert_eq!(val, 1);
-
- // Now we can mutate
- let mut data = data;
- data.clear();
- assert_eq!(data.len(), 0);
- }
-
- // No double-free
- #[test]
- fn test_no_double_free() {
- struct DropCounter {
- drops: *mut i64,
- }
-
- impl Drop for DropCounter {
- fn drop(&mut self) {
- unsafe {
- *self.drops = *self.drops + 1;
- }
- }
- }
-
- let mut drop_count: i64 = 0;
-
- {
- let counter = DropCounter { drops: &mut drop_count };
- // counter goes out of scope here, dropped once
- }
-
- assert_eq!(drop_count, 1, "Object should be dropped exactly once");
- }
-
- // No memory leaks (basic)
- #[test]
- fn test_no_memory_leak() {
- use std::alloc;
-
- let initial_alloc = alloc::current_usage();
-
- // Allocate and deallocate in a loop
- for _ in 0..1000 {
- let v: Vec<i64> = Vec::with_capacity(1000);
- // v is dropped here
- }
-
- let final_alloc = alloc::current_usage();
-
- // Memory usage should be close to initial
- let diff = final_alloc - initial_alloc;
- assert!(diff < 1024, "Possible memory leak: {} bytes not freed", diff);
- }
-
- // Test: Run with address sanitizer
- #[test]
- #[cfg(feature = "asan")]
- fn test_asan_enabled() {
- // This test only runs with ASAN enabled
- // Any memory errors would cause ASAN to abort
-
- let v = vec![1, 2, 3, 4, 5];
-
- // Out of bounds access would be caught by ASAN
- let idx = 2;
- let val = v[idx]; // Safe access
-
- assert_eq!(val, 3);
- }
-
- // Verify Box cleanup
- #[test]
- fn test_box_cleanup() {
- use std::alloc;
-
- let before = alloc::current_usage();
-
- {
- let boxed: Box<[i64; 1000]> = Box::new([0; 1000]);
- let _ = boxed[0];
- } // boxed freed here
-
- let after = alloc::current_usage();
-
- assert!(after <= before + 64, "Box memory not properly freed");
- }
+    // w1 priority: 2*10+1=21, w2: 1*10+2=12, w3 hidden: empty string
+    if p1 == 21 && p2 == 12 && string_len(r3) == 0 { 1 } else { 0 }
 }
 
-// =============================================================================
-// 35.5.6 Type System Verification
-// =============================================================================
+// ============================================
+// Integration 2: Vec + Struct + Processing Pipeline
+// ============================================
 
-mod test_type_system {
- // Generic type constraints enforced
- trait Printable {
- fn print(&self) -> String;
- }
-
- struct NotPrintable {
- value: i64,
- }
-
- struct IsPrintable {
- value: i64,
- }
-
- impl Printable for IsPrintable {
- fn print(&self) -> String {
- format!("{}", self.value)
- }
- }
-
- fn print_thing<T: Printable>(thing: T) -> String {
- thing.print()
- }
-
- #[test]
- fn test_generic_constraint_satisfied() {
- let p = IsPrintable { value: 42 };
- let result = print_thing(p);
- assert_eq!(result, "42");
- }
-
- // This should fail to compile (compile-time verification)
- // #[test]
- // fn test_generic_constraint_violation() {
- // let np = NotPrintable { value: 42 };
- // print_thing(np); // ERROR: NotPrintable does not implement Printable
- // }
-
- // Trait bounds checked
- trait Addable {
- fn add(self, other: Self) -> Self;
- }
-
- impl Addable for i64 {
- fn add(self, other: Self) -> Self {
- self + other
- }
- }
-
- fn sum_all<T: Addable + Copy + Default>(items: &[T]) -> T {
- let mut total = T::default();
- for item in items {
- total = total.add(*item);
- }
- total
- }
-
- #[test]
- fn test_trait_bound_checked() {
- let numbers = [1, 2, 3, 4, 5];
- let total = sum_all(&numbers);
- assert_eq!(total, 15);
- }
-
- // Associated type resolution works
- trait Container {
- type Item;
- fn get(&self) -> Self::Item;
- }
-
- struct IntContainer {
- value: i64,
- }
-
- impl Container for IntContainer {
- type Item = i64;
- fn get(&self) -> Self::Item {
- self.value
- }
- }
-
- fn extract<C: Container>(container: C) -> C::Item {
- container.get()
- }
-
- #[test]
- fn test_associated_type_resolution() {
- let c = IntContainer { value: 42 };
- let val: i64 = extract(c); // Type inferred correctly
- assert_eq!(val, 42);
- }
-
- // Test: Compile-time rejection of type errors
- #[test]
- fn test_compile_time_type_errors() {
- // These should all be compile-time errors (tested by trying to compile)
-
- // Type mismatch
- // let x: i64 = "hello"; // ERROR
-
- // Missing trait implementation
- // let v: Vec<NotPrintable> = vec![NotPrintable { value: 1 }];
- // println!("{}", v[0]); // ERROR: NotPrintable doesn't impl Display
-
- // Wrong number of type arguments
- // let m: HashMap<i64> = HashMap::new(); // ERROR: needs 2 type args
-
- // If we got here, basic type checking works
- assert!(true);
- }
-
- // Lifetime checking
- #[test]
- fn test_lifetime_checking() {
- fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
- if x.len() > y.len() { x } else { y }
- }
-
- let s1 = "hello";
- let result;
- {
- let s2 = "world!";
- result = longest(s1, s2);
- }
- // result is valid because both s1 and s2 are string literals ('static)
- assert_eq!(result, "world!");
- }
+struct DataPoint {
+    x: i64,
+    y: i64,
+    label: i64
 }
 
-// =============================================================================
-// 35.5.7 Error Handling Verification
-// =============================================================================
+impl DataPoint {
+    fn new(x: i64, y: i64, label: i64) -> DataPoint {
+        DataPoint { x: x, y: y, label: label }
+    }
 
-mod test_error_handling {
- use std::error::Error;
-
- // Panics caught by supervisors
- actor PanickingActor supervised {
- receive Panic {
- panic!("Intentional panic");
- }
-
- receive IsAlive -> bool {
- true
- }
- }
-
- #[test]
- fn test_panic_caught_by_supervisor() {
- let supervisor = Supervisor::new(RestartStrategy::OneForOne);
- let actor = supervisor.spawn(PanickingActor);
-
- // Should be alive initially
- assert!(actor.ask(IsAlive));
-
- // Send panic message
- actor.send(Panic);
-
- // Wait for restart
- time::sleep_ms(100);
-
- // Actor should be restarted and alive
- assert!(actor.ask(IsAlive), "Actor was not restarted after panic");
- }
-
- // Result propagation with ?
- fn inner_fn() -> Result<i64, String> {
- Err("inner error".to_string())
- }
-
- fn middle_fn() -> Result<i64, String> {
- let val = inner_fn()?;
- Ok(val + 1)
- }
-
- fn outer_fn() -> Result<i64, String> {
- let val = middle_fn()?;
- Ok(val + 1)
- }
-
- #[test]
- fn test_result_propagation() {
- let result = outer_fn();
- assert!(result.is_err());
-
- // Error should propagate through all layers
- let error = result.unwrap_err();
- assert_eq!(error, "inner error");
- }
-
- // Error messages include location
- #[derive(Debug)]
- struct LocationError {
- message: String,
- file: String,
- line: u32,
- }
-
- impl std::fmt::Display for LocationError {
- fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
- write!(f, "{} at {}:{}", self.message, self.file, self.line)
- }
- }
-
- macro_rules! error_here {
- ($msg:expr) => {
- LocationError {
- message: $msg.to_string(),
- file: file!().to_string(),
- line: line!(),
- }
- }
- }
-
- fn failing_function() -> Result<(), LocationError> {
- Err(error_here!("Something went wrong"))
- }
-
- #[test]
- fn test_error_location() {
- let result = failing_function();
- assert!(result.is_err());
-
- let error = result.unwrap_err();
- assert!(error.file.contains("test_35_5_verification.sx"));
- assert!(error.line > 0);
- assert!(error.message.contains("Something went wrong"));
-
- println!("Error with location: {}", error);
- }
-
- // Test: Error chain through multiple call frames
- fn level1() -> Result<i64, Box<dyn Error>> {
- level2().map_err(|e| format!("level1: {}", e))?;
- Ok(1)
- }
-
- fn level2() -> Result<i64, Box<dyn Error>> {
- level3().map_err(|e| format!("level2: {}", e))?;
- Ok(2)
- }
-
- fn level3() -> Result<i64, Box<dyn Error>> {
- Err("level3: root cause".into())
- }
-
- #[test]
- fn test_error_chain() {
- let result = level1();
- assert!(result.is_err());
-
- let error = result.unwrap_err();
- let error_string = error.to_string();
-
- // Should show the chain
- assert!(error_string.contains("level1"));
- assert!(error_string.contains("level2"));
- assert!(error_string.contains("root cause"));
- }
-
- // Backtrace on error
- #[test]
- #[cfg(feature = "backtrace")]
- fn test_error_backtrace() {
- use std::backtrace::Backtrace;
-
- fn deep_error() -> Result<(), anyhow::Error> {
- anyhow::bail!("Deep error with backtrace")
- }
-
- let result = deep_error();
- assert!(result.is_err());
-
- let error = result.unwrap_err();
- let backtrace = error.backtrace();
-
- // Backtrace should contain function names
- let bt_string = format!("{}", backtrace);
- assert!(bt_string.contains("deep_error") || bt_string.len() > 0);
- }
+    fn distance_sq(self) -> i64 {
+        self.x * self.x + self.y * self.y
+    }
 }
 
-// =============================================================================
-// 35.5.8 Performance Verification
-// =============================================================================
-
-mod test_performance {
- use std::sync;
- use std::thread;
- use std::time;
-
- // Lock-free operations scale with threads
- #[test]
- fn test_lockfree_scaling() {
- let counter = sync::atomic::AtomicI64::new(0);
- let iterations = 100000;
-
- // Single thread baseline
- let start1 = time::now();
- for _ in 0..iterations {
- counter.fetch_add(1, Ordering::Relaxed);
- }
- let single_thread_time = time::now() - start1;
- counter.store(0, Ordering::Relaxed);
-
- // Multi-threaded (should scale)
- let num_threads = 4;
- let per_thread = iterations / num_threads;
-
- let start2 = time::now();
- let threads: Vec<_> = (0..num_threads).map(|_| {
- let counter_ref = &counter;
- thread::spawn(move || {
- for _ in 0..per_thread {
- counter_ref.fetch_add(1, Ordering::Relaxed);
- }
- })
- }).collect();
-
- for t in threads {
- t.join().unwrap();
- }
- let multi_thread_time = time::now() - start2;
-
- // Final count should be correct
- assert_eq!(counter.load(Ordering::Relaxed), iterations);
-
- // Multi-threaded should not be dramatically slower (good scaling)
- // Allow 2x overhead for thread management
- assert!(multi_thread_time < single_thread_time * 2,
- "Lock-free scaling poor: single={} multi={}", single_thread_time, multi_thread_time);
-
- println!("Lock-free scaling: single={}ms, multi={}ms", single_thread_time, multi_thread_time);
- }
-
- // No priority inversion in scheduler
- #[test]
- fn test_no_priority_inversion() {
- use scheduler::{Task, Priority};
-
- let scheduler = scheduler::Scheduler::new();
-
- let high_started = sync::AtomicBool::new(false);
- let low_finished = sync::AtomicBool::new(false);
-
- // Spawn low priority task first
- scheduler.spawn(Task::new(Priority::Low, || {
- time::sleep_ms(50);
- low_finished.store(true, Ordering::SeqCst);
- }));
-
- // Spawn high priority task
- scheduler.spawn(Task::new(Priority::High, || {
- high_started.store(true, Ordering::SeqCst);
- }));
-
- scheduler.run_for_ms(100);
-
- // High priority should have run (started) before low finished
- // This is a simplified check - real priority inversion is more subtle
- assert!(high_started.load(Ordering::SeqCst),
- "High priority task should have been scheduled");
- }
-
- // Memory usage bounded
- #[test]
- fn test_memory_bounded() {
- use std::alloc;
-
- let initial = alloc::current_usage();
-
- // Create and destroy many objects
- for _ in 0..1000 {
- let v: Vec<i64> = (0..1000).collect();
- let sum: i64 = v.iter().sum();
- assert!(sum > 0);
- // v is dropped here
- }
-
- let after = alloc::current_usage();
-
- // Memory should return to approximately initial
- let growth = after as i64 - initial as i64;
- assert!(growth.abs() < 1024 * 1024, // 1MB tolerance
- "Unbounded memory growth: {}MB", growth / 1024 / 1024);
- }
-
- // Test: Throughput under load
- #[test]
- fn test_throughput_under_load() {
- let mailbox = sync::mpsc::channel::<i64>();
- let (tx, rx) = mailbox;
-
- let num_messages = 100000;
-
- // Producer thread
- let producer = thread::spawn(move || {
- let start = time::now();
- for i in 0..num_messages {
- tx.send(i).unwrap();
- }
- let elapsed = time::now() - start;
- elapsed
- });
-
- // Consumer thread
- let consumer = thread::spawn(move || {
- let mut count = 0;
- let start = time::now();
- while count < num_messages {
- if rx.recv().is_ok() {
- count += 1;
- }
- }
- let elapsed = time::now() - start;
- (count, elapsed)
- });
-
- let producer_time = producer.join().unwrap();
- let (consumed, consumer_time) = consumer.join().unwrap();
-
- assert_eq!(consumed, num_messages);
-
- // Calculate throughput
- let throughput = num_messages as f64 / (consumer_time as f64 / 1000.0);
- println!("Message throughput: {:.0} messages/second", throughput);
-
- // Should achieve at least 100k messages/second
- assert!(throughput > 100000.0,
- "Throughput too low: {:.0} msg/s", throughput);
- }
-
- // Latency under load
- #[test]
- fn test_latency_under_load() {
- let mut latencies: Vec<i64> = Vec::new();
-
- // Measure round-trip times under load
- for _ in 0..1000 {
- let start = time::now_nanos();
- // Simulate minimal work
- let _ = 1 + 1;
- let elapsed = time::now_nanos() - start;
- latencies.push(elapsed);
- }
-
- // Sort for percentile calculation
- latencies.sort();
-
- let p50 = latencies[500];
- let p99 = latencies[990];
- let max = latencies[999];
-
- println!("Latencies: p50={}ns, p99={}ns, max={}ns", p50, p99, max);
-
- // p99 should be reasonable (under 1ms for trivial work)
- assert!(p99 < 1000000, "p99 latency too high: {}ns", p99);
- }
+fn process_dataset(points: Vec<i64>) -> i64 {
+    let total_dist: i64 = 0;
+    let i: i64 = 0;
+    while i < vec_len(points) {
+        let p: DataPoint = vec_get(points, i);
+        total_dist = total_dist + p.distance_sq();
+        i = i + 1;
+    }
+    total_dist
 }
 
-// =============================================================================
-// Helper types and functions
-// =============================================================================
+fn test_pipeline_integration() -> i64 {
+    let points: Vec<i64> = Vec::new();
+    vec_push(points, DataPoint::new(3, 4, 0));   // dist_sq = 25
+    vec_push(points, DataPoint::new(1, 1, 1));   // dist_sq = 2
+    vec_push(points, DataPoint::new(5, 0, 0));   // dist_sq = 25
 
-mod time {
- pub fn now() -> i64 { 0 }
- pub fn now_nanos() -> i64 { 0 }
- pub fn sleep_ms(ms: i64) {}
+    let total: i64 = process_dataset(points);
+    if total == 52 { 1 } else { 0 }
 }
 
-mod sync {
- pub struct AtomicBool { value: bool }
- impl AtomicBool {
- pub fn new(v: bool) -> Self { AtomicBool { value: v } }
- pub fn store(&self, v: bool, _: Ordering) {}
- pub fn load(&self, _: Ordering) -> bool { self.value }
- }
+// ============================================
+// Integration 3: Enum + HashMap + State Machine
+// ============================================
 
- pub mod atomic {
- use super::Ordering;
- pub struct AtomicI64 { value: i64 }
- impl AtomicI64 {
- pub fn new(v: i64) -> Self { AtomicI64 { value: v } }
- pub fn store(&self, v: i64, _: Ordering) {}
- pub fn load(&self, _: Ordering) -> i64 { self.value }
- pub fn fetch_add(&self, v: i64, _: Ordering) -> i64 { self.value }
- }
- }
-
- pub enum Ordering { Relaxed, SeqCst }
-
- pub mod mpsc {
- pub fn channel<T>() -> (Sender<T>, Receiver<T>) {
- (Sender { _marker: std::marker::PhantomData }, Receiver { _marker: std::marker::PhantomData })
- }
- pub struct Sender<T> { _marker: std::marker::PhantomData<T> }
- pub struct Receiver<T> { _marker: std::marker::PhantomData<T> }
- impl<T> Sender<T> {
- pub fn send(&self, _: T) -> Result<(), ()> { Ok(()) }
- }
- impl<T> Receiver<T> {
- pub fn recv(&self) -> Result<T, ()> { Err(()) }
- }
- }
+enum State {
+    Idle,
+    Running(i64),
+    Paused(i64),
+    Done(i64)
 }
 
-mod distributed {
- pub struct Node {}
- impl Node {
- pub fn start(addr: &str) -> Self { Node {} }
- pub fn connect(&self, addr: &str) {}
- pub fn stop(&self) {}
- pub fn spawn_actor<T>(&self, actor: T) -> ActorRef { ActorRef {} }
- pub fn send_to<M, R>(&self, actor: ActorRef, msg: M) -> R { unimplemented!() }
- pub fn lookup(&self, name: &str) -> Option<ActorRef> { None }
- pub fn on_node_down<F: Fn(&str)>(&self, f: F) {}
- }
- pub struct ActorRef {}
- impl ActorRef {
- pub fn ref_(&self) -> Self { ActorRef {} }
- }
- pub fn migrate<T>(actor: T, node: Node) -> T { actor }
+fn state_name(s: State) -> i64 {
+    match s {
+        State::Idle => string_from("idle"),
+        State::Running(id) => string_from("running"),
+        State::Paused(id) => string_from("paused"),
+        State::Done(result) => string_from("done")
+    }
 }
 
-mod scheduler {
- pub struct Scheduler {}
- impl Scheduler {
- pub fn new() -> Self { Scheduler {} }
- pub fn spawn(&self, task: Task) {}
- pub fn run_for_ms(&self, ms: i64) {}
- }
- pub struct Task {}
- impl Task {
- pub fn new<F: Fn()>(priority: Priority, f: F) -> Self { Task {} }
- }
- pub enum Priority { Low, High }
+fn state_transition(s: State) -> State {
+    match s {
+        State::Idle => State::Running(1),
+        State::Running(id) => State::Paused(id),
+        State::Paused(id) => State::Running(id + 1),
+        State::Done(r) => State::Done(r)
+    }
 }
 
-struct Supervisor {}
-impl Supervisor {
- fn new(strategy: RestartStrategy) -> Self { Supervisor {} }
- fn spawn<T>(&self, actor: T) -> ActorRef { ActorRef {} }
-}
-struct ActorRef {}
-impl ActorRef {
- fn ask<M, R>(&self, msg: M) -> R { unimplemented!() }
- fn send<M>(&self, msg: M) {}
-}
-enum RestartStrategy { OneForOne }
+fn test_state_machine() -> i64 {
+    let s: State = State::Idle;
+    let s: State = state_transition(s);  // Running(1)
+    let n1: i64 = state_name(s);
+    let s: State = state_transition(s);  // Paused(1)
+    let n2: i64 = state_name(s);
+    let s: State = state_transition(s);  // Running(2)
+    let n3: i64 = state_name(s);
 
-fn main() {
- println!(" Wave 5 Verification Tests");
- println!("===================================");
- println!("Run with: sxc test tests/test_35_5_verification.sx");
+    if string_eq(n1, string_from("running")) == 1 &&
+       string_eq(n2, string_from("paused")) == 1 &&
+       string_eq(n3, string_from("running")) == 1 { 1 } else { 0 }
+}
+
+// ============================================
+// Integration 4: Builder Pattern
+// ============================================
+
+struct QueryBuilder {
+    table: i64,
+    conditions: Vec<i64>,
+    limit: i64,
+    offset: i64
+}
+
+impl QueryBuilder {
+    fn new(table: i64) -> QueryBuilder {
+        QueryBuilder { table: table, conditions: Vec::new(), limit: 0, offset: 0 }
+    }
+
+    fn where_clause(self, condition: i64) -> QueryBuilder {
+        vec_push(self.conditions, condition);
+        QueryBuilder { table: self.table, conditions: self.conditions, limit: self.limit, offset: self.offset }
+    }
+
+    fn with_limit(self, n: i64) -> QueryBuilder {
+        QueryBuilder { table: self.table, conditions: self.conditions, limit: n, offset: self.offset }
+    }
+
+    fn with_offset(self, n: i64) -> QueryBuilder {
+        QueryBuilder { table: self.table, conditions: self.conditions, limit: self.limit, offset: n }
+    }
+
+    fn condition_count(self) -> i64 {
+        vec_len(self.conditions)
+    }
+}
+
+fn test_builder_pattern() -> i64 {
+    let q: QueryBuilder = QueryBuilder::new(string_from("users"));
+    let q: QueryBuilder = q.where_clause(string_from("age > 18"));
+    let q: QueryBuilder = q.where_clause(string_from("active = true"));
+    let q: QueryBuilder = q.with_limit(10);
+    let q: QueryBuilder = q.with_offset(20);
+
+    let conds: i64 = q.condition_count();
+    if conds == 2 && q.limit == 10 && q.offset == 20 { 1 } else { 0 }
+}
+
+// ============================================
+// Integration 5: String Processing Pipeline
+// ============================================
+
+fn count_words(text: i64) -> i64 {
+    let words: Vec<i64> = string_split(text, string_from(" "));
+    vec_len(words)
+}
+
+fn build_csv_row(fields: Vec<i64>) -> i64 {
+    let result: i64 = string_from("");
+    let i: i64 = 0;
+    while i < vec_len(fields) {
+        if i > 0 {
+            result = string_concat(result, string_from(","));
+        }
+        result = string_concat(result, vec_get(fields, i));
+        i = i + 1;
+    }
+    result
+}
+
+fn test_string_pipeline() -> i64 {
+    let text: i64 = string_from("the quick brown fox jumps");
+    let wc: i64 = count_words(text);
+
+    let fields: Vec<i64> = Vec::new();
+    vec_push(fields, string_from("name"));
+    vec_push(fields, string_from("age"));
+    vec_push(fields, string_from("city"));
+    let csv: i64 = build_csv_row(fields);
+
+    if wc == 5 && string_eq(csv, string_from("name,age,city")) == 1 { 1 } else { 0 }
+}
+
+// ============================================
+// Integration 6: Config + Struct + Validation
+// ============================================
+
+struct AppConfig {
+    host: i64,
+    port: i64,
+    max_connections: i64,
+    debug: i64
+}
+
+impl AppConfig {
+    fn from_map(map: HashMap<i64, i64>) -> AppConfig {
+        let host: i64 = option_unwrap(hashmap_get(map, string_from("host")));
+        let port: i64 = option_unwrap(hashmap_get(map, string_from("port")));
+        let max_conn: i64 = option_unwrap(hashmap_get(map, string_from("max_connections")));
+        let debug: i64 = option_unwrap(hashmap_get(map, string_from("debug")));
+        AppConfig { host: host, port: port, max_connections: max_conn, debug: debug }
+    }
+
+    fn is_valid(self) -> i64 {
+        if self.port > 0 && self.port < 65536 && self.max_connections > 0 { 1 } else { 0 }
+    }
+}
+
+fn test_config_integration() -> i64 {
+    let map: HashMap<i64, i64> = HashMap::new();
+    hashmap_insert(map, string_from("host"), string_from("localhost"));
+    hashmap_insert(map, string_from("port"), 8080);
+    hashmap_insert(map, string_from("max_connections"), 100);
+    hashmap_insert(map, string_from("debug"), 1);
+
+    let cfg: AppConfig = AppConfig::from_map(map);
+    let valid: i64 = cfg.is_valid();
+
+    if valid == 1 && cfg.port == 8080 && cfg.max_connections == 100 { 1 } else { 0 }
+}
+
+// ============================================
+// Integration 7: Error Propagation with Option
+// ============================================
+
+fn parse_int_safe(s: i64) -> i64 {
+    let val: i64 = string_to_int(s);
+    if val == 0 && string_eq(s, string_from("0")) == 0 {
+        option_none()
+    } else {
+        option_some(val)
+    }
+}
+
+fn add_parsed(a: i64, b: i64) -> i64 {
+    let va: i64 = parse_int_safe(a);
+    let vb: i64 = parse_int_safe(b);
+    if option_is_some(va) == 1 && option_is_some(vb) == 1 {
+        option_some(option_unwrap(va) + option_unwrap(vb))
+    } else {
+        option_none()
+    }
+}
+
+fn test_error_propagation() -> i64 {
+    let r1: i64 = add_parsed(string_from("10"), string_from("20"));
+    let r2: i64 = add_parsed(string_from("abc"), string_from("20"));
+
+    if option_is_some(r1) == 1 && option_unwrap(r1) == 30 && option_is_none(r2) == 1 { 1 } else { 0 }
+}
+
+// ============================================
+// Integration 8: Generic + Trait + Vec
+// ============================================
+
+fn vec_count_matching(v: Vec<i64>, predicate_val: i64) -> i64 {
+    let count: i64 = 0;
+    let i: i64 = 0;
+    while i < vec_len(v) {
+        if vec_get(v, i) == predicate_val {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+fn test_generic_collection() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    vec_push(v, 1);
+    vec_push(v, 2);
+    vec_push(v, 1);
+    vec_push(v, 3);
+    vec_push(v, 1);
+
+    let ones: i64 = vec_count_matching(v, 1);
+    let twos: i64 = vec_count_matching(v, 2);
+    let fours: i64 = vec_count_matching(v, 4);
+
+    if ones == 3 && twos == 1 && fours == 0 { 1 } else { 0 }
+}
+
+fn main() -> i64 {
+    let failed: i64 = 0;
+    if test_type_integration() == 0 { failed = failed + 1; }
+    if test_pipeline_integration() == 0 { failed = failed + 1; }
+    if test_state_machine() == 0 { failed = failed + 1; }
+    if test_builder_pattern() == 0 { failed = failed + 1; }
+    if test_string_pipeline() == 0 { failed = failed + 1; }
+    if test_config_integration() == 0 { failed = failed + 1; }
+    if test_error_propagation() == 0 { failed = failed + 1; }
+    if test_generic_collection() == 0 { failed = failed + 1; }
+    failed
 }

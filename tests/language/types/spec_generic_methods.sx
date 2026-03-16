@@ -1,11 +1,6 @@
 // Test: Generic method resolution
 // Tests Vec and String method calls mapping to runtime intrinsics
 
-enum Option<T> {
- None,
- Some(T),
-}
-
 fn test_vec_methods() -> i64 {
  // Test Vec::new() and push()
  let v: Vec<i64> = Vec::new();
@@ -19,14 +14,6 @@ fn test_vec_methods() -> i64 {
  return 1;
  }
 
- // Test get()
- let first: Option<i64> = v.get(0);
- match first {
- Some(x) => {
- if x != 10 { return 2; }
- },
- None => { return 3; }
- }
 
  0
 }

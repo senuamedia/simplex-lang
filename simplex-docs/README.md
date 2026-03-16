@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.10.0**
+**Version 0.12.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -28,6 +28,8 @@ Simplex (Latin for "simple") is a programming language designed for the AI era. 
 | [Neural IR](spec/14-neural-ir.md) | Differentiable execution and neural gates |
 | [Real-Time Learning](spec/15-real-time-learning.md) | Online learning and adaptation |
 | [Edge Hive](spec/16-edge-hive.md) | Lightweight autonomous hive for edge devices |
+| [Formal Semantics](spec/17-formal-semantics.md) | Formal Semantics - SAM Model |
+| [HTTP Server](spec/18-http-server.md) | HTTP server specification |
 
 ### Tutorial
 
@@ -47,8 +49,8 @@ A step-by-step learning path for the Simplex language.
 | [10](tutorial/10-ai-basics.md) | AI Integration | Completion, classification, embeddings |
 | [11](tutorial/11-capstone.md) | Capstone Project | Build a complete application |
 | [12](tutorial/12-cognitive-hives.md) | Cognitive Hives | Building SLM swarms with CHAI |
-| [13](tutorial/13-neural-gates.md) | Neural Gates | Learnable control flow with Neural IR |
-| [14](tutorial/14-real-time-learning.md) | Real-Time Learning | Online adaptation with simplex-learning |
+| [13](tutorial/13-dual-numbers.md) | Dual Numbers & Forward-Mode AD | Native dual type for automatic differentiation |
+| [14](tutorial/14-self-learning-annealing.md) | Self-Learning Annealing | Learnable optimization schedules via meta-gradients |
 
 Start the tutorial: [Tutorial Index](tutorial/README.md)
 
@@ -80,7 +82,7 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 ## Quick Links
 
 - **New to Simplex?** Start with the [Tutorial](tutorial/README.md) or [Overview](spec/01-overview.md)
-- **Learning the language?** Follow the [12-chapter tutorial](tutorial/README.md)
+- **Learning the language?** Follow the [14-chapter tutorial](tutorial/README.md)
 - **Want syntax reference?** Jump to [Language Syntax](spec/04-language-syntax.md)
 - **Building AI agents?** See [The Anima](spec/12-anima.md) and [Cognitive Hive AI](spec/09-cognitive-hive.md)
 - **Edge deployment?** Check [Edge Hive](spec/16-edge-hive.md) for device-side intelligence
@@ -105,7 +107,7 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.10.0)
+## Key Features (v0.12.0)
 
 ### NEW in v0.9.0: Edge Hive
 
@@ -399,6 +401,7 @@ Simplex uses the following terminology for its module system:
 | 0.9.0 | 2026-01-11 | Self-Learning Annealing, Edge Hive, test restructure (156 tests), simplex-training library |
 | 0.9.9 | 2026-01-18 | Runtime stability, 175 ABI fixes, device ID collision fix |
 | 0.10.0 | 2026-01-18 | Developer Experience: sxfmt, sxlint, benchmarking, profiling, coverage, playground, Tree-sitter |
+| 0.12.0 | 2026-01-19 | Module System: Cross-module function imports via `use`, automatic LLVM declaration generation |
 
 ---
 
