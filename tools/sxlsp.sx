@@ -5,13 +5,8 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-// Import shared modules
-use lib::version;
-use lib::safety;
-use lib::platform;
-
-// Version - now uses centralized constant
-fn VERSION() -> i64 { SXLSP_VERSION() }
+// Version constant (inlined for standalone compilation)
+fn VERSION() -> i64 { string_from("0.12.0") }
 
 // Cleanup function for long-running mode
 fn cleanup_resources(store: i64) -> i64 {
@@ -97,6 +92,41 @@ fn TK_KW_AWAIT() -> i64 { 67 }
 fn TK_KW_VAR() -> i64 { 68 }
 fn TK_KW_MUT() -> i64 { 69 }
 fn TK_HASH() -> i64 { 70 }
+
+// ========================================
+// JSON String Escaping
+// ========================================
+
+// Escape a string for safe JSON embedding
+// Handles: " (quote), \ (backslash), newlines, tabs, etc.
+fn json_escape_string(s: i64) -> i64 {
+    if s == 0 {
+        return string_from("");
+    }
+    let sb: i64 = sb_new();
+    let n: i64 = string_len(s);
+    let i: i64 = 0;
+    while i < n {
+        let c: i64 = string_char_at(s, i);
+        if c == 34 {         // " (quote)
+            sb_append(sb, string_from("\\\""));
+        } else if c == 92 {  // \ (backslash)
+            sb_append(sb, string_from("\\\\"));
+        } else if c == 10 {  // newline
+            sb_append(sb, string_from("\\n"));
+        } else if c == 13 {  // carriage return
+            sb_append(sb, string_from("\\r"));
+        } else if c == 9 {   // tab
+            sb_append(sb, string_from("\\t"));
+        } else if c < 32 {   // other control characters
+            // Skip other control characters
+        } else {
+            sb_append_char(sb, c);
+        }
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
 
 // ========================================
 // Lexer Implementation
@@ -894,12 +924,35 @@ fn read_content_length() -> i64 {
 
 // Read the request body
 fn read_body(length: i64) -> i64 {
-    // Read header/body separator
+    // Read header/body separator (empty line between headers and body)
     let sep: i64 = read_line();
 
-    // Read body (simplified - assumes single line or small body)
-    let body: i64 = read_line();
-    body
+    // Read body - may need multiple lines for large payloads
+    // JSON-RPC bodies are typically compacted on one line, but we handle multi-line just in case
+    let sb: i64 = sb_new();
+    let total_read: i64 = 0;
+
+    while total_read < length {
+        let line: i64 = read_line();
+        if line == 0 {
+            // EOF - return what we have
+            if total_read > 0 {
+                return sb_to_string(sb);
+            }
+            return 0;
+        }
+        sb_append(sb, line);
+        total_read = total_read + string_len(line);
+
+        // If we haven't read enough and line was terminated, add the newline back
+        // (read_line strips newlines, but JSON content might have them)
+        if total_read < length {
+            sb_append_char(sb, 10);  // newline character
+            total_read = total_read + 1;
+        }
+    }
+
+    sb_to_string(sb)
 }
 
 // Send a JSON-RPC response
@@ -1387,7 +1440,8 @@ fn publish_diagnostics(cache: i64, uri: i64, source: i64) -> i64 {
         diagnostics = string_concat(diagnostics, string_from("\"severity\":1,"));
         diagnostics = string_concat(diagnostics, string_from("\"source\":\"sxlsp\","));
         diagnostics = string_concat(diagnostics, string_from("\"message\":\""));
-        diagnostics = string_concat(diagnostics, msg);
+        // Escape the message to handle quotes, newlines, and other special characters
+        diagnostics = string_concat(diagnostics, json_escape_string(msg));
         diagnostics = string_concat(diagnostics, string_from("\"}"));
 
         i = i + 1;

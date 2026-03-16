@@ -11,7 +11,7 @@ Many languages use `null` to represent "no value." This leads to the infamous nu
 ```javascript
 // JavaScript: This might crash
 let user = getUser(id);
-console.log(user.name);  // 💥 if user is null
+console.log(user.name);  // crash if user is null
 ```
 
 Simplex doesn't have `null`. Instead, we explicitly model the possibility of absence.

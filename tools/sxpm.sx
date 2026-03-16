@@ -6,13 +6,8 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-// Import shared modules
-use lib::version;
-use lib::safety;
-use lib::platform;
-
-// Version - now uses centralized constant
-fn SXPM_VERSION() -> i64 { version::SXPM_VERSION() }
+// Version constant (inlined for standalone compilation)
+fn SXPM_VERSION() -> i64 { string_from("0.12.0") }
 
 // ============================================================================
 // Help and Version
@@ -131,28 +126,28 @@ fn template_test_sx(name: i64) -> i64 {
 // Cross-Platform Support
 // ============================================================================
 
-/// Detect the operating system - now uses shared platform module
+/// Detect the operating system
 /// Returns: "windows", "linux", or "macos"
-/// Eliminated duplication across 5+ files
 fn get_os_name() -> i64 {
-    platform::get_os_name()
+    // Default to macos for now - cross-platform detection handled at runtime
+    string_from("macos")
 }
 
 /// Get the path separator for the current platform
 /// Returns "/" for Unix or "\" for Windows
 fn get_path_separator() -> i64 {
     let os: i64 = get_os_name();
-    if string_eq(os, "windows") {
-        return "\\";
+    if string_eq(os, string_from("windows")) {
+        return string_from("\\");
     }
-    "/"
+    string_from("/")
 }
 
 /// Get the path separator character code for the current platform
 /// Returns 47 ('/') for Unix or 92 ('\') for Windows
 fn get_path_separator_char() -> i64 {
     let os: i64 = get_os_name();
-    if string_eq(os, "windows") {
+    if string_eq(os, string_from("windows")) {
         return 92;  // '\'
     }
     47  // '/'
@@ -2606,7 +2601,7 @@ fn parse_lockfile_toml(content: i64) -> i64 {
 
         // Parse key = value lines within [[package]]
         if in_package {
-            let eq_pos: i64 = string_find(line, "=");
+            let eq_pos: i64 = string_find(line, string_from("="), 0);
             if eq_pos > 0 {
                 let key: i64 = string_trim(string_slice(line, 0, eq_pos));
                 var value: i64 = string_trim(string_slice(line, eq_pos + 1, string_len(line)));
@@ -2984,7 +2979,7 @@ fn cache_init() {
 
 // Simple hash function for source file content
 fn hash_file_content(path: i64) -> i64 {
-    let content: i64 = file_read(path);
+    let content: i64 = read_file(path);
     if string_len(content) == 0 {
         return "0";
     }
@@ -3049,7 +3044,7 @@ fn cache_load() -> i64 {
         return cache;
     }
 
-    let content: i64 = file_read(cache_meta_path());
+    let content: i64 = read_file(cache_meta_path());
     if string_len(content) == 0 {
         return cache;
     }

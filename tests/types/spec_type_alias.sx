@@ -11,6 +11,9 @@ fn add_counts(a: Count, b: Count) -> Count {
 fn main() -> i64 {
  let x: Count = 10;
  let y: Number = 32;
- add_counts(x, y)
+ let result: i64 = add_counts(x, y);
+ if result == 42 {
+  return 0;
+ }
+ 1
 }
-// Expected: 42

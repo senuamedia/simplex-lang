@@ -10,7 +10,7 @@
 
 [package]
 name = "simplex-std"
-version = "0.9.0"
+version = "0.12.0"
 description = "Simplex Standard Library - core types, traits, and utilities"
 authors = ["Rod Higgins", "Simplex Team"]
 license = "MIT"

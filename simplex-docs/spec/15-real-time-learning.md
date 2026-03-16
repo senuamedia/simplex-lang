@@ -1,6 +1,6 @@
 # Real-Time Continuous Learning
 
-**Version 0.11.0**
+**Version 0.12.0**
 
 ---
 
@@ -13,24 +13,28 @@ The `simplex-learning` library enables AI specialists to learn and adapt during 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    simplex-learning                         │
-├─────────────┬─────────────┬──────────────┬─────────────────┤
-│   tensor/   │   optim/    │   safety/    │  distributed/   │
-├─────────────┼─────────────┼──────────────┼─────────────────┤
-│ Tensor      │ StreamingSGD│ SafetyBounds │ FederatedLearner│
-│ Shape       │ StreamingAdam│ Constraints │ KnowledgeDistill│
-│ Autograd    │ AdamW       │ SafeFallback │ BeliefResolver  │
-│ Ops         │ Schedulers  │ SafeLearner  │ HiveCoordinator │
-└─────────────┴─────────────┴──────────────┴─────────────────┘
-                              │
-                              ▼
-                    ┌─────────────────┐
-                    │    runtime/     │
-                    │ OnlineLearner   │
-                    │ Checkpoint      │
-                    │ Metrics         │
-                    └─────────────────┘
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                              simplex-learning                                     │
+├────────────┬────────────┬────────────┬──────────────┬────────────┬───────────────┤
+│  tensor/   │  optim/    │  safety/   │ distributed/ │   dual/    │   belief/     │
+├────────────┼────────────┼────────────┼──────────────┼────────────┼───────────────┤
+│ Tensor     │StreamingSGD│SafetyBounds│FederatedLearn│ Dual       │ Confidence    │
+│ DualTensor │StreamingAdam│Constraints│KnowledgeDistl│ Diff       │ Evidence      │
+│ Autograd   │ AdamW      │SafeFallback│BeliefResolver│            │ Grounded      │
+│ Ops        │ Scheduler  │ SafeLearner│HiveCoordinatr│            │ Provenance    │
+│ Backends   │ Streaming  │ Zones      │ Sync         │            │ Scope         │
+│ (CPU/GPU)  │            │            │              │            │ Timestamps    │
+├────────────┼────────────┼────────────┼──────────────┼────────────┼───────────────┤
+│calibration/│ epistemic/ │ feedback/  │   memory/    │  runtime/  │               │
+├────────────┼────────────┼────────────┼──────────────┼────────────┤               │
+│ Metrics    │Counterfact.│Attribution │ EWC          │OnlineLearner               │
+│ Online     │ Dissent    │ Channel    │ Progressive  │ Checkpoint │               │
+│ Temperature│ Integration│ Signals    │ ReplayBuffer │ Metrics    │               │
+│            │MetaOptimizr│            │ RNG          │            │               │
+│            │ Monitors   │            │              │            │               │
+│            │ Schedule   │            │              │            │               │
+│            │ Skeptic    │            │              │            │               │
+└────────────┴────────────┴────────────┴──────────────┴────────────┘
 ```
 
 ---

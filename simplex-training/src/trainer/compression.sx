@@ -1,6 +1,6 @@
 // Compression Pipeline
 //
-// Multi-stage compression: distillation → pruning → quantization → export.
+// Multi-stage compression: distillation -> pruning -> quantization -> export.
 
 use simplex_std::dual;
 use simplex_std::sync::Arc;

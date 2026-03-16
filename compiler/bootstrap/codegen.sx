@@ -115,7 +115,7 @@ fn str_join3(a: i64, b: i64, c: i64) -> i64 {
     sb_append(sb, a);
     sb_append(sb, b);
     sb_append(sb, c);
-    sb_build(sb)
+    sb_to_string(sb)
 }
 
 // Build mangled name: str_mangle("Type", "method") -> "Type_method"
@@ -1085,7 +1085,7 @@ fn extract_type_param_name(type_param: i64) -> i64 {
         return string_slice(type_param, 6, string_len(type_param));
     }
     // Check for trait bound (contains : but not const:)
-    let colon_pos: i64 = string_find(type_param, string_from(":"));
+    let colon_pos: i64 = string_find(type_param, string_from(":"), 0);
     if colon_pos > 0 {
         return string_slice(type_param, 0, colon_pos);
     }
@@ -1099,7 +1099,7 @@ fn extract_trait_bound(type_param: i64) -> i64 {
         return 0;
     }
     // Check for trait bound
-    let colon_pos: i64 = string_find(type_param, string_from(":"));
+    let colon_pos: i64 = string_find(type_param, string_from(":"), 0);
     if colon_pos > 0 {
         return string_slice(type_param, colon_pos + 1, string_len(type_param));
     }
@@ -1126,12 +1126,12 @@ fn check_trait_bounds(cg: i64, type_params: i64, type_args: i64) -> i64 {
                 let concrete_type: i64 = vec_get(type_args, i);
                 // Check if concrete type implements the bound trait
                 // Handle multiple bounds separated by +
-                let plus_pos: i64 = string_find(bound, string_from("+"));
+                let plus_pos: i64 = string_find(bound, string_from("+"), 0);
                 if plus_pos > 0 {
                     // Multiple bounds: check each one
                     let remaining: i64 = bound;
                     while string_len(remaining) > 0 {
-                        plus_pos = string_find(remaining, string_from("+"));
+                        plus_pos = string_find(remaining, string_from("+"), 0);
                         let trait_name: i64 = remaining;
                         if plus_pos > 0 {
                             trait_name = string_slice(remaining, 0, plus_pos);
@@ -1177,7 +1177,7 @@ fn type_error_mismatch(expected: i64, found: i64, context: i64) -> i64 {
         sb_append(sb, " in ");
         sb_append(sb, context);
     }
-    let msg: i64 = sb_build(sb);
+    let msg: i64 = sb_to_string(sb);
     report_simple_error(E_TYPE_MISMATCH(), msg);
     0
 }

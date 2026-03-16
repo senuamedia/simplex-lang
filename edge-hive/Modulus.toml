@@ -16,7 +16,7 @@
 
 [package]
 name = "edge-hive"
-version = "0.9.0"
+version = "0.12.0"
 description = "Lightweight autonomous cognitive hive for edge devices"
 authors = ["Rod Higgins", "Simplex Team"]
 license = "MIT"

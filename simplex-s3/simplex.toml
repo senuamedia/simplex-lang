@@ -1,6 +1,6 @@
 [package]
 name = "simplex-s3"
-version = "0.9.0"
+version = "0.12.0"
 description = "AWS S3 client for Simplex"
 
 [dependencies]

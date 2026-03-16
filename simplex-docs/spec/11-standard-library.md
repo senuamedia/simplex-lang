@@ -1,6 +1,6 @@
 # Simplex Standard Library Reference
 
-**Version 0.11.0**
+**Version 0.12.0**
 
 The Simplex standard library provides core functionality for I/O, collections, networking, and more. All modules are written in pure Simplex.
 
@@ -34,8 +34,10 @@ The Simplex standard library is organized around the **actor model**. Concurrenc
 
 | Module | Description |
 |--------|-------------|
+| `std::core` | Core language primitives |
+| `std::prelude` | Commonly used items, auto-imported |
 | `std::io` | I/O traits (sync + async) and buffered streams |
-| `std::collections` | Data structures |
+| `std::collections` | Data structures (HashMap, HashSet, VecDeque) |
 | `std::string` | String manipulation |
 | `std::time` | Time and duration |
 | `std::math` | Mathematical functions |
@@ -45,17 +47,21 @@ The Simplex standard library is organized around the **actor model**. Concurrenc
 | `std::runtime` | Async runtime primitives (spawn, block_on) |
 | `std::fmt` | Formatting and display |
 | `std::compress` | Gzip/deflate compression |
-| `std::crypto` | Cryptographic functions (bcrypt, tokens) |
-| `std::sync` | Synchronization primitives (atomics, Arc, Mutex) |
-| `std::sync::mpsc` | Multi-producer single-consumer channels |
-| `std::sync::oneshot` | Single-value, single-use channels |
+| `std::crypto` | Cryptographic functions (SHA256, bcrypt, tokens) |
+| `std::sync` | Synchronization primitives (Arc, Mutex, RwLock) |
+| `std::cli` | Command-line interface utilities |
+| `std::regex` | Regular expression support |
+| `std::log` | Logging framework |
+| `std::assert` | Testing assertions |
+| `std::task` | Async task management |
 | `std::dual` | Dual numbers for automatic differentiation |
 | `std::anneal` | Self-learning annealing optimization |
-| `std::bench` | Benchmarking framework |
-| `simplex_http` | Actor-based HTTP server |
+| `std::http` | Actor-based HTTP server with Hive integration |
 | `simplex_learning` | Real-time learning library |
 | `simplex_inference` | High-performance inference via llama.cpp |
 | `simplex_training` | Self-optimizing training pipelines |
+
+**Note:** `std::sync::mpsc` and `std::sync::oneshot` are submodules of `std::sync`. Benchmarking is provided via the `sxc bench` toolchain command rather than a library module.
 
 ---
 
@@ -1968,9 +1974,9 @@ fn fixed::cosine(t0: f64, t_min: f64, step: i64, total_steps: i64) -> f64
 
 ---
 
-## std::bench (v0.10.0)
+## Benchmarking API (v0.10.0) -- Planned
 
-Benchmarking framework for performance testing. Used by `sxc bench` command.
+Benchmarking framework for performance testing, used by the `sxc bench` command. This API is planned as part of the toolchain integration; it does not currently exist as a standalone `std::bench` library module.
 
 ### Core Types
 

@@ -17,19 +17,94 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang llvm libssl-dev libsqlite3-dev
+          sudo apt-get install -y clang llvm libssl-dev          
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Build Simplex compiler
         run: |
-          # Use pre-compiled LLVM IR (self-hosted compiler output)
-          # No Python bootstrap needed - sxc_combined.ll is checked into repo
-          if [ ! -f compiler/bootstrap/sxc_combined.ll ]; then
-            echo "Error: compiler/bootstrap/sxc_combined.ll not found"
-            exit 1
-          fi
+          # Bootstrap: compile .sx files to .ll
+          cd compiler/bootstrap
+          python3 stage0.py lexer.sx
+          python3 stage0.py parser.sx
+          python3 stage0.py codegen.sx
+          python3 stage0.py main.sx
 
-          echo "Using pre-compiled sxc_combined.ll (self-hosted)"
-          wc -l compiler/bootstrap/sxc_combined.ll
+          # Merge LLVM IR files
+          python3 << 'EOF'
+          import re
+
+          def extract_function_defs(content):
+              funcs = {}
+              pattern = r'define\s+(?:internal\s+)?[^\s]+\s+@"?([^"(\s]+)"?\s*\('
+              lines = content.split('\n')
+              i = 0
+              while i < len(lines):
+                  line = lines[i]
+                  m = re.match(pattern, line)
+                  if m:
+                      func_name = m.group(1)
+                      func_lines = [line]
+                      i += 1
+                      brace_count = line.count('{') - line.count('}')
+                      while i < len(lines) and brace_count > 0:
+                          func_lines.append(lines[i])
+                          brace_count += lines[i].count('{') - lines[i].count('}')
+                          i += 1
+                      if i < len(lines) and lines[i] == '}':
+                          func_lines.append(lines[i])
+                          i += 1
+                      funcs[func_name] = '\n'.join(func_lines)
+                  else:
+                      i += 1
+              return funcs
+
+          def extract_strings(content):
+              strings = {}
+              for m in re.finditer(r'(@\.str\.[^\s]+)\s*=\s*private.*', content):
+                  strings[m.group(1)] = m.group(0)
+              return strings
+
+          def get_base_header(content):
+              lines = content.split('\n')
+              header_lines = []
+              for line in lines:
+                  if line.startswith('define ') or line.startswith('@.str'):
+                      continue
+                  if line.startswith('; ModuleID') or line.startswith('target ') or line.startswith('declare '):
+                      header_lines.append(line)
+              return '\n'.join(header_lines)
+
+          with open('lexer.ll') as f: lexer = f.read()
+          with open('parser.ll') as f: parser = f.read()
+          with open('codegen.ll') as f: codegen = f.read()
+          with open('main.ll') as f: main = f.read()
+
+          header = get_base_header(lexer)
+          all_strings = {}
+          all_funcs = {}
+
+          for content in [lexer, parser, codegen, main]:
+              all_strings.update(extract_strings(content))
+              for fn, body in extract_function_defs(content).items():
+                  if fn not in all_funcs:
+                      all_funcs[fn] = body
+
+          combined = header + '\n\n'
+          for str_name, str_def in sorted(all_strings.items()):
+              combined += str_def + '\n'
+          combined += '\n'
+          for fn_name, fn_body in sorted(all_funcs.items()):
+              combined += fn_body + '\n\n'
+
+          with open('sxc_combined.ll', 'w') as f:
+              f.write(combined)
+          print(f"Created sxc_combined.ll ({len(all_funcs)} functions)")
+          EOF
+
+          cd ../..
 
           # Create build directory and link compiler
           mkdir -p build
@@ -37,7 +112,7 @@ jobs:
             compiler/bootstrap/sxc_combined.ll \
             runtime/standalone_runtime.c \
             -o build/sxc \
-            -lm -lssl -lcrypto -lsqlite3 -lpthread
+            -lm -lssl -lcrypto -lpthread
 
           chmod +x build/sxc
           echo "Simplex compiler built successfully"
@@ -64,8 +139,7 @@ jobs:
                   -fno-omit-frame-pointer \
                   -Wno-format \
                   runtime/standalone_runtime.c \
-                  test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto -lsqlite3
-              ;;
+                  test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto              ;;
 
             "undefined")
               export UBSAN_OPTIONS=halt_on_error=1
@@ -73,8 +147,7 @@ jobs:
                   -fno-omit-frame-pointer \
                   -Wno-format \
                   runtime/standalone_runtime.c \
-                  test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto -lsqlite3
-              ;;
+                  test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto              ;;
 
             "thread")
               export TSAN_OPTIONS=halt_on_error=1
@@ -82,8 +155,7 @@ jobs:
                   -fno-omit-frame-pointer \
                   -Wno-format \
                   runtime/standalone_runtime.c \
-                  test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto -lsqlite3
-              ;;
+                  test_hello.ll -o test_sanitized -lpthread -lm -lssl -lcrypto              ;;
           esac
 
           echo "Running test under ${{ matrix.sanitizer }} sanitizer..."

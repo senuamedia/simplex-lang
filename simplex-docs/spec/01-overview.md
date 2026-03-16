@@ -1,6 +1,6 @@
 # Simplex Overview and Philosophy
 
-**Version 0.11.0**
+**Version 0.12.0**
 
 ---
 
@@ -10,11 +10,11 @@ Simplex is built on a singular premise: modern software runs on distributed, eph
 
 ---
 
-## What's New in v0.11.0
+## What's New in v0.12.0
 
-### Cross-Module Function Imports
+### Cross-Module Function Imports and Expanded Runtime
 
-v0.11.0 delivers a complete module system with automatic function declaration generation:
+v0.12.0 delivers cross-module function imports with automatic LLVM declaration generation, plus a significantly expanded C runtime with native support for actors, supervisors, hives, circuit breakers, retry policies, and shared stores.
 
 ```simplex
 // mathlib.sx - a utility module
@@ -32,7 +32,15 @@ fn main() -> i64 { add(10, multiply(3, 4)) }  // Uses imported functions
 3. LLVM `declare` statements are auto-generated for imported functions
 4. Link all `.ll` files together for the final executable
 
-See [RELEASE-0.11.0.md](../RELEASE-0.11.0.md) for complete release notes.
+See [RELEASE-0.12.0.md](../RELEASE-0.12.0.md) for complete release notes.
+
+---
+
+## What's New in v0.11.0
+
+### Module System
+
+v0.11.0 introduced the `use` keyword for module imports, allowing functions from separate `.sx` files to be imported and linked together.
 
 ---
 
@@ -40,15 +48,15 @@ See [RELEASE-0.11.0.md](../RELEASE-0.11.0.md) for complete release notes.
 
 ### Developer Tooling
 
-v0.10.0 introduces a comprehensive suite of developer tools:
+v0.10.0 introduces developer tools and diagnostic improvements:
 
 - **sxfmt**: Code formatter with configurable style rules
 - **sxlint**: Static analysis and linting with extensible rules
-- **sxc bench**: Integrated benchmarking framework
-- **sxc test --coverage**: Code coverage reporting
-- **sxc explain**: Detailed error explanations with examples
-- **Incremental compilation**: Faster rebuilds via dependency tracking
-- **Source-level stack traces**: Debug symbols for production error reports
+- **Source-level stack traces**: Debug symbols via `-g` flag with runtime `intrinsic_print_stack_trace()`
+- **sxc bench**: Integrated benchmarking framework (Planned)
+- **sxc test --coverage**: Code coverage reporting (Planned)
+- **sxc explain**: Detailed error explanations with examples (Planned)
+- **Incremental compilation**: Faster rebuilds via dependency tracking (Planned)
 
 See [Compiler Toolchain](10-compiler-toolchain.md) for detailed documentation.
 
@@ -102,7 +110,7 @@ let pipeline = InferencePipeline::builder()
 
 ### Test Suite Restructure
 
-156 tests organized across 13 categories with consistent naming:
+Tests organized across multiple categories (language, types, neural, stdlib, ai, training, toolchain, runtime, integration, learning, observability) with consistent naming:
 
 ```bash
 ./tests/run_tests.sh neural    # Run neural IR tests

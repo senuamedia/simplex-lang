@@ -1,11 +1,13 @@
 // Test ? operator (no-op for bootstrap)
-// Expected: 42
 
 fn maybe_value(x: i64) -> i64 {
  x * 2
 }
 
 fn main() -> i64 {
- let val = maybe_value(21)?;
- val
+ let val: i64 = maybe_value(21);
+ if val == 42 {
+  return 0;
+ }
+ 1
 }

@@ -7,7 +7,7 @@
 //
 // - `gate`: Dual-mode gates with temperature control
 // - `soft_logic`: Differentiable logic operations (AND, OR, NOT, XOR)
-// - `temp_attention`: Temperature-aware attention mechanisms
+// - `temperature_attention`: Temperature-aware attention mechanisms
 //
 // # Training vs Inference
 //
@@ -17,7 +17,7 @@
 
 pub mod gate;
 pub mod soft_logic;
-pub mod temp_attention;
+pub mod temperature_attention;
 
 pub use gate::{
     DualGate,
@@ -32,7 +32,7 @@ pub use soft_logic::{
     LogicOp,
 };
 
-pub use temp_attention::{
+pub use temperature_attention::{
     TemperatureAttention,
     LearnableTemperature,
     AttentionConfig,

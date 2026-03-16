@@ -111,7 +111,7 @@ run_test() {
     local display_name="${test_dir#$SCRIPT_DIR/}/$test_name"
 
     # Skip library/helper files
-    if [[ "$test_name" == "spec_mathlib" ]] || [[ "$test_name" == "helpers" ]]; then
+    if [[ "$test_name" == "spec_mathlib" ]] || [[ "$test_name" == "mathlib" ]] || [[ "$test_name" == "helpers" ]]; then
         return
     fi
 
@@ -126,7 +126,19 @@ run_test() {
     local orig_dir=$(pwd)
     cd "$test_dir"
 
-    # Compile - use sxc or fall back to python
+    # Pre-compile module dependencies BEFORE main test (needed for declare extraction)
+    local LL_FILES=""
+    for module in $(grep -E "^use [a-z_]+;" "$test_name.sx" 2>/dev/null | sed 's/use \([a-z_]*\);/\1/' || true); do
+        if [ -f "${module}.sx" ]; then
+            "$COMPILER" "${module}.sx" >/dev/null 2>&1
+            if [ -f "${module}.ll" ]; then
+                LL_FILES="$LL_FILES ${module}.ll"
+            fi
+        fi
+    done
+
+    # Compile main test file (after modules so it can read their .ll for declarations)
+    rm -f "$test_name.ll"
     local compile_output
     if [ -n "$USE_PYTHON" ]; then
         compile_output=$(python3 "$COMPILER" "$test_name.sx" 2>&1)
@@ -152,12 +164,14 @@ run_test() {
     if [[ "$OSTYPE" == "darwin"* ]]; then
         OPENSSL_PREFIX=$(brew --prefix openssl 2>/dev/null || echo "/usr/local/opt/openssl")
         SQLITE_PREFIX=$(brew --prefix sqlite 2>/dev/null || echo "/usr/local/opt/sqlite")
-        LINK_LIBS="-lm -lssl -lcrypto -lsqlite3 -L$OPENSSL_PREFIX/lib -L$SQLITE_PREFIX/lib"
+        LINK_LIBS="-lm -lssl -lcrypto -L$OPENSSL_PREFIX/lib -L$SQLITE_PREFIX/lib"
     elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        LINK_LIBS="-lm -lssl -lcrypto -lsqlite3 -lpthread"
+        LINK_LIBS="-lm -lssl -lcrypto -lpthread"
     fi
 
-    if ! clang -O2 "$test_name.ll" "$RUNTIME" -o "$test_name.bin" $LINK_LIBS 2>/dev/null; then
+    # Collect all .ll files to link
+    LL_FILES="$test_name.ll $LL_FILES"
+    if ! clang -O2 $LL_FILES "$RUNTIME" -o "$test_name.bin" $LINK_LIBS 2>/dev/null; then
         echo -e "${RED}LINK FAIL${NC}"
         ((FAILED++))
         rm -f "$test_name.ll"
@@ -176,6 +190,9 @@ run_test() {
 
     # Cleanup
     rm -f "$test_name.ll" "$test_name.bin"
+    for module in $(grep -E "^use [a-z_]+;" "$test_name.sx" 2>/dev/null | sed 's/use \([a-z_]*\);/\1/' || true); do
+        rm -f "${module}.ll"
+    done
     cd "$orig_dir"
 }
 
@@ -192,7 +209,7 @@ run_category() {
         for test in "$category_path"/*.sx; do
             if [ -f "$test" ]; then
                 local name=$(basename "$test" .sx)
-                if [[ "$name" != "spec_mathlib" ]] && [[ "$name" != "helpers" ]]; then
+                if [[ "$name" != "spec_mathlib" ]] && [[ "$name" != "mathlib" ]] && [[ "$name" != "helpers" ]]; then
                     if matches_type_filter "$name"; then
                         has_tests=true
                         break
@@ -226,7 +243,7 @@ print_header() {
     if [ -n "$USE_PYTHON" ]; then
         echo -e "  Compiler: ${YELLOW}stage0.py (Python bootstrap)${NC}"
     else
-        echo -e "  Compiler: ${GREEN}sxc v0.9.0 (self-hosted)${NC}"
+        echo -e "  Compiler: ${GREEN}sxc v0.12.0 (self-hosted)${NC}"
     fi
     if [ "$TEST_TYPE" != "all" ]; then
         echo -e "  Filter: ${CYAN}$TEST_TYPE${NC} tests only"
@@ -377,6 +394,22 @@ CATEGORY="${1:-all}"
 # Handle help
 if [ "$CATEGORY" = "-h" ] || [ "$CATEGORY" = "--help" ] || [ "$CATEGORY" = "help" ]; then
     print_usage
+    exit 0
+fi
+
+# Single file mode
+if [ "$CATEGORY" = "file" ] || [ "$CATEGORY" = "f" ]; then
+    TEST_TYPE="all"
+    shift
+    print_header
+    for target in "$@"; do
+        if [[ "$target" == *.sx ]]; then test_file="$target"; else test_file="${target}.sx"; fi
+        if [ -f "$SCRIPT_DIR/$test_file" ]; then run_test "$SCRIPT_DIR/$test_file"
+        elif [ -f "$test_file" ]; then run_test "$test_file"
+        else echo -e "${RED}Not found: $test_file${NC}"; ((FAILED++)); fi
+    done
+    print_summary
+    if [ $FAILED -gt 0 ]; then exit 1; fi
     exit 0
 fi
 

@@ -1,16 +1,17 @@
 # Build artifacts
 *.o
 *.ll
-# Exception: pre-compiled self-hosted compiler (needed for CI)
-!compiler/bootstrap/sxc_combined.ll
 *.a
 *.dylib
 *.so
 
 # Compiled binaries
+/build/
 /compiler/bootstrap/sxc
 /compiler/bootstrap/merge_tool
 /runtime/*.o
+/tests/**/test_*
+/tests/**/spec_async_basic
 
 # Debug symbols
 *.dSYM/

@@ -34,11 +34,10 @@ echo ""
 if [[ "$PLATFORM" == "macos" ]]; then
     # macOS with Homebrew
     OPENSSL_PREFIX=$(brew --prefix openssl 2>/dev/null || echo "/usr/local/opt/openssl")
-    SQLITE_PREFIX=$(brew --prefix sqlite 2>/dev/null || echo "/usr/local/opt/sqlite")
-    LIBS="-lm -lssl -lcrypto -lsqlite3 -L$OPENSSL_PREFIX/lib -L$SQLITE_PREFIX/lib"
-    INCLUDES="-I$OPENSSL_PREFIX/include -I$SQLITE_PREFIX/include"
+    LIBS="-lm -lssl -lcrypto -L$OPENSSL_PREFIX/lib"
+    INCLUDES="-I$OPENSSL_PREFIX/include"
 elif [[ "$PLATFORM" == "linux" ]]; then
-    LIBS="-lm -lssl -lcrypto -lsqlite3 -lpthread"
+    LIBS="-lm -lssl -lcrypto -lpthread"
     INCLUDES=""
 else
     echo "Warning: Unsupported platform. Build may fail."
