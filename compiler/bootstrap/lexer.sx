@@ -92,6 +92,9 @@ enum TokenKind {
     KwMut,
     // Spawn expression
     KwSpawn,
+    // Actor message keywords
+    KwSend,
+    KwAsk,
     // Where clause
     KwWhere,
     // Belief guard tokens
@@ -316,6 +319,9 @@ fn check_keyword(text: i64) -> i64 {
     if string_eq(text, "mut") { return TokenKind::KwMut; }
     // Spawn expression
     if string_eq(text, "spawn") { return TokenKind::KwSpawn; }
+    // Actor message keywords
+    if string_eq(text, "send") { return TokenKind::KwSend; }
+    if string_eq(text, "ask") { return TokenKind::KwAsk; }
     // Where clause
     if string_eq(text, "where") { return TokenKind::KwWhere; }
     // Belief guard keywords

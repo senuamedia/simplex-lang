@@ -5,12 +5,12 @@
 //
 // # Pipeline Stages
 //
-// 1. Response Cache Check → Return immediately if cached
-// 2. Smart Routing → Select appropriate model tier
-// 3. Prompt Cache → Use cached tokenized prompts
-// 4. Request Batching → Batch with similar requests
-// 5. Model Inference → Execute on selected model
-// 6. Response Caching → Cache result if appropriate
+// 1. Response Cache Check -> Return immediately if cached
+// 2. Smart Routing -> Select appropriate model tier
+// 3. Prompt Cache -> Use cached tokenized prompts
+// 4. Request Batching -> Batch with similar requests
+// 5. Model Inference -> Execute on selected model
+// 6. Response Caching -> Cache result if appropriate
 //
 // All stages are OPTIONAL and can be enabled/disabled via configuration.
 

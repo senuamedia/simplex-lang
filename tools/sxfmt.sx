@@ -20,7 +20,8 @@
 // - Max line length 100 chars (soft wrap)
 // - Align struct fields
 
-fn VERSION() -> i64 { string_from("0.1.0") }
+// Version constant (inlined for standalone compilation)
+fn VERSION() -> i64 { string_from("0.12.0") }
 fn INDENT_WIDTH() -> i64 { 4 }
 fn MAX_LINE_LENGTH() -> i64 { 100 }
 

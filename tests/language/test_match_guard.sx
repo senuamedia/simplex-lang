@@ -1,12 +1,18 @@
 // Test match with guard
 fn test_guard() -> i64 {
- let x: i64 = 15;
- match x {
- n if n > 10 => n + 1,
- _ => 0
- }
+    let x: i64 = 15;
+    match x {
+        n if n > 10 => n + 1,
+        _ => 0
+    }
 }
 
 fn main() -> i64 {
- test_guard() // Should be 15 + 1 = 16
+    let result = test_guard();
+    if result != 16 {
+        print("FAIL: expected 16");
+        return 1;
+    }
+    print("PASS: match guard");
+    0
 }

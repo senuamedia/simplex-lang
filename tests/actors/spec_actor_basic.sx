@@ -14,9 +14,15 @@ actor Adder {
 }
 
 fn main() -> i64 {
-    let a = spawn Adder {};
+    let a = spawn Adder;
     send(a, Add(10));
     send(a, Add(20));
     send(a, Add(12));
-    ask(a, Get())
+    let result: i64 = ask(a, Get());
+    if result == 42 {
+        println("PASS: actor basic - total is 42");
+        return 0;
+    }
+    println("FAIL: actor basic");
+    1
 }

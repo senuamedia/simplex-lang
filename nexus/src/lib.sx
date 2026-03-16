@@ -50,7 +50,7 @@ fn nexus_version() -> i64 {
 }
 
 fn nexus_version_string_print() -> i64 {
-    print("0.10.0");
+    print("0.12.0");
     0
 }
 
@@ -305,7 +305,7 @@ fn print_bandwidth(bytes_per_sec: i64) -> i64 {
 fn nexus_print_info() -> i64 {
     print("\n");
     print("================================================================\n");
-    print("              NEXUS PROTOCOL v0.10.0                            \n");
+    print("              NEXUS PROTOCOL v0.12.0                            \n");
     print("      High-Performance Hive Communication                       \n");
     print("================================================================\n");
     print("\n");

@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.10.0**
+**Version 0.12.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -27,14 +27,14 @@ Simplex is a modern systems programming language designed for AI-native applicat
 | Platform | Requirements |
 |----------|-------------|
 | macOS    | Xcode Command Line Tools, LLVM/Clang |
-| Linux    | GCC or Clang, OpenSSL, SQLite3 |
-| Windows  | MSVC or MinGW, OpenSSL, SQLite3 (coming soon) |
+| Linux    | GCC or Clang, OpenSSL |
+| Windows  | MSVC or MinGW, OpenSSL (coming soon) |
 
 ### Quick Install (macOS)
 
 ```bash
 # Install dependencies
-brew install llvm openssl sqlite3
+brew install llvm openssl
 
 # Clone the repository
 git clone https://github.com/senuamedia/simplex-lang.git
@@ -48,7 +48,7 @@ cd simplex-lang
 
 ```bash
 # Ubuntu/Debian
-sudo apt-get install clang libssl-dev libsqlite3-dev
+sudo apt-get install clang libssl-dev
 
 # Clone and build
 git clone https://github.com/senuamedia/simplex-lang.git
@@ -69,7 +69,7 @@ The repository includes a pre-built `sxc` compiler. To rebuild from scratch:
 python3 stage0.py hello.sx
 
 # 2. Link with clang
-clang -O2 hello.ll standalone_runtime.c -o hello -lm -lssl -lcrypto -lsqlite3
+clang -O2 hello.ll standalone_runtime.c -o hello -lm -lssl -lcrypto
 ```
 
 ## Getting Started
@@ -267,18 +267,19 @@ simplex-lang/
 │       ├── src/schedules/  # Learnable schedules (LR, distillation)
 │       ├── src/research/   # Epistemic data refinement
 │       └── src/trainer/    # MetaTrainer for meta-optimization
-├── tests/                  # 156 tests across 13 categories
-│   ├── language/           # Core language features (40)
-│   ├── types/              # Type system tests (24)
+├── tests/                  # 154 tests, 100% pass rate
+│   ├── language/           # Core language features (42)
+│   ├── types/              # Type system tests (12)
 │   ├── neural/             # Neural IR and gates (16)
-│   ├── stdlib/             # Standard library (16)
-│   ├── ai/                 # AI/Cognitive tests (17)
-│   ├── toolchain/          # Toolchain tests (14)
-│   ├── runtime/            # Runtime systems (5)
+│   ├── stdlib/             # Standard library (27)
+│   ├── ai/                 # AI/Cognitive tests (18)
+│   ├── toolchain/          # Toolchain tests (11)
+│   ├── runtime/            # Runtime systems (8)
 │   ├── integration/        # End-to-end tests (7)
+│   ├── training/           # Training pipeline (8)
 │   ├── basics/             # Basic language (6)
 │   ├── async/              # Async/await (3)
-│   ├── learning/           # Automatic differentiation (3)
+│   ├── learning/           # Automatic differentiation (4)
 │   ├── actors/             # Actor model (1)
 │   └── observability/      # Metrics and tracing (1)
 ├── simplex-docs/
@@ -293,15 +294,40 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.10.0 | Simplex Compiler with Neural IR and Dual Numbers |
-| **sxpm** | 0.10.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.10.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.10.0 | Documentation Generator |
-| **sxlsp** | 0.10.0 | Language Server Protocol |
-| **sxfmt** | 0.10.0 | Code Formatter |
-| **sxlint** | 0.10.0 | Static Linter |
+| **sxc** | 0.12.0 | Simplex Compiler with Neural IR, Dual Numbers, and Module System |
+| **sxpm** | 0.12.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.12.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.12.0 | Documentation Generator |
+| **sxlsp** | 0.12.0 | Language Server Protocol |
+| **sxfmt** | 0.12.0 | Code Formatter |
+| **sxlint** | 0.12.0 | Static Linter |
 
 ## Release History
+
+### v0.12.0 (2026-01-19) - Module System
+
+**Cross-Module Function Imports:**
+- `use module;` now automatically imports functions from compiled `.ll` files
+- Compiler parses `.ll` files and generates LLVM `declare` statements
+- Enables multi-file Simplex projects with proper function declarations
+
+**How to Use:**
+```simplex
+// mathlib.sx
+fn add(a: i64, b: i64) -> i64 { a + b }
+
+// main.sx
+use mathlib;
+fn main() -> i64 { add(10, 20) }
+```
+
+```bash
+sxc mathlib.sx -o mathlib.ll
+sxc main.sx -o main.ll
+# Link both .ll files together
+```
+
+See [RELEASE-0.12.0.md](simplex-docs/RELEASE-0.12.0.md) for details.
 
 ### v0.10.0 (2026-01-18) - Developer Experience
 
@@ -641,6 +667,7 @@ sxc run tests/learning/unit_dual_numbers.sx
 - [Tutorial](simplex-docs/tutorial/)
 - [Testing Documentation](simplex-docs/testing/)
 - [Getting Started Guide](simplex-docs/guides/getting-started.md)
+- [Release Notes v0.12.0](simplex-docs/RELEASE-0.12.0.md) - Module System
 - [Release Notes v0.10.0](simplex-docs/RELEASE-0.10.0.md) - Developer Experience
 - [Release Notes v0.9.9](simplex-docs/RELEASE-0.9.9.md) - Runtime Stability
 - [Release Notes v0.9.7](simplex-docs/RELEASE-0.9.7.md) - Distributed Validation

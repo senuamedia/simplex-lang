@@ -1,0 +1,111 @@
+{
+  "category": "http",
+  "description": "Pure Simplex HTTP server and client library with async support, routing, middleware, SSE, CORS, and JSON handling.",
+  "modules": [
+    {
+      "name": "lib",
+      "file": "lib.html",
+      "description": "Root module and re-exports for simplex-http.",
+      "items": []
+    },
+    {
+      "name": "server",
+      "file": "server.html",
+      "description": "Async HTTP server with io_uring support, configurable workers, keep-alive, and request size limits.",
+      "items": [
+        {"kind": "struct", "name": "HttpServer", "signature": "pub struct HttpServer"},
+        {"kind": "struct", "name": "ServerConfig", "signature": "pub struct ServerConfig { pub host: String, pub port: u16, pub max_connections: usize, pub read_timeout_ms: u64, pub write_timeout_ms: u64, pub keep_alive: bool, pub max_request_size: usize, pub workers: usize }"},
+        {"kind": "fn", "name": "ServerConfig::new", "signature": "pub fn new() -> ServerConfig"},
+        {"kind": "fn", "name": "ServerConfig::host", "signature": "pub fn host(mut self, host: &str) -> Self"},
+        {"kind": "fn", "name": "ServerConfig::port", "signature": "pub fn port(mut self, port: u16) -> Self"},
+        {"kind": "fn", "name": "ServerConfig::workers", "signature": "pub fn workers(mut self, workers: usize) -> Self"}
+      ]
+    },
+    {
+      "name": "client",
+      "file": "client.html",
+      "description": "Async HTTP client with redirect following, configurable timeouts, and default headers.",
+      "items": [
+        {"kind": "struct", "name": "HttpClient", "signature": "pub struct HttpClient"},
+        {"kind": "struct", "name": "ClientConfig", "signature": "pub struct ClientConfig { pub timeout_ms: u64, pub follow_redirects: bool, pub max_redirects: u32, pub user_agent: String }"},
+        {"kind": "fn", "name": "ClientConfig::new", "signature": "pub fn new() -> ClientConfig"},
+        {"kind": "fn", "name": "HttpClient::new", "signature": "pub fn new(config: ClientConfig) -> HttpClient"},
+        {"kind": "fn", "name": "HttpClient::header", "signature": "pub fn header(mut self, key: &str, value: &str) -> Self"}
+      ]
+    },
+    {
+      "name": "request",
+      "file": "request.html",
+      "description": "HTTP request types including Method, Headers, and Query parsing.",
+      "items": [
+        {"kind": "struct", "name": "Request", "signature": "pub struct Request"},
+        {"kind": "enum", "name": "Method", "signature": "pub enum Method { GET, POST, PUT, DELETE, PATCH, HEAD, OPTIONS }"},
+        {"kind": "struct", "name": "Headers", "signature": "pub struct Headers"},
+        {"kind": "struct", "name": "Query", "signature": "pub struct Query"}
+      ]
+    },
+    {
+      "name": "response",
+      "file": "response.html",
+      "description": "HTTP response types including StatusCode and cookie management.",
+      "items": [
+        {"kind": "struct", "name": "Response", "signature": "pub struct Response"},
+        {"kind": "struct", "name": "StatusCode", "signature": "pub struct StatusCode"},
+        {"kind": "struct", "name": "CookieOptions", "signature": "pub struct CookieOptions"}
+      ]
+    },
+    {
+      "name": "router",
+      "file": "router.html",
+      "description": "URL routing with pattern matching, path parameters, and handler registration.",
+      "items": [
+        {"kind": "struct", "name": "Router", "signature": "pub struct Router"},
+        {"kind": "struct", "name": "Route", "signature": "pub struct Route"},
+        {"kind": "type", "name": "Handler", "signature": "pub type Handler"}
+      ]
+    },
+    {
+      "name": "middleware",
+      "file": "middleware.html",
+      "description": "Composable middleware chain with logging, compression, rate limiting, timeouts, and security headers.",
+      "items": [
+        {"kind": "trait", "name": "Middleware", "signature": "pub trait Middleware"},
+        {"kind": "struct", "name": "Chain", "signature": "pub struct Chain"},
+        {"kind": "struct", "name": "LoggingMiddleware", "signature": "pub struct LoggingMiddleware"},
+        {"kind": "struct", "name": "CompressionMiddleware", "signature": "pub struct CompressionMiddleware"},
+        {"kind": "struct", "name": "RateLimitMiddleware", "signature": "pub struct RateLimitMiddleware"},
+        {"kind": "struct", "name": "TimeoutMiddleware", "signature": "pub struct TimeoutMiddleware"},
+        {"kind": "struct", "name": "SecurityHeadersMiddleware", "signature": "pub struct SecurityHeadersMiddleware"}
+      ]
+    },
+    {
+      "name": "cors",
+      "file": "cors.html",
+      "description": "Cross-Origin Resource Sharing (CORS) configuration and middleware.",
+      "items": [
+        {"kind": "struct", "name": "CorsConfig", "signature": "pub struct CorsConfig"},
+        {"kind": "struct", "name": "CorsMiddleware", "signature": "pub struct CorsMiddleware"}
+      ]
+    },
+    {
+      "name": "json",
+      "file": "json.html",
+      "description": "JSON serialization and deserialization for HTTP request/response bodies.",
+      "items": [
+        {"kind": "struct", "name": "Json", "signature": "pub struct Json"},
+        {"kind": "enum", "name": "JsonValue", "signature": "pub enum JsonValue"},
+        {"kind": "fn", "name": "to_json", "signature": "pub fn to_json<T: Serialize>(value: &T) -> String"},
+        {"kind": "fn", "name": "from_json", "signature": "pub fn from_json<T: Deserialize>(json: &str) -> Result<T, JsonError>"}
+      ]
+    },
+    {
+      "name": "sse",
+      "file": "sse.html",
+      "description": "Server-Sent Events (SSE) streaming support.",
+      "items": [
+        {"kind": "struct", "name": "SseStream", "signature": "pub struct SseStream"},
+        {"kind": "struct", "name": "SseEvent", "signature": "pub struct SseEvent"}
+      ]
+    }
+  ]
+}

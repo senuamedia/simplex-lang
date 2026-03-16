@@ -1,11 +1,17 @@
 // Match test with binding patterns (no guards)
 fn test_match_binding_simple() -> i64 {
- let x: i64 = 5;
- match x {
- n => n + 10
- }
+    let x: i64 = 5;
+    match x {
+        n => n + 10
+    }
 }
 
 fn main() -> i64 {
- test_match_binding_simple() // Should be 5 + 10 = 15
+    let result = test_match_binding_simple();
+    if result != 15 {
+        print("FAIL: expected 15");
+        return 1;
+    }
+    print("PASS: match binding");
+    0
 }

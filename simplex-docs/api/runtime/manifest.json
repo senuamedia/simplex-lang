@@ -1,0 +1,22 @@
+{
+  "category": "runtime",
+  "description": "Simplex runtime system. Core C runtime providing memory management, string operations, I/O, and native FFI. Also includes AI provider configuration and SLM model management.",
+  "modules": [
+    {
+      "name": "ai",
+      "file": "ai.html",
+      "description": "AI provider configuration for multi-provider LLM support (Anthropic, OpenAI, Ollama, local SLMs).",
+      "items": [
+        {"kind": "struct", "name": "ProviderConfig", "signature": "struct ProviderConfig { name, api_key, model, endpoint, ... }"}
+      ]
+    },
+    {
+      "name": "slm",
+      "file": "slm.html",
+      "description": "Small Language Model management. Handles model quantization formats, loading, and per-hive SLM provisioning.",
+      "items": [
+        {"kind": "enum", "name": "Quantization", "signature": "enum Quantization { Q4, Q5, Q8, F16, F32 }"}
+      ]
+    }
+  ]
+}

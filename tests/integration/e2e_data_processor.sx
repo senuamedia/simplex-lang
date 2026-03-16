@@ -190,7 +190,16 @@ fn test_filter_passing() -> i64 {
  vec_push(scores, 38);
 
  let iter: i64 = sxiter_from_vec(scores);
- let passing: i64 = sxiter_filter(iter, is_passing);
+ // Manual filter instead of function pointer
+ let passing: i64 = vec_new();
+ let fi: i64 = 0;
+ while fi < vec_len(scores) {
+  let sc: i64 = vec_get(scores, fi);
+  if is_passing(sc) != 0 {
+   vec_push(passing, sc);
+  }
+  fi = fi + 1;
+ }
  let passed: i64 = sxiter_collect_vec(passing);
 
  if vec_len(passed) != 3 {

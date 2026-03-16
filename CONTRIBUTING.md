@@ -27,14 +27,50 @@ clang -c -O2 standalone_runtime.c -o standalone_runtime.o
 # The compiler is self-hosted - see docs for bootstrap process
 ```
 
+## Project Structure
+
+| Directory | Purpose |
+|-----------|---------|
+| `compiler/bootstrap/` | Self-hosted compiler — lexer, parser, codegen, error handling, main entry |
+| `runtime/` | Standalone C runtime (`standalone_runtime.c`) |
+| `lib/` | Shared libraries — platform, version, safety, strings, llm, ast_defs |
+| `simplex-std/` | Standard library |
+| `simplex-learning/` | ML/AI learning framework — dual numbers, tensors, beliefs, epistemics |
+| `lib/simplex-training/` | Training pipeline — neural gates, LoRA, schedules, data generators |
+| `nexus/` | Nexus protocol for hive communication |
+| `edge-hive/` | Edge deployment framework |
+| `tools/` | Developer tools — sxc, sxpm, sxdoc, sxlsp, sxfmt, sxlint, cursus |
+| `tests/` | Test suite (unit, integration, language, toolchain) |
+| `simplex-docs/` | Specification, tutorials, and API docs |
+
+## Key Constraint
+
+ALL code must be pure Simplex. No external tools, libraries, or dependencies. This is a core project principle — the language and its ecosystem are entirely self-contained.
+
 ## Code Style
 
+- Run `sxfmt` to format your code before committing
 - Use 4-space indentation
 - Keep lines under 100 characters
-- Follow existing naming conventions
+- Follow existing naming conventions and patterns in nearby files
 - Add comments for non-obvious code
 
-## Testing
+## Running Tests
+
+```bash
+./tests/run_tests.sh
+```
+
+Tests are organized by category under `tests/`:
+
+- `basics/` — closures, try operator, core language features
+- `language/` — functions, modules, traits, types, generics
+- `types/` — type system (generics, aliases, associated types)
+- `actors/` — actor model
+- `async/` — async/await
+- `learning/` — ML framework (dual tensors, etc.)
+- `integration/` — end-to-end programs
+- `toolchain/` — compiler, sxpm, verification
 
 Before submitting a PR:
 

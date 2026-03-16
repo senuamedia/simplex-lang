@@ -13,49 +13,49 @@ use platform;
 // ========================================
 
 // Main Simplex version - replaces 11+ duplicate VERSION() functions
-pub fn SIMPLEX_VERSION() -> i64 { string_from("0.10.0") }
+pub fn SIMPLEX_VERSION() -> i64 { string_from("0.12.0") }
 
 // Toolchain version for compiler and tools
-pub fn TOOLCHAIN_VERSION() -> i64 { string_from("0.10.0") }
+pub fn TOOLCHAIN_VERSION() -> i64 { string_from("0.12.0") }
 
 // Runtime version for standalone_runtime.c
-pub fn RUNTIME_VERSION() -> i64 { string_from("0.10.0") }
+pub fn RUNTIME_VERSION() -> i64 { string_from("0.12.0") }
 
 // Language specification version
-pub fn LANGUAGE_VERSION() -> i64 { string_from("0.10.0") }
+pub fn LANGUAGE_VERSION() -> i64 { string_from("0.12.0") }
 
 // Package manager version
-pub fn SXPM_VERSION() -> i64 { string_from("0.10.0") }
+pub fn SXPM_VERSION() -> i64 { string_from("0.12.0") }
 
 // Documentation generator version
-pub fn SXDOC_VERSION() -> i64 { string_from("0.10.0") }
+pub fn SXDOC_VERSION() -> i64 { string_from("0.12.0") }
 
 // Language server version
-pub fn SXLSP_VERSION() -> i64 { string_from("0.10.0") }
+pub fn SXLSP_VERSION() -> i64 { string_from("0.12.0") }
 
 // Bytecode VM version
-pub fn CURSUS_VERSION() -> i64 { string_from("0.10.0") }
+pub fn CURSUS_VERSION() -> i64 { string_from("0.12.0") }
 
 // Component Versions
 // ========================================
 
 // Compiler bootstrap version
-pub fn COMPILER_VERSION() -> i64 { string_from("0.10.0") }
+pub fn COMPILER_VERSION() -> i64 { string_from("0.12.0") }
 
 // Standard library version
-pub fn STDLIB_VERSION() -> i64 { string_from("0.10.0") }
+pub fn STDLIB_VERSION() -> i64 { string_from("0.12.0") }
 
 // Neural IR version
-pub fn NEURAL_IR_VERSION() -> i64 { string_from("0.10.0") }
+pub fn NEURAL_IR_VERSION() -> i64 { string_from("0.12.0") }
 
 // Dual numbers version
-pub fn DUAL_NUMBERS_VERSION() -> i64 { string_from("0.10.0") }
+pub fn DUAL_NUMBERS_VERSION() -> i64 { string_from("0.12.0") }
 
 // Learning framework version
-pub fn LEARNING_VERSION() -> i64 { string_from("0.10.0") }
+pub fn LEARNING_VERSION() -> i64 { string_from("0.12.0") }
 
 // Training pipeline version
-pub fn TRAINING_VERSION() -> i64 { string_from("0.10.0") }
+pub fn TRAINING_VERSION() -> i64 { string_from("0.12.0") }
 
 // Compatibility Versions
 // ========================================
@@ -64,7 +64,7 @@ pub fn TRAINING_VERSION() -> i64 { string_from("0.10.0") }
 pub fn MIN_COMPATIBLE_VERSION() -> i64 { string_from("0.8.0") }
 
 // Maximum compatible version for current ABI
-pub fn MAX_COMPATIBLE_VERSION() -> i64 { string_from("0.11.0") }
+pub fn MAX_COMPATIBLE_VERSION() -> i64 { string_from("0.12.0") }
 
 // LLVM version requirement
 pub fn LLVM_MIN_VERSION() -> i64 { string_from("14.0.0") }

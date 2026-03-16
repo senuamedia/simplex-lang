@@ -5,6 +5,9 @@ fn identity<T>(x: T) -> T {
 }
 
 fn main() -> i64 {
- identity(42)
+ let result: i64 = identity(42);
+ if result == 42 {
+  return 0;
+ }
+ 1
 }
-// Expected: 42

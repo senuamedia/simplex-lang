@@ -307,7 +307,7 @@ def api_health():
     return jsonify({
         'status': 'healthy' if compiler_ok else 'degraded',
         'compiler': 'available' if compiler_ok else 'not found',
-        'version': '0.10.0'
+        'version': '0.12.0'
     })
 
 

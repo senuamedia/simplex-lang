@@ -745,9 +745,9 @@ specialist SafeClassifier {
 
 ---
 
-## High-Performance Inference (v0.10.0)
+## High-Performance Inference (v0.12.0)
 
-Starting with v0.10.0, Simplex provides native llama.cpp integration for optimized inference.
+Starting with v0.12.0, Simplex provides native llama.cpp integration for optimized inference.
 
 ### Using the Inference Pipeline
 
@@ -799,7 +799,7 @@ fn batch_analyze(documents: Vec<String>) -> Vec<Analysis> {
 
 ---
 
-## Self-Learning Optimization (v0.10.0)
+## Self-Learning Optimization (v0.12.0)
 
 Specialists can now learn optimal schedules for their operation through meta-gradients.
 
@@ -884,8 +884,8 @@ specialist DifferentiableClassifier {
 | `OnlineLearner` | Real-time learning during inference (v0.7.0) |
 | `HiveLearningCoordinator` | Federated learning across hive (v0.7.0) |
 | `SafeLearner` | Learning with safety constraints (v0.7.0) |
-| `InferencePipeline` | High-performance batched inference (v0.10.0) |
-| `LearnableSchedule` | Self-learning optimization schedules (v0.10.0) |
+| `InferencePipeline` | High-performance batched inference (v0.12.0) |
+| `LearnableSchedule` | Self-learning optimization schedules (v0.12.0) |
 | `dual` | Automatic differentiation for training (v0.8.0) |
 
 ---

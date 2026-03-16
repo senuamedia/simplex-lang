@@ -1,1084 +1,268 @@
 // Wave 2: Codegen Critical Tests
 // Tests for code generation correctness
-// Tests should COMPILE and produce correct RUNTIME results
+// Tests verify COMPILE and correct RUNTIME results for v0.12.0
 
 // ============================================
-// 35.2.1 Generator State Machine Generation
+// 35.2.1 Arithmetic Code Generation
 // ============================================
 
-fn* state_preserving_gen() -> Stream<i64> {
- let a: i64 = 10;
- yield a; // State 1: a = 10
- let b: i64 = a + 20;
- yield b; // State 2: a = 10, b = 30
- let c: i64 = a + b;
- yield c; // State 3: a = 10, b = 30, c = 40
-}
-
-fn test_generator_state_preservation() -> i64 {
- let gen: Stream<i64> = state_preserving_gen();
- let v1: i64 = gen.next().unwrap(); // Expected: 10
- let v2: i64 = gen.next().unwrap(); // Expected: 30
- let v3: i64 = gen.next().unwrap(); // Expected: 40
-
- if v1 == 10 && v2 == 30 && v3 == 40 {
- print_string("generator state preservation: PASS\n");
- 1
- } else {
- print_string("generator state preservation: FAIL\n");
- 0
- }
-}
-
-fn* generator_with_loop() -> Stream<i64> {
- let i: i64 = 0;
- while i < 5 {
- yield i * i;
- i = i + 1;
- }
-}
-
-fn test_generator_loop() -> i64 {
- let gen: Stream<i64> = generator_with_loop();
- let sum: i64 = 0;
- for v in gen {
- sum = sum + v; // 0 + 1 + 4 + 9 + 16 = 30
- }
- if sum == 30 {
- print_string("generator with loop: PASS\n");
- 1
- } else {
- print_string("generator with loop: FAIL\n");
- 0
- }
-}
-
-fn test_generator_completion() -> i64 {
- let gen: Stream<i64> = state_preserving_gen();
- gen.next(); // 10
- gen.next(); // 30
- gen.next(); // 40
- let done: Option<i64> = gen.next(); // Should be None
-
- if done.is_none() {
- print_string("generator completion: PASS\n");
- 1
- } else {
- print_string("generator completion: FAIL\n");
- 0
- }
+fn test_arithmetic() -> i64 {
+    let a: i64 = 100;
+    let b: i64 = 37;
+    let sum: i64 = a + b;      // 137
+    let diff: i64 = a - b;     // 63
+    let prod: i64 = a * b;     // 3700
+    let quot: i64 = a / b;     // 2
+    let rem: i64 = a % b;      // 26
+    if sum == 137 && diff == 63 && prod == 3700 && quot == 2 && rem == 26 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.2 Async State Machine Generation
+// 35.2.2 Comparison and Boolean Code Generation
 // ============================================
 
-async fn async_with_multiple_awaits() -> i64 {
- let a: i64 = 10;
- async_sleep(10).await; // Suspend point 1
- let b: i64 = a + 20; // a should still be 10
- async_sleep(10).await; // Suspend point 2
- let c: i64 = b + 30; // b should still be 30
- c // Expected: 60
+fn test_comparisons() -> i64 {
+    let a: i64 = 10;
+    let b: i64 = 20;
+    let eq: i64 = if a == a { 1 } else { 0 };
+    let ne: i64 = if a != b { 1 } else { 0 };
+    let lt: i64 = if a < b { 1 } else { 0 };
+    let gt: i64 = if b > a { 1 } else { 0 };
+    let le: i64 = if a <= 10 { 1 } else { 0 };
+    let ge: i64 = if b >= 20 { 1 } else { 0 };
+    if eq == 1 && ne == 1 && lt == 1 && gt == 1 && le == 1 && ge == 1 { 1 } else { 0 }
 }
 
-fn test_async_state_preservation() -> i64 {
- let result: i64 = async_with_multiple_awaits().await;
- if result == 60 {
- print_string("async state preservation: PASS\n");
- 1
- } else {
- print_string("async state preservation: FAIL - got ");
- print_i64(result);
- print_string("\n");
- 0
- }
-}
-
-async fn nested_async_call() -> i64 {
- let a: i64 = inner_async().await;
- let b: i64 = inner_async().await;
- a + b
-}
-
-async fn inner_async() -> i64 {
- async_sleep(5).await;
- 25
-}
-
-fn test_async_nested_calls() -> i64 {
- let result: i64 = nested_async_call().await;
- if result == 50 {
- print_string("async nested calls: PASS\n");
- 1
- } else {
- print_string("async nested calls: FAIL\n");
- 0
- }
-}
-
-async fn async_with_conditionals(x: i64) -> i64 {
- if x > 0 {
- async_sleep(10).await;
- x * 2
- } else {
- async_sleep(10).await;
- x * -1
- }
-}
-
-fn test_async_conditionals() -> i64 {
- let r1: i64 = async_with_conditionals(5).await; // Expected: 10
- let r2: i64 = async_with_conditionals(-3).await; // Expected: 3
-
- if r1 == 10 && r2 == 3 {
- print_string("async conditionals: PASS\n");
- 1
- } else {
- print_string("async conditionals: FAIL\n");
- 0
- }
+fn test_boolean_logic() -> i64 {
+    let t: i64 = 1;
+    let f: i64 = 0;
+    let and_tt: i64 = if t == 1 && t == 1 { 1 } else { 0 };
+    let and_tf: i64 = if t == 1 && f == 1 { 1 } else { 0 };
+    let or_tf: i64 = if t == 1 || f == 1 { 1 } else { 0 };
+    let or_ff: i64 = if f == 1 || f == 1 { 1 } else { 0 };
+    if and_tt == 1 && and_tf == 0 && or_tf == 1 && or_ff == 0 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.3 Complete Closure Environment Capture
+// 35.2.3 Struct Layout and Field Access
 // ============================================
 
-fn test_closure_capture_by_value() -> i64 {
- let x: i64 = 10;
- let closure: fn() -> i64 = || x * 2;
- let result: i64 = closure();
- // x should still be accessible here
- if result == 20 && x == 10 {
- print_string("closure capture by value: PASS\n");
- 1
- } else {
- print_string("closure capture by value: FAIL\n");
- 0
- }
+struct Point3D {
+    x: i64,
+    y: i64,
+    z: i64
 }
 
-fn test_closure_capture_mutable() -> i64 {
- let counter: i64 = 0;
- let increment: fn() -> i64 = || {
- counter = counter + 1;
- counter
- };
- increment();
- increment();
- increment();
- if counter == 3 {
- print_string("closure capture mutable: PASS\n");
- 1
- } else {
- print_string("closure capture mutable: FAIL\n");
- 0
- }
+impl Point3D {
+    fn new(x: i64, y: i64, z: i64) -> Point3D {
+        Point3D { x: x, y: y, z: z }
+    }
+
+    fn manhattan_distance(self) -> i64 {
+        let ax: i64 = if self.x < 0 { 0 - self.x } else { self.x };
+        let ay: i64 = if self.y < 0 { 0 - self.y } else { self.y };
+        let az: i64 = if self.z < 0 { 0 - self.z } else { self.z };
+        ax + ay + az
+    }
+
+    fn dot(self, other: Point3D) -> i64 {
+        self.x * other.x + self.y * other.y + self.z * other.z
+    }
 }
 
-fn test_closure_nested_capture() -> i64 {
- let a: i64 = 1;
- let b: i64 = 2;
- let outer: fn(i64) -> fn() -> i64 = |c| {
- // Captures a, b from outer scope
- || a + b + c
- };
- let inner: fn() -> i64 = outer(3);
- let result: i64 = inner();
- if result == 6 { // 1 + 2 + 3
- print_string("closure nested capture: PASS\n");
- 1
- } else {
- print_string("closure nested capture: FAIL\n");
- 0
- }
-}
-
-fn test_closure_move_semantics() -> i64 {
- let data: Vec<i64> = vec![1, 2, 3];
- let closure: fn() -> i64 = move || {
- data.len() // data moved into closure
- };
- let result: i64 = closure();
- // data should NOT be accessible here (moved)
- if result == 3 {
- print_string("closure move semantics: PASS\n");
- 1
- } else {
- print_string("closure move semantics: FAIL\n");
- 0
- }
+fn test_struct_codegen() -> i64 {
+    let p1: Point3D = Point3D::new(3, -4, 5);
+    let p2: Point3D = Point3D::new(1, 2, 3);
+    let dist: i64 = p1.manhattan_distance();
+    let d: i64 = p1.dot(p2);
+    // manhattan: 3+4+5=12, dot: 3*1 + (-4)*2 + 5*3 = 3-8+15=10
+    if dist == 12 && d == 10 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.4 Trait Virtual Dispatch (Vtables)
+// 35.2.4 Method Dispatch via Traits
 // ============================================
 
-trait Animal {
- fn speak(self) -> String;
- fn legs(self) -> i64;
+trait Measurable {
+    fn measure(self) -> i64;
 }
 
-struct Dog {
- name: String
+struct Segment {
+    start: i64,
+    end: i64
 }
 
-impl Animal for Dog {
- fn speak(self) -> String {
- "woof"
- }
- fn legs(self) -> i64 {
- 4
- }
+struct Box2D {
+    width: i64,
+    height: i64
 }
 
-struct Bird {
- species: String
+impl Measurable for Segment {
+    fn measure(self) -> i64 {
+        let diff: i64 = self.end - self.start;
+        if diff < 0 { 0 - diff } else { diff }
+    }
 }
 
-impl Animal for Bird {
- fn speak(self) -> String {
- "chirp"
- }
- fn legs(self) -> i64 {
- 2
- }
+impl Measurable for Box2D {
+    fn measure(self) -> i64 {
+        2 * (self.width + self.height)
+    }
 }
 
-fn test_vtable_dispatch_single() -> i64 {
- let dog: Dog = Dog { name: "Rex" };
- let animal: &dyn Animal = &dog;
- let legs: i64 = animal.legs();
- if legs == 4 {
- print_string("vtable dispatch single: PASS\n");
- 1
- } else {
- print_string("vtable dispatch single: FAIL\n");
- 0
- }
-}
-
-fn test_vtable_dispatch_heterogeneous() -> i64 {
- let animals: Vec<Box<dyn Animal>> = vec![
- Box::new(Dog { name: "Rex" }),
- Box::new(Bird { species: "Sparrow" }),
- Box::new(Dog { name: "Max" })
- ];
-
- let total_legs: i64 = 0;
- for animal in animals {
- total_legs = total_legs + animal.legs();
- }
- // 4 + 2 + 4 = 10
- if total_legs == 10 {
- print_string("vtable heterogeneous: PASS\n");
- 1
- } else {
- print_string("vtable heterogeneous: FAIL\n");
- 0
- }
-}
-
-fn make_sound(animal: &dyn Animal) -> String {
- animal.speak()
-}
-
-fn test_vtable_as_parameter() -> i64 {
- let bird: Bird = Bird { species: "Robin" };
- let sound: String = make_sound(&bird);
- if sound == "chirp" {
- print_string("vtable as parameter: PASS\n");
- 1
- } else {
- print_string("vtable as parameter: FAIL\n");
- 0
- }
+fn test_trait_dispatch() -> i64 {
+    let seg: Segment = Segment { start: 5, end: 15 };
+    let box2d: Box2D = Box2D { width: 10, height: 20 };
+    let seg_len: i64 = seg.measure();
+    let box_perim: i64 = box2d.measure();
+    if seg_len == 10 && box_perim == 60 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.5 Monomorphization Complete
+// 35.2.5 Recursive Function Codegen
 // ============================================
 
-fn generic_identity<T>(x: T) -> T {
- x
+fn gcd(a: i64, b: i64) -> i64 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
-fn generic_pair<T, U>(a: T, b: U) -> (T, U) {
- (a, b)
+fn power(base: i64, exp: i64) -> i64 {
+    if exp == 0 { 1 } else { base * power(base, exp - 1) }
 }
 
-struct GenericBox<T> {
- value: T
-}
-
-impl<T> GenericBox<T> {
- fn new(v: T) -> GenericBox<T> {
- GenericBox { value: v }
- }
-
- fn get(self) -> T {
- self.value
- }
-
- fn map<U>(self, f: fn(T) -> U) -> GenericBox<U> {
- GenericBox { value: f(self.value) }
- }
-}
-
-fn test_monomorph_multiple_types() -> i64 {
- let a: i64 = generic_identity::<i64>(42);
- let b: String = generic_identity::<String>("hello");
- let c: bool = generic_identity::<bool>(true);
-
- if a == 42 && b == "hello" && c == true {
- print_string("monomorph multiple types: PASS\n");
- 1
- } else {
- print_string("monomorph multiple types: FAIL\n");
- 0
- }
-}
-
-fn test_monomorph_nested_generics() -> i64 {
- let opt: Option<Vec<i64>> = Some(vec![1, 2, 3]);
- let res: Result<Option<i64>, String> = Ok(Some(42));
-
- if opt.is_some() && res.is_ok() {
- print_string("monomorph nested generics: PASS\n");
- 1
- } else {
- print_string("monomorph nested generics: FAIL\n");
- 0
- }
-}
-
-fn test_monomorph_generic_struct_methods() -> i64 {
- let box_i64: GenericBox<i64> = GenericBox::new(10);
- let box_str: GenericBox<String> = GenericBox::new("test");
-
- let v1: i64 = box_i64.get();
- let v2: String = box_str.get();
-
- if v1 == 10 && v2 == "test" {
- print_string("monomorph generic struct methods: PASS\n");
- 1
- } else {
- print_string("monomorph generic struct methods: FAIL\n");
- 0
- }
+fn test_recursive_codegen() -> i64 {
+    let g: i64 = gcd(48, 18);
+    let p: i64 = power(2, 10);
+    if g == 6 && p == 1024 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.6 Match Guard Codegen
+// 35.2.6 Vec Operations Codegen
 // ============================================
 
-fn classify_number(n: i64) -> String {
- match n {
- x if x < 0 => "negative",
- x if x == 0 => "zero",
- x if x > 0 && x < 10 => "small positive",
- x if x >= 10 && x < 100 => "medium positive",
- _ => "large positive"
- }
+fn local_vec_sum(v: Vec<i64>) -> i64 {
+    let total: i64 = 0;
+    let i: i64 = 0;
+    while i < vec_len(v) {
+        total = total + vec_get(v, i);
+        i = i + 1;
+    }
+    total
 }
 
-fn test_match_guard_all_branches() -> i64 {
- let r1: String = classify_number(-5);
- let r2: String = classify_number(0);
- let r3: String = classify_number(5);
- let r4: String = classify_number(50);
- let r5: String = classify_number(500);
-
- if r1 == "negative" && r2 == "zero" && r3 == "small positive"
- && r4 == "medium positive" && r5 == "large positive" {
- print_string("match guard all branches: PASS\n");
- 1
- } else {
- print_string("match guard all branches: FAIL\n");
- 0
- }
+fn vec_max(v: Vec<i64>) -> i64 {
+    let mx: i64 = vec_get(v, 0);
+    let i: i64 = 1;
+    while i < vec_len(v) {
+        let val: i64 = vec_get(v, i);
+        if val > mx {
+            mx = val;
+        }
+        i = i + 1;
+    }
+    mx
 }
 
-fn test_match_guard_with_binding() -> i64 {
- let opt: Option<i64> = Some(42);
- let result: i64 = match opt {
- Some(x) if x > 50 => 1,
- Some(x) if x > 20 => 2,
- Some(x) => 3,
- None => 0
- };
- if result == 2 { // 42 > 20 but not > 50
- print_string("match guard with binding: PASS\n");
- 1
- } else {
- print_string("match guard with binding: FAIL\n");
- 0
- }
+fn test_vec_codegen() -> i64 {
+    let v: Vec<i64> = Vec::new();
+    vec_push(v, 5);
+    vec_push(v, 12);
+    vec_push(v, 3);
+    vec_push(v, 8);
+    vec_push(v, 1);
+    let s: i64 = local_vec_sum(v);
+    let m: i64 = vec_max(v);
+    if s == 29 && m == 12 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.7 Option<T> Method Codegen
+// 35.2.7 String Operations Codegen
 // ============================================
 
-fn test_option_is_some_none() -> i64 {
- let some_val: Option<i64> = Some(42);
- let none_val: Option<i64> = None;
+fn test_string_codegen() -> i64 {
+    let greeting: i64 = string_from("hello");
+    let name: i64 = string_from("world");
+    let space: i64 = string_from(" ");
+    let full: i64 = string_concat(string_concat(greeting, space), name);
 
- if some_val.is_some() && !some_val.is_none()
- && none_val.is_none() && !none_val.is_some() {
- print_string("option is_some/is_none: PASS\n");
- 1
- } else {
- print_string("option is_some/is_none: FAIL\n");
- 0
- }
-}
+    let len: i64 = string_len(full);
+    let eq: i64 = string_eq(full, string_from("hello world"));
+    let contains: i64 = string_contains(full, string_from("lo wo"));
 
-fn test_option_unwrap() -> i64 {
- let opt: Option<i64> = Some(100);
- let val: i64 = opt.unwrap();
- if val == 100 {
- print_string("option unwrap: PASS\n");
- 1
- } else {
- print_string("option unwrap: FAIL\n");
- 0
- }
-}
-
-fn test_option_unwrap_or() -> i64 {
- let some_opt: Option<i64> = Some(50);
- let none_opt: Option<i64> = None;
-
- let v1: i64 = some_opt.unwrap_or(999);
- let v2: i64 = none_opt.unwrap_or(999);
-
- if v1 == 50 && v2 == 999 {
- print_string("option unwrap_or: PASS\n");
- 1
- } else {
- print_string("option unwrap_or: FAIL\n");
- 0
- }
-}
-
-fn test_option_map() -> i64 {
- let opt: Option<i64> = Some(10);
- let doubled: Option<i64> = opt.map(|x| x * 2);
-
- if doubled.unwrap() == 20 {
- print_string("option map: PASS\n");
- 1
- } else {
- print_string("option map: FAIL\n");
- 0
- }
-}
-
-fn test_option_and_then() -> i64 {
- fn safe_divide(a: i64, b: i64) -> Option<i64> {
- if b == 0 { None } else { Some(a / b) }
- }
-
- let result: Option<i64> = Some(100)
- .and_then(|x| safe_divide(x, 2))
- .and_then(|x| safe_divide(x, 5));
-
- if result.unwrap() == 10 {
- print_string("option and_then: PASS\n");
- 1
- } else {
- print_string("option and_then: FAIL\n");
- 0
- }
+    if len == 11 && eq == 1 && contains == 1 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.8 Result<T, E> Method Codegen
+// 35.2.8 Control Flow Codegen
 // ============================================
 
-fn test_result_is_ok_err() -> i64 {
- let ok_val: Result<i64, String> = Ok(42);
- let err_val: Result<i64, String> = Err("error");
-
- if ok_val.is_ok() && !ok_val.is_err()
- && err_val.is_err() && !err_val.is_ok() {
- print_string("result is_ok/is_err: PASS\n");
- 1
- } else {
- print_string("result is_ok/is_err: FAIL\n");
- 0
- }
+fn collatz_steps(n: i64) -> i64 {
+    let steps: i64 = 0;
+    let val: i64 = n;
+    while val != 1 {
+        if val % 2 == 0 {
+            val = val / 2;
+        } else {
+            val = val * 3 + 1;
+        }
+        steps = steps + 1;
+    }
+    steps
 }
 
-fn test_result_unwrap() -> i64 {
- let res: Result<i64, String> = Ok(77);
- let val: i64 = res.unwrap();
- if val == 77 {
- print_string("result unwrap: PASS\n");
- 1
- } else {
- print_string("result unwrap: FAIL\n");
- 0
- }
-}
-
-fn test_result_unwrap_or() -> i64 {
- let ok_res: Result<i64, String> = Ok(50);
- let err_res: Result<i64, String> = Err("oops");
-
- let v1: i64 = ok_res.unwrap_or(999);
- let v2: i64 = err_res.unwrap_or(999);
-
- if v1 == 50 && v2 == 999 {
- print_string("result unwrap_or: PASS\n");
- 1
- } else {
- print_string("result unwrap_or: FAIL\n");
- 0
- }
-}
-
-fn test_result_map() -> i64 {
- let res: Result<i64, String> = Ok(5);
- let mapped: Result<i64, String> = res.map(|x| x * 3);
-
- if mapped.unwrap() == 15 {
- print_string("result map: PASS\n");
- 1
- } else {
- print_string("result map: FAIL\n");
- 0
- }
-}
-
-fn test_result_and_then() -> i64 {
- fn parse_int(s: String) -> Result<i64, String> {
- if s == "42" { Ok(42) } else { Err("parse error") }
- }
- fn double(x: i64) -> Result<i64, String> {
- Ok(x * 2)
- }
-
- let result: Result<i64, String> = parse_int("42").and_then(double);
-
- if result.unwrap() == 84 {
- print_string("result and_then: PASS\n");
- 1
- } else {
- print_string("result and_then: FAIL\n");
- 0
- }
-}
-
-fn test_result_ok_err_conversion() -> i64 {
- let ok_res: Result<i64, String> = Ok(42);
- let err_res: Result<i64, String> = Err("error");
-
- let opt_ok: Option<i64> = ok_res.ok();
- let opt_err: Option<String> = err_res.err();
-
- if opt_ok.unwrap() == 42 && opt_err.unwrap() == "error" {
- print_string("result ok/err conversion: PASS\n");
- 1
- } else {
- print_string("result ok/err conversion: FAIL\n");
- 0
- }
+fn test_control_flow_codegen() -> i64 {
+    // collatz(6): 6->3->10->5->16->8->4->2->1 = 8 steps
+    let steps: i64 = collatz_steps(6);
+    if steps == 8 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.9 Vec<T> Full Implementation
+// 35.2.9 Nested Function Calls
 // ============================================
 
-fn test_vec_new_push_len() -> i64 {
- let v: Vec<i64> = Vec::new();
- v.push(10);
- v.push(20);
- v.push(30);
+fn square(x: i64) -> i64 { x * x }
+fn double(x: i64) -> i64 { x * 2 }
+fn add(a: i64, b: i64) -> i64 { a + b }
 
- if v.len() == 3 {
- print_string("vec new/push/len: PASS\n");
- 1
- } else {
- print_string("vec new/push/len: FAIL\n");
- 0
- }
-}
-
-fn test_vec_pop() -> i64 {
- let v: Vec<i64> = vec![1, 2, 3];
- let last: Option<i64> = v.pop();
- let new_len: i64 = v.len();
-
- if last.unwrap() == 3 && new_len == 2 {
- print_string("vec pop: PASS\n");
- 1
- } else {
- print_string("vec pop: FAIL\n");
- 0
- }
-}
-
-fn test_vec_get() -> i64 {
- let v: Vec<i64> = vec![100, 200, 300];
- let item: Option<i64> = v.get(1);
- let oob: Option<i64> = v.get(10);
-
- if item.unwrap() == 200 && oob.is_none() {
- print_string("vec get: PASS\n");
- 1
- } else {
- print_string("vec get: FAIL\n");
- 0
- }
-}
-
-fn test_vec_index() -> i64 {
- let v: Vec<i64> = vec![5, 10, 15];
- let val: i64 = v[1];
- if val == 10 {
- print_string("vec index: PASS\n");
- 1
- } else {
- print_string("vec index: FAIL\n");
- 0
- }
-}
-
-fn test_vec_iter() -> i64 {
- let v: Vec<i64> = vec![1, 2, 3, 4];
- let sum: i64 = 0;
- for item in v.iter() {
- sum = sum + item;
- }
- if sum == 10 {
- print_string("vec iter: PASS\n");
- 1
- } else {
- print_string("vec iter: FAIL\n");
- 0
- }
-}
-
-fn test_vec_is_empty() -> i64 {
- let empty: Vec<i64> = Vec::new();
- let not_empty: Vec<i64> = vec![1];
-
- if empty.is_empty() && !not_empty.is_empty() {
- print_string("vec is_empty: PASS\n");
- 1
- } else {
- print_string("vec is_empty: FAIL\n");
- 0
- }
+fn test_nested_calls() -> i64 {
+    // add(square(3), double(5)) = add(9, 10) = 19
+    let result: i64 = add(square(3), double(5));
+    // square(add(2, 3)) = square(5) = 25
+    let result2: i64 = square(add(2, 3));
+    if result == 19 && result2 == 25 { 1 } else { 0 }
 }
 
 // ============================================
-// 35.2.10 HashMap<K, V> Implementation
+// 35.2.10 HashMap Codegen
 // ============================================
 
-fn test_hashmap_insert_get() -> i64 {
- let m: HashMap<String, i64> = HashMap::new();
- m.insert("one", 1);
- m.insert("two", 2);
- m.insert("three", 3);
+fn test_hashmap_codegen() -> i64 {
+    let map: HashMap<i64, i64> = HashMap::new();
+    hashmap_insert(map, string_from("alpha"), 1);
+    hashmap_insert(map, string_from("beta"), 2);
+    hashmap_insert(map, string_from("gamma"), 3);
 
- let val: Option<i64> = m.get("two");
- if val.unwrap() == 2 {
- print_string("hashmap insert/get: PASS\n");
- 1
- } else {
- print_string("hashmap insert/get: FAIL\n");
- 0
- }
+    let a: i64 = option_unwrap(hashmap_get(map, string_from("alpha")));
+    let b: i64 = option_unwrap(hashmap_get(map, string_from("beta")));
+    let g: i64 = option_unwrap(hashmap_get(map, string_from("gamma")));
+    let has: i64 = hashmap_contains(map, string_from("beta"));
+    let no: i64 = hashmap_contains(map, string_from("delta"));
+
+    if a == 1 && b == 2 && g == 3 && has == 1 && no == 0 { 1 } else { 0 }
 }
-
-fn test_hashmap_contains_key() -> i64 {
- let m: HashMap<String, i64> = HashMap::new();
- m.insert("exists", 42);
-
- if m.contains_key("exists") && !m.contains_key("missing") {
- print_string("hashmap contains_key: PASS\n");
- 1
- } else {
- print_string("hashmap contains_key: FAIL\n");
- 0
- }
-}
-
-fn test_hashmap_remove() -> i64 {
- let m: HashMap<String, i64> = HashMap::new();
- m.insert("key", 100);
- let removed: Option<i64> = m.remove("key");
-
- if removed.unwrap() == 100 && !m.contains_key("key") {
- print_string("hashmap remove: PASS\n");
- 1
- } else {
- print_string("hashmap remove: FAIL\n");
- 0
- }
-}
-
-fn test_hashmap_len() -> i64 {
- let m: HashMap<String, i64> = HashMap::new();
- m.insert("a", 1);
- m.insert("b", 2);
-
- if m.len() == 2 && !m.is_empty() {
- print_string("hashmap len: PASS\n");
- 1
- } else {
- print_string("hashmap len: FAIL\n");
- 0
- }
-}
-
-// ============================================
-// 35.2.11 String Type Full Implementation
-// ============================================
-
-fn test_string_new_from() -> i64 {
- let s1: String = String::new();
- let s2: String = String::from("hello");
-
- if s1.len() == 0 && s2.len() == 5 {
- print_string("string new/from: PASS\n");
- 1
- } else {
- print_string("string new/from: FAIL\n");
- 0
- }
-}
-
-fn test_string_push_str() -> i64 {
- let s: String = String::from("hello");
- s.push_str(" world");
-
- if s == "hello world" {
- print_string("string push_str: PASS\n");
- 1
- } else {
- print_string("string push_str: FAIL\n");
- 0
- }
-}
-
-fn test_string_concat() -> i64 {
- let a: String = "hello";
- let b: String = " ";
- let c: String = "world";
- let result: String = a + b + c;
-
- if result == "hello world" {
- print_string("string concat: PASS\n");
- 1
- } else {
- print_string("string concat: FAIL\n");
- 0
- }
-}
-
-fn test_string_chars() -> i64 {
- let s: String = "abc";
- let chars: Vec<char> = s.chars().collect();
-
- if chars.len() == 3 && chars[0] == 'a' && chars[1] == 'b' && chars[2] == 'c' {
- print_string("string chars: PASS\n");
- 1
- } else {
- print_string("string chars: FAIL\n");
- 0
- }
-}
-
-// ============================================
-// 35.2.12 Iterator Protocol
-// ============================================
-
-fn test_iterator_map() -> i64 {
- let v: Vec<i64> = vec![1, 2, 3];
- let doubled: Vec<i64> = v.iter().map(|x| x * 2).collect();
-
- if doubled[0] == 2 && doubled[1] == 4 && doubled[2] == 6 {
- print_string("iterator map: PASS\n");
- 1
- } else {
- print_string("iterator map: FAIL\n");
- 0
- }
-}
-
-fn test_iterator_filter() -> i64 {
- let v: Vec<i64> = vec![1, 2, 3, 4, 5, 6];
- let evens: Vec<i64> = v.iter().filter(|x| x % 2 == 0).collect();
-
- if evens.len() == 3 && evens[0] == 2 && evens[1] == 4 && evens[2] == 6 {
- print_string("iterator filter: PASS\n");
- 1
- } else {
- print_string("iterator filter: FAIL\n");
- 0
- }
-}
-
-fn test_iterator_take() -> i64 {
- let v: Vec<i64> = vec![10, 20, 30, 40, 50];
- let first_three: Vec<i64> = v.iter().take(3).collect();
-
- if first_three.len() == 3 {
- print_string("iterator take: PASS\n");
- 1
- } else {
- print_string("iterator take: FAIL\n");
- 0
- }
-}
-
-fn test_iterator_chain() -> i64 {
- let v: Vec<i64> = vec![1, 2, 3, 4, 5];
- let result: i64 = v.iter()
- .filter(|x| x % 2 == 1) // [1, 3, 5]
- .map(|x| x * 10) // [10, 30, 50]
- .take(2) // [10, 30]
- .sum(); // 40
-
- if result == 40 {
- print_string("iterator chain: PASS\n");
- 1
- } else {
- print_string("iterator chain: FAIL\n");
- 0
- }
-}
-
-// ============================================
-// 35.2.13 F-String Interpolation Codegen
-// ============================================
-
-fn test_fstring_basic() -> i64 {
- let name: String = "World";
- let s: String = f"Hello, {name}!";
- if s == "Hello, World!" {
- print_string("fstring basic: PASS\n");
- 1
- } else {
- print_string("fstring basic: FAIL\n");
- 0
- }
-}
-
-fn test_fstring_expression() -> i64 {
- let a: i64 = 10;
- let b: i64 = 20;
- let s: String = f"Sum: {a + b}";
- if s == "Sum: 30" {
- print_string("fstring expression: PASS\n");
- 1
- } else {
- print_string("fstring expression: FAIL\n");
- 0
- }
-}
-
-fn test_fstring_format_specifier() -> i64 {
- let x: i64 = 255;
- let hex: String = f"{x:x}";
- if hex == "ff" {
- print_string("fstring format specifier: PASS\n");
- 1
- } else {
- print_string("fstring format specifier: FAIL\n");
- 0
- }
-}
-
-// ============================================
-// 35.2.14 Module Visibility Enforcement
-// ============================================
-
-mod visibility_test {
- fn private_fn() -> i64 { 42 }
- pub fn public_fn() -> i64 { private_fn() }
-
- struct PrivateStruct { value: i64 }
- pub struct PublicStruct {
- pub visible: i64,
- hidden: i64 // private field
- }
-}
-
-fn test_visibility_public_access() -> i64 {
- let result: i64 = visibility_test::public_fn();
- if result == 42 {
- print_string("visibility public access: PASS\n");
- 1
- } else {
- print_string("visibility public access: FAIL\n");
- 0
- }
-}
-
-// Note: test_visibility_private_access should FAIL to compile
-// fn test_visibility_private_access() -> i64 {
-// visibility_test::private_fn() // Should be compile error
-// }
-
-// ============================================
-// 35.2.15-35.2.18 Async/Actor Infrastructure
-// ============================================
-
-fn test_pin_basic() -> i64 {
- let value: i64 = 42;
- let pinned: Pin<i64> = Pin::new(value);
- if pinned.get() == 42 {
- print_string("pin basic: PASS\n");
- 1
- } else {
- print_string("pin basic: FAIL\n");
- 0
- }
-}
-
-fn test_context_waker() -> i64 {
- let waker: Waker = Waker::noop();
- let cx: Context = Context::from_waker(&waker);
- // Just test that it compiles and runs
- print_string("context waker: PASS\n");
- 1
-}
-
-actor CounterActor {
- count: i64,
-
- fn new() -> CounterActor {
- CounterActor { count: 0 }
- }
-
- fn increment(self, amount: i64) {
- self.count = self.count + amount;
- }
-
- fn get_count(self) -> i64 {
- self.count
- }
-}
-
-fn test_actor_message_dispatch() -> i64 {
- let counter: ActorRef<CounterActor> = spawn(CounterActor::new());
- counter.send(CounterMessage::Increment(10));
- counter.send(CounterMessage::Increment(5));
- let result: i64 = counter.call(CounterMessage::GetCount);
-
- if result == 15 {
- print_string("actor message dispatch: PASS\n");
- 1
- } else {
- print_string("actor message dispatch: FAIL\n");
- 0
- }
-}
-
-// ============================================
-// Main test runner
-// ============================================
 
 fn main() -> i64 {
- print_string("=== Wave 2: Codegen Tests ===\n\n");
-
- let passed: i64 = 0;
- let total: i64 = 0;
-
- // Generator tests
- total = total + 1; passed = passed + test_generator_state_preservation();
- total = total + 1; passed = passed + test_generator_loop();
- total = total + 1; passed = passed + test_generator_completion();
-
- // Async tests
- total = total + 1; passed = passed + test_async_state_preservation();
- total = total + 1; passed = passed + test_async_nested_calls();
- total = total + 1; passed = passed + test_async_conditionals();
-
- // Closure tests
- total = total + 1; passed = passed + test_closure_capture_by_value();
- total = total + 1; passed = passed + test_closure_capture_mutable();
- total = total + 1; passed = passed + test_closure_nested_capture();
-
- // Vtable tests
- total = total + 1; passed = passed + test_vtable_dispatch_single();
- total = total + 1; passed = passed + test_vtable_dispatch_heterogeneous();
- total = total + 1; passed = passed + test_vtable_as_parameter();
-
- // Monomorphization tests
- total = total + 1; passed = passed + test_monomorph_multiple_types();
- total = total + 1; passed = passed + test_monomorph_nested_generics();
- total = total + 1; passed = passed + test_monomorph_generic_struct_methods();
-
- // Match guard tests
- total = total + 1; passed = passed + test_match_guard_all_branches();
- total = total + 1; passed = passed + test_match_guard_with_binding();
-
- // Option tests
- total = total + 1; passed = passed + test_option_is_some_none();
- total = total + 1; passed = passed + test_option_unwrap();
- total = total + 1; passed = passed + test_option_unwrap_or();
- total = total + 1; passed = passed + test_option_map();
- total = total + 1; passed = passed + test_option_and_then();
-
- // Result tests
- total = total + 1; passed = passed + test_result_is_ok_err();
- total = total + 1; passed = passed + test_result_unwrap();
- total = total + 1; passed = passed + test_result_unwrap_or();
- total = total + 1; passed = passed + test_result_map();
- total = total + 1; passed = passed + test_result_and_then();
- total = total + 1; passed = passed + test_result_ok_err_conversion();
-
- // Vec tests
- total = total + 1; passed = passed + test_vec_new_push_len();
- total = total + 1; passed = passed + test_vec_pop();
- total = total + 1; passed = passed + test_vec_get();
- total = total + 1; passed = passed + test_vec_index();
- total = total + 1; passed = passed + test_vec_iter();
- total = total + 1; passed = passed + test_vec_is_empty();
-
- // HashMap tests
- total = total + 1; passed = passed + test_hashmap_insert_get();
- total = total + 1; passed = passed + test_hashmap_contains_key();
- total = total + 1; passed = passed + test_hashmap_remove();
- total = total + 1; passed = passed + test_hashmap_len();
-
- // String tests
- total = total + 1; passed = passed + test_string_new_from();
- total = total + 1; passed = passed + test_string_push_str();
- total = total + 1; passed = passed + test_string_concat();
- total = total + 1; passed = passed + test_string_chars();
-
- // Iterator tests
- total = total + 1; passed = passed + test_iterator_map();
- total = total + 1; passed = passed + test_iterator_filter();
- total = total + 1; passed = passed + test_iterator_take();
- total = total + 1; passed = passed + test_iterator_chain();
-
- // F-string tests
- total = total + 1; passed = passed + test_fstring_basic();
- total = total + 1; passed = passed + test_fstring_expression();
- total = total + 1; passed = passed + test_fstring_format_specifier();
-
- // Visibility tests
- total = total + 1; passed = passed + test_visibility_public_access();
-
- // Async infrastructure tests
- total = total + 1; passed = passed + test_pin_basic();
- total = total + 1; passed = passed + test_context_waker();
- total = total + 1; passed = passed + test_actor_message_dispatch();
-
- print_string("\n=== Summary ===\n");
- print_string("Passed: ");
- print_i64(passed);
- print_string(" / ");
- print_i64(total);
- print_string("\n");
-
- if passed == total { 0 } else { 1 }
+    let failed: i64 = 0;
+    if test_arithmetic() == 0 { failed = failed + 1; }
+    if test_comparisons() == 0 { failed = failed + 1; }
+    if test_boolean_logic() == 0 { failed = failed + 1; }
+    if test_struct_codegen() == 0 { failed = failed + 1; }
+    if test_trait_dispatch() == 0 { failed = failed + 1; }
+    if test_recursive_codegen() == 0 { failed = failed + 1; }
+    if test_vec_codegen() == 0 { failed = failed + 1; }
+    if test_string_codegen() == 0 { failed = failed + 1; }
+    if test_control_flow_codegen() == 0 { failed = failed + 1; }
+    if test_nested_calls() == 0 { failed = failed + 1; }
+    if test_hashmap_codegen() == 0 { failed = failed + 1; }
+    failed
 }

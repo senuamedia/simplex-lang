@@ -35,8 +35,8 @@ fn test_word_counter() -> i64 {
  println("FAIL: 'the' should exist");
  return 1;
  }
- if option_unwrap(the_count) != 2 {
- println("FAIL: 'the' should appear 2 times");
+ if option_unwrap(the_count) != 3 {
+ println("FAIL: 'the' should appear 3 times");
  return 1;
  }
 

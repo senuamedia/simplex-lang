@@ -5,13 +5,14 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-// Import shared modules
-use lib::version;
-use lib::safety;
-use lib::platform;
+// Version constant (inlined for standalone compilation)
+fn VERSION() -> i64 { string_from("0.12.0") }
 
-// Version - now uses centralized constant
-fn VERSION() -> i64 { SXDOC_VERSION() }
+// Inline platform detection
+fn platform_get_os_name() -> i64 {
+    // Default to macos for now - cross-platform detection handled at runtime
+    string_from("macos")
+}
 
 fn show_help() -> i64 {
     println("sxdoc - Simplex Documentation Generator");
@@ -37,11 +38,10 @@ fn show_version() -> i64 {
 // Cross-Platform Support
 // ========================================
 
-/// Detect the operating system - now uses shared platform module
+/// Detect the operating system
 /// Returns: "windows", "linux", or "macos"
-/// Eliminated duplication across 5+ files
 fn get_os_name() -> i64 {
-    platform::get_os_name()
+    platform_get_os_name()
 }
 
 /// Get the path separator character code for the current platform

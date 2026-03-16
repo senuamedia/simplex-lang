@@ -99,6 +99,9 @@ enum TokenKind {
     KwMut,
     // Spawn expression
     KwSpawn,
+    // Actor message keywords
+    KwSend,
+    KwAsk,
     // Where clause
     KwWhere,
     // Belief guard tokens
@@ -132,6 +135,7 @@ fn STMT_RETURN() -> i64 { 2 }
 fn STMT_ASSIGN() -> i64 { 3 }
 fn STMT_BREAK() -> i64 { 4 }
 fn STMT_CONTINUE() -> i64 { 5 }
+fn STMT_FIELD_ASSIGN() -> i64 { 6 }  // Field assignment: expr.field = value
 
 // Expr tags
 fn EXPR_INT() -> i64 { 0 }
@@ -176,6 +180,8 @@ fn EXPR_DERIVATIVE() -> i64 { 36 }    // expr.derivative
 fn EXPR_BELIEF_GUARD() -> i64 { 37 }  // belief_expr cmp value
 fn EXPR_BELIEF_AND() -> i64 { 38 }    // guard && guard
 fn EXPR_BELIEF_OR() -> i64 { 39 }     // guard || guard
+fn EXPR_SEND() -> i64 { 40 }          // send(actor, Message(args))
+fn EXPR_ASK() -> i64 { 41 }           // ask(actor, Message(args))
 
 // Parser state - we pass this to all functions
 fn parser_new(tokens: i64) -> i64 {
@@ -476,6 +482,17 @@ fn ast_assign(name: i64, value: i64) -> i64 {
     let node: i64 = malloc(24);
     store_i64(node, 0, STMT_ASSIGN());
     store_ptr(node, 1, name);
+    store_ptr(node, 2, value);
+    node
+}
+
+// Stmt: Field Assign (e.g., self.field = value)
+// Layout: tag(0), target_expr(1), value(2)
+// target_expr is an EXPR_FIELD containing the object and field name
+fn ast_field_assign(target: i64, value: i64) -> i64 {
+    let node: i64 = malloc(24);
+    store_i64(node, 0, STMT_FIELD_ASSIGN());
+    store_ptr(node, 1, target);
     store_ptr(node, 2, value);
     node
 }
@@ -917,6 +934,28 @@ fn ast_spawn(type_name: i64) -> i64 {
     node
 }
 
+// Expr: Send message to actor
+// Layout: tag(0), target(1), message_name(2), args(3)
+fn ast_send(target: i64, message_name: i64, args: i64) -> i64 {
+    let node: i64 = malloc(32);
+    store_i64(node, 0, EXPR_SEND());
+    store_ptr(node, 1, target);
+    store_ptr(node, 2, message_name);
+    store_ptr(node, 3, args);
+    node
+}
+
+// Expr: Ask actor for response
+// Layout: tag(0), target(1), message_name(2), args(3)
+fn ast_ask(target: i64, message_name: i64, args: i64) -> i64 {
+    let node: i64 = malloc(32);
+    store_i64(node, 0, EXPR_ASK());
+    store_ptr(node, 1, target);
+    store_ptr(node, 2, message_name);
+    store_ptr(node, 3, args);
+    node
+}
+
 // Expr: Array literal [a, b, c]
 // Layout: tag(0), elements(1)
 fn ast_array(elements: i64) -> i64 {
@@ -1221,6 +1260,52 @@ fn parse_primary(parser: i64) -> i64 {
         return ast_spawn(type_name);
     }
 
+    // Send expression: send(target, MessageName) or send(target, MessageName(args))
+    if parser_check(parser, TokenKind::KwSend) {
+        parser_advance(parser);
+        parser_expect(parser, TokenKind::LParen);
+        let target: i64 = parse_expr(parser);
+        parser_expect(parser, TokenKind::Comma);
+        let msg_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        let msg_name: i64 = token_text(msg_tok);
+        let args: i64 = vec_new();
+        if parser_check(parser, TokenKind::LParen) {
+            parser_advance(parser);
+            while parser_check(parser, TokenKind::RParen) == false {
+                vec_push(args, parse_expr(parser));
+                if parser_check(parser, TokenKind::RParen) == false {
+                    parser_expect(parser, TokenKind::Comma);
+                }
+            }
+            parser_expect(parser, TokenKind::RParen);
+        }
+        parser_expect(parser, TokenKind::RParen);
+        return ast_send(target, msg_name, args);
+    }
+
+    // Ask expression: ask(target, MessageName) or ask(target, MessageName(args))
+    if parser_check(parser, TokenKind::KwAsk) {
+        parser_advance(parser);
+        parser_expect(parser, TokenKind::LParen);
+        let target: i64 = parse_expr(parser);
+        parser_expect(parser, TokenKind::Comma);
+        let msg_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        let msg_name: i64 = token_text(msg_tok);
+        let args: i64 = vec_new();
+        if parser_check(parser, TokenKind::LParen) {
+            parser_advance(parser);
+            while parser_check(parser, TokenKind::RParen) == false {
+                vec_push(args, parse_expr(parser));
+                if parser_check(parser, TokenKind::RParen) == false {
+                    parser_expect(parser, TokenKind::Comma);
+                }
+            }
+            parser_expect(parser, TokenKind::RParen);
+        }
+        parser_expect(parser, TokenKind::RParen);
+        return ast_ask(target, msg_name, args);
+    }
+
     // Infer expression (infer(prompt)) - AI model inference
     if parser_check(parser, TokenKind::KwInfer) {
         parser_advance(parser);
@@ -1422,12 +1507,9 @@ fn parse_primary(parser: i64) -> i64 {
                 }
             }
         }
-        // (ident, ...) => body  - untyped multi param closure
-        if parser_peek_check(parser, 1, TokenKind::Ident) {
-            if parser_peek_check(parser, 2, TokenKind::Comma) {
-                is_closure = true;
-            }
-        }
+        // Note: (ident, ...) untyped multi-param closures should use |x, y| syntax
+        // to avoid ambiguity with tuple expressions like (x, y)
+
         // (ident : type) => body  - typed closure with params
         if parser_peek_check(parser, 1, TokenKind::Ident) {
             if parser_peek_check(parser, 2, TokenKind::Colon) {
@@ -1550,6 +1632,38 @@ fn parse_primary(parser: i64) -> i64 {
     // Block expression
     if parser_check(parser, TokenKind::LBrace) {
         return parse_block(parser);
+    }
+
+    // Rust-style closure: || expr or |x| expr or |x: i64| expr
+    if parser_check(parser, TokenKind::PipePipe) {
+        // || expr - zero params closure
+        parser_advance(parser);  // consume ||
+        let body: i64 = parse_expr(parser);
+        return ast_closure(vec_new(), body);
+    }
+
+    if parser_check(parser, TokenKind::Pipe) {
+        // |params| expr - closure with params
+        parser_advance(parser);  // consume |
+        let params: i64 = vec_new();
+
+        while parser_check(parser, TokenKind::Pipe) == false {
+            let param_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            let param_name: i64 = token_text(param_tok);
+            let param_type: i64 = 0;
+            if parser_match(parser, TokenKind::Colon) {
+                param_type = parse_type(parser);
+            }
+            vec_push(params, ast_param(param_name, param_type));
+
+            if parser_check(parser, TokenKind::Pipe) == false {
+                parser_expect(parser, TokenKind::Comma);
+            }
+        }
+
+        parser_expect(parser, TokenKind::Pipe);  // consume closing |
+        let body: i64 = parse_expr(parser);
+        return ast_closure(params, body);
     }
 
     // Error - advance past unrecognized token to prevent infinite loop
@@ -1874,16 +1988,21 @@ fn parse_block(parser: i64) -> i64 {
             // Expression - could be statement, assignment, or result
             let expr: i64 = parse_expr(parser);
 
-            // Check for assignment: ident = expr;
+            // Check for assignment: ident = expr; or expr.field = expr;
             if parser_match(parser, TokenKind::Eq) {
                 // This is an assignment statement
-                // expr should be an identifier
                 let expr_tag: i64 = load_i64(expr, 0);
                 if expr_tag == EXPR_IDENT() {
+                    // Simple variable assignment: x = value
                     let name: i64 = load_ptr(expr, 1);
                     let value: i64 = parse_expr(parser);
                     parser_match(parser, TokenKind::Semi);
                     vec_push(stmts, ast_assign(name, value));
+                } else if expr_tag == EXPR_FIELD() {
+                    // Field assignment: self.field = value
+                    let value: i64 = parse_expr(parser);
+                    parser_match(parser, TokenKind::Semi);
+                    vec_push(stmts, ast_field_assign(expr, value));
                 } else {
                     // Invalid assignment target, treat as expression
                     parser_match(parser, TokenKind::Semi);
