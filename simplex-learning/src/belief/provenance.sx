@@ -46,13 +46,13 @@ impl Signature {
 /// Rules for inferring beliefs from other beliefs
 #[derive(Clone)]
 pub enum InferenceRule {
-    /// Modus ponens: A, A->B ⊢ B
+    /// Modus ponens: A, A→B ⊢ B
     ModusPonens,
 
     /// Conjunction introduction: A, B ⊢ A∧B
     Conjunction,
 
-    /// Bayesian update: prior + evidence -> posterior
+    /// Bayesian update: prior + evidence → posterior
     BayesianUpdate {
         /// Prior probability
         prior: f64,

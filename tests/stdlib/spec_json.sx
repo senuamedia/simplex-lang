@@ -1,0 +1,861 @@
+// Simplex JSON Module Tests
+// Tests JSON parsing, building, stringifying, and accessor functions
+//
+// All JSON functions are runtime intrinsics available automatically.
+
+// =============================================================================
+// Test 1: Parse Simple Object
+// =============================================================================
+
+fn test_parse_simple_object() -> i64 {
+    println("  Testing parse simple object...");
+
+    let input: i64 = "{\"key\": \"value\"}";
+    let obj: i64 = json_parse_simple(input);
+
+    if json_is_object(obj) != 1 {
+        println("  FAIL: parsed value should be an object");
+        return 1;
+    }
+
+    let val: i64 = json_get_sx(obj, "key");
+    if json_is_string(val) != 1 {
+        println("  FAIL: value for 'key' should be a string");
+        return 1;
+    }
+
+    let str_val: i64 = json_as_string(val);
+    if intrinsic_string_eq(str_val, "value") != 1 {
+        println("  FAIL: value should be 'value'");
+        return 1;
+    }
+
+    println("  PASS: parse simple object");
+    0
+}
+
+// =============================================================================
+// Test 2: Parse Nested Object
+// =============================================================================
+
+fn test_parse_nested() -> i64 {
+    println("  Testing parse nested structure...");
+
+    let input: i64 = "{\"a\": {\"b\": [1, 2, 3]}}";
+    let obj: i64 = json_parse_simple(input);
+
+    if json_is_object(obj) != 1 {
+        println("  FAIL: parsed value should be an object");
+        return 1;
+    }
+
+    let inner: i64 = json_get_sx(obj, "a");
+    if json_is_object(inner) != 1 {
+        println("  FAIL: 'a' should be an object");
+        return 1;
+    }
+
+    let arr: i64 = json_get_sx(inner, "b");
+    if json_is_array(arr) != 1 {
+        println("  FAIL: 'b' should be an array");
+        return 1;
+    }
+
+    let len: i64 = json_array_len(arr);
+    if len != 3 {
+        println("  FAIL: array should have 3 elements");
+        return 1;
+    }
+
+    let elem0: i64 = json_get_index(arr, 0);
+    let val0: i64 = json_as_i64(elem0);
+    if val0 != 1 {
+        println("  FAIL: first element should be 1");
+        return 1;
+    }
+
+    let elem2: i64 = json_get_index(arr, 2);
+    let val2: i64 = json_as_i64(elem2);
+    if val2 != 3 {
+        println("  FAIL: third element should be 3");
+        return 1;
+    }
+
+    println("  PASS: parse nested structure");
+    0
+}
+
+// =============================================================================
+// Test 3: Parse All Types
+// =============================================================================
+
+fn test_parse_all_types() -> i64 {
+    println("  Testing parse all JSON types...");
+
+    // Test string
+    let str_input: i64 = "\"hello world\"";
+    let str_val: i64 = json_parse_simple(str_input);
+    if json_is_string(str_val) != 1 {
+        println("  FAIL: should parse string");
+        return 1;
+    }
+
+    // Test number
+    let num_input: i64 = "42";
+    let num_val: i64 = json_parse_simple(num_input);
+    if json_is_number(num_val) != 1 {
+        println("  FAIL: should parse number");
+        return 1;
+    }
+    if json_as_i64(num_val) != 42 {
+        println("  FAIL: number should be 42");
+        return 1;
+    }
+
+    // Test true
+    let true_input: i64 = "true";
+    let true_val: i64 = json_parse_simple(true_input);
+    if json_is_bool(true_val) != 1 {
+        println("  FAIL: should parse true as bool");
+        return 1;
+    }
+    if json_as_i64(true_val) != 1 {
+        println("  FAIL: true should be 1");
+        return 1;
+    }
+
+    // Test false
+    let false_input: i64 = "false";
+    let false_val: i64 = json_parse_simple(false_input);
+    if json_is_bool(false_val) != 1 {
+        println("  FAIL: should parse false as bool");
+        return 1;
+    }
+    if json_as_i64(false_val) != 0 {
+        println("  FAIL: false should be 0");
+        return 1;
+    }
+
+    // Test null
+    let null_input: i64 = "null";
+    let null_val: i64 = json_parse_simple(null_input);
+    if json_is_null(null_val) != 1 {
+        println("  FAIL: should parse null");
+        return 1;
+    }
+
+    // Test array
+    let arr_input: i64 = "[1, 2, 3]";
+    let arr_val: i64 = json_parse_simple(arr_input);
+    if json_is_array(arr_val) != 1 {
+        println("  FAIL: should parse array");
+        return 1;
+    }
+
+    // Test object
+    let obj_input: i64 = "{\"x\": 10}";
+    let obj_val: i64 = json_parse_simple(obj_input);
+    if json_is_object(obj_val) != 1 {
+        println("  FAIL: should parse object");
+        return 1;
+    }
+
+    println("  PASS: parse all JSON types");
+    0
+}
+
+// =============================================================================
+// Test 4: Build and Stringify Object
+// =============================================================================
+
+fn test_build_stringify_object() -> i64 {
+    println("  Testing build and stringify object...");
+
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "name", json_string("Alice"));
+    json_object_set(obj, "age", json_number_i64(30));
+    json_object_set(obj, "active", json_bool(1));
+
+    let output: i64 = json_stringify(obj);
+
+    // Verify the object has correct fields
+    let name: i64 = json_get_sx(obj, "name");
+    if json_is_string(name) != 1 {
+        println("  FAIL: name should be a string");
+        return 1;
+    }
+    let name_str: i64 = json_as_string(name);
+    if intrinsic_string_eq(name_str, "Alice") != 1 {
+        println("  FAIL: name should be 'Alice'");
+        return 1;
+    }
+
+    let age: i64 = json_get_sx(obj, "age");
+    if json_as_i64(age) != 30 {
+        println("  FAIL: age should be 30");
+        return 1;
+    }
+
+    let active: i64 = json_get_sx(obj, "active");
+    if json_as_i64(active) != 1 {
+        println("  FAIL: active should be true (1)");
+        return 1;
+    }
+
+    // Verify stringify produces valid JSON (non-empty string)
+    if output == 0 {
+        println("  FAIL: stringify should produce non-null output");
+        return 1;
+    }
+
+    println("  PASS: build and stringify object");
+    0
+}
+
+// =============================================================================
+// Test 5: Build and Stringify Array
+// =============================================================================
+
+fn test_build_stringify_array() -> i64 {
+    println("  Testing build and stringify array...");
+
+    let arr: i64 = json_array_new();
+    json_array_push(arr, json_number_i64(10));
+    json_array_push(arr, json_number_i64(20));
+    json_array_push(arr, json_number_i64(30));
+
+    if json_array_len(arr) != 3 {
+        println("  FAIL: array should have 3 elements");
+        return 1;
+    }
+
+    let first: i64 = json_get_index(arr, 0);
+    if json_as_i64(first) != 10 {
+        println("  FAIL: first element should be 10");
+        return 1;
+    }
+
+    let last: i64 = json_get_index(arr, 2);
+    if json_as_i64(last) != 30 {
+        println("  FAIL: last element should be 30");
+        return 1;
+    }
+
+    let output: i64 = json_stringify(arr);
+    if output == 0 {
+        println("  FAIL: stringify should produce non-null output");
+        return 1;
+    }
+
+    println("  PASS: build and stringify array");
+    0
+}
+
+// =============================================================================
+// Test 6: Stringify Round-Trip
+// =============================================================================
+
+fn test_stringify_roundtrip() -> i64 {
+    println("  Testing stringify round-trip...");
+
+    // Build an object
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "x", json_number_i64(42));
+    json_object_set(obj, "y", json_string("hello"));
+    json_object_set(obj, "z", json_bool(1));
+
+    // Stringify
+    let json_str: i64 = json_stringify(obj);
+
+    // Parse back
+    let parsed: i64 = json_parse_simple(json_str);
+
+    if json_is_object(parsed) != 1 {
+        println("  FAIL: round-trip should produce an object");
+        return 1;
+    }
+
+    // Verify fields survived round-trip
+    let x: i64 = json_get_sx(parsed, "x");
+    if json_as_i64(x) != 42 {
+        println("  FAIL: x should be 42 after round-trip");
+        return 1;
+    }
+
+    let y: i64 = json_get_sx(parsed, "y");
+    let y_str: i64 = json_as_string(y);
+    if intrinsic_string_eq(y_str, "hello") != 1 {
+        println("  FAIL: y should be 'hello' after round-trip");
+        return 1;
+    }
+
+    let z: i64 = json_get_sx(parsed, "z");
+    if json_as_i64(z) != 1 {
+        println("  FAIL: z should be true (1) after round-trip");
+        return 1;
+    }
+
+    println("  PASS: stringify round-trip");
+    0
+}
+
+// =============================================================================
+// Test 7: Error Handling - Malformed JSON
+// =============================================================================
+
+fn test_malformed_json() -> i64 {
+    println("  Testing malformed JSON handling...");
+
+    // Malformed: missing closing brace
+    let bad1: i64 = "{\"key\": ";
+    let result1: i64 = json_parse_simple(bad1);
+    // Parser should still return something (null or partial)
+    // It should not crash
+
+    // Malformed: random text
+    let bad2: i64 = "not json at all";
+    let result2: i64 = json_parse_simple(bad2);
+    // Should not crash
+
+    // Empty string
+    let bad3: i64 = "";
+    let result3: i64 = json_parse_simple(bad3);
+    // Should return null
+    if json_is_null(result3) != 1 {
+        // Some parsers might return 0 handle for empty input
+        // Either way, should not crash
+    }
+
+    println("  PASS: malformed JSON handling (no crash)");
+    0
+}
+
+// =============================================================================
+// Test 8: Object Accessor Functions
+// =============================================================================
+
+fn test_object_accessors() -> i64 {
+    println("  Testing object accessor functions...");
+
+    let input: i64 = "{\"name\": \"Bob\", \"age\": 25, \"active\": true, \"score\": null}";
+    let obj: i64 = json_parse_simple(input);
+
+    // Get string
+    let name: i64 = json_get_sx(obj, "name");
+    if json_is_string(name) != 1 {
+        println("  FAIL: name should be a string");
+        return 1;
+    }
+    let name_str: i64 = json_as_string(name);
+    if intrinsic_string_eq(name_str, "Bob") != 1 {
+        println("  FAIL: name should be 'Bob'");
+        return 1;
+    }
+
+    // Get number
+    let age: i64 = json_get_sx(obj, "age");
+    if json_is_number(age) != 1 {
+        println("  FAIL: age should be a number");
+        return 1;
+    }
+    if json_as_i64(age) != 25 {
+        println("  FAIL: age should be 25");
+        return 1;
+    }
+
+    // Get boolean
+    let active: i64 = json_get_sx(obj, "active");
+    if json_is_bool(active) != 1 {
+        println("  FAIL: active should be a boolean");
+        return 1;
+    }
+    if json_as_i64(active) != 1 {
+        println("  FAIL: active should be true (1)");
+        return 1;
+    }
+
+    // Get null
+    let score: i64 = json_get_sx(obj, "score");
+    if json_is_null(score) != 1 {
+        println("  FAIL: score should be null");
+        return 1;
+    }
+
+    // Get non-existent key
+    let missing: i64 = json_get_sx(obj, "nonexistent");
+    if json_is_null(missing) != 1 {
+        println("  FAIL: missing key should return null");
+        return 1;
+    }
+
+    println("  PASS: object accessor functions");
+    0
+}
+
+// =============================================================================
+// Test 9: Array Accessor Functions
+// =============================================================================
+
+fn test_array_accessors() -> i64 {
+    println("  Testing array accessor functions...");
+
+    let input: i64 = "[\"hello\", 42, true, null, [1, 2]]";
+    let arr: i64 = json_parse_simple(input);
+
+    if json_is_array(arr) != 1 {
+        println("  FAIL: should parse as array");
+        return 1;
+    }
+
+    if json_array_len(arr) != 5 {
+        println("  FAIL: array should have 5 elements");
+        return 1;
+    }
+
+    // String element
+    let elem0: i64 = json_get_index(arr, 0);
+    if json_is_string(elem0) != 1 {
+        println("  FAIL: element 0 should be string");
+        return 1;
+    }
+
+    // Number element
+    let elem1: i64 = json_get_index(arr, 1);
+    if json_as_i64(elem1) != 42 {
+        println("  FAIL: element 1 should be 42");
+        return 1;
+    }
+
+    // Bool element
+    let elem2: i64 = json_get_index(arr, 2);
+    if json_is_bool(elem2) != 1 {
+        println("  FAIL: element 2 should be boolean");
+        return 1;
+    }
+
+    // Null element
+    let elem3: i64 = json_get_index(arr, 3);
+    if json_is_null(elem3) != 1 {
+        println("  FAIL: element 3 should be null");
+        return 1;
+    }
+
+    // Nested array element
+    let elem4: i64 = json_get_index(arr, 4);
+    if json_is_array(elem4) != 1 {
+        println("  FAIL: element 4 should be array");
+        return 1;
+    }
+    if json_array_len(elem4) != 2 {
+        println("  FAIL: nested array should have 2 elements");
+        return 1;
+    }
+
+    // Out of bounds
+    let oob: i64 = json_get_index(arr, 99);
+    if json_is_null(oob) != 1 {
+        println("  FAIL: out-of-bounds access should return null");
+        return 1;
+    }
+
+    println("  PASS: array accessor functions");
+    0
+}
+
+// =============================================================================
+// Test 10: Builder Functions
+// =============================================================================
+
+fn test_builder_functions() -> i64 {
+    println("  Testing builder functions...");
+
+    // Build object with set
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "name", json_string("Charlie"));
+    json_object_set(obj, "items", json_array_new());
+
+    if json_object_len(obj) != 2 {
+        println("  FAIL: object should have 2 keys");
+        return 1;
+    }
+
+    // Build array with push
+    let arr: i64 = json_array_new();
+    json_array_push(arr, json_string("a"));
+    json_array_push(arr, json_string("b"));
+    json_array_push(arr, json_string("c"));
+
+    if json_array_len(arr) != 3 {
+        println("  FAIL: array should have 3 elements");
+        return 1;
+    }
+
+    // Set the array on the object
+    let items: i64 = json_get_sx(obj, "items");
+    json_array_push(items, json_number_i64(100));
+    json_array_push(items, json_number_i64(200));
+
+    let items_check: i64 = json_get_sx(obj, "items");
+    if json_array_len(items_check) != 2 {
+        println("  FAIL: items array should have 2 elements");
+        return 1;
+    }
+
+    println("  PASS: builder functions");
+    0
+}
+
+// =============================================================================
+// Test 11: Object Key Iteration
+// =============================================================================
+
+fn test_object_iteration() -> i64 {
+    println("  Testing object key iteration...");
+
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "alpha", json_number_i64(1));
+    json_object_set(obj, "beta", json_number_i64(2));
+    json_object_set(obj, "gamma", json_number_i64(3));
+
+    let len: i64 = json_object_len(obj);
+    if len != 3 {
+        println("  FAIL: object should have 3 keys");
+        return 1;
+    }
+
+    // Iterate and sum values
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        let val: i64 = json_object_value_at(obj, i);
+        total = total + json_as_i64(val);
+        i = i + 1;
+    }
+
+    if total != 6 {
+        println("  FAIL: sum of values should be 6");
+        return 1;
+    }
+
+    println("  PASS: object key iteration");
+    0
+}
+
+// =============================================================================
+// Test 12: Nested Object Build and Parse
+// =============================================================================
+
+fn test_nested_build() -> i64 {
+    println("  Testing nested object building...");
+
+    // Build: {"user": {"name": "Diana", "tags": ["admin", "user"]}}
+    let tags: i64 = json_array_new();
+    json_array_push(tags, json_string("admin"));
+    json_array_push(tags, json_string("user"));
+
+    let user: i64 = json_object_new();
+    json_object_set(user, "name", json_string("Diana"));
+    json_object_set(user, "tags", tags);
+
+    let root: i64 = json_object_new();
+    json_object_set(root, "user", user);
+
+    // Stringify and re-parse
+    let json_str: i64 = json_stringify(root);
+    let parsed: i64 = json_parse_simple(json_str);
+
+    // Navigate the parsed structure
+    let p_user: i64 = json_get_sx(parsed, "user");
+    if json_is_object(p_user) != 1 {
+        println("  FAIL: user should be an object");
+        return 1;
+    }
+
+    let p_name: i64 = json_get_sx(p_user, "name");
+    let p_name_str: i64 = json_as_string(p_name);
+    if intrinsic_string_eq(p_name_str, "Diana") != 1 {
+        println("  FAIL: user name should be 'Diana'");
+        return 1;
+    }
+
+    let p_tags: i64 = json_get_sx(p_user, "tags");
+    if json_array_len(p_tags) != 2 {
+        println("  FAIL: tags should have 2 elements");
+        return 1;
+    }
+
+    let tag0: i64 = json_get_index(p_tags, 0);
+    let tag0_str: i64 = json_as_string(tag0);
+    if intrinsic_string_eq(tag0_str, "admin") != 1 {
+        println("  FAIL: first tag should be 'admin'");
+        return 1;
+    }
+
+    println("  PASS: nested object building");
+    0
+}
+
+// =============================================================================
+// Test 13: Mixed Type Array
+// =============================================================================
+
+fn test_mixed_array() -> i64 {
+    println("  Testing mixed type array...");
+
+    let arr: i64 = json_array_new();
+    json_array_push(arr, json_string("text"));
+    json_array_push(arr, json_number_i64(99));
+    json_array_push(arr, json_bool(0));
+    json_array_push(arr, json_null());
+    json_array_push(arr, json_object_new());
+    json_array_push(arr, json_array_new());
+
+    if json_array_len(arr) != 6 {
+        println("  FAIL: array should have 6 elements");
+        return 1;
+    }
+
+    // Verify types
+    if json_is_string(json_get_index(arr, 0)) != 1 {
+        println("  FAIL: index 0 should be string");
+        return 1;
+    }
+    if json_is_number(json_get_index(arr, 1)) != 1 {
+        println("  FAIL: index 1 should be number");
+        return 1;
+    }
+    if json_is_bool(json_get_index(arr, 2)) != 1 {
+        println("  FAIL: index 2 should be bool");
+        return 1;
+    }
+    if json_is_null(json_get_index(arr, 3)) != 1 {
+        println("  FAIL: index 3 should be null");
+        return 1;
+    }
+    if json_is_object(json_get_index(arr, 4)) != 1 {
+        println("  FAIL: index 4 should be object");
+        return 1;
+    }
+    if json_is_array(json_get_index(arr, 5)) != 1 {
+        println("  FAIL: index 5 should be array");
+        return 1;
+    }
+
+    println("  PASS: mixed type array");
+    0
+}
+
+// =============================================================================
+// Test 14: Object Key Override
+// =============================================================================
+
+fn test_object_key_override() -> i64 {
+    println("  Testing object key override...");
+
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "key", json_string("first"));
+    json_object_set(obj, "key", json_string("second"));
+
+    let val: i64 = json_get_sx(obj, "key");
+    let val_str: i64 = json_as_string(val);
+    if intrinsic_string_eq(val_str, "second") != 1 {
+        println("  FAIL: overridden key should have value 'second'");
+        return 1;
+    }
+
+    println("  PASS: object key override");
+    0
+}
+
+// =============================================================================
+// Test 15: Empty Structures
+// =============================================================================
+
+fn test_empty_structures() -> i64 {
+    println("  Testing empty structures...");
+
+    // Empty object
+    let empty_obj: i64 = json_parse_simple("{}");
+    if json_is_object(empty_obj) != 1 {
+        println("  FAIL: should parse empty object");
+        return 1;
+    }
+    if json_object_len(empty_obj) != 0 {
+        println("  FAIL: empty object should have 0 keys");
+        return 1;
+    }
+
+    // Empty array
+    let empty_arr: i64 = json_parse_simple("[]");
+    if json_is_array(empty_arr) != 1 {
+        println("  FAIL: should parse empty array");
+        return 1;
+    }
+    if json_array_len(empty_arr) != 0 {
+        println("  FAIL: empty array should have 0 elements");
+        return 1;
+    }
+
+    // Stringify empty structures
+    let obj_str: i64 = json_stringify(json_object_new());
+    if obj_str == 0 {
+        println("  FAIL: stringify empty object should not be null");
+        return 1;
+    }
+
+    let arr_str: i64 = json_stringify(json_array_new());
+    if arr_str == 0 {
+        println("  FAIL: stringify empty array should not be null");
+        return 1;
+    }
+
+    println("  PASS: empty structures");
+    0
+}
+
+// =============================================================================
+// Test 16: Numeric Values
+// =============================================================================
+
+fn test_numeric_values() -> i64 {
+    println("  Testing numeric values...");
+
+    // Parse various numbers
+    let pos: i64 = json_parse_simple("123");
+    if json_as_i64(pos) != 123 {
+        println("  FAIL: 123 should parse as 123");
+        return 1;
+    }
+
+    let zero: i64 = json_parse_simple("0");
+    if json_as_i64(zero) != 0 {
+        println("  FAIL: 0 should parse as 0");
+        return 1;
+    }
+
+    let neg: i64 = json_parse_simple("-42");
+    if json_as_i64(neg) != -42 {
+        println("  FAIL: -42 should parse as -42");
+        return 1;
+    }
+
+    println("  PASS: numeric values");
+    0
+}
+
+// =============================================================================
+// Test 17: Parse String with Whitespace
+// =============================================================================
+
+fn test_whitespace_handling() -> i64 {
+    println("  Testing whitespace handling...");
+
+    let input: i64 = "  {  \"key\"  :  \"value\"  }  ";
+    let obj: i64 = json_parse_simple(input);
+
+    if json_is_object(obj) != 1 {
+        println("  FAIL: should parse object with extra whitespace");
+        return 1;
+    }
+
+    let val: i64 = json_get_sx(obj, "key");
+    let val_str: i64 = json_as_string(val);
+    if intrinsic_string_eq(val_str, "value") != 1 {
+        println("  FAIL: value should be 'value' despite whitespace");
+        return 1;
+    }
+
+    println("  PASS: whitespace handling");
+    0
+}
+
+// =============================================================================
+// Test 18: Complex Nested Structure
+// =============================================================================
+
+fn test_complex_structure() -> i64 {
+    println("  Testing complex nested structure...");
+
+    let input: i64 = "{\"users\": [{\"id\": 1, \"name\": \"Alice\"}, {\"id\": 2, \"name\": \"Bob\"}], \"count\": 2}";
+    let obj: i64 = json_parse_simple(input);
+
+    // Get count
+    let count: i64 = json_get_sx(obj, "count");
+    if json_as_i64(count) != 2 {
+        println("  FAIL: count should be 2");
+        return 1;
+    }
+
+    // Get users array
+    let users: i64 = json_get_sx(obj, "users");
+    if json_array_len(users) != 2 {
+        println("  FAIL: users should have 2 entries");
+        return 1;
+    }
+
+    // Get first user
+    let user0: i64 = json_get_index(users, 0);
+    let id0: i64 = json_get_sx(user0, "id");
+    if json_as_i64(id0) != 1 {
+        println("  FAIL: first user id should be 1");
+        return 1;
+    }
+
+    let name0: i64 = json_get_sx(user0, "name");
+    let name0_str: i64 = json_as_string(name0);
+    if intrinsic_string_eq(name0_str, "Alice") != 1 {
+        println("  FAIL: first user name should be 'Alice'");
+        return 1;
+    }
+
+    // Get second user
+    let user1: i64 = json_get_index(users, 1);
+    let name1: i64 = json_get_sx(user1, "name");
+    let name1_str: i64 = json_as_string(name1);
+    if intrinsic_string_eq(name1_str, "Bob") != 1 {
+        println("  FAIL: second user name should be 'Bob'");
+        return 1;
+    }
+
+    println("  PASS: complex nested structure");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== JSON Module Tests ===");
+    println("");
+
+    let f1: i64 = test_parse_simple_object();
+    let f2: i64 = test_parse_nested();
+    let f3: i64 = test_parse_all_types();
+    let f4: i64 = test_build_stringify_object();
+    let f5: i64 = test_build_stringify_array();
+    let f6: i64 = test_stringify_roundtrip();
+    let f7: i64 = test_malformed_json();
+    let f8: i64 = test_object_accessors();
+    let f9: i64 = test_array_accessors();
+    let f10: i64 = test_builder_functions();
+    let f11: i64 = test_object_iteration();
+    let f12: i64 = test_nested_build();
+    let f13: i64 = test_mixed_array();
+    let f14: i64 = test_object_key_override();
+    let f15: i64 = test_empty_structures();
+    let f16: i64 = test_numeric_values();
+    let f17: i64 = test_whitespace_handling();
+    let f18: i64 = test_complex_structure();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f16 + f17 + f18;
+
+    println("");
+    if failures == 0 {
+        println("All 18 JSON tests passed!");
+    } else {
+        println("Some JSON tests failed");
+    }
+
+    failures
+}

@@ -1,0 +1,299 @@
+// SLM Native Bindings Unit Tests
+// Tests the C-level SLM functions exposed through runtime/slm.sx
+// v0.13.0: Validates SLM native binding layer (Phase 12)
+//
+// These tests verify structural correctness: function signatures,
+// memory lifecycle, error handling, and return value shapes.
+// Actual inference math is stubbed in the runtime.
+
+// ============================================================================
+// Test 1: Load nonexistent model returns error gracefully
+// ============================================================================
+
+fn test_load_nonexistent_model() -> i64 {
+    println("  Test: load nonexistent model...");
+
+    // Attempt to load a model file that does not exist
+    let handle: i64 = slm_native_load("/tmp/nonexistent_model_12345.gguf", 4096, 4);
+
+    if handle == 0 {
+        println("    PASS: nonexistent model returns handle 0");
+        1
+    } else {
+        println("    FAIL: expected handle 0, got nonzero");
+        // Clean up unexpected handle
+        slm_native_unload(handle);
+        0
+    }
+}
+
+// ============================================================================
+// Test 2: Load with empty path returns error gracefully
+// ============================================================================
+
+fn test_load_empty_path() -> i64 {
+    println("  Test: load with empty path...");
+
+    let handle: i64 = slm_native_load("", 4096, 4);
+
+    if handle == 0 {
+        println("    PASS: empty path returns handle 0");
+        1
+    } else {
+        println("    FAIL: expected handle 0 for empty path");
+        slm_native_unload(handle);
+        0
+    }
+}
+
+// ============================================================================
+// Test 3: Unload invalid handle does not crash
+// ============================================================================
+
+fn test_unload_invalid_handle() -> i64 {
+    println("  Test: unload invalid handle...");
+
+    // These should not crash — just log a warning and return
+    slm_native_unload(0);
+    slm_native_unload(999999);
+
+    println("    PASS: unload invalid handles did not crash");
+    1
+}
+
+// ============================================================================
+// Test 4: Create and destroy context lifecycle
+// ============================================================================
+
+fn test_context_lifecycle() -> i64 {
+    println("  Test: create/destroy context lifecycle...");
+
+    // Context creation requires a valid model, which requires a valid GGUF file.
+    // Since we don't have one in tests, verify that invalid model handle returns 0.
+    let ctx: i64 = slm_native_create_context(0, 4096);
+
+    if ctx == 0 {
+        println("    PASS: context with invalid model returns 0");
+        1
+    } else {
+        println("    FAIL: expected 0 for invalid model context");
+        slm_native_destroy_context(ctx);
+        0
+    }
+}
+
+// ============================================================================
+// Test 5: Destroy invalid context does not crash
+// ============================================================================
+
+fn test_destroy_invalid_context() -> i64 {
+    println("  Test: destroy invalid context...");
+
+    slm_native_destroy_context(0);
+    slm_native_destroy_context(999999);
+
+    println("    PASS: destroy invalid contexts did not crash");
+    1
+}
+
+// ============================================================================
+// Test 6: Tokenize with invalid context returns empty vec
+// ============================================================================
+
+fn test_tokenize_invalid_context() -> i64 {
+    println("  Test: tokenize with invalid context...");
+
+    let tokens: i64 = slm_native_tokenize(0, "hello world");
+    let len: i64 = vec_len(tokens);
+
+    if len == 0 {
+        println("    PASS: tokenize with invalid context returns empty vec");
+        1
+    } else {
+        print("    FAIL: expected 0 tokens, got ");
+        print_i64(len);
+        println("");
+        0
+    }
+}
+
+// ============================================================================
+// Test 7: Infer with invalid model returns error string
+// ============================================================================
+
+fn test_infer_invalid_model() -> i64 {
+    println("  Test: infer with invalid model...");
+
+    let result: i64 = slm_native_infer(0, "test prompt", 70);
+
+    if result != 0 {
+        let len: i64 = string_len(result);
+        if len > 0 {
+            println("    PASS: infer with invalid model returns error string");
+            1
+        } else {
+            println("    FAIL: error string is empty");
+            0
+        }
+    } else {
+        println("    FAIL: infer returned null");
+        0
+    }
+}
+
+// ============================================================================
+// Test 8: Generate with invalid context returns error string
+// ============================================================================
+
+fn test_generate_invalid_context() -> i64 {
+    println("  Test: generate with invalid context...");
+
+    let empty_tokens: i64 = vec_new();
+    let result: i64 = slm_native_generate(0, empty_tokens, 100, 70);
+
+    if result != 0 {
+        let len: i64 = string_len(result);
+        if len > 0 {
+            println("    PASS: generate with invalid context returns error string");
+            1
+        } else {
+            println("    FAIL: error string is empty");
+            0
+        }
+    } else {
+        println("    FAIL: generate returned null");
+        0
+    }
+}
+
+// ============================================================================
+// Test 9: Get model info with invalid handle returns error JSON
+// ============================================================================
+
+fn test_model_info_invalid() -> i64 {
+    println("  Test: get_model_info with invalid handle...");
+
+    let info: i64 = slm_native_get_model_info(0);
+
+    if info != 0 {
+        let len: i64 = string_len(info);
+        if len > 0 {
+            println("    PASS: model info with invalid handle returns error JSON");
+            1
+        } else {
+            println("    FAIL: info string is empty");
+            0
+        }
+    } else {
+        println("    FAIL: model info returned null");
+        0
+    }
+}
+
+// ============================================================================
+// Test 10: Embed with invalid handle returns vector
+// ============================================================================
+
+fn test_embed_invalid_handle() -> i64 {
+    println("  Test: embed with invalid handle...");
+
+    let embedding: i64 = slm_native_embed(0, "test text");
+    let len: i64 = vec_len(embedding);
+
+    // Should return a zero vector of default dimension (384)
+    if len == 384 {
+        println("    PASS: embed returns 384-dim zero vector");
+        1
+    } else {
+        print("    FAIL: expected 384-dim vector, got ");
+        print_i64(len);
+        println("");
+        0
+    }
+}
+
+// ============================================================================
+// Test 11: Similarity of zero vectors returns 0.0
+// ============================================================================
+
+fn test_similarity_zero_vectors() -> i64 {
+    println("  Test: similarity of zero vectors...");
+
+    let a: i64 = slm_native_embed(0, "a");
+    let b: i64 = slm_native_embed(0, "b");
+
+    let sim: i64 = slm_native_similarity(a, b);
+
+    // Zero vectors should give similarity 0.0 (bit pattern 0)
+    if sim == 0 {
+        println("    PASS: zero vector similarity is 0.0");
+        1
+    } else {
+        println("    FAIL: expected 0.0 similarity for zero vectors");
+        0
+    }
+}
+
+// ============================================================================
+// Test 12: Context size and embedding size with invalid handle
+// ============================================================================
+
+fn test_metadata_invalid_handle() -> i64 {
+    println("  Test: context_size/embedding_size with invalid handle...");
+
+    let ctx_size: i64 = slm_native_context_size(0);
+    let emb_size: i64 = slm_native_embedding_size(0);
+
+    if ctx_size == 0 {
+        if emb_size == 0 {
+            println("    PASS: metadata queries return 0 for invalid handle");
+            1
+        } else {
+            println("    FAIL: embedding_size should be 0 for invalid handle");
+            0
+        }
+    } else {
+        println("    FAIL: context_size should be 0 for invalid handle");
+        0
+    }
+}
+
+// ============================================================================
+// Main test runner
+// ============================================================================
+
+fn main() -> i64 {
+    println("=== SLM Native Bindings Unit Tests ===");
+    println("");
+
+    var passed: i64 = 0;
+    let total: i64 = 12;
+
+    passed = passed + test_load_nonexistent_model();
+    passed = passed + test_load_empty_path();
+    passed = passed + test_unload_invalid_handle();
+    passed = passed + test_context_lifecycle();
+    passed = passed + test_destroy_invalid_context();
+    passed = passed + test_tokenize_invalid_context();
+    passed = passed + test_infer_invalid_model();
+    passed = passed + test_generate_invalid_context();
+    passed = passed + test_model_info_invalid();
+    passed = passed + test_embed_invalid_handle();
+    passed = passed + test_similarity_zero_vectors();
+    passed = passed + test_metadata_invalid_handle();
+
+    println("");
+    print("Results: ");
+    print_i64(passed);
+    print("/");
+    print_i64(total);
+    println(" tests passed");
+
+    if passed == total {
+        println("=== ALL TESTS PASSED ===");
+        0
+    } else {
+        println("=== SOME TESTS FAILED ===");
+        1
+    }
+}

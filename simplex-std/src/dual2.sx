@@ -1,0 +1,499 @@
+// simplex-std::dual2 - Second-Order Dual Numbers for Hessian Computation
+//
+// Second-order dual numbers track a value, its first derivative, and its
+// second derivative simultaneously. This enables computing f(x), f'(x),
+// and f''(x) in a single forward pass — no numerical approximation needed.
+//
+// # Mathematical Foundation
+//
+// A second-order dual number has the form:
+//   d = a + b·ε + c·ε²
+//
+// where ε³ = 0 (truncated at second order).
+//
+// Multiplication:
+//   (a + b·ε + c·ε²)(d + e·ε + f·ε²)
+//     = ad + (ae + bd)ε + (af + be + cd)ε²  [keeping terms up to ε²]
+//
+// The coefficient of ε² gives us the second derivative (divided by 2),
+// but we store it directly as d2 = f''(x) rather than f''(x)/2!.
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::dual2::Dual2;
+//
+// // Compute f(x) = x³ and its first two derivatives at x = 2
+// let x = Dual2::variable(2.0);
+// let f = x * x * x;
+// // f.val = 8.0   (2³)
+// // f.d1  = 12.0  (3·2² = 12)
+// // f.d2  = 12.0  (6·2 = 12)
+// ```
+//
+// # Use Cases
+//
+// - **Newton's method**: Requires f'(x) and f''(x) for step computation
+// - **Hessian computation**: Second-order optimization (L-BFGS, trust region)
+// - **Curvature analysis**: Determine if a critical point is min/max/saddle
+// - **Taylor expansion**: f(x+h) ≈ f(x) + f'(x)h + ½f''(x)h²
+
+use super::{Clone, Copy, Eq, Display, Default};
+
+// =============================================================================
+// Core Type
+// =============================================================================
+
+/// Second-order dual number: value + first derivative + second derivative.
+///
+/// Represents f(x), f'(x), and f''(x) simultaneously.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Dual2 {
+    /// Function value f(x)
+    pub val: f64,
+    /// First derivative f'(x)
+    pub d1: f64,
+    /// Second derivative f''(x)
+    pub d2: f64,
+}
+
+impl Dual2 {
+    // =========================================================================
+    // Constructors
+    // =========================================================================
+
+    /// Create a variable for differentiation.
+    ///
+    /// Sets d1=1.0 (first derivative of x w.r.t. x is 1)
+    /// and d2=0.0 (second derivative of x w.r.t. x is 0).
+    ///
+    /// # Example
+    /// ```
+    /// let x = Dual2::variable(3.0);
+    /// let y = x * x;  // x²
+    /// // y.val = 9.0, y.d1 = 6.0, y.d2 = 2.0
+    /// ```
+    #[inline]
+    pub fn variable(val: f64) -> Dual2 {
+        Dual2 { val, d1: 1.0, d2: 0.0 }
+    }
+
+    /// Create a constant (all derivatives = 0).
+    #[inline]
+    pub fn constant(val: f64) -> Dual2 {
+        Dual2 { val, d1: 0.0, d2: 0.0 }
+    }
+
+    /// Create with explicit components.
+    #[inline]
+    pub fn new(val: f64, d1: f64, d2: f64) -> Dual2 {
+        Dual2 { val, d1, d2 }
+    }
+
+    /// Zero value.
+    #[inline]
+    pub fn zero() -> Dual2 {
+        Dual2 { val: 0.0, d1: 0.0, d2: 0.0 }
+    }
+
+    /// One (constant).
+    #[inline]
+    pub fn one() -> Dual2 {
+        Dual2 { val: 1.0, d1: 0.0, d2: 0.0 }
+    }
+
+    // =========================================================================
+    // Accessors
+    // =========================================================================
+
+    /// Get the function value.
+    #[inline]
+    pub fn value(&self) -> f64 {
+        self.val
+    }
+
+    /// Get the first derivative.
+    #[inline]
+    pub fn first_derivative(&self) -> f64 {
+        self.d1
+    }
+
+    /// Get the second derivative.
+    #[inline]
+    pub fn second_derivative(&self) -> f64 {
+        self.d2
+    }
+
+    /// Extract all three components as a tuple: (f(x), f'(x), f''(x)).
+    #[inline]
+    pub fn components(&self) -> (f64, f64, f64) {
+        (self.val, self.d1, self.d2)
+    }
+
+    /// Check if this is a constant.
+    #[inline]
+    pub fn is_constant(&self) -> bool {
+        self.d1 == 0.0 && self.d2 == 0.0
+    }
+
+    /// Detach from the computation (zero out derivatives).
+    #[inline]
+    pub fn detach(&self) -> Dual2 {
+        Dual2::constant(self.val)
+    }
+
+    // =========================================================================
+    // Arithmetic Operations
+    // =========================================================================
+
+    /// Addition: derivatives add linearly.
+    /// (a + b·ε + c·ε²) + (d + e·ε + f·ε²) = (a+d) + (b+e)·ε + (c+f)·ε²
+    #[inline]
+    pub fn add(self, other: Dual2) -> Dual2 {
+        Dual2 {
+            val: self.val + other.val,
+            d1: self.d1 + other.d1,
+            d2: self.d2 + other.d2,
+        }
+    }
+
+    /// Subtraction: derivatives subtract linearly.
+    #[inline]
+    pub fn sub(self, other: Dual2) -> Dual2 {
+        Dual2 {
+            val: self.val - other.val,
+            d1: self.d1 - other.d1,
+            d2: self.d2 - other.d2,
+        }
+    }
+
+    /// Multiplication with second-order propagation.
+    ///
+    /// Product rule for second derivatives:
+    ///   (fg)' = f'g + fg'
+    ///   (fg)'' = f''g + 2f'g' + fg''
+    ///
+    /// The 2f'g' term is what makes second-order dual numbers special —
+    /// it captures the cross-term that first-order dual numbers miss.
+    #[inline]
+    pub fn mul(self, other: Dual2) -> Dual2 {
+        Dual2 {
+            val: self.val * other.val,
+            d1: self.val * other.d1 + self.d1 * other.val,
+            d2: self.val * other.d2 + 2.0 * self.d1 * other.d1 + self.d2 * other.val,
+        }
+    }
+
+    /// Division with second-order quotient rule.
+    ///
+    /// (f/g)' = (f'g - fg') / g²
+    /// (f/g)'' = (f''g² - 2f'g'g - fg''g + 2fg'²) / g³  ... simplified form:
+    ///         = (f'' - 2·(f/g)'·g' - (f/g)·g'') / g
+    #[inline]
+    pub fn div(self, other: Dual2) -> Dual2 {
+        let val = self.val / other.val;
+        let d1 = (self.d1 * other.val - self.val * other.d1) / (other.val * other.val);
+        // Second derivative of quotient:
+        // (f/g)'' = (f'' - 2·d1_result·g' - val_result·g'') / g
+        let d2 = (self.d2 - 2.0 * d1 * other.d1 - val * other.d2) / other.val;
+        Dual2 { val, d1, d2 }
+    }
+
+    /// Negation.
+    #[inline]
+    pub fn neg(self) -> Dual2 {
+        Dual2 {
+            val: -self.val,
+            d1: -self.d1,
+            d2: -self.d2,
+        }
+    }
+
+    /// Scalar addition.
+    #[inline]
+    pub fn add_scalar(self, s: f64) -> Dual2 {
+        Dual2 {
+            val: self.val + s,
+            d1: self.d1,
+            d2: self.d2,
+        }
+    }
+
+    /// Scalar multiplication.
+    #[inline]
+    pub fn mul_scalar(self, s: f64) -> Dual2 {
+        Dual2 {
+            val: self.val * s,
+            d1: self.d1 * s,
+            d2: self.d2 * s,
+        }
+    }
+
+    // =========================================================================
+    // Mathematical Functions
+    // =========================================================================
+    // Each function computes: f(val), f'(val)·d1, and f''(val)·d1² + f'(val)·d2
+    // using the chain rule for second derivatives:
+    //   [f(g(x))]'' = f''(g(x))·[g'(x)]² + f'(g(x))·g''(x)
+
+    /// Sine: sin(x)
+    /// First derivative:  cos(x)
+    /// Second derivative: -sin(x)
+    pub fn sin(self) -> Dual2 {
+        let sin_v = self.val.sin();
+        let cos_v = self.val.cos();
+        Dual2 {
+            val: sin_v,
+            d1: cos_v * self.d1,
+            d2: cos_v * self.d2 - sin_v * self.d1 * self.d1,
+        }
+    }
+
+    /// Cosine: cos(x)
+    /// First derivative:  -sin(x)
+    /// Second derivative: -cos(x)
+    pub fn cos(self) -> Dual2 {
+        let sin_v = self.val.sin();
+        let cos_v = self.val.cos();
+        Dual2 {
+            val: cos_v,
+            d1: -sin_v * self.d1,
+            d2: -sin_v * self.d2 - cos_v * self.d1 * self.d1,
+        }
+    }
+
+    /// Exponential: exp(x)
+    /// First derivative:  exp(x)
+    /// Second derivative: exp(x)
+    pub fn exp(self) -> Dual2 {
+        let e = self.val.exp();
+        Dual2 {
+            val: e,
+            d1: e * self.d1,
+            d2: e * self.d2 + e * self.d1 * self.d1,
+        }
+    }
+
+    /// Natural logarithm: ln(x)
+    /// First derivative:  1/x
+    /// Second derivative: -1/x²
+    pub fn ln(self) -> Dual2 {
+        let inv = 1.0 / self.val;
+        Dual2 {
+            val: self.val.ln(),
+            d1: inv * self.d1,
+            d2: inv * self.d2 - inv * inv * self.d1 * self.d1,
+        }
+    }
+
+    /// Square root: sqrt(x)
+    /// First derivative:  1/(2·sqrt(x))
+    /// Second derivative: -1/(4·x·sqrt(x))
+    pub fn sqrt(self) -> Dual2 {
+        let s = self.val.sqrt();
+        let inv_2s = 1.0 / (2.0 * s);
+        Dual2 {
+            val: s,
+            d1: inv_2s * self.d1,
+            d2: inv_2s * self.d2 - self.d1 * self.d1 / (4.0 * self.val * s),
+        }
+    }
+
+    /// Power with constant exponent: x^n
+    /// First derivative:  n·x^(n-1)
+    /// Second derivative: n·(n-1)·x^(n-2)
+    pub fn pow(self, n: f64) -> Dual2 {
+        let val = self.val.powf(n);
+        let first_coeff = n * self.val.powf(n - 1.0);
+        let second_coeff = n * (n - 1.0) * self.val.powf(n - 2.0);
+        Dual2 {
+            val,
+            d1: first_coeff * self.d1,
+            d2: first_coeff * self.d2 + second_coeff * self.d1 * self.d1,
+        }
+    }
+
+    /// Power with integer exponent.
+    pub fn powi(self, n: i32) -> Dual2 {
+        self.pow(n as f64)
+    }
+
+    /// Hyperbolic tangent: tanh(x)
+    /// First derivative:  1 - tanh²(x) = sech²(x)
+    /// Second derivative: -2·tanh(x)·sech²(x)
+    pub fn tanh(self) -> Dual2 {
+        let t = self.val.tanh();
+        let sech2 = 1.0 - t * t;
+        Dual2 {
+            val: t,
+            d1: sech2 * self.d1,
+            d2: sech2 * self.d2 - 2.0 * t * sech2 * self.d1 * self.d1,
+        }
+    }
+
+    /// Sigmoid: σ(x) = 1/(1 + e^(-x))
+    /// First derivative:  σ(x)·(1 - σ(x))
+    /// Second derivative: σ(x)·(1 - σ(x))·(1 - 2·σ(x))
+    pub fn sigmoid(self) -> Dual2 {
+        let s = 1.0 / (1.0 + (-self.val).exp());
+        let ds = s * (1.0 - s);
+        let dds = ds * (1.0 - 2.0 * s);
+        Dual2 {
+            val: s,
+            d1: ds * self.d1,
+            d2: ds * self.d2 + dds * self.d1 * self.d1,
+        }
+    }
+
+    /// Tangent: tan(x)
+    /// First derivative:  sec²(x) = 1 + tan²(x)
+    /// Second derivative: 2·tan(x)·sec²(x)
+    pub fn tan(self) -> Dual2 {
+        let t = self.val.tan();
+        let sec2 = 1.0 + t * t;
+        Dual2 {
+            val: t,
+            d1: sec2 * self.d1,
+            d2: sec2 * self.d2 + 2.0 * t * sec2 * self.d1 * self.d1,
+        }
+    }
+
+    /// Absolute value (with subgradient at 0).
+    pub fn abs(self) -> Dual2 {
+        if self.val >= 0.0 {
+            self
+        } else {
+            self.neg()
+        }
+    }
+
+    /// ReLU activation: max(0, x)
+    pub fn relu(self) -> Dual2 {
+        if self.val > 0.0 {
+            self
+        } else {
+            Dual2::zero()
+        }
+    }
+
+    /// Softplus: ln(1 + e^x)
+    /// First derivative:  σ(x) = e^x / (1 + e^x)
+    /// Second derivative: σ(x)·(1 - σ(x))
+    pub fn softplus(self) -> Dual2 {
+        let e = self.val.exp();
+        let sp = (1.0 + e).ln();
+        let sig = e / (1.0 + e);
+        let dsig = sig * (1.0 - sig);
+        Dual2 {
+            val: sp,
+            d1: sig * self.d1,
+            d2: sig * self.d2 + dsig * self.d1 * self.d1,
+        }
+    }
+
+    /// Reciprocal: 1/x
+    /// First derivative:  -1/x²
+    /// Second derivative:  2/x³
+    pub fn recip(self) -> Dual2 {
+        let inv = 1.0 / self.val;
+        let inv2 = inv * inv;
+        let inv3 = inv2 * inv;
+        Dual2 {
+            val: inv,
+            d1: -inv2 * self.d1,
+            d2: -inv2 * self.d2 + 2.0 * inv3 * self.d1 * self.d1,
+        }
+    }
+
+    // =========================================================================
+    // Utility Methods
+    // =========================================================================
+
+    /// Clamp value to range.
+    pub fn clamp(self, min_val: f64, max_val: f64) -> Dual2 {
+        if self.val < min_val {
+            Dual2::constant(min_val)
+        } else if self.val > max_val {
+            Dual2::constant(max_val)
+        } else {
+            self
+        }
+    }
+
+    /// Check if all components are finite.
+    pub fn is_finite(&self) -> bool {
+        self.val.is_finite() && self.d1.is_finite() && self.d2.is_finite()
+    }
+}
+
+// =============================================================================
+// Operator Overloading
+// =============================================================================
+
+impl std::ops::Add for Dual2 {
+    type Output = Dual2;
+    fn add(self, other: Dual2) -> Dual2 { self.add(other) }
+}
+
+impl std::ops::Add<f64> for Dual2 {
+    type Output = Dual2;
+    fn add(self, other: f64) -> Dual2 { self.add_scalar(other) }
+}
+
+impl std::ops::Sub for Dual2 {
+    type Output = Dual2;
+    fn sub(self, other: Dual2) -> Dual2 { self.sub(other) }
+}
+
+impl std::ops::Sub<f64> for Dual2 {
+    type Output = Dual2;
+    fn sub(self, other: f64) -> Dual2 { self.add_scalar(-other) }
+}
+
+impl std::ops::Mul for Dual2 {
+    type Output = Dual2;
+    fn mul(self, other: Dual2) -> Dual2 { self.mul(other) }
+}
+
+impl std::ops::Mul<f64> for Dual2 {
+    type Output = Dual2;
+    fn mul(self, other: f64) -> Dual2 { self.mul_scalar(other) }
+}
+
+impl std::ops::Div for Dual2 {
+    type Output = Dual2;
+    fn div(self, other: Dual2) -> Dual2 { self.div(other) }
+}
+
+impl std::ops::Div<f64> for Dual2 {
+    type Output = Dual2;
+    fn div(self, other: f64) -> Dual2 { self.mul_scalar(1.0 / other) }
+}
+
+impl std::ops::Neg for Dual2 {
+    type Output = Dual2;
+    fn neg(self) -> Dual2 { self.neg() }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl Default for Dual2 {
+    fn default() -> Dual2 {
+        Dual2::zero()
+    }
+}
+
+impl Display for Dual2 {
+    fn fmt(&self) -> String {
+        format!("Dual2({}, d1={}, d2={})", self.val, self.d1, self.d2)
+    }
+}
+
+impl Eq for Dual2 {
+    fn eq(&self, other: &Dual2) -> bool {
+        self.val == other.val && self.d1 == other.d1 && self.d2 == other.d2
+    }
+}

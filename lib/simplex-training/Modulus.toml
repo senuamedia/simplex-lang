@@ -6,7 +6,7 @@
 
 [package]
 name = "simplex-training"
-version = "0.12.0"
+version = "0.13.0"
 description = "Self-learning training pipeline for Simplex models"
 authors = ["Rod Higgins"]
 license = "MIT"

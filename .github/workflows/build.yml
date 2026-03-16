@@ -38,7 +38,6 @@ jobs:
         cd compiler/bootstrap
         python3 stage0.py lexer.sx
         python3 stage0.py parser.sx
-        python3 stage0.py error.sx
         python3 stage0.py codegen.sx
         python3 stage0.py main.sx
 
@@ -89,7 +88,6 @@ jobs:
 
         with open('lexer.ll') as f: lexer = f.read()
         with open('parser.ll') as f: parser = f.read()
-        with open('error.ll') as f: error = f.read()
         with open('codegen.ll') as f: codegen = f.read()
         with open('main.ll') as f: main = f.read()
 
@@ -97,7 +95,7 @@ jobs:
         all_strings = {}
         all_funcs = {}
 
-        for content in [lexer, parser, error, codegen, main]:
+        for content in [lexer, parser, codegen, main]:
             all_strings.update(extract_strings(content))
             for fn, body in extract_function_defs(content).items():
                 if fn not in all_funcs:
@@ -190,7 +188,6 @@ jobs:
         cd compiler/bootstrap
         python3 stage0.py lexer.sx
         python3 stage0.py parser.sx
-        python3 stage0.py error.sx
         python3 stage0.py codegen.sx
         python3 stage0.py main.sx
 
@@ -241,7 +238,6 @@ jobs:
 
         with open('lexer.ll') as f: lexer = f.read()
         with open('parser.ll') as f: parser = f.read()
-        with open('error.ll') as f: error = f.read()
         with open('codegen.ll') as f: codegen = f.read()
         with open('main.ll') as f: main = f.read()
 
@@ -249,7 +245,7 @@ jobs:
         all_strings = {}
         all_funcs = {}
 
-        for content in [lexer, parser, error, codegen, main]:
+        for content in [lexer, parser, codegen, main]:
             all_strings.update(extract_strings(content))
             for fn, body in extract_function_defs(content).items():
                 if fn not in all_funcs:
@@ -334,7 +330,6 @@ jobs:
         cd compiler/bootstrap
         python stage0.py lexer.sx
         python stage0.py parser.sx
-        python stage0.py error.sx
         python stage0.py codegen.sx
         python stage0.py main.sx
 
@@ -385,7 +380,6 @@ jobs:
 
         with open('lexer.ll') as f: lexer = f.read()
         with open('parser.ll') as f: parser = f.read()
-        with open('error.ll') as f: error = f.read()
         with open('codegen.ll') as f: codegen = f.read()
         with open('main.ll') as f: main = f.read()
 
@@ -393,7 +387,7 @@ jobs:
         all_strings = {}
         all_funcs = {}
 
-        for content in [lexer, parser, error, codegen, main]:
+        for content in [lexer, parser, codegen, main]:
             all_strings.update(extract_strings(content))
             for fn, body in extract_function_defs(content).items():
                 if fn not in all_funcs:

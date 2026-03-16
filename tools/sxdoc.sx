@@ -5,13 +5,30 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-// Version constant (inlined for standalone compilation)
-fn VERSION() -> i64 { string_from("0.12.0") }
+// TODO(TASK-020): Replace with `use lib::version;` and call SXDOC_VERSION() once
+// cross-file imports work for standalone-compiled tools. The canonical source of
+// truth is lib/version.sx SXDOC_VERSION().
+// Version constant (inlined for standalone compilation — see lib/version.sx)
+fn VERSION() -> i64 { string_from("0.13.0") }
 
 // Inline platform detection
+// Synced with lib/platform.sx — use lib::platform when module compilation supports it
 fn platform_get_os_name() -> i64 {
-    // Default to macos for now - cross-platform detection handled at runtime
-    string_from("macos")
+    let windir: i64 = env_get(string_from("WINDIR"));
+    if windir != 0 {
+        return string_from("windows");
+    }
+
+    let home: i64 = env_get(string_from("HOME"));
+    if home != 0 {
+        let tmpdir: i64 = env_get(string_from("TMPDIR"));
+        if tmpdir != 0 && string_contains(tmpdir, string_from("/var/folders/")) {
+            return string_from("macos");
+        }
+        return string_from("linux");
+    }
+
+    return string_from("unknown");
 }
 
 fn show_help() -> i64 {
@@ -23,6 +40,8 @@ fn show_help() -> i64 {
     println("OPTIONS:");
     println("    --html          Generate HTML output (default)");
     println("    --markdown      Generate Markdown output");
+    println("    --manifest      Generate manifest.json instead of docs");
+    println("    --category <n>  Category for output grouping (e.g., stdlib, tools)");
     println("    -o <dir>        Output directory (default: ./docs)");
     println("    -h, --help      Show this help");
     println("    --version       Show version");
@@ -666,6 +685,124 @@ fn generate_md_item(item: i64) -> i64 {
 }
 
 // ========================================
+// JSON Utilities (for manifest generation)
+// ========================================
+
+/// Escape a string for safe embedding in JSON values
+fn json_escape(s: i64) -> i64 {
+    let result: i64 = s;
+    result = string_replace(result, string_from("\\"), string_from("\\\\"));
+    result = string_replace(result, string_from("\""), string_from("\\\""));
+    result = string_replace(result, string_from("\n"), string_from("\\n"));
+    result = string_replace(result, string_from("\t"), string_from("\\t"));
+    result
+}
+
+// ========================================
+// Manifest Generation (--manifest flag)
+// ========================================
+
+/// Generate a manifest.json for a documented module
+/// Output follows the format used in simplex-docs/api/lib/manifest.json:
+///   { "category": "...", "modules": [ { "name": "...", "file": "...", "items": [...] } ] }
+fn generate_manifest(docs: i64, module_name: i64, category: i64) -> i64 {
+    let sb: i64 = sb_new();
+
+    sb_append(sb, string_from("{\n"));
+
+    // Category field
+    sb_append(sb, string_from("  \"category\": \""));
+    sb_append(sb, json_escape(category));
+    sb_append(sb, string_from("\",\n"));
+
+    // Modules array (one module per source file)
+    sb_append(sb, string_from("  \"modules\": [\n"));
+    sb_append(sb, string_from("    {\n"));
+    sb_append(sb, string_from("      \"name\": \""));
+    sb_append(sb, json_escape(module_name));
+    sb_append(sb, string_from("\",\n"));
+    sb_append(sb, string_from("      \"file\": \""));
+    sb_append(sb, json_escape(string_concat(module_name, string_from(".html"))));
+    sb_append(sb, string_from("\",\n"));
+
+    // Module description: use the first doc comment line if available
+    let description: i64 = extract_module_description(docs);
+    if string_len(description) > 0 {
+        sb_append(sb, string_from("      \"description\": \""));
+        sb_append(sb, json_escape(description));
+        sb_append(sb, string_from("\",\n"));
+    }
+
+    // Items array
+    sb_append(sb, string_from("      \"items\": [\n"));
+
+    let n: i64 = vec_len(docs);
+    let i: i64 = 0;
+    while i < n {
+        let item: i64 = vec_get(docs, i);
+        sb_append(sb, generate_manifest_item(item));
+
+        // Comma separator between items
+        if i + 1 < n {
+            sb_append(sb, string_from(",\n"));
+        } else {
+            sb_append(sb, string_from("\n"));
+        }
+        i = i + 1;
+    }
+
+    sb_append(sb, string_from("      ]\n"));
+    sb_append(sb, string_from("    }\n"));
+    sb_append(sb, string_from("  ]\n"));
+    sb_append(sb, string_from("}\n"));
+
+    sb_to_string(sb)
+}
+
+/// Generate a single manifest item JSON object
+fn generate_manifest_item(item: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let kind: i64 = doc_item_kind(item);
+    let name: i64 = doc_item_name(item);
+    let sig: i64 = doc_item_sig(item);
+
+    sb_append(sb, string_from("        {\"kind\": \""));
+    sb_append(sb, json_escape(get_kind_str(kind)));
+    sb_append(sb, string_from("\", \"name\": \""));
+    sb_append(sb, json_escape(name));
+    sb_append(sb, string_from("\""));
+
+    // Include signature if available
+    if string_len(sig) > 0 {
+        sb_append(sb, string_from(", \"signature\": \""));
+        sb_append(sb, json_escape(sig));
+        sb_append(sb, string_from("\""));
+    }
+
+    sb_append(sb, string_from("}"));
+    sb_to_string(sb)
+}
+
+/// Extract a module-level description from the first documented item
+/// Uses the first item's doc comment as the module description
+fn extract_module_description(docs: i64) -> i64 {
+    if vec_len(docs) == 0 {
+        return string_from("");
+    }
+    let first: i64 = vec_get(docs, 0);
+    let doc: i64 = doc_item_doc(first);
+    if string_len(doc) > 0 {
+        // Use first line of doc comment only
+        let newline_pos: i64 = string_find(doc, string_from("\n"), 0);
+        if newline_pos > 0 {
+            return string_slice(doc, 0, newline_pos);
+        }
+        return doc;
+    }
+    string_from("")
+}
+
+// ========================================
 // Main Entry Point
 // ========================================
 
@@ -681,6 +818,8 @@ fn main() -> i64 {
     // Parse arguments
     let output_dir: i64 = string_from("./docs");
     let use_markdown: i64 = 0;
+    let use_manifest: i64 = 0;
+    let category: i64 = string_from("lib");
     let files: i64 = vec_new();
     let i: i64 = 1;
 
@@ -698,6 +837,17 @@ fn main() -> i64 {
             show_version();
             return 0;
         }
+        if string_eq(arg, string_from("--manifest")) {
+            use_manifest = 1;
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--category")) {
+            if i + 1 < argc {
+                i = i + 1;
+                category = vec_get(args, i);
+            }
+            i = i + 1;
+        } else {
         if string_eq(arg, string_from("--html")) {
             use_markdown = 0;
             i = i + 1;
@@ -718,6 +868,8 @@ fn main() -> i64 {
         }
         }
         }
+        }
+        }
     }
 
     if vec_len(files) == 0 {
@@ -725,8 +877,15 @@ fn main() -> i64 {
         return 1;
     }
 
+    // Determine effective output directory based on category
+    let effective_dir: i64 = output_dir;
+    if use_manifest == 1 {
+        // When generating manifests with a category, output into category subdirectory
+        effective_dir = path_join(output_dir, category);
+    }
+
     // Ensure output directory exists
-    mkdir(output_dir);
+    mkdir(effective_dir);
 
     // Process each file
     i = 0;
@@ -746,26 +905,39 @@ fn main() -> i64 {
         println(string_concat(string_from("Extracted "), int_to_string(vec_len(docs))));
         println(string_concat(string_from(" items from "), path));
 
-        // Generate output
-        let output: i64 = string_from("");
-        let ext: i64 = string_from(".html");
-        if use_markdown == 1 {
-            output = generate_markdown(docs, module_name);
-            ext = string_from(".md");
+        // Generate output based on mode
+        if use_manifest == 1 {
+            // Manifest mode: generate manifest.json
+            let manifest: i64 = generate_manifest(docs, module_name, category);
+            let output_file: i64 = path_join(effective_dir, string_from("manifest.json"));
+            write_file(output_file, manifest);
+            println(string_concat(string_from("  -> "), output_file));
         } else {
-            output = generate_html(docs, module_name);
-        }
+            // Documentation mode: generate HTML or Markdown
+            let output: i64 = string_from("");
+            let ext: i64 = string_from(".html");
+            if use_markdown == 1 {
+                output = generate_markdown(docs, module_name);
+                ext = string_from(".md");
+            } else {
+                output = generate_html(docs, module_name);
+            }
 
-        // Write output file
-        let output_file: i64 = path_join(output_dir, string_concat(module_name, ext));
-        write_file(output_file, output);
-        println(string_concat(string_from("  -> "), output_file));
+            // Write output file
+            let output_file: i64 = path_join(effective_dir, string_concat(module_name, ext));
+            write_file(output_file, output);
+            println(string_concat(string_from("  -> "), output_file));
+        }
 
         i = i + 1;
         }
     }
 
-    println("Documentation generated successfully.");
+    if use_manifest == 1 {
+        println("Manifest generated successfully.");
+    } else {
+        println("Documentation generated successfully.");
+    }
     0
 }
 

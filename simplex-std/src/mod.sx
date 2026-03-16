@@ -12,8 +12,10 @@
 // - `crypto`: Cryptographic functions (SHA256)
 // - `task`: Async task management
 // - `dual`: Dual numbers for automatic differentiation
+// - `complex`: Complex numbers with full arithmetic and transcendentals
 // - `anneal`: Self-learning annealing with meta-gradients
 // - `fmt`: Formatting and printing
+// - `matrix`: Matrix & linear algebra (dense matrices, LU, inverse, Kronecker)
 // - `math`: Mathematical functions
 // - `string`: String utilities
 // - `assert`: Testing assertions
@@ -24,6 +26,8 @@
 // - `net`: TCP/UDP networking
 // - `compress`: Compression (gzip, deflate)
 // - `http`: Actor-based HTTP server with Hive integration
+// - `http_client`: HTTP client with async support and JSON integration
+// - `json`: JSON parser, builder, and accessor API
 //
 // # Example
 //
@@ -54,6 +58,10 @@ pub mod time;
 pub mod crypto;
 pub mod task;
 pub mod dual;
+pub mod multidual;
+pub mod dual2;
+pub mod diff;
+pub mod complex;
 pub mod anneal;
 pub mod fmt;
 pub mod math;
@@ -68,7 +76,10 @@ pub mod compress;
 pub mod env;
 pub mod signal;
 pub mod runtime;
+pub mod matrix;
 pub mod http;
+pub mod http_client;
+pub mod json;
 
 // =============================================================================
 // Re-exports for convenience
@@ -76,6 +87,21 @@ pub mod http;
 
 // Dual numbers (most commonly used for ML)
 pub use dual::dual;
+
+// Multi-dimensional dual numbers (gradients)
+pub use multidual::MultiDual;
+
+// Second-order dual numbers (Hessians)
+pub use dual2::Dual2;
+
+// Differentiation utilities
+pub use diff::{derivative, gradient, jacobian, hessian};
+
+// Complex numbers
+pub use complex::Complex;
+
+// Matrix & linear algebra
+pub use matrix::Matrix;
 
 // Common sync primitives
 pub use sync::{Arc, Mutex, RwLock};
@@ -91,6 +117,12 @@ pub use runtime::{spawn, block_on};
 
 // HTTP server
 pub use http::{HttpServer, Router, Request, Response, Handler, Middleware};
+
+// HTTP client
+pub use http_client::{HttpClient, HttpResponse, HttpError, RequestBuilder};
+
+// JSON
+pub use json::{ObjectBuilder, ArrayBuilder};
 
 // =============================================================================
 // Core Types (provided by C runtime)

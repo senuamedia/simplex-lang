@@ -1,6 +1,6 @@
 # Neural IR and Differentiable Execution
 
-**Version 0.12.0**
+**Version 0.13.0**
 
 ---
 

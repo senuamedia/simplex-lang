@@ -1,0 +1,490 @@
+// Test file for sxdoc manifest generation
+// v0.13.0: API Documentation tooling (TASK-017)
+// Tests --manifest and --category CLI flags and JSON output format
+
+// External declarations matching sxdoc internals
+fn string_from(s: i64) -> i64;
+fn string_eq(a: i64, b: i64) -> i64;
+fn string_len(s: i64) -> i64;
+fn string_contains(s: i64, sub: i64) -> i64;
+fn string_starts_with(s: i64, prefix: i64) -> i64;
+fn string_find(s: i64, needle: i64, start: i64) -> i64;
+fn string_slice(s: i64, start: i64, end: i64) -> i64;
+fn string_trim(s: i64) -> i64;
+fn string_concat(a: i64, b: i64) -> i64;
+fn string_replace(s: i64, old: i64, new: i64) -> i64;
+fn string_split(s: i64, delim: i64) -> i64;
+fn string_char_at(s: i64, idx: i64) -> i64;
+fn string_from_char(c: i64) -> i64;
+fn int_to_string(n: i64) -> i64;
+fn println(s: i64);
+fn print(s: i64);
+fn vec_new() -> i64;
+fn vec_push(v: i64, val: i64);
+fn vec_get(v: i64, idx: i64) -> i64;
+fn vec_len(v: i64) -> i64;
+fn sb_new() -> i64;
+fn sb_append(sb: i64, s: i64);
+fn sb_append_char(sb: i64, c: i64);
+fn sb_to_string(sb: i64) -> i64;
+fn malloc(size: i64) -> i64;
+fn store_i64(ptr: i64, offset: i64, val: i64);
+fn store_ptr(ptr: i64, offset: i64, val: i64);
+fn load_i64(ptr: i64, offset: i64) -> i64;
+fn load_ptr(ptr: i64, offset: i64) -> i64;
+
+// ========================================
+// Test helpers
+// ========================================
+
+fn test_pass(name: i64) -> i64 {
+    print("  PASS: ");
+    println(name);
+    0
+}
+
+fn test_fail(name: i64) -> i64 {
+    print("  FAIL: ");
+    println(name);
+    1
+}
+
+fn assert_eq(actual: i64, expected: i64, name: i64) -> i64 {
+    if string_eq(actual, expected) {
+        return test_pass(name);
+    }
+    test_fail(name);
+    print("    expected: ");
+    println(expected);
+    print("    actual:   ");
+    println(actual);
+    1
+}
+
+fn assert_contains(haystack: i64, needle: i64, name: i64) -> i64 {
+    if string_contains(haystack, needle) {
+        return test_pass(name);
+    }
+    test_fail(name);
+    print("    missing: ");
+    println(needle);
+    1
+}
+
+fn assert_true(cond: i64, name: i64) -> i64 {
+    if cond != 0 {
+        return test_pass(name);
+    }
+    test_fail(name)
+}
+
+// ========================================
+// Inline copies of sxdoc functions under test
+// (tools are compiled standalone; we inline the functions to test them)
+// ========================================
+
+fn DOC_FN() -> i64 { 0 }
+fn DOC_STRUCT() -> i64 { 1 }
+fn DOC_ENUM() -> i64 { 2 }
+fn DOC_TRAIT() -> i64 { 3 }
+fn DOC_IMPL() -> i64 { 4 }
+
+fn doc_item_new(kind: i64, name: i64) -> i64 {
+    let item: i64 = malloc(56);
+    store_i64(item, 0, kind);
+    store_ptr(item, 1, name);
+    store_ptr(item, 2, string_from(""));
+    store_ptr(item, 3, string_from(""));
+    store_ptr(item, 4, vec_new());
+    store_ptr(item, 5, 0);
+    store_ptr(item, 6, vec_new());
+    item
+}
+
+fn doc_item_kind(item: i64) -> i64 { load_i64(item, 0) }
+fn doc_item_name(item: i64) -> i64 { load_ptr(item, 1) }
+fn doc_item_doc(item: i64) -> i64 { load_ptr(item, 2) }
+fn doc_item_set_doc(item: i64, doc: i64) -> i64 { store_ptr(item, 2, doc); 0 }
+fn doc_item_sig(item: i64) -> i64 { load_ptr(item, 3) }
+fn doc_item_set_sig(item: i64, sig: i64) -> i64 { store_ptr(item, 3, sig); 0 }
+fn doc_item_fields(item: i64) -> i64 { load_ptr(item, 6) }
+
+fn get_kind_str(kind: i64) -> i64 {
+    if kind == DOC_FN() { return string_from("fn"); }
+    if kind == DOC_STRUCT() { return string_from("struct"); }
+    if kind == DOC_ENUM() { return string_from("enum"); }
+    if kind == DOC_TRAIT() { return string_from("trait"); }
+    if kind == DOC_IMPL() { return string_from("impl"); }
+    string_from("")
+}
+
+fn json_escape(s: i64) -> i64 {
+    let result: i64 = s;
+    result = string_replace(result, string_from("\\"), string_from("\\\\"));
+    result = string_replace(result, string_from("\""), string_from("\\\""));
+    result = string_replace(result, string_from("\n"), string_from("\\n"));
+    result = string_replace(result, string_from("\t"), string_from("\\t"));
+    result
+}
+
+fn generate_manifest_item(item: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let kind: i64 = doc_item_kind(item);
+    let name: i64 = doc_item_name(item);
+    let sig: i64 = doc_item_sig(item);
+
+    sb_append(sb, string_from("        {\"kind\": \""));
+    sb_append(sb, json_escape(get_kind_str(kind)));
+    sb_append(sb, string_from("\", \"name\": \""));
+    sb_append(sb, json_escape(name));
+    sb_append(sb, string_from("\""));
+
+    if string_len(sig) > 0 {
+        sb_append(sb, string_from(", \"signature\": \""));
+        sb_append(sb, json_escape(sig));
+        sb_append(sb, string_from("\""));
+    }
+
+    sb_append(sb, string_from("}"));
+    sb_to_string(sb)
+}
+
+fn extract_module_description(docs: i64) -> i64 {
+    if vec_len(docs) == 0 {
+        return string_from("");
+    }
+    let first: i64 = vec_get(docs, 0);
+    let doc: i64 = doc_item_doc(first);
+    if string_len(doc) > 0 {
+        let newline_pos: i64 = string_find(doc, string_from("\n"), 0);
+        if newline_pos > 0 {
+            return string_slice(doc, 0, newline_pos);
+        }
+        return doc;
+    }
+    string_from("")
+}
+
+fn generate_manifest(docs: i64, module_name: i64, category: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("{\n"));
+    sb_append(sb, string_from("  \"category\": \""));
+    sb_append(sb, json_escape(category));
+    sb_append(sb, string_from("\",\n"));
+    sb_append(sb, string_from("  \"modules\": [\n"));
+    sb_append(sb, string_from("    {\n"));
+    sb_append(sb, string_from("      \"name\": \""));
+    sb_append(sb, json_escape(module_name));
+    sb_append(sb, string_from("\",\n"));
+    sb_append(sb, string_from("      \"file\": \""));
+    sb_append(sb, json_escape(string_concat(module_name, string_from(".html"))));
+    sb_append(sb, string_from("\",\n"));
+    let description: i64 = extract_module_description(docs);
+    if string_len(description) > 0 {
+        sb_append(sb, string_from("      \"description\": \""));
+        sb_append(sb, json_escape(description));
+        sb_append(sb, string_from("\",\n"));
+    }
+    sb_append(sb, string_from("      \"items\": [\n"));
+    let n: i64 = vec_len(docs);
+    let i: i64 = 0;
+    while i < n {
+        let item: i64 = vec_get(docs, i);
+        sb_append(sb, generate_manifest_item(item));
+        if i + 1 < n {
+            sb_append(sb, string_from(",\n"));
+        } else {
+            sb_append(sb, string_from("\n"));
+        }
+        i = i + 1;
+    }
+    sb_append(sb, string_from("      ]\n"));
+    sb_append(sb, string_from("    }\n"));
+    sb_append(sb, string_from("  ]\n"));
+    sb_append(sb, string_from("}\n"));
+    sb_to_string(sb)
+}
+
+// Simulate CLI flag parsing (extracted logic from main)
+fn parse_has_flag(args: i64, flag: i64) -> i64 {
+    let i: i64 = 0;
+    while i < vec_len(args) {
+        if string_eq(vec_get(args, i), flag) {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn parse_flag_value(args: i64, flag: i64) -> i64 {
+    let i: i64 = 0;
+    while i < vec_len(args) {
+        if string_eq(vec_get(args, i), flag) {
+            if i + 1 < vec_len(args) {
+                return vec_get(args, i + 1);
+            }
+        }
+        i = i + 1;
+    }
+    string_from("")
+}
+
+// ========================================
+// Tests
+// ========================================
+
+fn main() -> i64 {
+    println("=== sxdoc Manifest Generation Tests ===");
+    println("v0.13.0: API Documentation Tooling (TASK-017)");
+    println("");
+
+    let failures: i64 = 0;
+
+    // ---- Test 1: --manifest flag recognized ----
+    println("--- Test 1: --manifest Flag Recognition ---");
+    let args1: i64 = vec_new();
+    vec_push(args1, string_from("sxdoc"));
+    vec_push(args1, string_from("--manifest"));
+    vec_push(args1, string_from("lib/safety.sx"));
+    failures = failures + assert_true(
+        parse_has_flag(args1, string_from("--manifest")),
+        "manifest flag is recognized in args"
+    );
+
+    let args1b: i64 = vec_new();
+    vec_push(args1b, string_from("sxdoc"));
+    vec_push(args1b, string_from("--html"));
+    vec_push(args1b, string_from("lib/safety.sx"));
+    failures = failures + assert_true(
+        parse_has_flag(args1b, string_from("--manifest")) == 0,
+        "manifest flag absent when not specified"
+    );
+    println("");
+
+    // ---- Test 2: --category flag recognized ----
+    println("--- Test 2: --category Flag Recognition ---");
+    let args2: i64 = vec_new();
+    vec_push(args2, string_from("sxdoc"));
+    vec_push(args2, string_from("--manifest"));
+    vec_push(args2, string_from("--category"));
+    vec_push(args2, string_from("stdlib"));
+    vec_push(args2, string_from("lib/safety.sx"));
+    failures = failures + assert_true(
+        parse_has_flag(args2, string_from("--category")),
+        "category flag is recognized in args"
+    );
+    failures = failures + assert_eq(
+        parse_flag_value(args2, string_from("--category")),
+        string_from("stdlib"),
+        "category value parsed correctly"
+    );
+
+    let args2b: i64 = vec_new();
+    vec_push(args2b, string_from("sxdoc"));
+    vec_push(args2b, string_from("--category"));
+    vec_push(args2b, string_from("tools"));
+    failures = failures + assert_eq(
+        parse_flag_value(args2b, string_from("--category")),
+        string_from("tools"),
+        "category value 'tools' parsed correctly"
+    );
+    println("");
+
+    // ---- Test 3: Manifest JSON output format ----
+    println("--- Test 3: Manifest JSON Output Format ---");
+    let docs: i64 = vec_new();
+
+    // Add a function item
+    let fn_item: i64 = doc_item_new(DOC_FN(), string_from("safe_malloc"));
+    doc_item_set_doc(fn_item, string_from("Allocate memory with safety checks"));
+    doc_item_set_sig(fn_item, string_from("fn safe_malloc(size: i64) -> i64"));
+    vec_push(docs, fn_item);
+
+    // Add a struct item
+    let struct_item: i64 = doc_item_new(DOC_STRUCT(), string_from("SafeBuffer"));
+    doc_item_set_doc(struct_item, string_from("A bounds-checked buffer"));
+    vec_push(docs, struct_item);
+
+    let manifest: i64 = generate_manifest(docs, string_from("safety"), string_from("stdlib"));
+
+    // Verify category field
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"category\": \"stdlib\""),
+        "manifest contains category field"
+    );
+
+    // Verify module name
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"name\": \"safety\""),
+        "manifest contains module name"
+    );
+
+    // Verify file reference
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"file\": \"safety.html\""),
+        "manifest contains file reference"
+    );
+
+    // Verify description (from first item doc)
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"description\": \"Allocate memory with safety checks\""),
+        "manifest contains description from first doc"
+    );
+
+    // Verify function item in items array
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"kind\": \"fn\""),
+        "manifest contains fn kind"
+    );
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"name\": \"safe_malloc\""),
+        "manifest contains function name"
+    );
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"signature\": \"fn safe_malloc(size: i64) -> i64\""),
+        "manifest contains function signature"
+    );
+
+    // Verify struct item
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"kind\": \"struct\""),
+        "manifest contains struct kind"
+    );
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"name\": \"SafeBuffer\""),
+        "manifest contains struct name"
+    );
+
+    // Verify valid JSON structure (opening/closing braces)
+    failures = failures + assert_true(
+        string_starts_with(string_trim(manifest), string_from("{")),
+        "manifest starts with opening brace"
+    );
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"modules\": ["),
+        "manifest has modules array"
+    );
+    failures = failures + assert_contains(
+        manifest,
+        string_from("\"items\": ["),
+        "manifest has items array"
+    );
+    println("");
+
+    // ---- Test 4: Category grouping ----
+    println("--- Test 4: Category Grouping ---");
+
+    // Test different category values
+    let manifest_lib: i64 = generate_manifest(docs, string_from("safety"), string_from("lib"));
+    failures = failures + assert_contains(
+        manifest_lib,
+        string_from("\"category\": \"lib\""),
+        "lib category in manifest"
+    );
+
+    let manifest_tools: i64 = generate_manifest(docs, string_from("sxdoc"), string_from("tools"));
+    failures = failures + assert_contains(
+        manifest_tools,
+        string_from("\"category\": \"tools\""),
+        "tools category in manifest"
+    );
+
+    let manifest_learning: i64 = generate_manifest(docs, string_from("tensor"), string_from("learning"));
+    failures = failures + assert_contains(
+        manifest_learning,
+        string_from("\"category\": \"learning\""),
+        "learning category in manifest"
+    );
+    failures = failures + assert_contains(
+        manifest_learning,
+        string_from("\"name\": \"tensor\""),
+        "module name preserved with learning category"
+    );
+    println("");
+
+    // ---- Test 5: JSON escape in manifest ----
+    println("--- Test 5: JSON Escape in Manifest ---");
+    failures = failures + assert_eq(
+        json_escape(string_from("hello world")),
+        string_from("hello world"),
+        "json_escape: plain string unchanged"
+    );
+    failures = failures + assert_contains(
+        json_escape(string_from("line1\nline2")),
+        string_from("\\n"),
+        "json_escape: newline escaped"
+    );
+    println("");
+
+    // ---- Test 6: Empty docs manifest ----
+    println("--- Test 6: Empty Docs Manifest ---");
+    let empty_docs: i64 = vec_new();
+    let empty_manifest: i64 = generate_manifest(empty_docs, string_from("empty"), string_from("lib"));
+    failures = failures + assert_contains(
+        empty_manifest,
+        string_from("\"category\": \"lib\""),
+        "empty manifest has category"
+    );
+    failures = failures + assert_contains(
+        empty_manifest,
+        string_from("\"name\": \"empty\""),
+        "empty manifest has module name"
+    );
+    failures = failures + assert_contains(
+        empty_manifest,
+        string_from("\"items\": ["),
+        "empty manifest has items array"
+    );
+    println("");
+
+    // ---- Test 7: Module description extraction ----
+    println("--- Test 7: Module Description Extraction ---");
+    let desc: i64 = extract_module_description(docs);
+    failures = failures + assert_eq(
+        desc,
+        string_from("Allocate memory with safety checks"),
+        "description extracted from first item"
+    );
+
+    let empty_desc: i64 = extract_module_description(empty_docs);
+    failures = failures + assert_eq(
+        empty_desc,
+        string_from(""),
+        "empty description from empty docs"
+    );
+
+    // Multi-line doc: should use only first line
+    let multi_docs: i64 = vec_new();
+    let multi_item: i64 = doc_item_new(DOC_FN(), string_from("test_fn"));
+    doc_item_set_doc(multi_item, string_from("First line\nSecond line\nThird line"));
+    vec_push(multi_docs, multi_item);
+    let multi_desc: i64 = extract_module_description(multi_docs);
+    failures = failures + assert_eq(
+        multi_desc,
+        string_from("First line"),
+        "multi-line doc uses first line only"
+    );
+    println("");
+
+    // ---- Summary ----
+    println("=== Test Summary ===");
+    if failures == 0 {
+        println("All tests passed.");
+    } else {
+        print("Failures: ");
+        println(int_to_string(failures));
+    }
+
+    failures
+}

@@ -4439,6 +4439,18 @@ int64_t mailbox_full(int64_t mb_ptr) {
 }
 
 // Close mailbox (no more sends)
+// Ask actor for response (synchronous send + receive)
+// Bug 2 fix: Used as fallback when actor type is not statically known
+int64_t mailbox_ask(int64_t actor_ptr, int64_t message) {
+    // For synchronous actors (no actual mailbox), the message contains a tag
+    // and the handler should be dispatched. Since we don't have the actor type
+    // at compile time, we use a simple stub that returns 0.
+    // TODO: Implement proper dynamic dispatch via actor vtable
+    (void)actor_ptr;
+    (void)message;
+    return 0;
+}
+
 int64_t mailbox_close(int64_t mb_ptr) {
     if (mb_ptr == 0) return 0;
     LockFreeMailbox* mb = (LockFreeMailbox*)mb_ptr;
@@ -5504,6 +5516,20 @@ void* intrinsic_getenv(void* name_ptr) {
     char* value = getenv(name->data);
     if (!value) return NULL;
     return intrinsic_string_new(value);
+}
+
+// Get environment variable (i64 wrapper)
+int64_t cli_getenv(int64_t name_ptr) {
+    SxString* name = (SxString*)name_ptr;
+    if (!name || !name->data) return (int64_t)intrinsic_string_new("");
+    char* value = getenv(name->data);
+    if (!value) return (int64_t)intrinsic_string_new("");
+    return (int64_t)intrinsic_string_new(value);
+}
+
+// Alias for env_get (used by sxc.sx and other toolchain files)
+int64_t env_get(int64_t name_ptr) {
+    return cli_getenv(name_ptr);
 }
 
 // Set environment variable
@@ -18628,9 +18654,9 @@ int64_t belief_suspend_get_duration_ms(int64_t suspend_id) {
 }
 
 // ============================================================
-// v0.12.0 Runtime Additions
+// v0.13.0 Runtime Additions
 
-// Global state variables for v0.12.0 runtime
+// Global state variables for v0.13.0 runtime
 typedef struct { double weights[32]; int count; int executed[32]; } LazyCtx;
 typedef struct { double weights[32]; int64_t results[32]; int count; int64_t mem_used; } SpecCtx;
 static int g_wref_total = 0;
@@ -18826,10 +18852,10 @@ int64_t json_as_i64(int64_t v) {
 int8_t json_as_bool(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; if(!j)return 0; if(j->tag==3)return j->d.bool_val?1:0; if(j->tag==2)return j->d.int_val?1:0; return 0; }
 int64_t json_as_array(int64_t v) { return v; }
 int64_t json_keys(int64_t o) { JsonValue* obj=(JsonValue*)(intptr_t)o; void* vec=intrinsic_vec_new(); if(obj&&obj->tag==4)for(int i=0;i<obj->d.obj.len;i++)intrinsic_vec_push(vec,(void*)(intptr_t)obj->d.obj.keys[i]); return(int64_t)(intptr_t)vec; }
-int8_t json_is_string(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; return(j&&j->tag==1)?1:0; }
-int8_t json_is_object(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; return(j&&j->tag==4)?1:0; }
-int8_t json_is_array(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; return(j&&j->tag==5)?1:0; }
-int8_t json_is_null(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; return(!j||j->tag==0)?1:0; }
+int64_t json_is_string(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; return(j&&j->tag==1)?1:0; }
+int64_t json_is_object(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; return(j&&j->tag==4)?1:0; }
+int64_t json_is_array(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; return(j&&j->tag==5)?1:0; }
+int64_t json_is_null(int64_t v) { JsonValue* j=(JsonValue*)(intptr_t)v; return(!j||j->tag==0)?1:0; }
 int64_t json_object_key_at(int64_t o, int64_t idx) { JsonValue* obj=(JsonValue*)(intptr_t)o; if(!obj||obj->tag!=4||idx<0||idx>=obj->d.obj.len)return 0; return obj->d.obj.keys[idx]; }
 int64_t json_object_value_at(int64_t o, int64_t idx) { JsonValue* obj=(JsonValue*)(intptr_t)o; if(!obj||obj->tag!=4||idx<0||idx>=obj->d.obj.len)return 0; return(int64_t)(intptr_t)obj->d.obj.vals[idx]; }
 static void jv_stringify(JsonValue* v, char* buf, int* pos, int cap) { if(!v||*pos>=cap-1)return; switch(v->tag){ case 0:*pos+=snprintf(buf+*pos,cap-*pos,"null");break; case 1:{char*s=(char*)(intptr_t)v->d.str_val;*pos+=snprintf(buf+*pos,cap-*pos,"\"%s\"",s?s:"");break;} case 2:*pos+=snprintf(buf+*pos,cap-*pos,"%lld",(long long)v->d.int_val);break; case 3:*pos+=snprintf(buf+*pos,cap-*pos,"%s",v->d.bool_val?"true":"false");break; case 6:*pos+=snprintf(buf+*pos,cap-*pos,"%g",v->d.float_val);break; case 4:buf[(*pos)++]='{';for(int i=0;i<v->d.obj.len&&*pos<cap-1;i++){if(i>0)buf[(*pos)++]=',';const char*k=sx_str_data(v->d.obj.keys[i]);if(!k)k="";*pos+=snprintf(buf+*pos,cap-*pos,"\"%s\":",k);jv_stringify(v->d.obj.vals[i],buf,pos,cap);}buf[(*pos)++]='}';break; case 5:buf[(*pos)++]='[';for(int i=0;i<v->d.arr.len&&*pos<cap-1;i++){if(i>0)buf[(*pos)++]=',';jv_stringify(v->d.arr.items[i],buf,pos,cap);}buf[(*pos)++]=']';break; } }
@@ -18901,7 +18927,7 @@ int64_t vec_first(int64_t v){void*vec=(void*)(intptr_t)v;return intrinsic_vec_le
 int64_t vec_last(int64_t v){void*vec=(void*)(intptr_t)v;int64_t n=intrinsic_vec_len(vec);return n==0?0:(int64_t)(intptr_t)intrinsic_vec_get(vec,n-1);}
 int64_t vec_pop(int64_t v){return(int64_t)(intptr_t)intrinsic_vec_pop((void*)(intptr_t)v);}
 int64_t vec_remove(int64_t v,int64_t idx){void*vec=(void*)(intptr_t)v;int64_t n=intrinsic_vec_len(vec);if(idx>=0&&idx<n){for(int64_t i=idx;i<n-1;i++)intrinsic_vec_set(vec,i,intrinsic_vec_get(vec,i+1));intrinsic_vec_pop(vec);}return 0;}
-int64_t vec_set(int64_t v,int64_t idx,int64_t val){intrinsic_vec_set((void*)(intptr_t)v,idx,(void*)(intptr_t)val);return 0;}
+__attribute__((weak)) int64_t vec_set(int64_t v,int64_t idx,int64_t val){intrinsic_vec_set((void*)(intptr_t)v,idx,(void*)(intptr_t)val);return 0;}
 int64_t vec_clear(int64_t v){intrinsic_vec_clear((void*)(intptr_t)v);return 0;}
 int64_t vec_reverse(int64_t v){void*vec=(void*)(intptr_t)v;int64_t n=intrinsic_vec_len(vec);for(int64_t i=0;i<n/2;i++){void*a=intrinsic_vec_get(vec,i);void*b=intrinsic_vec_get(vec,n-1-i);intrinsic_vec_set(vec,i,b);intrinsic_vec_set(vec,n-1-i,a);}return 0;}
 int64_t vec_sum(int64_t v){void*vec=(void*)(intptr_t)v;int64_t n=intrinsic_vec_len(vec);int64_t s=0;for(int64_t i=0;i<n;i++)s+=(int64_t)(intptr_t)intrinsic_vec_get(vec,i);return s;}
@@ -19048,7 +19074,7 @@ int64_t sql_last_insert_id(int64_t d){(void)d;return 0;}
 int64_t sql_begin(int64_t d){(void)d;return 1;} int64_t sql_commit(int64_t d){(void)d;return 1;} int64_t sql_rollback(int64_t d){(void)d;return 1;}
 
 
-// Additional v0.12.0 missing functions
+// Additional v0.13.0 missing functions
 int64_t device_count(void) { return 1; }
 int64_t ckpt_context_new(void) { return 1; }
 int64_t ckpt_context_free(int64_t ctx) { (void)ctx; return 0; }
@@ -19085,7 +19111,7 @@ int64_t sx_pow(int64_t base, int64_t e) { return f64_to_bits(pow(bits_to_f64(bas
 // Note: these use the Simplex convention where f64 is stored as i64 bits
 
 
-// More missing v0.12.0 functions
+// More missing v0.13.0 functions
 int64_t device_get(int64_t idx) { (void)idx; return 1; }
 static int g_ckpt_count = 0;
 int64_t ckpt_count(void) { return g_ckpt_count; }
@@ -19128,7 +19154,7 @@ int64_t string_to_lowercase(int64_t s) {
 int64_t exp_f64(int64_t b) { return f64_to_bits(exp(bits_to_f64(b))); }
 int64_t sin_f64(int64_t b) { return f64_to_bits(sin(bits_to_f64(b))); }
 
-// Final batch of missing v0.12.0 functions
+// Final batch of missing v0.13.0 functions
 int64_t activation_gate_count(void) { 
     int count = 0;
     for (int i = 0; i < 256; i++) {
@@ -19153,7 +19179,7 @@ int64_t neural_is_gate_pruned(int64_t idx) { return (idx>=0&&idx<256)?g_gate_pru
 int64_t ln_f64(int64_t b) { return f64_to_bits(log(bits_to_f64(b))); }
 
 
-// AI/ML Infrastructure stubs for v0.12.0
+// AI/ML Infrastructure stubs for v0.13.0
 // File I/O
 int64_t file_read(int64_t path) {
     const char* pdata = sx_str_data(path);
@@ -19234,6 +19260,418 @@ int64_t slm_config_set_temperature(int64_t c, int64_t t) { (void)c;(void)t; retu
 int64_t slm_config_set_context_size(int64_t c, int64_t s) { (void)c;(void)s; return 0; }
 int64_t slm_config_set_threads(int64_t c, int64_t t) { (void)c;(void)t; return 0; }
 int64_t slm_config_set_quantization(int64_t c, int64_t q) { (void)c;(void)q; return 0; }
+
+// ============================================================
+// SLM (Small Language Model) Native Bindings
+// ============================================================
+// Structural implementations for the Simplex SLM runtime API.
+// These provide correct function signatures, memory management,
+// and error handling. Actual inference math is stubbed — the goal
+// is that runtime/slm.sx can call these without crashes.
+
+// GGUF magic bytes: "GGUF" in little-endian = 0x46554747
+#define SLM_GGUF_MAGIC 0x46554747
+
+// Internal model representation
+typedef struct {
+    int64_t id;                // Unique handle ID
+    char*   path;              // Path to GGUF file (owned copy)
+    int64_t context_size;      // Configured context window
+    int64_t threads;           // Thread count
+    int64_t embedding_dim;     // Embedding dimension (stubbed to 384)
+    int64_t vocab_size;        // Vocabulary size (stubbed to 32000)
+    int64_t n_layers;          // Number of layers (stubbed to 22)
+    int     valid;             // 1 if model loaded successfully
+    char    architecture[64];  // Model architecture string
+} SxSLMModel;
+
+// Internal inference context
+typedef struct {
+    int64_t      id;           // Unique context ID
+    SxSLMModel*  model;        // Back-pointer to parent model
+    int64_t      context_size; // KV cache size
+    int64_t      tokens_used;  // Tokens consumed so far
+    int          valid;        // 1 if context is usable
+} SxSLMContext;
+
+// Simple handle table for models and contexts
+#define SLM_MAX_HANDLES 64
+static SxSLMModel*   slm_models[SLM_MAX_HANDLES];
+static SxSLMContext*  slm_contexts[SLM_MAX_HANDLES];
+static int64_t        slm_next_model_id   = 1;
+static int64_t        slm_next_context_id = 1;
+
+// Find model by handle
+static SxSLMModel* slm_find_model(int64_t handle) {
+    for (int i = 0; i < SLM_MAX_HANDLES; i++) {
+        if (slm_models[i] && slm_models[i]->id == handle) {
+            return slm_models[i];
+        }
+    }
+    return NULL;
+}
+
+// Find context by handle
+static SxSLMContext* slm_find_context(int64_t handle) {
+    for (int i = 0; i < SLM_MAX_HANDLES; i++) {
+        if (slm_contexts[i] && slm_contexts[i]->id == handle) {
+            return slm_contexts[i];
+        }
+    }
+    return NULL;
+}
+
+// Store model in handle table, returns slot index or -1
+static int slm_store_model(SxSLMModel* model) {
+    for (int i = 0; i < SLM_MAX_HANDLES; i++) {
+        if (!slm_models[i]) {
+            slm_models[i] = model;
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Store context in handle table
+static int slm_store_context(SxSLMContext* ctx) {
+    for (int i = 0; i < SLM_MAX_HANDLES; i++) {
+        if (!slm_contexts[i]) {
+            slm_contexts[i] = ctx;
+            return i;
+        }
+    }
+    return -1;
+}
+
+// Remove model from handle table
+static void slm_remove_model(int64_t handle) {
+    for (int i = 0; i < SLM_MAX_HANDLES; i++) {
+        if (slm_models[i] && slm_models[i]->id == handle) {
+            slm_models[i] = NULL;
+            return;
+        }
+    }
+}
+
+// Remove context from handle table
+static void slm_remove_context(int64_t handle) {
+    for (int i = 0; i < SLM_MAX_HANDLES; i++) {
+        if (slm_contexts[i] && slm_contexts[i]->id == handle) {
+            slm_contexts[i] = NULL;
+            return;
+        }
+    }
+}
+
+// slm_native_load(model_path, ctx_size, threads) -> handle
+// Loads a GGUF model file. Validates magic bytes. Returns model handle or 0 on error.
+int64_t slm_native_load(int64_t path_ptr, int64_t ctx_size, int64_t threads) {
+    SxString* path_str = (SxString*)(intptr_t)path_ptr;
+    if (!path_str || !path_str->data || path_str->len == 0) {
+        fprintf(stderr, "SLM: slm_native_load: empty model path\n");
+        return 0;
+    }
+
+    // Try to open and validate GGUF magic bytes
+    FILE* f = fopen(path_str->data, "rb");
+    if (!f) {
+        fprintf(stderr, "SLM: slm_native_load: cannot open '%s'\n", path_str->data);
+        return 0;
+    }
+
+    uint32_t magic = 0;
+    size_t read_count = fread(&magic, sizeof(uint32_t), 1, f);
+    fclose(f);
+
+    if (read_count != 1 || magic != SLM_GGUF_MAGIC) {
+        fprintf(stderr, "SLM: slm_native_load: invalid GGUF magic in '%s' (got 0x%08X, expected 0x%08X)\n",
+                path_str->data, magic, SLM_GGUF_MAGIC);
+        return 0;
+    }
+
+    // Allocate model
+    SxSLMModel* model = (SxSLMModel*)sx_calloc(1, sizeof(SxSLMModel));
+    model->id = slm_next_model_id++;
+    model->path = sx_strdup(path_str->data);
+    model->context_size = ctx_size > 0 ? ctx_size : 4096;
+    model->threads = threads > 0 ? threads : 4;
+    model->embedding_dim = 384;   // Stub: typical small model dimension
+    model->vocab_size = 32000;    // Stub: typical LLaMA vocab
+    model->n_layers = 22;         // Stub: typical small model layers
+    model->valid = 1;
+    snprintf(model->architecture, sizeof(model->architecture), "llama");
+
+    if (slm_store_model(model) < 0) {
+        fprintf(stderr, "SLM: slm_native_load: handle table full\n");
+        free(model->path);
+        free(model);
+        return 0;
+    }
+
+    return model->id;
+}
+
+// slm_native_unload(handle) -> void (returns 0)
+// Frees all memory associated with a loaded model.
+int64_t slm_native_unload(int64_t handle) {
+    SxSLMModel* model = slm_find_model(handle);
+    if (!model) {
+        fprintf(stderr, "SLM: slm_native_unload: invalid handle %lld\n", (long long)handle);
+        return 0;
+    }
+
+    // Invalidate any contexts using this model
+    for (int i = 0; i < SLM_MAX_HANDLES; i++) {
+        if (slm_contexts[i] && slm_contexts[i]->model == model) {
+            slm_contexts[i]->valid = 0;
+            slm_contexts[i]->model = NULL;
+        }
+    }
+
+    slm_remove_model(handle);
+    free(model->path);
+    free(model);
+    return 0;
+}
+
+// slm_native_create_context(model_handle, context_size) -> context handle
+// Creates an inference context with KV cache for the given model.
+int64_t slm_native_create_context(int64_t model_handle, int64_t context_size) {
+    SxSLMModel* model = slm_find_model(model_handle);
+    if (!model || !model->valid) {
+        fprintf(stderr, "SLM: slm_native_create_context: invalid model handle %lld\n", (long long)model_handle);
+        return 0;
+    }
+
+    SxSLMContext* ctx = (SxSLMContext*)sx_calloc(1, sizeof(SxSLMContext));
+    ctx->id = slm_next_context_id++;
+    ctx->model = model;
+    ctx->context_size = context_size > 0 ? context_size : model->context_size;
+    ctx->tokens_used = 0;
+    ctx->valid = 1;
+
+    if (slm_store_context(ctx) < 0) {
+        fprintf(stderr, "SLM: slm_native_create_context: context table full\n");
+        free(ctx);
+        return 0;
+    }
+
+    return ctx->id;
+}
+
+// slm_native_destroy_context(ctx_handle) -> 0
+// Frees a previously created inference context.
+int64_t slm_native_destroy_context(int64_t ctx_handle) {
+    SxSLMContext* ctx = slm_find_context(ctx_handle);
+    if (!ctx) {
+        fprintf(stderr, "SLM: slm_native_destroy_context: invalid handle %lld\n", (long long)ctx_handle);
+        return 0;
+    }
+
+    slm_remove_context(ctx_handle);
+    free(ctx);
+    return 0;
+}
+
+// slm_native_tokenize(ctx_handle, text_ptr) -> vec handle
+// Basic whitespace tokenizer. Returns a vector of token index i64 values.
+// Real BPE/SPM tokenizer is future work.
+int64_t slm_native_tokenize(int64_t ctx_handle, int64_t text_ptr) {
+    SxSLMContext* ctx = slm_find_context(ctx_handle);
+    if (!ctx || !ctx->valid || !ctx->model) {
+        fprintf(stderr, "SLM: slm_native_tokenize: invalid context\n");
+        return (int64_t)(intptr_t)intrinsic_vec_new();
+    }
+
+    SxString* text = (SxString*)(intptr_t)text_ptr;
+    if (!text || !text->data || text->len == 0) {
+        return (int64_t)(intptr_t)intrinsic_vec_new();
+    }
+
+    SxVec* tokens = intrinsic_vec_new();
+
+    // Simple whitespace tokenizer: split on spaces and assign sequential IDs
+    // Each unique whitespace-delimited word gets a hash-based token ID
+    const char* src = text->data;
+    size_t len = text->len;
+    size_t i = 0;
+
+    while (i < len) {
+        // Skip whitespace
+        while (i < len && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n' || src[i] == '\r')) {
+            i++;
+        }
+        if (i >= len) break;
+
+        // Read a word
+        size_t start = i;
+        while (i < len && src[i] != ' ' && src[i] != '\t' && src[i] != '\n' && src[i] != '\r') {
+            i++;
+        }
+
+        // Hash the word to produce a token ID (simple djb2 hash mod vocab_size)
+        uint64_t hash = 5381;
+        for (size_t j = start; j < i; j++) {
+            hash = ((hash << 5) + hash) + (unsigned char)src[j];
+        }
+        int64_t token_id = (int64_t)(hash % (uint64_t)ctx->model->vocab_size);
+
+        intrinsic_vec_push(tokens, (void*)(intptr_t)token_id);
+    }
+
+    return (int64_t)(intptr_t)tokens;
+}
+
+// slm_native_infer(handle, prompt, temperature) -> String
+// Stub inference: returns placeholder text. Structure accepts all params correctly.
+// Real inference (forward pass, KV cache, sampling) is future work.
+int64_t slm_native_infer(int64_t handle, int64_t prompt_ptr, int64_t temperature) {
+    SxSLMModel* model = slm_find_model(handle);
+    if (!model || !model->valid) {
+        return (int64_t)(intptr_t)intrinsic_string_new("[SLM error: invalid model handle]");
+    }
+
+    SxString* prompt = (SxString*)(intptr_t)prompt_ptr;
+    if (!prompt || !prompt->data) {
+        return (int64_t)(intptr_t)intrinsic_string_new("[SLM error: null prompt]");
+    }
+
+    // Build a placeholder response that includes model metadata
+    // so callers can verify the pipeline is connected
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "[SLM stub response | model=%s | arch=%s | ctx=%lld | temp=%lld | prompt_len=%zu]",
+        model->path, model->architecture,
+        (long long)model->context_size,
+        (long long)temperature,
+        prompt->len);
+
+    return (int64_t)(intptr_t)intrinsic_string_new(buf);
+}
+
+// slm_native_generate(ctx_handle, tokens_ptr, max_tokens, temperature_bits) -> String
+// Stub generation from token array. Returns placeholder text.
+int64_t slm_native_generate(int64_t ctx_handle, int64_t tokens_ptr, int64_t max_tokens, int64_t temperature_bits) {
+    SxSLMContext* ctx = slm_find_context(ctx_handle);
+    if (!ctx || !ctx->valid) {
+        return (int64_t)(intptr_t)intrinsic_string_new("[SLM error: invalid context]");
+    }
+
+    SxVec* tokens = (SxVec*)(intptr_t)tokens_ptr;
+    int64_t n_tokens = tokens ? (int64_t)tokens->len : 0;
+
+    (void)temperature_bits;  // Will be used when real sampling is implemented
+
+    char buf[512];
+    snprintf(buf, sizeof(buf),
+        "[SLM stub generation | model=%s | input_tokens=%lld | max_tokens=%lld]",
+        ctx->model ? ctx->model->path : "unknown",
+        (long long)n_tokens,
+        (long long)max_tokens);
+
+    // Track token usage in context
+    if (ctx->model) {
+        if (n_tokens > ctx->context_size - ctx->tokens_used) {
+            ctx->tokens_used = ctx->context_size; // Clamp
+        } else {
+            ctx->tokens_used += n_tokens;
+        }
+    }
+
+    return (int64_t)(intptr_t)intrinsic_string_new(buf);
+}
+
+// slm_native_embed(handle, text_ptr) -> Vec<f64> (as bit patterns)
+// Stub: returns a zero vector of embedding_dim dimensions.
+int64_t slm_native_embed(int64_t handle, int64_t text_ptr) {
+    SxSLMModel* model = slm_find_model(handle);
+    SxVec* vec = intrinsic_vec_new();
+
+    int64_t dim = (model && model->valid) ? model->embedding_dim : 384;
+
+    (void)text_ptr;  // Will be used when real embedding is implemented
+
+    // Return a zero vector (f64 0.0 as bit pattern = 0)
+    for (int64_t i = 0; i < dim; i++) {
+        intrinsic_vec_push(vec, (void*)(intptr_t)0);
+    }
+
+    return (int64_t)(intptr_t)vec;
+}
+
+// slm_native_similarity(a_vec, b_vec) -> f64 (as bit pattern)
+// Cosine similarity between two embedding vectors.
+// Stub: returns 0.0 for zero vectors, correct math for non-zero.
+int64_t slm_native_similarity(int64_t a_ptr, int64_t b_ptr) {
+    SxVec* a = (SxVec*)(intptr_t)a_ptr;
+    SxVec* b = (SxVec*)(intptr_t)b_ptr;
+
+    if (!a || !b || a->len == 0 || b->len == 0 || a->len != b->len) {
+        return f64_to_bits(0.0);
+    }
+
+    double dot = 0.0, norm_a = 0.0, norm_b = 0.0;
+    size_t len = a->len;
+
+    for (size_t i = 0; i < len; i++) {
+        double va = bits_to_f64((int64_t)(intptr_t)a->items[i]);
+        double vb = bits_to_f64((int64_t)(intptr_t)b->items[i]);
+        dot    += va * vb;
+        norm_a += va * va;
+        norm_b += vb * vb;
+    }
+
+    if (norm_a < 1e-12 || norm_b < 1e-12) {
+        return f64_to_bits(0.0);
+    }
+
+    return f64_to_bits(dot / (sqrt(norm_a) * sqrt(norm_b)));
+}
+
+// slm_native_context_size(handle) -> i64
+// Returns the configured context window size for a model.
+int64_t slm_native_context_size(int64_t handle) {
+    SxSLMModel* model = slm_find_model(handle);
+    if (!model || !model->valid) return 0;
+    return model->context_size;
+}
+
+// slm_native_embedding_size(handle) -> i64
+// Returns the embedding dimension for a model.
+int64_t slm_native_embedding_size(int64_t handle) {
+    SxSLMModel* model = slm_find_model(handle);
+    if (!model || !model->valid) return 0;
+    return model->embedding_dim;
+}
+
+// slm_native_get_model_info(handle) -> String (JSON)
+// Returns a JSON string with model metadata.
+int64_t slm_native_get_model_info(int64_t handle) {
+    SxSLMModel* model = slm_find_model(handle);
+    if (!model || !model->valid) {
+        return (int64_t)(intptr_t)intrinsic_string_new("{\"error\":\"invalid model handle\"}");
+    }
+
+    size_t needed = strlen(model->path) + strlen(model->architecture) + 256;
+    char *buf = (char *)malloc(needed);
+    if (!buf) {
+        return (int64_t)(intptr_t)intrinsic_string_new("{\"error\":\"allocation failed\"}");
+    }
+    snprintf(buf, needed,
+        "{\"path\":\"%s\",\"architecture\":\"%s\",\"context_size\":%lld,"
+        "\"embedding_dim\":%lld,\"vocab_size\":%lld,\"n_layers\":%lld,"
+        "\"threads\":%lld,\"valid\":true}",
+        model->path, model->architecture,
+        (long long)model->context_size,
+        (long long)model->embedding_dim,
+        (long long)model->vocab_size,
+        (long long)model->n_layers,
+        (long long)model->threads);
+
+    int64_t result = (int64_t)(intptr_t)intrinsic_string_new(buf);
+    free(buf);
+    return result;
+}
 
 // Specialist stubs
 int64_t specialist_create(int64_t name, int64_t model) { (void)name;(void)model; return (int64_t)(intptr_t)calloc(1, 64); }

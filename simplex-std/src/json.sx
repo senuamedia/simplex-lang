@@ -1,0 +1,941 @@
+// Simplex JSON Library
+// Full JSON parser, builder, and accessor API
+//
+// Provides pure Simplex JSON manipulation backed by C runtime functions
+// for parsing and serialization. Supports all JSON types: objects, arrays,
+// strings, numbers, booleans, and null.
+//
+// # Usage
+//
+// ```simplex
+// use simplex_std::json::{json_parse, json_stringify, json_object, json_set};
+//
+// // Parse JSON
+// let value = json_parse("{\"name\": \"Alice\", \"age\": 30}");
+// let name = json_get_string(value.unwrap(), "name");
+//
+// // Build JSON
+// let obj = json_object();
+// let obj = json_set(obj, "name", json_string_value("Alice"));
+// let obj = json_set(obj, "age", json_number_value(30));
+// let output = json_stringify(obj);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+//
+// These functions are implemented in standalone_runtime.c and provide
+// the core JSON parsing, building, and querying operations.
+
+/// Create a new JSON null value
+extern fn json_null() -> i64;
+
+/// Create a JSON string value from a Simplex string
+extern fn json_string(s: i64) -> i64;
+
+/// Create a JSON string value (alias)
+extern fn json_string_sx(s: i64) -> i64;
+
+/// Create a JSON integer number value
+extern fn json_number_i64(n: i64) -> i64;
+
+/// Create a JSON float number value (bits representation)
+extern fn json_number_f64(bits: i64) -> i64;
+
+/// Create a JSON boolean value
+extern fn json_bool(b: i64) -> i64;
+
+/// Create an empty JSON object
+extern fn json_object_new() -> i64;
+
+/// Create an empty JSON array
+extern fn json_array_new() -> i64;
+
+/// Alias: create empty JSON object
+extern fn json_object() -> i64;
+
+/// Alias: create empty JSON array
+extern fn json_array() -> i64;
+
+/// Set a key-value pair on a JSON object
+extern fn json_object_set(obj: i64, key: i64, val: i64) -> i64;
+
+/// Set a key-value pair on a JSON object (alias)
+extern fn json_object_set_sx(obj: i64, key: i64, val: i64) -> i64;
+
+/// Get a value from a JSON object by key
+extern fn json_get_sx(obj: i64, key: i64) -> i64;
+
+/// Get length of a JSON object (number of keys)
+extern fn json_object_len(obj: i64) -> i64;
+
+/// Push a value onto a JSON array
+extern fn json_array_push(arr: i64, val: i64) -> i64;
+
+/// Get length of a JSON array
+extern fn json_array_len(arr: i64) -> i64;
+
+/// Get value at index from a JSON array
+extern fn json_get_index(arr: i64, idx: i64) -> i64;
+
+/// Get key at index from a JSON object
+extern fn json_object_key_at(obj: i64, idx: i64) -> i64;
+
+/// Get value at index from a JSON object
+extern fn json_object_value_at(obj: i64, idx: i64) -> i64;
+
+/// Convert a JSON value to a string representation
+extern fn json_as_string(val: i64) -> i64;
+
+/// Convert a JSON value to an i64
+extern fn json_as_i64(val: i64) -> i64;
+
+/// Serialize a JSON value to a JSON string
+extern fn json_stringify(val: i64) -> i64;
+
+/// Parse a JSON string into a JSON value (simple, no Result wrapping)
+extern fn json_parse_simple(s: i64) -> i64;
+
+/// Parse a JSON string into a Result<JsonValue, Error>
+extern fn json_parse(s: i64) -> i64;
+
+/// Check if a JSON value is a string
+extern fn json_is_string(val: i64) -> i64;
+
+/// Check if a JSON value is a number
+extern fn json_is_number(val: i64) -> i64;
+
+/// Check if a JSON value is a boolean
+extern fn json_is_bool(val: i64) -> i64;
+
+/// Check if a JSON value is an object
+extern fn json_is_object(val: i64) -> i64;
+
+/// Check if a JSON value is an array
+extern fn json_is_array(val: i64) -> i64;
+
+/// Check if a JSON value is null
+extern fn json_is_null(val: i64) -> i64;
+
+/// String concatenation
+extern fn string_concat(a: i64, b: i64) -> i64;
+
+/// String length
+extern fn string_length(s: i64) -> i64;
+
+/// Get character at position in string
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+
+/// Get substring
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+
+/// Result wrapping
+extern fn result_ok(val: i64) -> i64;
+extern fn result_err(val: i64) -> i64;
+extern fn result_is_ok(r: i64) -> i64;
+extern fn result_is_err(r: i64) -> i64;
+extern fn result_unwrap(r: i64) -> i64;
+
+// =============================================================================
+// JSON Value Type Constants
+// =============================================================================
+
+/// JSON value type tags (matching C runtime JsonValue.tag values)
+/// 0 = Null, 1 = String, 2 = Integer, 3 = Bool, 4 = Object, 5 = Array, 6 = Float
+
+pub fn JSON_NULL() -> i64 { 0 }
+pub fn JSON_STRING() -> i64 { 1 }
+pub fn JSON_INTEGER() -> i64 { 2 }
+pub fn JSON_BOOL() -> i64 { 3 }
+pub fn JSON_OBJECT() -> i64 { 4 }
+pub fn JSON_ARRAY() -> i64 { 5 }
+pub fn JSON_FLOAT() -> i64 { 6 }
+
+// =============================================================================
+// JsonValue Enum (Simplex-level abstraction)
+// =============================================================================
+
+/// Represents a JSON value
+///
+/// All JSON types are represented:
+/// - Object: key-value mapping
+/// - Array: ordered list
+/// - String: text value
+/// - Number: numeric value (integer or float)
+/// - Bool: true or false
+/// - Null: absence of value
+pub enum JsonValue {
+    /// JSON object `{}`
+    Object(i64),    // handle to runtime object
+    /// JSON array `[]`
+    Array(i64),     // handle to runtime array
+    /// JSON string `"..."`
+    Str(String),
+    /// JSON integer number
+    Integer(i64),
+    /// JSON floating-point number
+    Float(f64),
+    /// JSON boolean
+    Bool(bool),
+    /// JSON null
+    Null,
+}
+
+impl JsonValue {
+    /// Get the raw runtime handle for this value
+    pub fn handle(&self) -> i64 {
+        match self {
+            JsonValue::Object(h) => *h,
+            JsonValue::Array(h) => *h,
+            JsonValue::Str(s) => json_string(*s as i64),
+            JsonValue::Integer(n) => json_number_i64(*n),
+            JsonValue::Float(f) => json_number_f64(*f as i64),
+            JsonValue::Bool(b) => json_bool(if *b { 1 } else { 0 }),
+            JsonValue::Null => json_null(),
+        }
+    }
+
+    /// Check if this value is null
+    pub fn is_null(&self) -> bool {
+        match self {
+            JsonValue::Null => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this value is a string
+    pub fn is_string(&self) -> bool {
+        match self {
+            JsonValue::Str(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this value is a number (integer or float)
+    pub fn is_number(&self) -> bool {
+        match self {
+            JsonValue::Integer(_) => true,
+            JsonValue::Float(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this value is a boolean
+    pub fn is_bool(&self) -> bool {
+        match self {
+            JsonValue::Bool(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this value is an object
+    pub fn is_object(&self) -> bool {
+        match self {
+            JsonValue::Object(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this value is an array
+    pub fn is_array(&self) -> bool {
+        match self {
+            JsonValue::Array(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Try to get as string
+    pub fn as_string(&self) -> Option<String> {
+        match self {
+            JsonValue::Str(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    /// Try to get as integer
+    pub fn as_i64(&self) -> Option<i64> {
+        match self {
+            JsonValue::Integer(n) => Some(*n),
+            JsonValue::Float(f) => Some(*f as i64),
+            _ => None,
+        }
+    }
+
+    /// Try to get as float
+    pub fn as_f64(&self) -> Option<f64> {
+        match self {
+            JsonValue::Float(f) => Some(*f),
+            JsonValue::Integer(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    /// Try to get as bool
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            JsonValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+}
+
+// =============================================================================
+// Parsing Functions
+// =============================================================================
+
+/// Parse a JSON string into a raw handle
+///
+/// Returns a Result wrapping the raw JSON handle.
+/// Use accessor functions to extract values.
+///
+/// # Example
+/// ```simplex
+/// let result = parse("{\"name\": \"Alice\"}");
+/// if result_is_ok(result) {
+///     let obj = result_unwrap(result);
+///     let name = json_get_string_value(obj, "name");
+/// }
+/// ```
+pub fn parse(input: String) -> i64 {
+    json_parse(input as i64)
+}
+
+/// Parse JSON string, returning the raw handle directly (no Result wrapping)
+///
+/// Returns json_null() on parse failure.
+pub fn parse_raw(input: String) -> i64 {
+    json_parse_simple(input as i64)
+}
+
+/// Parse JSON and wrap in JsonValue enum
+pub fn parse_value(input: String) -> Result<JsonValue, String> {
+    let result = json_parse(input as i64);
+    if result_is_ok(result) == 1 {
+        let handle = result_unwrap(result);
+        Ok(wrap_handle(handle))
+    } else {
+        Err("Failed to parse JSON")
+    }
+}
+
+/// Convert a raw runtime handle to a JsonValue enum
+pub fn wrap_handle(handle: i64) -> JsonValue {
+    if json_is_null(handle) == 1 {
+        JsonValue::Null
+    } else if json_is_string(handle) == 1 {
+        let s = json_as_string(handle);
+        JsonValue::Str(s as String)
+    } else if json_is_number(handle) == 1 {
+        let n = json_as_i64(handle);
+        JsonValue::Integer(n)
+    } else if json_is_bool(handle) == 1 {
+        let b = json_as_i64(handle);
+        JsonValue::Bool(b != 0)
+    } else if json_is_object(handle) == 1 {
+        JsonValue::Object(handle)
+    } else if json_is_array(handle) == 1 {
+        JsonValue::Array(handle)
+    } else {
+        JsonValue::Null
+    }
+}
+
+// =============================================================================
+// Serialization Functions
+// =============================================================================
+
+/// Serialize a raw JSON handle to a JSON string
+///
+/// # Example
+/// ```simplex
+/// let obj = json_object_new();
+/// json_object_set(obj, "key", json_string("value"));
+/// let output = stringify(obj);
+/// // output: {"key":"value"}
+/// ```
+pub fn stringify(handle: i64) -> String {
+    json_stringify(handle) as String
+}
+
+/// Serialize a JsonValue to a JSON string
+pub fn stringify_value(value: &JsonValue) -> String {
+    let handle = value.handle();
+    json_stringify(handle) as String
+}
+
+// =============================================================================
+// Object Accessor Functions
+// =============================================================================
+
+/// Get a value from a JSON object by key (returns raw handle)
+///
+/// Returns json_null handle if key not found or value is not an object.
+pub fn get(obj: i64, key: String) -> i64 {
+    json_get_sx(obj, key as i64)
+}
+
+/// Get a string value from a JSON object by key
+///
+/// Returns the string value, or empty string if not found or not a string.
+pub fn get_string(obj: i64, key: String) -> String {
+    let val = json_get_sx(obj, key as i64);
+    if json_is_string(val) == 1 {
+        json_as_string(val) as String
+    } else {
+        ""
+    }
+}
+
+/// Get a number value from a JSON object by key
+///
+/// Returns the i64 value, or 0 if not found or not a number.
+pub fn get_number(obj: i64, key: String) -> i64 {
+    let val = json_get_sx(obj, key as i64);
+    if json_is_number(val) == 1 {
+        json_as_i64(val)
+    } else {
+        0
+    }
+}
+
+/// Get a float value from a JSON object by key
+///
+/// Returns the f64 value, or 0.0 if not found or not a number.
+pub fn get_float(obj: i64, key: String) -> f64 {
+    let val = json_get_sx(obj, key as i64);
+    if json_is_number(val) == 1 {
+        json_as_i64(val) as f64
+    } else {
+        0.0
+    }
+}
+
+/// Get a boolean value from a JSON object by key
+///
+/// Returns true/false, or false if not found or not a boolean.
+pub fn get_bool(obj: i64, key: String) -> bool {
+    let val = json_get_sx(obj, key as i64);
+    if json_is_bool(val) == 1 {
+        json_as_i64(val) != 0
+    } else {
+        false
+    }
+}
+
+/// Get an array value from a JSON object by key (returns raw handle)
+///
+/// Returns empty array handle if not found or not an array.
+pub fn get_array(obj: i64, key: String) -> i64 {
+    let val = json_get_sx(obj, key as i64);
+    if json_is_array(val) == 1 {
+        val
+    } else {
+        json_array_new()
+    }
+}
+
+/// Get an object value from a JSON object by key (returns raw handle)
+///
+/// Returns empty object handle if not found or not an object.
+pub fn get_object(obj: i64, key: String) -> i64 {
+    let val = json_get_sx(obj, key as i64);
+    if json_is_object(val) == 1 {
+        val
+    } else {
+        json_object_new()
+    }
+}
+
+/// Check if a key exists in a JSON object
+pub fn has_key(obj: i64, key: String) -> bool {
+    let val = json_get_sx(obj, key as i64);
+    json_is_null(val) != 1
+}
+
+// =============================================================================
+// Array Accessor Functions
+// =============================================================================
+
+/// Get the length of a JSON array
+pub fn array_len(arr: i64) -> i64 {
+    json_array_len(arr)
+}
+
+/// Get a value from a JSON array by index (returns raw handle)
+pub fn array_get(arr: i64, index: i64) -> i64 {
+    json_get_index(arr, index)
+}
+
+/// Get a string from a JSON array by index
+pub fn array_get_string(arr: i64, index: i64) -> String {
+    let val = json_get_index(arr, index);
+    if json_is_string(val) == 1 {
+        json_as_string(val) as String
+    } else {
+        ""
+    }
+}
+
+/// Get a number from a JSON array by index
+pub fn array_get_number(arr: i64, index: i64) -> i64 {
+    let val = json_get_index(arr, index);
+    if json_is_number(val) == 1 {
+        json_as_i64(val)
+    } else {
+        0
+    }
+}
+
+/// Get a boolean from a JSON array by index
+pub fn array_get_bool(arr: i64, index: i64) -> bool {
+    let val = json_get_index(arr, index);
+    if json_is_bool(val) == 1 {
+        json_as_i64(val) != 0
+    } else {
+        false
+    }
+}
+
+// =============================================================================
+// Object Length and Iteration
+// =============================================================================
+
+/// Get the number of keys in a JSON object
+pub fn object_len(obj: i64) -> i64 {
+    json_object_len(obj)
+}
+
+/// Get the key at a given index in a JSON object
+pub fn object_key_at(obj: i64, index: i64) -> String {
+    json_object_key_at(obj, index) as String
+}
+
+/// Get the value at a given index in a JSON object (returns raw handle)
+pub fn object_value_at(obj: i64, index: i64) -> i64 {
+    json_object_value_at(obj, index)
+}
+
+// =============================================================================
+// Builder Functions
+// =============================================================================
+
+/// Create a new empty JSON object
+///
+/// # Example
+/// ```simplex
+/// let obj = new_object();
+/// let obj = set(obj, "name", string_value("Alice"));
+/// ```
+pub fn new_object() -> i64 {
+    json_object_new()
+}
+
+/// Create a new empty JSON array
+///
+/// # Example
+/// ```simplex
+/// let arr = new_array();
+/// let arr = push(arr, number_value(42));
+/// ```
+pub fn new_array() -> i64 {
+    json_array_new()
+}
+
+/// Set a key-value pair on a JSON object (returns the object handle)
+///
+/// The value should be a JSON handle created by one of the value functions.
+///
+/// # Example
+/// ```simplex
+/// let obj = new_object();
+/// set(obj, "key", string_value("hello"));
+/// ```
+pub fn set(obj: i64, key: String, value: i64) -> i64 {
+    json_object_set(obj, key as i64, value);
+    obj
+}
+
+/// Push a value onto a JSON array (returns the array handle)
+///
+/// # Example
+/// ```simplex
+/// let arr = new_array();
+/// push(arr, number_value(1));
+/// push(arr, number_value(2));
+/// push(arr, number_value(3));
+/// ```
+pub fn push(arr: i64, value: i64) -> i64 {
+    json_array_push(arr, value);
+    arr
+}
+
+// =============================================================================
+// Value Constructor Functions
+// =============================================================================
+
+/// Create a JSON string value
+pub fn string_value(s: String) -> i64 {
+    json_string(s as i64)
+}
+
+/// Create a JSON integer number value
+pub fn number_value(n: i64) -> i64 {
+    json_number_i64(n)
+}
+
+/// Create a JSON float number value
+pub fn float_value(f: f64) -> i64 {
+    json_number_f64(f as i64)
+}
+
+/// Create a JSON boolean value
+pub fn bool_value(b: bool) -> i64 {
+    json_bool(if b { 1 } else { 0 })
+}
+
+/// Create a JSON null value
+pub fn null_value() -> i64 {
+    json_null()
+}
+
+// =============================================================================
+// Type Checking Functions
+// =============================================================================
+
+/// Check if a JSON handle represents a null value
+pub fn is_null(handle: i64) -> bool {
+    json_is_null(handle) == 1
+}
+
+/// Check if a JSON handle represents a string value
+pub fn is_string(handle: i64) -> bool {
+    json_is_string(handle) == 1
+}
+
+/// Check if a JSON handle represents a number value
+pub fn is_number(handle: i64) -> bool {
+    json_is_number(handle) == 1
+}
+
+/// Check if a JSON handle represents a boolean value
+pub fn is_bool(handle: i64) -> bool {
+    json_is_bool(handle) == 1
+}
+
+/// Check if a JSON handle represents an object
+pub fn is_object_val(handle: i64) -> bool {
+    json_is_object(handle) == 1
+}
+
+/// Check if a JSON handle represents an array
+pub fn is_array_val(handle: i64) -> bool {
+    json_is_array(handle) == 1
+}
+
+// =============================================================================
+// Conversion Functions
+// =============================================================================
+
+/// Convert a JSON handle to a string (extracts string value)
+pub fn as_string(handle: i64) -> String {
+    json_as_string(handle) as String
+}
+
+/// Convert a JSON handle to an i64 (extracts number value)
+pub fn as_i64(handle: i64) -> i64 {
+    json_as_i64(handle)
+}
+
+/// Convert a JSON handle to a bool (extracts boolean value)
+pub fn as_bool(handle: i64) -> bool {
+    json_as_i64(handle) != 0
+}
+
+// =============================================================================
+// Convenience: Object Builder (Fluent Style)
+// =============================================================================
+
+/// Fluent JSON object builder
+///
+/// # Example
+/// ```simplex
+/// let obj = ObjectBuilder::new()
+///     .set_string("name", "Alice")
+///     .set_number("age", 30)
+///     .set_bool("active", true)
+///     .build();
+/// ```
+pub struct ObjectBuilder {
+    handle: i64,
+}
+
+impl ObjectBuilder {
+    /// Create a new object builder
+    pub fn new() -> Self {
+        ObjectBuilder { handle: json_object_new() }
+    }
+
+    /// Set a string value
+    pub fn set_string(self, key: String, value: String) -> Self {
+        json_object_set(self.handle, key as i64, json_string(value as i64));
+        self
+    }
+
+    /// Set an integer value
+    pub fn set_number(self, key: String, value: i64) -> Self {
+        json_object_set(self.handle, key as i64, json_number_i64(value));
+        self
+    }
+
+    /// Set a float value
+    pub fn set_float(self, key: String, value: f64) -> Self {
+        json_object_set(self.handle, key as i64, json_number_f64(value as i64));
+        self
+    }
+
+    /// Set a boolean value
+    pub fn set_bool(self, key: String, value: bool) -> Self {
+        json_object_set(self.handle, key as i64, json_bool(if value { 1 } else { 0 }));
+        self
+    }
+
+    /// Set a null value
+    pub fn set_null(self, key: String) -> Self {
+        json_object_set(self.handle, key as i64, json_null());
+        self
+    }
+
+    /// Set a nested object value
+    pub fn set_object(self, key: String, obj: i64) -> Self {
+        json_object_set(self.handle, key as i64, obj);
+        self
+    }
+
+    /// Set a nested array value
+    pub fn set_array(self, key: String, arr: i64) -> Self {
+        json_object_set(self.handle, key as i64, arr);
+        self
+    }
+
+    /// Get the built object handle
+    pub fn build(&self) -> i64 {
+        self.handle
+    }
+
+    /// Serialize the built object to a JSON string
+    pub fn to_string(&self) -> String {
+        json_stringify(self.handle) as String
+    }
+}
+
+// =============================================================================
+// Convenience: Array Builder (Fluent Style)
+// =============================================================================
+
+/// Fluent JSON array builder
+///
+/// # Example
+/// ```simplex
+/// let arr = ArrayBuilder::new()
+///     .push_number(1)
+///     .push_number(2)
+///     .push_string("three")
+///     .build();
+/// ```
+pub struct ArrayBuilder {
+    handle: i64,
+}
+
+impl ArrayBuilder {
+    /// Create a new array builder
+    pub fn new() -> Self {
+        ArrayBuilder { handle: json_array_new() }
+    }
+
+    /// Push a string value
+    pub fn push_string(self, value: String) -> Self {
+        json_array_push(self.handle, json_string(value as i64));
+        self
+    }
+
+    /// Push an integer value
+    pub fn push_number(self, value: i64) -> Self {
+        json_array_push(self.handle, json_number_i64(value));
+        self
+    }
+
+    /// Push a float value
+    pub fn push_float(self, value: f64) -> Self {
+        json_array_push(self.handle, json_number_f64(value as i64));
+        self
+    }
+
+    /// Push a boolean value
+    pub fn push_bool(self, value: bool) -> Self {
+        json_array_push(self.handle, json_bool(if value { 1 } else { 0 }));
+        self
+    }
+
+    /// Push a null value
+    pub fn push_null(self) -> Self {
+        json_array_push(self.handle, json_null());
+        self
+    }
+
+    /// Push a nested object
+    pub fn push_object(self, obj: i64) -> Self {
+        json_array_push(self.handle, obj);
+        self
+    }
+
+    /// Push a nested array
+    pub fn push_array(self, arr: i64) -> Self {
+        json_array_push(self.handle, arr);
+        self
+    }
+
+    /// Get the built array handle
+    pub fn build(&self) -> i64 {
+        self.handle
+    }
+
+    /// Get length of built array
+    pub fn len(&self) -> i64 {
+        json_array_len(self.handle)
+    }
+
+    /// Serialize the built array to a JSON string
+    pub fn to_string(&self) -> String {
+        json_stringify(self.handle) as String
+    }
+}
+
+// =============================================================================
+// Merge and Deep Copy Utilities
+// =============================================================================
+
+/// Merge two JSON objects. Keys from `overlay` override those in `base`.
+/// Returns a new object handle.
+pub fn merge_objects(base: i64, overlay: i64) -> i64 {
+    let result = json_object_new();
+
+    // Copy all keys from base
+    let base_len = json_object_len(base);
+    let mut i: i64 = 0;
+    while i < base_len {
+        let key = json_object_key_at(base, i);
+        let val = json_object_value_at(base, i);
+        json_object_set(result, key, val);
+        i = i + 1;
+    }
+
+    // Copy/overwrite with keys from overlay
+    let overlay_len = json_object_len(overlay);
+    let mut j: i64 = 0;
+    while j < overlay_len {
+        let key = json_object_key_at(overlay, j);
+        let val = json_object_value_at(overlay, j);
+        json_object_set(result, key, val);
+        j = j + 1;
+    }
+
+    result
+}
+
+/// Concatenate two JSON arrays into a new array
+pub fn concat_arrays(a: i64, b: i64) -> i64 {
+    let result = json_array_new();
+
+    let a_len = json_array_len(a);
+    let mut i: i64 = 0;
+    while i < a_len {
+        json_array_push(result, json_get_index(a, i));
+        i = i + 1;
+    }
+
+    let b_len = json_array_len(b);
+    let mut j: i64 = 0;
+    while j < b_len {
+        json_array_push(result, json_get_index(b, j));
+        j = j + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Path-based Access (dot notation)
+// =============================================================================
+
+/// Access a nested value using dot-separated path notation
+///
+/// # Example
+/// ```simplex
+/// let data = parse_raw("{\"a\": {\"b\": {\"c\": 42}}}");
+/// let val = get_path(data, "a.b.c");
+/// // val is the handle for 42
+/// ```
+pub fn get_path(obj: i64, path: String) -> i64 {
+    let mut current = obj;
+    let path_len = string_length(path as i64);
+    let mut start: i64 = 0;
+    let mut i: i64 = 0;
+
+    while i <= path_len {
+        let at_end = i == path_len;
+        let is_dot = if !at_end {
+            string_char_at(path as i64, i) == 46  // '.' = ASCII 46
+        } else {
+            false
+        };
+
+        if is_dot || at_end {
+            if i > start {
+                let segment = string_substring(path as i64, start, i - start);
+                current = json_get_sx(current, segment);
+
+                if json_is_null(current) == 1 {
+                    return current;  // Key not found, return null
+                }
+            }
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+
+    current
+}
+
+/// Get a string at a nested path
+pub fn get_path_string(obj: i64, path: String) -> String {
+    let val = get_path(obj, path);
+    if json_is_string(val) == 1 {
+        json_as_string(val) as String
+    } else {
+        ""
+    }
+}
+
+/// Get a number at a nested path
+pub fn get_path_number(obj: i64, path: String) -> i64 {
+    let val = get_path(obj, path);
+    if json_is_number(val) == 1 {
+        json_as_i64(val)
+    } else {
+        0
+    }
+}
+
+/// Get a boolean at a nested path
+pub fn get_path_bool(obj: i64, path: String) -> bool {
+    let val = get_path(obj, path);
+    if json_is_bool(val) == 1 {
+        json_as_i64(val) != 0
+    } else {
+        false
+    }
+}

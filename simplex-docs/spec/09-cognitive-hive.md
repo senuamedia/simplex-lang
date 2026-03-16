@@ -1,6 +1,6 @@
 # Cognitive Hive AI Architecture
 
-**Version 0.12.0**
+**Version 0.13.0**
 
 **The future of AI is not one giant mind, but a swarm of specialists.**
 

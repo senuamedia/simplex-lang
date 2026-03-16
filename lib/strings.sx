@@ -1,0 +1,340 @@
+// Simplex String Utilities - StringBuilder Library
+// Efficient string building with single allocation on finalization
+// Replaces repeated string_concat patterns (O(n^2)) with O(n) approach
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex
+
+// ========================================
+// StringBuilder
+// ========================================
+//
+// StringBuilder provides efficient string concatenation by collecting
+// string parts and building the final result in a single allocation.
+// This avoids the O(n^2) performance of repeated string_concat calls.
+//
+// Usage:
+//   let sb: i64 = sb_new();
+//   sb_append(sb, "Hello, ");
+//   sb_append(sb, name);
+//   sb_append_char(sb, 33);  // '!'
+//   let result: i64 = sb_build(sb);
+//
+// The StringBuilder uses runtime intrinsics for optimal performance.
+// Internal structure (opaque, managed by runtime):
+//   - data: char* - dynamically growing buffer
+//   - len: i64 - current length
+//   - cap: i64 - current capacity
+//
+// Runtime Intrinsics (built into the compiler):
+//   sb_new() -> i64              Create new StringBuilder (1KB default capacity)
+//   sb_new_cap(cap) -> i64       Create with specified capacity
+//   sb_append(sb, s) -> i64      Append a string
+//   sb_append_char(sb, c) -> i64 Append a single character
+//   sb_append_i64(sb, n)         Append an integer
+//   sb_to_string(sb) -> i64      Finalize and return the string
+//   sb_len(sb) -> i64            Get current content length
+//   sb_clear(sb) -> i64          Clear contents (keep buffer)
+//   sb_free(sb) -> i64           Free the StringBuilder
+//
+
+/// Build the final string from all appended parts
+/// Creates a new string with a single allocation
+/// Note: This is an alias for sb_to_string for API consistency
+///
+/// Arguments:
+///   sb: StringBuilder handle
+///
+/// Returns: The concatenated string
+///
+/// Example:
+///   let result: i64 = sb_build(sb);
+fn sb_build(sb: i64) -> i64 {
+    sb_to_string(sb)
+}
+
+// ========================================
+// Convenience Functions
+// ========================================
+
+/// Append a string followed by a newline
+/// Convenience for the common pattern: sb_append(sb, s); sb_append_char(sb, 10);
+///
+/// Arguments:
+///   sb: StringBuilder handle
+///   s: String to append (newline will be added after)
+///
+/// Example:
+///   sb_append_line(sb, "First line");
+///   sb_append_line(sb, "Second line");
+fn sb_append_line(sb: i64, s: i64) -> i64 {
+    sb_append(sb, s);
+    sb_append_char(sb, 10);
+    0
+}
+
+/// Check if the StringBuilder is empty
+///
+/// Arguments:
+///   sb: StringBuilder handle
+///
+/// Returns: true if empty, false otherwise
+fn sb_is_empty(sb: i64) -> bool {
+    sb_len(sb) == 0
+}
+
+// ========================================
+// String Joining Utilities
+// ========================================
+
+/// Join a vector of strings with a separator
+/// More efficient than repeated string_concat
+///
+/// Arguments:
+///   parts: Vec of strings to join
+///   sep: Separator string between parts
+///
+/// Returns: Joined string
+///
+/// Example:
+///   let parts: i64 = vec_new();
+///   vec_push(parts, "a");
+///   vec_push(parts, "b");
+///   vec_push(parts, "c");
+///   let result: i64 = string_join(parts, ", ");  // "a, b, c"
+fn string_join(parts: i64, sep: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let n: i64 = vec_len(parts);
+    let i: i64 = 0;
+    while i < n {
+        if i > 0 {
+            sb_append(sb, sep);
+        }
+        sb_append(sb, vec_get(parts, i));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Join strings with newlines
+///
+/// Arguments:
+///   parts: Vec of strings to join
+///
+/// Returns: Joined string with newlines between parts
+fn string_join_lines(parts: i64) -> i64 {
+    string_join(parts, string_from("\n"))
+}
+
+/// Repeat a string n times
+///
+/// Arguments:
+///   s: String to repeat
+///   count: Number of times to repeat
+///
+/// Returns: Repeated string
+///
+/// Example:
+///   let dashes: i64 = string_repeat("-", 40);  // 40 dashes
+fn string_repeat(s: i64, count: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let i: i64 = 0;
+    while i < count {
+        sb_append(sb, s);
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Create a string of n spaces
+/// Commonly used for indentation
+///
+/// Arguments:
+///   n: Number of spaces
+///
+/// Returns: String of n spaces
+///
+/// Example:
+///   let indent: i64 = string_spaces(4);  // "    "
+fn string_spaces(n: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let i: i64 = 0;
+    while i < n {
+        sb_append_char(sb, 32);
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Create an indentation string (n * indent_width spaces)
+/// Default indent width is 4 spaces
+///
+/// Arguments:
+///   level: Indentation level (0, 1, 2, ...)
+///
+/// Returns: String of (level * 4) spaces
+fn string_indent(level: i64) -> i64 {
+    string_spaces(level * 4)
+}
+
+/// Create an indentation string with custom width
+///
+/// Arguments:
+///   level: Indentation level
+///   width: Spaces per indentation level
+///
+/// Returns: String of (level * width) spaces
+fn string_indent_with(level: i64, width: i64) -> i64 {
+    string_spaces(level * width)
+}
+
+// ========================================
+// String Formatting Helpers
+// ========================================
+
+/// Pad a string on the left to reach target length
+///
+/// Arguments:
+///   s: String to pad
+///   target_len: Desired total length
+///   pad_char: Character code to use for padding
+///
+/// Returns: Padded string (or original if already long enough)
+fn string_pad_left(s: i64, target_len: i64, pad_char: i64) -> i64 {
+    let current_len: i64 = string_len(s);
+    if current_len >= target_len {
+        return s;
+    }
+    let sb: i64 = sb_new();
+    let pad_count: i64 = target_len - current_len;
+    let i: i64 = 0;
+    while i < pad_count {
+        sb_append_char(sb, pad_char);
+        i = i + 1;
+    }
+    sb_append(sb, s);
+    sb_to_string(sb)
+}
+
+/// Pad a string on the right to reach target length
+///
+/// Arguments:
+///   s: String to pad
+///   target_len: Desired total length
+///   pad_char: Character code to use for padding
+///
+/// Returns: Padded string (or original if already long enough)
+fn string_pad_right(s: i64, target_len: i64, pad_char: i64) -> i64 {
+    let current_len: i64 = string_len(s);
+    if current_len >= target_len {
+        return s;
+    }
+    let sb: i64 = sb_new();
+    sb_append(sb, s);
+    let pad_count: i64 = target_len - current_len;
+    let i: i64 = 0;
+    while i < pad_count {
+        sb_append_char(sb, pad_char);
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Center a string within target length
+///
+/// Arguments:
+///   s: String to center
+///   target_len: Desired total length
+///   pad_char: Character code to use for padding
+///
+/// Returns: Centered string
+fn string_center(s: i64, target_len: i64, pad_char: i64) -> i64 {
+    let current_len: i64 = string_len(s);
+    if current_len >= target_len {
+        return s;
+    }
+    let total_padding: i64 = target_len - current_len;
+    let left_padding: i64 = total_padding / 2;
+    let right_padding: i64 = total_padding - left_padding;
+
+    let sb: i64 = sb_new();
+    let i: i64 = 0;
+    while i < left_padding {
+        sb_append_char(sb, pad_char);
+        i = i + 1;
+    }
+    sb_append(sb, s);
+    i = 0;
+    while i < right_padding {
+        sb_append_char(sb, pad_char);
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+// ========================================
+// Quoted String Helpers
+// ========================================
+
+/// Wrap a string in double quotes
+///
+/// Arguments:
+///   s: String to quote
+///
+/// Returns: Quoted string
+///
+/// Example:
+///   string_quote("hello")  // "\"hello\""
+fn string_quote(s: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append_char(sb, 34);
+    sb_append(sb, s);
+    sb_append_char(sb, 34);
+    sb_to_string(sb)
+}
+
+/// Wrap a string in single quotes
+fn string_quote_single(s: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append_char(sb, 39);
+    sb_append(sb, s);
+    sb_append_char(sb, 39);
+    sb_to_string(sb)
+}
+
+/// Wrap a string in parentheses
+fn string_paren(s: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append_char(sb, 40);
+    sb_append(sb, s);
+    sb_append_char(sb, 41);
+    sb_to_string(sb)
+}
+
+/// Wrap a string in brackets
+fn string_bracket(s: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append_char(sb, 91);
+    sb_append(sb, s);
+    sb_append_char(sb, 93);
+    sb_to_string(sb)
+}
+
+/// Wrap a string in braces
+fn string_brace(s: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append_char(sb, 123);
+    sb_append(sb, s);
+    sb_append_char(sb, 125);
+    sb_to_string(sb)
+}
+
+/// Wrap a string in angle brackets
+fn string_angle(s: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append_char(sb, 60);
+    sb_append(sb, s);
+    sb_append_char(sb, 62);
+    sb_to_string(sb)
+}

@@ -12,11 +12,13 @@ pub mod lr;
 pub mod distill;
 pub mod prune;
 pub mod quant;
+pub mod curriculum;
 
 pub use lr::LearnableLRSchedule;
 pub use distill::LearnableDistillation;
 pub use prune::LearnablePruning;
 pub use quant::LearnableQuantization;
+pub use curriculum::{LearnableCurriculum, CurriculumGradient, TaskDescriptor};
 
 use simplex_std::dual::dual;
 
@@ -35,6 +37,8 @@ pub struct LearnedSchedules {
     pub prune: LearnablePruning,
     /// Quantization schedule
     pub quant: LearnableQuantization,
+    /// Curriculum schedule
+    pub curriculum: LearnableCurriculum,
 }
 
 impl LearnedSchedules {
@@ -45,6 +49,18 @@ impl LearnedSchedules {
             distill: LearnableDistillation::new(),
             prune: LearnablePruning::new(),
             quant: LearnableQuantization::new(),
+            curriculum: LearnableCurriculum::new(4),
+        }
+    }
+
+    /// Create with specified number of curriculum specialists
+    pub fn with_curriculum(num_specialists: usize) -> LearnedSchedules {
+        LearnedSchedules {
+            lr: LearnableLRSchedule::new(),
+            distill: LearnableDistillation::new(),
+            prune: LearnablePruning::new(),
+            quant: LearnableQuantization::new(),
+            curriculum: LearnableCurriculum::new(num_specialists),
         }
     }
 
@@ -75,6 +91,7 @@ impl LearnedSchedules {
             distill: self.distill.gradient(),
             prune: self.prune.gradient(),
             quant: self.quant.gradient(),
+            curriculum: self.curriculum.extract_gradients(),
         }
     }
 
@@ -84,6 +101,7 @@ impl LearnedSchedules {
         self.distill.update(&grad.distill, lr);
         self.prune.update(&grad.prune, lr);
         self.quant.update(&grad.quant, lr);
+        self.curriculum.apply_gradients(&grad.curriculum, lr);
     }
 
     /// Total L2 norm (for regularization)
@@ -91,7 +109,8 @@ impl LearnedSchedules {
         self.lr.l2_norm() +
         self.distill.l2_norm() +
         self.prune.l2_norm() +
-        self.quant.l2_norm()
+        self.quant.l2_norm() +
+        self.curriculum.l2_norm()
     }
 }
 
@@ -108,6 +127,7 @@ pub struct SchedulesGradient {
     pub distill: distill::DistillGradient,
     pub prune: prune::PruneGradient,
     pub quant: quant::QuantGradient,
+    pub curriculum: curriculum::CurriculumGradient,
 }
 
 impl SchedulesGradient {
@@ -118,6 +138,18 @@ impl SchedulesGradient {
             distill: distill::DistillGradient::default(),
             prune: prune::PruneGradient::default(),
             quant: quant::QuantGradient::default(),
+            curriculum: curriculum::CurriculumGradient::default(),
+        }
+    }
+
+    /// Zero gradient with curriculum size
+    pub fn zero_with_curriculum(num_specialists: usize) -> SchedulesGradient {
+        SchedulesGradient {
+            lr: lr::LRGradient::default(),
+            distill: distill::DistillGradient::default(),
+            prune: prune::PruneGradient::default(),
+            quant: quant::QuantGradient::default(),
+            curriculum: curriculum::CurriculumGradient::zero(num_specialists),
         }
     }
 
@@ -127,6 +159,7 @@ impl SchedulesGradient {
         self.distill.scale(factor);
         self.prune.scale(factor);
         self.quant.scale(factor);
+        self.curriculum.scale(factor);
     }
 
     /// Gradient norm
@@ -134,7 +167,8 @@ impl SchedulesGradient {
         (self.lr.norm().powi(2) +
          self.distill.norm().powi(2) +
          self.prune.norm().powi(2) +
-         self.quant.norm().powi(2)).sqrt()
+         self.quant.norm().powi(2) +
+         self.curriculum.norm().powi(2)).sqrt()
     }
 }
 

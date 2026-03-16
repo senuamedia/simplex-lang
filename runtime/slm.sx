@@ -328,25 +328,111 @@ fn divine_slm_infer(dslm: DivineSLM, prompt: String) -> String {
 }
 
 // ============================================================================
-// Native SLM bindings (implemented in C/GGML)
+// Native SLM bindings (implemented in C runtime)
 // ============================================================================
 
-// Load a GGUF model file
+// Load a GGUF model file — validates magic bytes, returns model handle (0 on error)
 fn slm_native_load(model_path: String, ctx_size: i64, threads: i64) -> i64;
 
-// Unload a model
+// Unload a model and free all associated memory
 fn slm_native_unload(handle: i64);
 
-// Run inference on the model
+// Create an inference context with KV cache for a loaded model
+fn slm_native_create_context(model_handle: i64, context_size: i64) -> i64;
+
+// Destroy an inference context
+fn slm_native_destroy_context(ctx_handle: i64);
+
+// Tokenize text using basic whitespace tokenizer (returns token array handle)
+fn slm_native_tokenize(ctx_handle: i64, text: String) -> Vec<i64>;
+
+// Run inference on the model (prompt-based)
 fn slm_native_infer(handle: i64, prompt: String, temperature: i64) -> String;
+
+// Generate text from token array (context-based)
+fn slm_native_generate(ctx_handle: i64, tokens: Vec<i64>, max_tokens: i64, temperature: i64) -> String;
 
 // Get model metadata
 fn slm_native_context_size(handle: i64) -> i64;
 fn slm_native_embedding_size(handle: i64) -> i64;
 
+// Get model info as JSON string
+fn slm_native_get_model_info(handle: i64) -> String;
+
 // Embeddings for semantic search
 fn slm_native_embed(handle: i64, text: String) -> Vec<f64>;
 fn slm_native_similarity(a: Vec<f64>, b: Vec<f64>) -> f64;
+
+// ============================================================================
+// Context Management — create/destroy inference contexts
+// ============================================================================
+
+// Create an inference context for a loaded SLM instance
+fn slm_create_context(instance: SLMInstance, ctx_size: i64) -> i64 {
+    slm_native_create_context(instance.handle, ctx_size)
+}
+
+// Destroy an inference context
+fn slm_destroy_context(ctx_handle: i64) {
+    slm_native_destroy_context(ctx_handle);
+}
+
+// ============================================================================
+// Tokenization — split text into tokens
+// ============================================================================
+
+// Tokenize text using the model's tokenizer (basic whitespace for now)
+fn slm_tokenize(instance: SLMInstance, text: String) -> Vec<i64> {
+    let ctx: i64 = slm_native_create_context(instance.handle, instance.config.context_size);
+    let tokens: Vec<i64> = slm_native_tokenize(ctx, text);
+    slm_native_destroy_context(ctx);
+    tokens
+}
+
+// ============================================================================
+// Generation — produce text from tokens
+// ============================================================================
+
+// Generate text from a token array with explicit parameters
+fn slm_generate(instance: SLMInstance, tokens: Vec<i64>, max_tokens: i64) -> String {
+    let ctx: i64 = slm_native_create_context(instance.handle, instance.config.context_size);
+    let result: String = slm_native_generate(ctx, tokens, max_tokens, instance.config.temperature);
+    slm_native_destroy_context(ctx);
+    result
+}
+
+// ============================================================================
+// Model Info — query model metadata
+// ============================================================================
+
+// Get model info as a JSON string
+fn slm_get_model_info(instance: SLMInstance) -> String {
+    slm_native_get_model_info(instance.handle)
+}
+
+// Get the context window size for a model
+fn slm_context_size(instance: SLMInstance) -> i64 {
+    slm_native_context_size(instance.handle)
+}
+
+// Get the embedding dimension for a model
+fn slm_embedding_size(instance: SLMInstance) -> i64 {
+    slm_native_embedding_size(instance.handle)
+}
+
+// ============================================================================
+// Embeddings — vector representations
+// ============================================================================
+
+// Get embedding vector for text
+fn slm_embed(instance: SLMInstance, text: String) -> Vec<f64> {
+    slm_native_embed(instance.handle, text)
+}
+
+// Compute cosine similarity between two embedding vectors
+fn slm_similarity(a: Vec<f64>, b: Vec<f64>) -> f64 {
+    slm_native_similarity(a, b)
+}
 
 // ============================================================================
 // Helper imports

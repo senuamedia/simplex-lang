@@ -1,13 +1,61 @@
-// Test async/await (sync version for bootstrap)
+// Test: Basic async/await functionality
+// Exercises: async fn, .await, block_on, Ready tagging
 
-fn compute(x: i64) -> i64 {
- x * 2
+// Simple async function returning a value
+async fn async_value() -> i64 {
+    42
+}
+
+// Async function with computation
+async fn async_double(x: i64) -> i64 {
+    x * 2
+}
+
+// Async function awaiting another async function
+async fn async_with_await() -> i64 {
+    let val: i64 = async_value().await;
+    val + 8
+}
+
+// Async function with multiple awaits
+async fn async_multi_await() -> i64 {
+    let a: i64 = async_value().await;
+    let b: i64 = async_double(10).await;
+    a + b
 }
 
 fn main() -> i64 {
- let result: i64 = compute(21);
- if result == 42 {
-  return 0;
- }
- 1
+    // Test 1: block_on simple async value
+    let r1: i64 = block_on(async_value());
+    if r1 != 42 {
+        print("FAIL: async_value");
+        return 1;
+    }
+    print(" PASS: async_value");
+
+    // Test 2: block_on async with parameter
+    let r2: i64 = block_on(async_double(21));
+    if r2 != 42 {
+        print("FAIL: async_double");
+        return 1;
+    }
+    print(" PASS: async_double");
+
+    // Test 3: block_on async with single .await
+    let r3: i64 = block_on(async_with_await());
+    if r3 != 50 {
+        print("FAIL: async_with_await");
+        return 1;
+    }
+    print(" PASS: async_with_await");
+
+    // Test 4: block_on async with multiple .await points
+    let r4: i64 = block_on(async_multi_await());
+    if r4 != 62 {
+        print("FAIL: async_multi_await");
+        return 1;
+    }
+    print(" PASS: async_multi_await");
+
+    0
 }

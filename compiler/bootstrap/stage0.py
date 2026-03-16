@@ -138,6 +138,12 @@ class TokenKind:
     FAT_ARROW = 'FAT_ARROW'
     UNDERSCORE = 'UNDERSCORE'
     HASH = 'HASH'
+    KW_AS = 'KW_AS'
+    # Contract keywords (TASK-001 Phase 2)
+    KW_REQUIRES = 'KW_REQUIRES'
+    KW_ENSURES = 'KW_ENSURES'
+    KW_INVARIANT = 'KW_INVARIANT'
+    KW_FALLBACK = 'KW_FALLBACK'
 
 KEYWORDS = {
     'fn': TokenKind.KW_FN,
@@ -182,7 +188,13 @@ KEYWORDS = {
     'const': TokenKind.KW_CONST,
     'where': TokenKind.KW_WHERE,
     'mut': TokenKind.KW_MUT,
+    'as': TokenKind.KW_AS,
     '_': TokenKind.UNDERSCORE,
+    # Contract keywords (TASK-001 Phase 2)
+    'requires': TokenKind.KW_REQUIRES,
+    'ensures': TokenKind.KW_ENSURES,
+    'invariant': TokenKind.KW_INVARIANT,
+    'fallback': TokenKind.KW_FALLBACK,
 }
 
 class Token:
@@ -1612,6 +1624,10 @@ class Parser:
                 if self.check(TokenKind.KW_AWAIT):
                     self.advance()
                     expr = {'type': 'AwaitExpr', 'expr': expr}
+                elif self.check(TokenKind.INT):
+                    # Tuple field access: expr.0, expr.1, etc.
+                    idx_str = self.advance().text
+                    expr = make_field_access(expr, idx_str)
                 else:
                     name = self.expect(TokenKind.IDENT).text
                     # Check if method call (followed by '(')
@@ -2814,6 +2830,12 @@ class CodeGen:
         self.emit('declare i64 @belief_update_dual_i64(i64, i64, i64)')
         self.emit('declare i64 @belief_suspend_receive(i64, i64, i64, i64, i64, double, i64, i64)')
         self.emit('declare i64 @belief_cancel_suspend(i64)')
+        self.emit('declare i64 @belief_suspended_count()')
+        self.emit('declare i64 @belief_get_actor_suspends(i64)')
+        self.emit('declare i64 @belief_clear_actor_suspends(i64)')
+        self.emit('declare i64 @belief_suspend_get_belief(i64)')
+        self.emit('declare i64 @belief_suspend_get_actor(i64)')
+        self.emit('declare i64 @belief_suspend_get_duration_ms(i64)')
         self.emit('; Memory intrinsics')
         self.emit('declare i64 @intrinsic_remember(ptr, i64, i64)')
         self.emit('declare ptr @intrinsic_recall(ptr, i64)')
@@ -3317,6 +3339,7 @@ class CodeGen:
         self.emit('; Phase 23.3: Lock-Free Mailbox - Michael-Scott Queue Implementation')
         self.emit('declare i64 @mailbox_new(i64)')
         self.emit('declare i64 @mailbox_send(i64, i64)')
+        self.emit('declare i64 @mailbox_ask(i64, i64)')
         self.emit('declare i64 @mailbox_recv(i64)')
         self.emit('declare i64 @mailbox_try_recv(i64)')
         self.emit('declare i64 @mailbox_size(i64)')
@@ -3376,6 +3399,20 @@ class CodeGen:
         self.emit('declare i64 @native_model_infer(i64, i64)')
         self.emit('declare void @native_model_free()')
         self.emit('declare i64 @native_model_loaded()')
+
+        self.emit('; SLM (Small Language Model) native bindings')
+        self.emit('declare i64 @slm_native_load(i64, i64, i64)')
+        self.emit('declare i64 @slm_native_unload(i64)')
+        self.emit('declare i64 @slm_native_create_context(i64, i64)')
+        self.emit('declare i64 @slm_native_destroy_context(i64)')
+        self.emit('declare i64 @slm_native_tokenize(i64, i64)')
+        self.emit('declare i64 @slm_native_infer(i64, i64, i64)')
+        self.emit('declare i64 @slm_native_generate(i64, i64, i64, i64)')
+        self.emit('declare i64 @slm_native_embed(i64, i64)')
+        self.emit('declare i64 @slm_native_similarity(i64, i64)')
+        self.emit('declare i64 @slm_native_context_size(i64)')
+        self.emit('declare i64 @slm_native_embedding_size(i64)')
+        self.emit('declare i64 @slm_native_get_model_info(i64)')
 
         self.emit('; Shared Vector Store (semantic memory)')
         self.emit('declare i64 @shared_store_new(i64, i64)')
@@ -8559,22 +8596,53 @@ class CodeGen:
                     temp2 = self.new_temp()
                     self.emit(f'  {temp2} = ptrtoint ptr {temp} to i64')
                     return temp2
+            elif func_name == 'call0':
+                # Closure-aware call with 0 args: call0(closure_struct)
+                closure_val = args[0]
+                cptr = self.new_temp()
+                self.emit(f'  {cptr} = inttoptr i64 {closure_val} to ptr')
+                fn_load = self.new_temp()
+                self.emit(f'  {fn_load} = load i64, ptr {cptr}')
+                env_gep = self.new_temp()
+                self.emit(f'  {env_gep} = getelementptr i8, ptr {cptr}, i64 8')
+                env_load = self.new_temp()
+                self.emit(f'  {env_load} = load i64, ptr {env_gep}')
+                fn_ptr = self.new_temp()
+                self.emit(f'  {fn_ptr} = inttoptr i64 {fn_load} to ptr')
+                self.emit(f'  {temp} = call i64 {fn_ptr}(i64 {env_load})')
+                return temp
             elif func_name == 'call1':
-                # Indirect call with 1 arg: call1(fn_ptr, arg1)
-                fn_ptr = args[0]
+                # Closure-aware call with 1 arg: call1(closure_struct, arg1)
+                closure_val = args[0]
                 arg1 = args[1]
-                ptr_temp = self.new_temp()
-                self.emit(f'  {ptr_temp} = inttoptr i64 {fn_ptr} to ptr')
-                self.emit(f'  {temp} = call i64 {ptr_temp}(i64 {arg1})')
+                cptr = self.new_temp()
+                self.emit(f'  {cptr} = inttoptr i64 {closure_val} to ptr')
+                fn_load = self.new_temp()
+                self.emit(f'  {fn_load} = load i64, ptr {cptr}')
+                env_gep = self.new_temp()
+                self.emit(f'  {env_gep} = getelementptr i8, ptr {cptr}, i64 8')
+                env_load = self.new_temp()
+                self.emit(f'  {env_load} = load i64, ptr {env_gep}')
+                fn_ptr = self.new_temp()
+                self.emit(f'  {fn_ptr} = inttoptr i64 {fn_load} to ptr')
+                self.emit(f'  {temp} = call i64 {fn_ptr}(i64 {env_load}, i64 {arg1})')
                 return temp
             elif func_name == 'call2':
-                # Indirect call with 2 args: call2(fn_ptr, arg1, arg2)
-                fn_ptr = args[0]
+                # Closure-aware call with 2 args: call2(closure_struct, arg1, arg2)
+                closure_val = args[0]
                 arg1 = args[1]
                 arg2 = args[2]
-                ptr_temp = self.new_temp()
-                self.emit(f'  {ptr_temp} = inttoptr i64 {fn_ptr} to ptr')
-                self.emit(f'  {temp} = call i64 {ptr_temp}(i64 {arg1}, i64 {arg2})')
+                cptr = self.new_temp()
+                self.emit(f'  {cptr} = inttoptr i64 {closure_val} to ptr')
+                fn_load = self.new_temp()
+                self.emit(f'  {fn_load} = load i64, ptr {cptr}')
+                env_gep = self.new_temp()
+                self.emit(f'  {env_gep} = getelementptr i8, ptr {cptr}, i64 8')
+                env_load = self.new_temp()
+                self.emit(f'  {env_load} = load i64, ptr {env_gep}')
+                fn_ptr = self.new_temp()
+                self.emit(f'  {fn_ptr} = inttoptr i64 {fn_load} to ptr')
+                self.emit(f'  {temp} = call i64 {fn_ptr}(i64 {env_load}, i64 {arg1}, i64 {arg2})')
                 return temp
             else:
                 # Check if this is a closure call (function name is a local variable)
@@ -9295,13 +9363,17 @@ class CodeGen:
                             self.emit(f'  {load_temp} = load i64, ptr {gep_temp}')
                             return load_temp
 
-            # Find field offset by searching all structs
+            # Check for numeric tuple field access (.0, .1, etc.)
             field_idx = 0
-            for struct_name, fields in self.structs.items():
-                for i, (fname, ftype) in enumerate(fields):
-                    if fname == field_name:
-                        field_idx = i
-                        break
+            if field_name.isdigit():
+                field_idx = int(field_name)
+            else:
+                # Find field offset by searching all structs
+                for struct_name, fields in self.structs.items():
+                    for i, (fname, ftype) in enumerate(fields):
+                        if fname == field_name:
+                            field_idx = i
+                            break
 
             offset = field_idx * 8
 

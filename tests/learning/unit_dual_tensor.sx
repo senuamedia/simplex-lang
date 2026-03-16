@@ -1,6 +1,6 @@
 // Forward-Mode Automatic Differentiation using Dual Numbers
 // Tests dual number arithmetic for gradient computation
-// v0.12.0: Validates learning/AD subsystem foundations
+// v0.13.0: Validates learning/AD subsystem foundations
 
 // ============================================
 // Dual Number Representation

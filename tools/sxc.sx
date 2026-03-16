@@ -5,7 +5,8 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-fn VERSION() -> i64 { string_from("0.12.0") }
+// Version constant (synced with lib/version.sx — use lib::version when module compilation supports it)
+fn VERSION() -> i64 { string_from("0.13.0") }
 
 // ========================================
 // Platform Detection and Cross-Platform Paths
@@ -13,36 +14,23 @@ fn VERSION() -> i64 { string_from("0.12.0") }
 
 // Detect current operating system
 // Returns: "windows", "linux", "macos", or "unknown"
+// Synced with lib/platform.sx — use lib::platform when module compilation supports it
 fn get_os_name() -> i64 {
-    // Check for Windows-specific environment variable
     let windir: i64 = env_get(string_from("WINDIR"));
     if windir != 0 {
-        if string_len(windir) > 0 {
-            return string_from("windows");
-        }
+        return string_from("windows");
     }
 
-    // Check for macOS
-    let ostype: i64 = env_get(string_from("OSTYPE"));
-    if ostype != 0 {
-        if string_contains(ostype, string_from("darwin")) {
+    let home: i64 = env_get(string_from("HOME"));
+    if home != 0 {
+        let tmpdir: i64 = env_get(string_from("TMPDIR"));
+        if tmpdir != 0 && string_contains(tmpdir, string_from("/var/folders/")) {
             return string_from("macos");
         }
-    }
-
-    // Try uname-based detection (works on macOS/Linux)
-    // Check if /proc exists (Linux-specific)
-    if file_exists(string_from("/proc/version")) != 0 {
         return string_from("linux");
     }
 
-    // Check for macOS paths
-    if file_exists(string_from("/System/Library")) != 0 {
-        return string_from("macos");
-    }
-
-    // Default to linux for other Unix-like systems
-    string_from("linux")
+    return string_from("unknown");
 }
 
 // Get platform-appropriate temporary directory
