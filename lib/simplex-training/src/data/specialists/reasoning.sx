@@ -78,7 +78,7 @@ impl ReasoningGenerator {
                 "If it rains, the ground gets wet. The ground is wet. Did it rain?",
                 "**Analysis:**\n\n\
                  This is an example of the **affirming the consequent** fallacy.\n\n\
-                 1. Premise: If rain -> wet ground\n\
+                 1. Premise: If rain → wet ground\n\
                  2. Observation: Wet ground\n\
                  3. Question: Did it rain?\n\n\
                  **Answer:** Not necessarily. While rain causes wet ground, other things can too \
@@ -114,7 +114,7 @@ impl ReasoningGenerator {
                  - **Confounding variable:** Hot weather\n\n\
                  **Explanation:** Hot weather causes both:\n\
                  1. More people buy ice cream to cool down\n\
-                 2. More people go swimming -> more drowning risk\n\n\
+                 2. More people go swimming → more drowning risk\n\n\
                  **Conclusion:** No, ice cream does not cause drowning. Both are independently caused by summer heat.\n\n\
                  [confidence: 0.97]",
                 0.97

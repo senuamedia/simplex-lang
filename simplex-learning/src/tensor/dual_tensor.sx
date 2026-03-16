@@ -18,7 +18,7 @@
 // |---------|-------------------|------------|
 // | AD Mode | Backward (reverse) | Forward |
 // | Memory | O(n) tape storage | O(1) per element |
-// | Best for | Loss -> many params | One param -> many outputs |
+// | Best for | Loss → many params | One param → many outputs |
 // | Use case | Training neural nets | Meta-gradients, Jacobians |
 //
 // # Example

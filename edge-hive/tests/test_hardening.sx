@@ -919,7 +919,7 @@ fn update_manager_new() -> i64 {
     let mgr: i64 = vec_new();
     vec_push(mgr, string_from("public_key_12345"));  // 0: public_key
     vec_push(mgr, 0);                                 // 1: has_pending
-    vec_push(mgr, 11000);                             // 2: current_version (0.12.0)
+    vec_push(mgr, 11000);                             // 2: current_version (0.13.0)
     mgr
 }
 

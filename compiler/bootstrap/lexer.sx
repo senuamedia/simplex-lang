@@ -102,7 +102,16 @@ enum TokenKind {
     KwConfidence,    // confidence(belief_id)
     KwDerivative,    // .derivative accessor
     // Attribute tokens
-    Hash             // # for #[attr] syntax
+    Hash,            // # for #[attr] syntax
+    // Type cast keyword
+    KwAs,            // as keyword for type casting
+    // Neural gate keyword
+    KwNeuralGate,    // neural_gate keyword for neural gates
+    // Contract keywords (TASK-001 Phase 2)
+    KwRequires,      // requires precondition
+    KwEnsures,       // ensures postcondition
+    KwInvariant,     // invariant struct/type constraint
+    KwFallback       // fallback handler on contract failure
 }
 
 // Lexer state - we pass this to all functions instead of using self
@@ -327,7 +336,15 @@ fn check_keyword(text: i64) -> i64 {
     // Belief guard keywords
     if string_eq(text, "confidence") { return TokenKind::KwConfidence; }
     if string_eq(text, "derivative") { return TokenKind::KwDerivative; }
+    // Type cast keyword
+    if string_eq(text, "as") { return TokenKind::KwAs; }
     if string_eq(text, "_") { return TokenKind::Underscore; }
+    if string_eq(text, "neural_gate") { return TokenKind::KwNeuralGate; }
+    // Contract keywords (TASK-001 Phase 2)
+    if string_eq(text, "requires") { return TokenKind::KwRequires; }
+    if string_eq(text, "ensures") { return TokenKind::KwEnsures; }
+    if string_eq(text, "invariant") { return TokenKind::KwInvariant; }
+    if string_eq(text, "fallback") { return TokenKind::KwFallback; }
     return TokenKind::Ident;
 }
 

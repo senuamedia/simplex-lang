@@ -4,7 +4,7 @@
 // Implements TASK-012: Nexus Protocol specification
 // - 400x compression via bit-packed deltas (0.38 bytes/belief)
 // - Implicit addressing: position = belief ID
-// - Connection lifecycle: CONNECT -> HELLO/WELCOME -> CATALOG -> BASELINE -> SYNC LOOP
+// - Connection lifecycle: CONNECT → HELLO/WELCOME → CATALOG → BASELINE → SYNC LOOP
 // - Drift correction via periodic CHECKSUM frames
 // - STF (Simplex Term Format) for native wire types
 

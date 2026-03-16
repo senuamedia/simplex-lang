@@ -25,7 +25,8 @@ fn TAG_ACTOR() -> i64 { 8 }       // actor definition
 fn TAG_SPECIALIST() -> i64 { 9 }  // AI specialist
 fn TAG_HIVE() -> i64 { 10 }       // cognitive hive
 fn TAG_ANIMA() -> i64 { 11 }      // cognitive soul
-fn TAG_TYPE_ALIAS() -> i64 { 12 } // type alias
+fn TAG_TYPE_ALIAS() -> i64 { 12 }
+fn TAG_NEURAL_GATE() -> i64 { 13 } // neural gate definition
 
 // Stmt tags
 fn STMT_LET() -> i64 { 0 }
@@ -115,7 +116,7 @@ fn str_join3(a: i64, b: i64, c: i64) -> i64 {
     sb_append(sb, a);
     sb_append(sb, b);
     sb_append(sb, c);
-    sb_to_string(sb)
+    sb_build(sb)
 }
 
 // Build mangled name: str_mangle("Type", "method") -> "Type_method"
@@ -187,8 +188,9 @@ fn codegen_new() -> i64 {
     // Allocate codegen: output_sb(0), temp_counter(1), label_counter(2), enums(3), locals(4), strings(5), terminated(6), structs(7), var_types(8), loop_stack(9), loop_depth(10), pre_alloca_queue(11), module_name(12), generic_fns(13), instantiated(14), pending_instantiations(15), assoc_types(16), current_impl_type(17), const_params(18), type_params(19), generic_struct_templates(20), trait_impls(21), is_async_fn(22), async_state_counter(23), async_await_points(24), async_fn_name(25), default_methods(26), trait_defs(27), vtables(28), type_aliases(29), closures(30), closure_counter(31), defined_fns(32), messages(33)
     // Debug info slots: debug_enabled(34), debug_file(35), debug_dir(36), debug_metadata_id(37), debug_subprograms(38), current_subprogram(39), current_line(40)
     // Module system: source_dir(41)
+    // Closure codegen: pending_closure_code(42), closure_vars(43)
     // Note: slot 0 is now a StringBuilder for O(n) instead of O(n²) string building
-    let cg: i64 = malloc(336);
+    let cg: i64 = malloc(360);
     store_ptr(cg, 0, sb_new_cap(65536));
     store_i64(cg, 1, 0);
     store_i64(cg, 2, 0);
@@ -233,6 +235,9 @@ fn codegen_new() -> i64 {
     store_i64(cg, 40, 1);         // current_line: current source line number for debug locations
     // Module system
     store_ptr(cg, 41, string_from(".")); // source_dir: directory of current source file
+    // Closure codegen
+    store_ptr(cg, 42, sb_new_cap(4096)); // pending_closure_code: StringBuilder for closure function IR
+    store_ptr(cg, 43, vec_new()); // closure_vars: vec of variable names that hold closure structs
     cg
 }
 
@@ -355,11 +360,53 @@ fn gen_use_declarations(cg: i64, use_node: i64) -> i64 {
         return 0;
     }
 
-    // Parse and emit declarations
+    // Parse and emit declarations, filtering out any that conflict with user-defined functions
+    // (fixes Bug 1: vec_set redefinition when imported module defines same function as user code)
     let declarations: i64 = parse_ll_file_for_declarations(ll_content);
     if string_len(declarations) > 0 {
         emit_line(cg, string_concat(string_from("; Imported from "), module_name));
-        emit(cg, declarations);
+        // Filter each declaration line against cg_defined_fns
+        let decl_newline: i64 = string_from_char(10);
+        let decl_lines: i64 = string_split(declarations, decl_newline);
+        let dl: i64 = 0;
+        while dl < vec_len(decl_lines) {
+            let decl_line: i64 = vec_get(decl_lines, dl);
+            // Extract function name from declaration: declare TYPE @"NAME"(...)
+            // Skip if the user defines a function with the same name
+            let at_pos: i64 = string_find(decl_line, string_from("@\""), 0);
+            if at_pos >= 0 {
+                let name_start: i64 = at_pos + 2;
+                let quote_end: i64 = string_find(decl_line, string_from("\""), name_start);
+                if quote_end > name_start {
+                    let imported_fn_name: i64 = string_slice(decl_line, name_start, quote_end);
+                    if cg_has_defined_fn(cg, imported_fn_name) == false {
+                        emit_line(cg, decl_line);
+                    }
+                } else {
+                    emit_line(cg, decl_line);
+                }
+            } else {
+                // Also handle unquoted names: declare TYPE @NAME(...)
+                let at_pos2: i64 = string_find(decl_line, string_from("@"), 0);
+                if at_pos2 >= 0 {
+                    let name_start2: i64 = at_pos2 + 1;
+                    let paren_pos: i64 = string_find(decl_line, string_from("("), name_start2);
+                    if paren_pos > name_start2 {
+                        let imported_fn_name2: i64 = string_slice(decl_line, name_start2, paren_pos);
+                        if cg_has_defined_fn(cg, imported_fn_name2) == false {
+                            emit_line(cg, decl_line);
+                        }
+                    } else {
+                        emit_line(cg, decl_line);
+                    }
+                } else {
+                    if string_len(decl_line) > 0 {
+                        emit_line(cg, decl_line);
+                    }
+                }
+            }
+            dl = dl + 1;
+        }
     }
 
     0
@@ -556,8 +603,19 @@ fn cg_current_impl_type(cg: i64) -> i64 {
     load_ptr(cg, 17)
 }
 
+fn cg_current_impl_fields(cg: i64) -> i64 {
+    load_ptr(cg, 44)
+}
+
 fn cg_set_current_impl_type(cg: i64, type_name: i64) -> i64 {
     store_ptr(cg, 17, type_name);
+    // Also store the fields vec for direct field lookup
+    if type_name != 0 {
+        let fields: i64 = lookup_struct_fields(cg, type_name);
+        store_ptr(cg, 44, fields);
+    } else {
+        store_ptr(cg, 44, 0);
+    }
     0
 }
 
@@ -1046,6 +1104,48 @@ fn cg_lookup_closure(cg: i64, var_name: i64) -> i64 {
     0  // Not found
 }
 
+// Slot 42: pending_closure_code - StringBuilder for closure function definitions
+fn cg_closure_sb(cg: i64) -> i64 {
+    load_ptr(cg, 42)
+}
+
+// Emit a line to the pending closure code buffer
+fn emit_closure(cg: i64, s: i64) -> i64 {
+    let sb: i64 = cg_closure_sb(cg);
+    sb_append(sb, s);
+    0
+}
+
+fn emit_closure_line(cg: i64, s: i64) -> i64 {
+    let sb: i64 = cg_closure_sb(cg);
+    sb_append(sb, s);
+    sb_append(sb, "\n");
+    0
+}
+
+// Slot 43: closure_vars - tracks which variable names hold closure structs
+fn cg_closure_vars(cg: i64) -> i64 {
+    load_ptr(cg, 43)
+}
+
+fn cg_mark_closure_var(cg: i64, name: i64) -> i64 {
+    vec_push(cg_closure_vars(cg), name);
+    0
+}
+
+fn cg_is_closure_var(cg: i64, name: i64) -> i64 {
+    let vars: i64 = cg_closure_vars(cg);
+    let n: i64 = vec_len(vars);
+    let i: i64 = 0;
+    while i < n {
+        if string_eq(vec_get(vars, i), name) {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
 // Get method index in vtable for a trait method
 fn cg_get_vtable_method_index(cg: i64, trait_name: i64, method_name: i64) -> i64 {
     let method_sigs: i64 = cg_get_trait_methods(cg, trait_name);
@@ -1085,7 +1185,7 @@ fn extract_type_param_name(type_param: i64) -> i64 {
         return string_slice(type_param, 6, string_len(type_param));
     }
     // Check for trait bound (contains : but not const:)
-    let colon_pos: i64 = string_find(type_param, string_from(":"), 0);
+    let colon_pos: i64 = string_find(type_param, string_from(":"));
     if colon_pos > 0 {
         return string_slice(type_param, 0, colon_pos);
     }
@@ -1099,7 +1199,7 @@ fn extract_trait_bound(type_param: i64) -> i64 {
         return 0;
     }
     // Check for trait bound
-    let colon_pos: i64 = string_find(type_param, string_from(":"), 0);
+    let colon_pos: i64 = string_find(type_param, string_from(":"));
     if colon_pos > 0 {
         return string_slice(type_param, colon_pos + 1, string_len(type_param));
     }
@@ -1126,12 +1226,12 @@ fn check_trait_bounds(cg: i64, type_params: i64, type_args: i64) -> i64 {
                 let concrete_type: i64 = vec_get(type_args, i);
                 // Check if concrete type implements the bound trait
                 // Handle multiple bounds separated by +
-                let plus_pos: i64 = string_find(bound, string_from("+"), 0);
+                let plus_pos: i64 = string_find(bound, string_from("+"));
                 if plus_pos > 0 {
                     // Multiple bounds: check each one
                     let remaining: i64 = bound;
                     while string_len(remaining) > 0 {
-                        plus_pos = string_find(remaining, string_from("+"), 0);
+                        plus_pos = string_find(remaining, string_from("+"));
                         let trait_name: i64 = remaining;
                         if plus_pos > 0 {
                             trait_name = string_slice(remaining, 0, plus_pos);
@@ -1177,7 +1277,7 @@ fn type_error_mismatch(expected: i64, found: i64, context: i64) -> i64 {
         sb_append(sb, " in ");
         sb_append(sb, context);
     }
-    let msg: i64 = sb_to_string(sb);
+    let msg: i64 = sb_build(sb);
     report_simple_error(E_TYPE_MISMATCH(), msg);
     0
 }
@@ -1672,6 +1772,319 @@ fn analyze_closure_captures(params: i64, body: i64) -> i64 {
     captures
 }
 
+// =============================================================================
+// Closure Code Generation
+// =============================================================================
+// Closures are compiled as: closure struct {fn_ptr, env_ptr} where fn_ptr
+// points to a generated function with signature (env_ptr, param1, param2, ...)
+// For capturing closures, env_ptr points to a heap-allocated struct containing
+// the captured variable values. For non-capturing closures, env_ptr is 0 (null).
+
+// Generate a closure expression: emits a closure function definition to the
+// pending closure buffer and returns a closure struct value (as i64)
+fn gen_closure_expr(cg: i64, expr: i64) -> i64 {
+    let params: i64 = load_ptr(expr, 1);
+    let body: i64 = load_ptr(expr, 2);
+
+    // Analyze captures
+    let captures: i64 = analyze_closure_captures(params, body);
+
+    // Filter captures to only include variables that exist as locals
+    let valid_captures: i64 = vec_new();
+    let ci: i64 = 0;
+    while ci < vec_len(captures) {
+        let cap_name: i64 = vec_get(captures, ci);
+        // Check if this is actually a local variable (not a function name etc)
+        let locals: i64 = load_ptr(cg, 4);
+        let found: i64 = 0;
+        let lj: i64 = vec_len(locals) - 1;
+        while lj >= 0 {
+            let pair: i64 = vec_get(locals, lj);
+            let stored_name: i64 = load_ptr(pair, 0);
+            if string_eq(stored_name, cap_name) {
+                found = 1;
+                break;
+            }
+            lj = lj - 1;
+        }
+        if found == 1 {
+            // Check for duplicates
+            let is_dup: i64 = 0;
+            let dk: i64 = 0;
+            while dk < vec_len(valid_captures) {
+                if string_eq(vec_get(valid_captures, dk), cap_name) {
+                    is_dup = 1;
+                    break;
+                }
+                dk = dk + 1;
+            }
+            if is_dup == 0 {
+                vec_push(valid_captures, cap_name);
+            }
+        }
+        ci = ci + 1;
+    }
+
+    // Generate unique closure function name
+    let closure_id: i64 = cg_next_closure_id(cg);
+    let closure_name: i64 = str_join3("__closure_", cg_module_name(cg), str_join3("_", int_to_string(closure_id), ""));
+
+    let num_params: i64 = vec_len(params);
+    let num_captures: i64 = vec_len(valid_captures);
+
+    // === Build complete closure atomically to prevent nested interleaving ===
+    // Save state first, emit header+body together into closure_sb
+
+    let saved_sb: i64 = load_ptr(cg, 0);
+    let saved_locals: i64 = load_ptr(cg, 4);
+    let saved_temp: i64 = load_i64(cg, 1);
+    let saved_label: i64 = load_i64(cg, 2);
+    let saved_terminated: i64 = load_i64(cg, 6);
+    let saved_alloca_queue: i64 = load_ptr(cg, 11);
+    let saved_var_types: i64 = load_ptr(cg, 8);
+
+    let closure_sb: i64 = sb_new_cap(4096);
+    store_ptr(cg, 0, closure_sb);
+    store_ptr(cg, 4, vec_new());
+    store_i64(cg, 1, 0);
+    store_i64(cg, 2, 0);
+    store_i64(cg, 6, 0);
+    store_ptr(cg, 11, vec_new());
+    store_ptr(cg, 8, vec_new());
+
+    if num_captures > 0 {
+        emit(cg, "; Capturing closure with ");
+        emit(cg, int_to_string(num_captures));
+        emit_line(cg, " captured vars");
+    } else {
+        emit_line(cg, "; Non-capturing closure");
+    }
+
+    emit(cg, "define i64 @\"");
+    emit(cg, closure_name);
+    emit(cg, "\"(i64 %__env");
+    let pi: i64 = 0;
+    while pi < num_params {
+        let param: i64 = vec_get(params, pi);
+        let pname: i64 = load_ptr(param, 0);
+        emit(cg, ", i64 %param.");
+        emit(cg, pname);
+        pi = pi + 1;
+    }
+    emit_line(cg, ") {");
+    emit_line(cg, "entry:");
+
+    // If capturing, load captured variables from environment
+    if num_captures > 0 {
+        // Alloca for env
+        emit_line(cg, "  %local.__env = alloca i64");
+        emit_line(cg, "  store i64 %__env, ptr %local.__env");
+        // Convert env i64 to ptr
+        emit_line(cg, "  %env.load = load i64, ptr %local.__env");
+        emit_line(cg, "  %env.ptr = inttoptr i64 %env.load to ptr");
+
+        // Load each captured variable from the environment struct
+        ci = 0;
+        while ci < num_captures {
+            let cap_name: i64 = vec_get(valid_captures, ci);
+            let offset: i64 = ci * 8;
+            // Alloca for the captured var
+            emit(cg, "  %local.");
+            emit(cg, cap_name);
+            emit_line(cg, " = alloca i64");
+            // GEP into env
+            let gep_id: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(gep_id));
+            emit(cg, " = getelementptr i8, ptr %env.ptr, i64 ");
+            emit_line(cg, int_to_string(offset));
+            // Load from env
+            let load_id: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(load_id));
+            emit(cg, " = load i64, ptr %t");
+            emit_line(cg, int_to_string(gep_id));
+            // Store into local
+            emit(cg, "  store i64 %t");
+            emit(cg, int_to_string(load_id));
+            emit(cg, ", ptr %local.");
+            emit_line(cg, cap_name);
+            // Register in locals
+            add_local(cg, cap_name, cap_name);
+            ci = ci + 1;
+        }
+    }
+
+    // Allocate closure params as locals
+    pi = 0;
+    while pi < num_params {
+        let param: i64 = vec_get(params, pi);
+        let pname: i64 = load_ptr(param, 0);
+        emit(cg, "  %local.");
+        emit(cg, pname);
+        emit_line(cg, " = alloca i64");
+        emit(cg, "  store i64 %param.");
+        emit(cg, pname);
+        emit(cg, ", ptr %local.");
+        emit_line(cg, pname);
+        add_local(cg, pname, pname);
+        pi = pi + 1;
+    }
+
+    // Generate closure body
+    cg_set_terminated(cg, false);
+    let result: i64 = gen_expr(cg, body);
+
+    // Emit return
+    if cg_is_terminated(cg) == false {
+        emit(cg, "  ret i64 ");
+        emit_line(cg, result);
+    }
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Collect closure function IR and append to pending closure buffer
+    let closure_body_ir: i64 = sb_to_string(closure_sb);
+    let pending_sb: i64 = cg_closure_sb(cg);
+    sb_append(pending_sb, closure_body_ir);
+
+    // Restore codegen state
+    store_ptr(cg, 0, saved_sb);
+    store_ptr(cg, 4, saved_locals);
+    store_i64(cg, 1, saved_temp);
+    store_i64(cg, 2, saved_label);
+    store_i64(cg, 6, saved_terminated);
+    store_ptr(cg, 11, saved_alloca_queue);
+    store_ptr(cg, 8, saved_var_types);
+
+    // === At the call site: create closure struct {fn_ptr, env_ptr} ===
+
+    if num_captures > 0 {
+        // Allocate environment struct: num_captures * 8 bytes
+        let env_size: i64 = num_captures * 8;
+        let env_alloc_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(env_alloc_t));
+        emit(cg, " = call ptr @malloc(i64 ");
+        emit(cg, int_to_string(env_size));
+        emit_line(cg, ")");
+
+        // Store each captured variable value into environment
+        ci = 0;
+        while ci < num_captures {
+            let cap_name: i64 = vec_get(valid_captures, ci);
+            let cap_unique: i64 = lookup_local(cg, cap_name);
+            let offset: i64 = ci * 8;
+
+            // Load current value of captured variable
+            let load_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(load_t));
+            emit(cg, " = load i64, ptr %local.");
+            emit_line(cg, cap_unique);
+
+            // GEP to env slot
+            let gep_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(gep_t));
+            emit(cg, " = getelementptr i8, ptr %t");
+            emit(cg, int_to_string(env_alloc_t));
+            emit(cg, ", i64 ");
+            emit_line(cg, int_to_string(offset));
+
+            // Store value
+            emit(cg, "  store i64 %t");
+            emit(cg, int_to_string(load_t));
+            emit(cg, ", ptr %t");
+            emit_line(cg, int_to_string(gep_t));
+
+            ci = ci + 1;
+        }
+
+        // Allocate closure struct (16 bytes: fn_ptr + env_ptr)
+        let struct_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(struct_t));
+        emit_line(cg, " = call ptr @malloc(i64 16)");
+
+        // Store function pointer at offset 0
+        let fn_ptr_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(fn_ptr_t));
+        emit(cg, " = ptrtoint ptr @\"");
+        emit(cg, closure_name);
+        emit_line(cg, "\" to i64");
+        emit(cg, "  store i64 %t");
+        emit(cg, int_to_string(fn_ptr_t));
+        emit(cg, ", ptr %t");
+        emit_line(cg, int_to_string(struct_t));
+
+        // Store environment pointer at offset 8
+        let env_gep_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(env_gep_t));
+        emit(cg, " = getelementptr i8, ptr %t");
+        emit(cg, int_to_string(struct_t));
+        emit_line(cg, ", i64 8");
+        let env_i64_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(env_i64_t));
+        emit(cg, " = ptrtoint ptr %t");
+        emit(cg, int_to_string(env_alloc_t));
+        emit_line(cg, " to i64");
+        emit(cg, "  store i64 %t");
+        emit(cg, int_to_string(env_i64_t));
+        emit(cg, ", ptr %t");
+        emit_line(cg, int_to_string(env_gep_t));
+
+        // Return closure struct as i64
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = ptrtoint ptr %t");
+        emit(cg, int_to_string(struct_t));
+        emit_line(cg, " to i64");
+        return string_concat("%t", int_to_string(result_t));
+    } else {
+        // Non-capturing closure: allocate closure struct with null env
+        let struct_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(struct_t));
+        emit_line(cg, " = call ptr @malloc(i64 16)");
+
+        // Store function pointer at offset 0
+        let fn_ptr_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(fn_ptr_t));
+        emit(cg, " = ptrtoint ptr @\"");
+        emit(cg, closure_name);
+        emit_line(cg, "\" to i64");
+        emit(cg, "  store i64 %t");
+        emit(cg, int_to_string(fn_ptr_t));
+        emit(cg, ", ptr %t");
+        emit_line(cg, int_to_string(struct_t));
+
+        // Store null (0) env pointer at offset 8
+        let env_gep_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(env_gep_t));
+        emit(cg, " = getelementptr i8, ptr %t");
+        emit(cg, int_to_string(struct_t));
+        emit_line(cg, ", i64 8");
+        emit(cg, "  store i64 0, ptr %t");
+        emit_line(cg, int_to_string(env_gep_t));
+
+        // Return closure struct as i64
+        let result_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(result_t));
+        emit(cg, " = ptrtoint ptr %t");
+        emit(cg, int_to_string(struct_t));
+        emit_line(cg, " to i64");
+        return string_concat("%t", int_to_string(result_t));
+    }
+}
+
 fn cg_output(cg: i64) -> i64 {
     load_ptr(cg, 0)
 }
@@ -1813,9 +2226,12 @@ fn emit_dbg_loc(cg: i64, line: i64) -> i64 {
 
 // Emit a stdlib function declaration only if not user-defined
 // This prevents LLVM redefinition errors when user defines functions with stdlib names
+// Also tracks emitted declarations to prevent duplicate declares from extern fn statements
 fn emit_stdlib_decl(cg: i64, fn_name: i64, decl: i64) -> i64 {
     if cg_has_defined_fn(cg, fn_name) == false {
         emit_line(cg, decl);
+        // Track this as declared so extern fn declarations don't re-emit it
+        cg_add_defined_fn(cg, fn_name);
     }
     0
 }
@@ -1996,6 +2412,33 @@ fn register_struct(cg: i64, name: i64, fields: i64) -> i64 {
     store_ptr(entry, 1, fields);
     vec_push(structs, entry);
     0
+}
+
+// Check if a struct has any f64 fields
+fn struct_has_f64_fields(cg: i64, struct_name: i64) -> bool {
+    let structs: i64 = cg_structs(cg);
+    let n: i64 = vec_len(structs);
+    let i: i64 = 0;
+    while i < n {
+        let entry: i64 = vec_get(structs, i);
+        let name: i64 = load_ptr(entry, 0);
+        if string_eq(name, struct_name) {
+            let fields: i64 = load_ptr(entry, 1);
+            let j: i64 = 0;
+            while j < vec_len(fields) {
+                let field: i64 = vec_get(fields, j);
+                let ftype: i64 = load_ptr(field, 1);
+                if ftype != 0 {
+                    if string_eq(ftype, string_from("f64")) {
+                        return true;
+                    }
+                }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+    return false;
 }
 
 // Look up struct field index (returns byte offset = index * 8)
@@ -2262,12 +2705,9 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         return temp;
     }
 
-    // Closure expression - return placeholder (closures should be handled in let statements)
+    // Closure expression - generate closure function and return closure struct
     if tag == EXPR_CLOSURE() {
-        // Closures assigned to variables are handled in let statement processing
-        // If we get here, it's a closure used directly (not supported for now)
-        let closure_id: i64 = cg_next_closure_id(cg);
-        return int_to_string(closure_id);
+        return gen_closure_expr(cg, expr);
     }
 
     // Identifier - load from local
@@ -2412,41 +2852,20 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             callee_name = load_ptr(callee, 1);
         }
 
-        // Check if this is a closure call (inline expansion)
-        let closure_entry: i64 = cg_lookup_closure(cg, callee_name);
-        if closure_entry != 0 {
-            // Inline the closure body with argument substitution
-            let closure_params: i64 = load_ptr(closure_entry, 1);
-            let closure_body: i64 = load_ptr(closure_entry, 2);
-
-            // Generate argument values and bind them to parameter names
+        // Check if this is a closure variable call: closure_var(args...)
+        // Closure struct = {fn_ptr, env_ptr}, call fn_ptr(env_ptr, args...)
+        if cg_is_closure_var(cg, callee_name) == 1 {
+            // Generate args first
+            let arg_values: i64 = vec_new();
             let n: i64 = vec_len(args);
             let i: i64 = 0;
             while i < n {
                 let arg: i64 = vec_get(args, i);
                 let val: i64 = gen_expr(cg, arg);
-
-                // Get param name and bind it to the argument value
-                if i < vec_len(closure_params) {
-                    let param: i64 = vec_get(closure_params, i);
-                    let param_name: i64 = load_ptr(param, 0);  // param: (name, type)
-                    // Create an alloca and store the argument value
-                    let param_id: i64 = cg_next_temp(cg);
-                    let unique_name: i64 = str_unique(param_name, param_id);
-                    emit(cg, "  %local.");
-                    emit(cg, unique_name);
-                    emit_line(cg, " = alloca i64");
-                    emit(cg, "  store i64 ");
-                    emit(cg, val);
-                    emit(cg, ", ptr %local.");
-                    emit_line(cg, unique_name);
-                    add_local(cg, param_name, unique_name);
-                }
+                vec_push(arg_values, val);
                 i = i + 1;
             }
-
-            // Generate the closure body - captures work because we're in same function
-            return gen_expr(cg, closure_body);
+            return emit_closure_indirect_call(cg, callee_name, arg_values);
         }
 
         // Generate args for regular function call
@@ -2558,6 +2977,58 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             return string_concat("%t", int_to_string(result_t));
         }
 
+        // Handle qualified enum variants: EnumName_VariantName (from Option::Some -> Option_Some)
+        // Check all registered enums for a match
+        let all_enums: i64 = cg_enums(cg);
+        let ei: i64 = 0;
+        while ei < vec_len(all_enums) {
+            let enum_entry: i64 = vec_get(all_enums, ei);
+            let enum_name: i64 = load_ptr(enum_entry, 0);
+            let prefix: i64 = string_concat(enum_name, "_");
+            if string_starts_with(callee_name, prefix) {
+                let variant_name: i64 = string_slice(callee_name, string_len(prefix), string_len(callee_name));
+                let qual_variant_idx: i64 = lookup_variant(cg, enum_name, variant_name);
+                if qual_variant_idx >= 0 {
+                    let num_payloads: i64 = vec_len(arg_values);
+                    let size: i64 = 8 + num_payloads * 8;
+                    let malloc_t: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(malloc_t));
+                    emit(cg, " = call ptr @malloc(i64 ");
+                    emit(cg, int_to_string(size));
+                    emit_line(cg, ")");
+                    emit(cg, "  store i64 ");
+                    emit(cg, int_to_string(qual_variant_idx));
+                    emit(cg, ", ptr %t");
+                    emit_line(cg, int_to_string(malloc_t));
+                    let pi: i64 = 0;
+                    while pi < num_payloads {
+                        let offset: i64 = 8 + pi * 8;
+                        let gep_t: i64 = cg_next_temp(cg);
+                        emit(cg, "  %t");
+                        emit(cg, int_to_string(gep_t));
+                        emit(cg, " = getelementptr i8, ptr %t");
+                        emit(cg, int_to_string(malloc_t));
+                        emit(cg, ", i64 ");
+                        emit_line(cg, int_to_string(offset));
+                        emit(cg, "  store i64 ");
+                        emit(cg, vec_get(arg_values, pi));
+                        emit(cg, ", ptr %t");
+                        emit_line(cg, int_to_string(gep_t));
+                        pi = pi + 1;
+                    }
+                    let result_t: i64 = cg_next_temp(cg);
+                    emit(cg, "  %t");
+                    emit(cg, int_to_string(result_t));
+                    emit(cg, " = ptrtoint ptr %t");
+                    emit(cg, int_to_string(malloc_t));
+                    emit_line(cg, " to i64");
+                    return string_concat("%t", int_to_string(result_t));
+                }
+            }
+            ei = ei + 1;
+        }
+
         // Handle user-defined enum variants (marked as "enum:EnumName:VariantName")
         if string_starts_with(callee_name, string_from("enum:")) {
             // Parse enum:EnumName:VariantName
@@ -2614,6 +3085,39 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             return string_concat("%t", int_to_string(result_t));
         }
 
+        // Closure-aware indirect call intrinsics: call0, call1, call2
+        // These take a closure struct as first arg and call through it
+        if string_eq(callee_name, "call0") {
+            // call0(closure) -> calls closure with no args
+            let closure_val: i64 = vec_get(arg_values, 0);
+            let call_args: i64 = vec_new();
+            return emit_closure_val_call(cg, closure_val, call_args);
+        }
+        if string_eq(callee_name, "call1") {
+            // call1(closure, arg1) -> calls closure with 1 arg
+            let closure_val: i64 = vec_get(arg_values, 0);
+            let call_args: i64 = vec_new();
+            vec_push(call_args, vec_get(arg_values, 1));
+            return emit_closure_val_call(cg, closure_val, call_args);
+        }
+        if string_eq(callee_name, "call2") {
+            // call2(closure, arg1, arg2) -> calls closure with 2 args
+            let closure_val: i64 = vec_get(arg_values, 0);
+            let call_args: i64 = vec_new();
+            vec_push(call_args, vec_get(arg_values, 1));
+            vec_push(call_args, vec_get(arg_values, 2));
+            return emit_closure_val_call(cg, closure_val, call_args);
+        }
+        if string_eq(callee_name, "call3") {
+            // call3(closure, arg1, arg2, arg3) -> calls closure with 3 args
+            let closure_val: i64 = vec_get(arg_values, 0);
+            let call_args: i64 = vec_new();
+            vec_push(call_args, vec_get(arg_values, 1));
+            vec_push(call_args, vec_get(arg_values, 2));
+            vec_push(call_args, vec_get(arg_values, 3));
+            return emit_closure_val_call(cg, closure_val, call_args);
+        }
+
         // Check for intrinsics - emit with proper type conversions
         // Pattern: convert i64 args to ptr, call intrinsic, convert ptr result to i64
 
@@ -2634,6 +3138,31 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         if string_eq(callee_name, "print_i64") {
             emit_intrinsic_void_i64(cg, "print_i64", vec_get(arg_values, 0));
             return string_from("0");
+        }
+        // Remap math functions to f64 wrappers
+        if string_eq(callee_name, "cos") {
+            callee_name = string_from("cos_f64");
+        }
+        if string_eq(callee_name, "pow") {
+            callee_name = string_from("pow_f64");
+        }
+        if string_eq(callee_name, "exp") {
+            callee_name = string_from("exp_f64");
+        }
+        if string_eq(callee_name, "sin") {
+            callee_name = string_from("sin_f64");
+        }
+        if string_eq(callee_name, "ln") {
+            callee_name = string_from("ln_f64");
+        }
+        if string_eq(callee_name, "sqrt") {
+            callee_name = string_from("sqrt_f64");
+        }
+        if string_eq(callee_name, "tanh") {
+            callee_name = string_from("tanh_f64");
+        }
+        if string_eq(callee_name, "abs") {
+            callee_name = string_from("abs_f64");
         }
         if string_eq(callee_name, "vec_push") {
             emit_intrinsic_void_ptr2(cg, "intrinsic_vec_push", vec_get(arg_values, 0), vec_get(arg_values, 1));
@@ -3053,7 +3582,7 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         }
 
         // Phase 1 Stdlib: JSON
-        if string_eq(callee_name, "json_parse") {
+        if string_eq(callee_name, "json_parse_simple_direct") {
             return emit_call_i64_1arg(cg, "json_parse_simple", vec_get(arg_values, 0));
         }
         if string_eq(callee_name, "json_stringify") {
@@ -3182,7 +3711,7 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         let emit_callee: i64 = callee_name;
         if type_args != 0 {
             if vec_len(type_args) > 0 {
-                // This is a generic call - mangle the name
+                // This is a generic call with explicit turbofish - mangle the name
                 let mangled: i64 = mangle_generic_name(callee_name, type_args);
                 emit_callee = mangled;
 
@@ -3192,6 +3721,31 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
                     if fn_def != 0 {
                         cg_queue_instantiation(cg, mangled, fn_def, type_args);
                         cg_mark_instantiated(cg, mangled);
+                    }
+                }
+            }
+        }
+        // If no explicit type args, check if callee is a registered generic
+        // and emit a concrete version with all types as i64
+        if type_args == 0 {
+            let fn_def: i64 = cg_lookup_generic(cg, callee_name);
+            if fn_def != 0 {
+                // Queue instantiation with callee_name as-is (no mangling)
+                if cg_is_instantiated(cg, callee_name) == false {
+                    let empty_args: i64 = vec_new();
+                    cg_queue_instantiation(cg, callee_name, fn_def, empty_args);
+                    cg_mark_instantiated(cg, callee_name);
+                }
+            }
+        }
+        if type_args != 0 {
+            if vec_len(type_args) == 0 {
+                let fn_def: i64 = cg_lookup_generic(cg, callee_name);
+                if fn_def != 0 {
+                    if cg_is_instantiated(cg, callee_name) == false {
+                        let empty_args: i64 = vec_new();
+                        cg_queue_instantiation(cg, callee_name, fn_def, empty_args);
+                        cg_mark_instantiated(cg, callee_name);
                     }
                 }
             }
@@ -3220,6 +3774,8 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
     }
 
     // Binary operation
+
+
     if tag == EXPR_BINARY() {
         let op: i64 = load_i64(expr, 1);
         let left: i64 = load_ptr(expr, 2);
@@ -3311,6 +3867,157 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         let left_val: i64 = gen_expr(cg, left);
         let right_val: i64 = gen_expr(cg, right);
 
+        // Check if either operand is f64
+        let is_f64: bool = false;
+        let left_tag: i64 = load_i64(left, 0);
+        let right_tag: i64 = load_i64(right, 0);
+        if left_tag == EXPR_FLOAT() { is_f64 = true; }
+        if right_tag == EXPR_FLOAT() { is_f64 = true; }
+        if left_tag == EXPR_CAST() { is_f64 = true; }
+        if right_tag == EXPR_CAST() { is_f64 = true; }
+        if left_tag == EXPR_IDENT() {
+            let lname: i64 = load_ptr(left, 1);
+            let ltype: i64 = lookup_var_type(cg, lname);
+            if ltype != 0 {
+                if string_eq(ltype, string_from("f64")) { is_f64 = true; }
+            }
+        }
+        if right_tag == EXPR_IDENT() {
+            let rname: i64 = load_ptr(right, 1);
+            let rtype: i64 = lookup_var_type(cg, rname);
+            if rtype != 0 {
+                if string_eq(rtype, string_from("f64")) { is_f64 = true; }
+            }
+        }
+        // Check struct field access - look up field type from struct definition
+        if left_tag == EXPR_FIELD() {
+            let lobj: i64 = load_ptr(left, 1);
+            let lfname: i64 = load_ptr(left, 2);
+            if load_i64(lobj, 0) == EXPR_IDENT() {
+                let loname: i64 = load_ptr(lobj, 1);
+                let lotype: i64 = lookup_var_type(cg, loname);
+                if lotype != 0 {
+                    if struct_has_f64_fields(cg, lotype) { is_f64 = true; }
+                }
+            }
+        }
+        if right_tag == EXPR_FIELD() {
+            let robj: i64 = load_ptr(right, 1);
+            let rfname: i64 = load_ptr(right, 2);
+            if load_i64(robj, 0) == EXPR_IDENT() {
+                let roname: i64 = load_ptr(robj, 1);
+                let rotype: i64 = lookup_var_type(cg, roname);
+                if rotype != 0 {
+                    if struct_has_f64_fields(cg, rotype) { is_f64 = true; }
+                }
+            }
+        }
+        // Check sub-binary expressions
+        if left_tag == EXPR_BINARY() {
+            let ll: i64 = load_ptr(left, 2);
+            let lr: i64 = load_ptr(left, 3);
+            if load_i64(ll, 0) == EXPR_FLOAT() { is_f64 = true; }
+            if load_i64(lr, 0) == EXPR_FLOAT() { is_f64 = true; }
+            if load_i64(ll, 0) == EXPR_IDENT() {
+                let llt: i64 = lookup_var_type(cg, load_ptr(ll, 1));
+                if llt != 0 { if string_eq(llt, string_from("f64")) { is_f64 = true; } }
+            }
+            if load_i64(lr, 0) == EXPR_IDENT() {
+                let lrt: i64 = lookup_var_type(cg, load_ptr(lr, 1));
+                if lrt != 0 { if string_eq(lrt, string_from("f64")) { is_f64 = true; } }
+            }
+            if load_i64(ll, 0) == EXPR_FIELD() {
+                let fobj: i64 = load_ptr(ll, 1);
+                if load_i64(fobj, 0) == EXPR_IDENT() {
+                    let ot: i64 = lookup_var_type(cg, load_ptr(fobj, 1));
+                    if ot != 0 { if struct_has_f64_fields(cg, ot) { is_f64 = true; } }
+                }
+            }
+            if load_i64(lr, 0) == EXPR_FIELD() {
+                let fobj: i64 = load_ptr(lr, 1);
+                if load_i64(fobj, 0) == EXPR_IDENT() {
+                    let ot: i64 = lookup_var_type(cg, load_ptr(fobj, 1));
+                    if ot != 0 { if struct_has_f64_fields(cg, ot) { is_f64 = true; } }
+                }
+            }
+        }
+        if right_tag == EXPR_BINARY() {
+            let rl: i64 = load_ptr(right, 2);
+            let rr: i64 = load_ptr(right, 3);
+            if load_i64(rl, 0) == EXPR_FLOAT() { is_f64 = true; }
+            if load_i64(rr, 0) == EXPR_FLOAT() { is_f64 = true; }
+            if load_i64(rl, 0) == EXPR_IDENT() {
+                let rlt: i64 = lookup_var_type(cg, load_ptr(rl, 1));
+                if rlt != 0 { if string_eq(rlt, string_from("f64")) { is_f64 = true; } }
+            }
+            if load_i64(rr, 0) == EXPR_IDENT() {
+                let rrt: i64 = lookup_var_type(cg, load_ptr(rr, 1));
+                if rrt != 0 { if string_eq(rrt, string_from("f64")) { is_f64 = true; } }
+            }
+            if load_i64(rl, 0) == EXPR_FIELD() {
+                let fobj: i64 = load_ptr(rl, 1);
+                if load_i64(fobj, 0) == EXPR_IDENT() {
+                    let ot: i64 = lookup_var_type(cg, load_ptr(fobj, 1));
+                    if ot != 0 { if struct_has_f64_fields(cg, ot) { is_f64 = true; } }
+                }
+            }
+            if load_i64(rr, 0) == EXPR_FIELD() {
+                let fobj: i64 = load_ptr(rr, 1);
+                if load_i64(fobj, 0) == EXPR_IDENT() {
+                    let ot: i64 = lookup_var_type(cg, load_ptr(fobj, 1));
+                    if ot != 0 { if struct_has_f64_fields(cg, ot) { is_f64 = true; } }
+                }
+            }
+        }
+        // Check call results
+        if left_tag == EXPR_CALL() {
+            let lfn: i64 = load_ptr(left, 1);
+            if load_i64(lfn, 0) == EXPR_IDENT() {
+                let fn_n: i64 = load_ptr(lfn, 1);
+                if string_eq(fn_n, string_from("cos")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("sin")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("exp")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("sqrt")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("pow")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("tanh")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("ln")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("abs")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("neural_sigmoid")) { is_f64 = true; }
+            }
+        }
+        if right_tag == EXPR_CALL() {
+            let rfn: i64 = load_ptr(right, 1);
+            if load_i64(rfn, 0) == EXPR_IDENT() {
+                let fn_n: i64 = load_ptr(rfn, 1);
+                if string_eq(fn_n, string_from("cos")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("sin")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("exp")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("sqrt")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("pow")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("tanh")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("ln")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("abs")) { is_f64 = true; }
+                if string_eq(fn_n, string_from("neural_sigmoid")) { is_f64 = true; }
+            }
+        }
+
+        // For f64 operations, use runtime functions
+        if is_f64 {
+            let fn_name: i64 = string_from("f64_add");
+            if op == OP_ADD() { fn_name = string_from("sx_f64_add"); }
+            if op == OP_SUB() { fn_name = string_from("sx_f64_sub"); }
+            if op == OP_MUL() { fn_name = string_from("sx_f64_mul"); }
+            if op == OP_DIV() { fn_name = string_from("sx_f64_div"); }
+            if op == OP_MOD() { fn_name = string_from("sx_f64_mod"); }
+            if op == OP_GT() { fn_name = string_from("sx_f64_gt"); }
+            if op == OP_LT() { fn_name = string_from("sx_f64_lt"); }
+            if op == OP_GE() { fn_name = string_from("sx_f64_ge"); }
+            if op == OP_LE() { fn_name = string_from("sx_f64_le"); }
+            if op == OP_EQ() { fn_name = string_from("sx_f64_eq"); }
+            if op == OP_NE() { fn_name = string_from("sx_f64_ne"); }
+            return emit_call_i64_2args(cg, fn_name, left_val, right_val);
+        }
+
         let t: i64 = cg_next_temp(cg);
         let temp: i64 = string_concat("%t", int_to_string(t));
 
@@ -3368,8 +4075,28 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         emit(cg, temp);
 
         if op == OP_NEG() {
-            emit(cg, " = sub i64 0, ");
-            emit_line(cg, val);
+            // Check if operand is a float - if so, use XOR with sign bit
+            let operand_tag: i64 = load_i64(operand, 0);
+            let neg_is_f64: bool = false;
+            if operand_tag == EXPR_FLOAT() { neg_is_f64 = true; }
+            if operand_tag == EXPR_IDENT() {
+                let neg_name: i64 = load_ptr(operand, 1);
+                let neg_type: i64 = lookup_var_type(cg, neg_name);
+                if neg_type != 0 {
+                    if string_eq(neg_type, string_from("f64")) { neg_is_f64 = true; }
+                }
+            }
+            if operand_tag == EXPR_FIELD() {
+                neg_is_f64 = true; // Assume struct fields might be f64
+            }
+            if neg_is_f64 {
+                emit(cg, " = xor i64 ");
+                emit(cg, val);
+                emit_line(cg, ", -9223372036854775808");
+            } else {
+                emit(cg, " = sub i64 0, ");
+                emit_line(cg, val);
+            }
         }
         if op == OP_NOT() {
             // Bool is represented as i64, so use i64 for xor
@@ -3378,7 +4105,72 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             emit_line(cg, ", 1");
         }
 
+        // OP_REF (102): &x - get address of variable as i64
+        if op == 102 {
+            let operand_tag: i64 = load_i64(operand, 0);
+            if operand_tag == EXPR_IDENT() {
+                let ref_name: i64 = load_ptr(operand, 1);
+                let ref_unique: i64 = lookup_local(cg, ref_name);
+                emit(cg, " = ptrtoint ptr %local.");
+                emit(cg, ref_unique);
+                emit_line(cg, " to i64");
+            } else {
+                // For non-ident operands, store to alloca and take address
+                emit_line(cg, " = alloca i64");
+                emit(cg, "  store i64 ");
+                emit(cg, val);
+                emit(cg, ", ptr ");
+                emit_line(cg, temp);
+                let addr_t: i64 = cg_next_temp(cg);
+                let addr_temp: i64 = string_concat("%t", int_to_string(addr_t));
+                emit(cg, "  ");
+                emit(cg, addr_temp);
+                emit(cg, " = ptrtoint ptr ");
+                emit(cg, temp);
+                emit_line(cg, " to i64");
+                return addr_temp;
+            }
+        }
+
+        // OP_DEREF (103): *x - dereference pointer
+        if op == 103 {
+            // temp was already emitted as "  %tN" by the outer code
+            // Complete the inttoptr assignment on temp
+            emit(cg, " = inttoptr i64 ");
+            emit(cg, val);
+            emit_line(cg, " to ptr");
+            // Now load from the pointer
+            let load_t: i64 = cg_next_temp(cg);
+            let load_temp: i64 = string_concat("%t", int_to_string(load_t));
+            emit(cg, "  ");
+            emit(cg, load_temp);
+            emit(cg, " = load i64, ptr ");
+            emit_line(cg, temp);
+            return load_temp;
+        }
+
         return temp;
+    }
+
+    // Cast expression: expr as Type
+    if tag == EXPR_CAST() {
+        let inner: i64 = load_ptr(expr, 1);
+        let target_type: i64 = load_ptr(expr, 2);
+        let val: i64 = gen_expr(cg, inner);
+        
+        // Check target type
+        if target_type != 0 {
+            if string_eq(target_type, string_from("f64")) {
+                // Integer to f64: convert via runtime
+                return emit_call_i64_1arg(cg, "sx_int_to_f64", val);
+            }
+            if string_eq(target_type, string_from("i64")) {
+                // f64 to integer: convert via runtime
+                return emit_call_i64_1arg(cg, "sx_f64_to_int", val);
+            }
+        }
+        // Default: pass through (same bit pattern)
+        return val;
     }
 
     // If expression
@@ -3482,7 +4274,7 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         return emit_ptr_to_i64(cg, ptr_temp);
     }
 
-    // Field access: expr.field
+    // Field access: expr.field or expr.0 (tuple)
     if tag == EXPR_FIELD() {
         let object: i64 = load_ptr(expr, 1);
         let field_name: i64 = load_ptr(expr, 2);
@@ -3493,9 +4285,67 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         // Convert i64 to ptr
         let ptr_temp: i64 = emit_i64_to_ptr(cg, obj_val);
 
-        // For now, we need to figure out the struct type from context
-        // We'll do a simple approach: try all structs and find one with this field
-        let field_idx: i64 = lookup_field_in_all_structs(cg, field_name);
+        // Check for numeric tuple field access (.0, .1, .2, etc.)
+        let first_char: i64 = string_char_at(field_name, 0);
+        let is_numeric: i64 = 0;
+        if first_char >= 48 {
+            if first_char <= 57 {
+                is_numeric = 1;
+            }
+        }
+        let field_idx: i64 = 0;
+        if is_numeric == 1 {
+            // Numeric field - direct index for tuple access
+            field_idx = string_to_int(field_name);
+        } else {
+            // Named field - look up struct type
+            let struct_type: i64 = 0;
+            let obj_tag: i64 = load_i64(object, 0);
+            if obj_tag == EXPR_IDENT() {
+                let obj_name: i64 = load_ptr(object, 1);
+                struct_type = lookup_var_type(cg, obj_name);
+                if struct_type == 0 {
+                    if string_eq(obj_name, string_from("self")) {
+                        struct_type = cg_current_impl_type(cg);
+                    }
+                }
+            }
+            if struct_type != 0 {
+                field_idx = lookup_struct_field(cg, struct_type, field_name);
+                // Fallback: if field_idx is 0 but field name is not the first field,
+                // try searching all structs (workaround for self-hosted string comparison issue)
+                let is_self_access: bool = false;
+                if obj_tag == EXPR_IDENT() {
+                    let check_name: i64 = load_ptr(object, 1);
+                    if string_eq(check_name, string_from("self")) {
+                        is_self_access = true;
+                    }
+                }
+                if is_self_access {
+                    // Use stored impl fields for direct lookup (avoids string comparison bug)
+                    let impl_fields: i64 = cg_current_impl_fields(cg);
+                    if impl_fields != 0 {
+                        let fi: i64 = 0;
+                        while fi < vec_len(impl_fields) {
+                            let fld: i64 = vec_get(impl_fields, fi);
+                            let fn2: i64 = load_ptr(fld, 0);
+                            if string_eq(fn2, field_name) {
+                                field_idx = fi;
+                            }
+                            fi = fi + 1;
+                        }
+                    }
+                    if field_idx == 0 {
+                        let fallback_idx: i64 = lookup_field_in_all_structs(cg, field_name);
+                        if fallback_idx > 0 {
+                            field_idx = fallback_idx;
+                        }
+                    }
+                }
+            } else {
+                field_idx = lookup_field_in_all_structs(cg, field_name);
+            }
+        }
         let offset: i64 = field_idx * 8;
 
         // GEP to field
@@ -3921,7 +4771,7 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             }
 
             if string_eq(method_name, string_from("get")) {
-                // vec.get(idx) -> Option wrapping intrinsic_vec_get result
+                // vec.get(idx) -> returns raw i64 value from vec
                 let idx_val: i64 = string_from("0");
                 if vec_len(arg_values) > 0 {
                     idx_val = vec_get(arg_values, 0);
@@ -3945,100 +4795,13 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
                 emit(cg, idx_val);
                 emit_line(cg, ")");
 
-                // Check if NULL
-                let is_null_t: i64 = cg_next_temp(cg);
-                emit(cg, "  %t");
-                emit(cg, int_to_string(is_null_t));
-                emit(cg, " = icmp eq ptr %t");
-                emit(cg, int_to_string(raw_t));
-                emit_line(cg, ", null");
-
-                // Create labels
-                let lbl_num: i64 = cg_next_label(cg);
-                let none_lbl: i64 = string_concat("vec_get_none", int_to_string(lbl_num));
-                let some_lbl: i64 = string_concat("vec_get_some", int_to_string(lbl_num));
-                let end_lbl: i64 = string_concat("vec_get_end", int_to_string(lbl_num));
-
-                // Branch on NULL
-                emit(cg, "  br i1 %t");
-                emit(cg, int_to_string(is_null_t));
-                emit(cg, ", label %");
-                emit(cg, none_lbl);
-                emit(cg, ", label %");
-                emit_line(cg, some_lbl);
-
-                // None case: allocate Option with tag=0
-                emit(cg, none_lbl);
-                emit_line(cg, ":");
-                let none_ptr_t: i64 = cg_next_temp(cg);
-                emit(cg, "  %t");
-                emit(cg, int_to_string(none_ptr_t));
-                emit_line(cg, " = call ptr @malloc(i64 16)");
-                let none_tag_t: i64 = cg_next_temp(cg);
-                emit(cg, "  store i64 0, ptr %t");
-                emit_line(cg, int_to_string(none_ptr_t));
-                let none_val_t: i64 = cg_next_temp(cg);
-                emit(cg, "  %t");
-                emit(cg, int_to_string(none_val_t));
-                emit(cg, " = ptrtoint ptr %t");
-                emit(cg, int_to_string(none_ptr_t));
-                emit_line(cg, " to i64");
-                emit(cg, "  br label %");
-                emit_line(cg, end_lbl);
-
-                // Some case: allocate Option with tag=1 and value
-                emit(cg, some_lbl);
-                emit_line(cg, ":");
-                let some_ptr_t: i64 = cg_next_temp(cg);
-                emit(cg, "  %t");
-                emit(cg, int_to_string(some_ptr_t));
-                emit_line(cg, " = call ptr @malloc(i64 16)");
-                // Store tag=1
-                emit(cg, "  store i64 1, ptr %t");
-                emit_line(cg, int_to_string(some_ptr_t));
-                // Get value (dereference the raw pointer as i64 for Vec<i64>)
-                let val_ptr_t: i64 = cg_next_temp(cg);
-                emit(cg, "  %t");
-                emit(cg, int_to_string(val_ptr_t));
-                emit(cg, " = ptrtoint ptr %t");
-                emit(cg, int_to_string(raw_t));
-                emit_line(cg, " to i64");
-                // Store value at offset 8
-                let payload_ptr_t: i64 = cg_next_temp(cg);
-                emit(cg, "  %t");
-                emit(cg, int_to_string(payload_ptr_t));
-                emit(cg, " = getelementptr i8, ptr %t");
-                emit(cg, int_to_string(some_ptr_t));
-                emit_line(cg, ", i64 8");
-                emit(cg, "  store i64 %t");
-                emit(cg, int_to_string(val_ptr_t));
-                emit(cg, ", ptr %t");
-                emit_line(cg, int_to_string(payload_ptr_t));
-                let some_val_t: i64 = cg_next_temp(cg);
-                emit(cg, "  %t");
-                emit(cg, int_to_string(some_val_t));
-                emit(cg, " = ptrtoint ptr %t");
-                emit(cg, int_to_string(some_ptr_t));
-                emit_line(cg, " to i64");
-                emit(cg, "  br label %");
-                emit_line(cg, end_lbl);
-
-                // End block with phi
-                emit(cg, end_lbl);
-                emit_line(cg, ":");
+                // Convert pointer back to i64
                 let result_t: i64 = cg_next_temp(cg);
                 emit(cg, "  %t");
                 emit(cg, int_to_string(result_t));
-                emit(cg, " = phi i64 [ %t");
-                emit(cg, int_to_string(none_val_t));
-                emit(cg, ", %");
-                emit(cg, none_lbl);
-                emit(cg, " ], [ %t");
-                emit(cg, int_to_string(some_val_t));
-                emit(cg, ", %");
-                emit(cg, some_lbl);
-                emit_line(cg, " ]");
-
+                emit(cg, " = ptrtoint ptr %t");
+                emit(cg, int_to_string(raw_t));
+                emit_line(cg, " to i64");
                 return string_concat("%t", int_to_string(result_t));
             }
 
@@ -4244,9 +5007,31 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             emit(cg, ", label %");
             emit_line(cg, resume_label);
 
-            // Pending path - return Pending from poll
+            // Pending path - save state to future struct, then return Pending
             emit(cg, pending_label);
             emit_line(cg, ":");
+            // Persist state to future struct at offset 8
+            let pend_sp_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(pend_sp_t));
+            emit_line(cg, " = getelementptr i8, ptr %future, i64 8");
+            emit(cg, "  store i64 ");
+            emit(cg, int_to_string(state_num));
+            emit(cg, ", ptr %t");
+            emit_line(cg, int_to_string(pend_sp_t));
+            // Persist inner future to future struct at offset 16
+            let pend_ip_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(pend_ip_t));
+            emit_line(cg, " = getelementptr i8, ptr %future, i64 16");
+            let pend_iv_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(pend_iv_t));
+            emit_line(cg, " = load i64, ptr %async_inner_future");
+            emit(cg, "  store i64 %t");
+            emit(cg, int_to_string(pend_iv_t));
+            emit(cg, ", ptr %t");
+            emit_line(cg, int_to_string(pend_ip_t));
             emit_line(cg, "  ret i64 0");  // Return Pending
 
             // Ready path - continue execution
@@ -4354,9 +5139,13 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             }
         }
 
-        // Generate call to handler
+        // Generate call to handler (all handlers return i64)
+        // Bug 2 fix: Add fallback via mailbox_send when actor_name is unknown
         if actor_name != 0 {
-            emit(cg, "  call void @\"");
+            let discard_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(discard_t));
+            emit(cg, " = call i64 @\"");
             emit(cg, actor_name);
             emit(cg, "_handle_");
             emit(cg, msg_name);
@@ -4370,6 +5159,31 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
                 emit(cg, vec_get(arg_vals, i));
                 i = i + 1;
             }
+            emit_line(cg, ")");
+        } else {
+            // Fallback: construct message and send via mailbox
+            let msg_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(msg_t));
+            emit(cg, " = call i64 @\"");
+            emit(cg, msg_name);
+            emit(cg, "\"(");
+            let n: i64 = vec_len(arg_vals);
+            let i: i64 = 0;
+            while i < n {
+                if i > 0 { emit(cg, ", "); }
+                emit(cg, "i64 ");
+                emit(cg, vec_get(arg_vals, i));
+                i = i + 1;
+            }
+            emit_line(cg, ")");
+            let discard_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(discard_t));
+            emit(cg, " = call i64 @mailbox_send(i64 ");
+            emit(cg, target_val);
+            emit(cg, ", i64 %t");
+            emit(cg, int_to_string(msg_t));
             emit_line(cg, ")");
         }
         return string_from("0");
@@ -4405,6 +5219,8 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         }
 
         // Generate call to handler and return result
+        // Bug 2 fix: When actor_name is unknown, use message constructor + mailbox_ask
+        // instead of silently returning 0 (which caused undefined '%local.Get' errors)
         let result_t: i64 = cg_next_temp(cg);
         if actor_name != 0 {
             emit(cg, "  %t");
@@ -4425,8 +5241,32 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             }
             emit_line(cg, ")");
             return string_concat("%t", int_to_string(result_t));
+        } else {
+            // Fallback: construct message and send via mailbox
+            let msg_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(msg_t));
+            emit(cg, " = call i64 @\"");
+            emit(cg, msg_name);
+            emit(cg, "\"(");
+            let n: i64 = vec_len(arg_vals);
+            let i: i64 = 0;
+            while i < n {
+                if i > 0 { emit(cg, ", "); }
+                emit(cg, "i64 ");
+                emit(cg, vec_get(arg_vals, i));
+                i = i + 1;
+            }
+            emit_line(cg, ")");
+            emit(cg, "  %t");
+            emit(cg, int_to_string(result_t));
+            emit(cg, " = call i64 @mailbox_ask(i64 ");
+            emit(cg, target_val);
+            emit(cg, ", i64 %t");
+            emit(cg, int_to_string(msg_t));
+            emit_line(cg, ")");
+            return string_concat("%t", int_to_string(result_t));
         }
-        return string_from("0");
     }
 
     // EXPR_INFER - AI model inference
@@ -4455,7 +5295,9 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         emit(cg, " = call i64 @f64_parse(ptr ");
         // Add string constant
         let str_idx: i64 = cg_add_string(cg, text);
-        emit(cg, "@.str.mod.");
+        emit(cg, "@.str.");
+        emit(cg, cg_module_name(cg));
+        emit(cg, ".");
         emit(cg, int_to_string(str_idx));
         emit_line(cg, ")");
         return string_concat("%t", int_to_string(result_t));
@@ -6155,7 +6997,10 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
             emit(cg, unique_name);
             emit_line(cg, " = alloca i64");
         }
-        add_local(cg, name, unique_name);
+
+        // IMPORTANT: Do NOT register the new local yet!
+        // The init expression might reference a previous variable with the same name
+        // (variable shadowing). We must evaluate the init FIRST, then register.
 
         // Record type if present (for method call resolution)
         if ty != 0 {
@@ -6164,7 +7009,6 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
 
         // Initialize if there's an init expression
         if init_expr != 0 {
-            // Check if init is a closure - register it for inline expansion
             let init_tag: i64 = load_i64(init_expr, 0);
 
             // If init is a spawn expression, record the actor type
@@ -6173,23 +7017,45 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
                 add_var_type(cg, name, actor_type);
             }
 
-            if init_tag == EXPR_CLOSURE() {
-                let params: i64 = load_ptr(init_expr, 1);
-                let body: i64 = load_ptr(init_expr, 2);
-                cg_register_closure(cg, name, params, body);
-                // Store a placeholder value (closure ID)
-                let closure_id: i64 = cg_next_closure_id(cg);
-                emit(cg, "  store i64 ");
-                emit(cg, int_to_string(closure_id));
-                emit(cg, ", ptr %local.");
-                emit_line(cg, unique_name);
-            } else {
-                let val: i64 = gen_expr(cg, init_expr);
-                emit(cg, "  store i64 ");
-                emit(cg, val);
-                emit(cg, ", ptr %local.");
-                emit_line(cg, unique_name);
+            // If init is a struct literal, record struct type for method dispatch
+            if init_tag == EXPR_STRUCT_LIT() {
+                let struct_type_name: i64 = load_ptr(init_expr, 1);
+                add_var_type(cg, name, struct_type_name);
             }
+
+            // If init is a call to Type::new() or similar path call, infer type
+            if init_tag == EXPR_CALL() {
+                let call_fn: i64 = load_ptr(init_expr, 1);
+                let call_fn_tag: i64 = load_i64(call_fn, 0);
+                if call_fn_tag == EXPR_PATH() {
+                    let path_segs: i64 = load_ptr(call_fn, 1);
+                    if vec_len(path_segs) >= 2 {
+                        let inferred_type: i64 = vec_get(path_segs, 0);
+                        add_var_type(cg, name, inferred_type);
+                    }
+                }
+            }
+
+            // If init is a closure, mark this variable as holding a closure struct
+            if init_tag == EXPR_CLOSURE() {
+                cg_mark_closure_var(cg, name);
+                // Also register for inline expansion (backwards compat for direct calls)
+                let cl_params: i64 = load_ptr(init_expr, 1);
+                let cl_body: i64 = load_ptr(init_expr, 2);
+                cg_register_closure(cg, name, cl_params, cl_body);
+            }
+
+            // Generate value BEFORE registering the new local (handles variable shadowing)
+            let val: i64 = gen_expr(cg, init_expr);
+            // NOW register the new local name (after init expr evaluated)
+            add_local(cg, name, unique_name);
+            emit(cg, "  store i64 ");
+            emit(cg, val);
+            emit(cg, ", ptr %local.");
+            emit_line(cg, unique_name);
+        } else {
+            // No init expression - register local immediately
+            add_local(cg, name, unique_name);
         }
         return 0;
     }
@@ -6208,10 +7074,32 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
         let expr: i64 = load_ptr(stmt, 1);
         if expr != 0 {
             let val: i64 = gen_expr(cg, expr);
-            emit(cg, "  ret i64 ");
-            emit_line(cg, val);
+            // In async context, tag return value as Ready: (value << 1) | 1
+            if cg_is_async_fn(cg) != 0 {
+                let shl_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(shl_t));
+                emit(cg, " = shl i64 ");
+                emit(cg, val);
+                emit_line(cg, ", 1");
+                let or_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(or_t));
+                emit(cg, " = or i64 %t");
+                emit(cg, int_to_string(shl_t));
+                emit_line(cg, ", 1");
+                emit(cg, "  ret i64 %t");
+                emit_line(cg, int_to_string(or_t));
+            } else {
+                emit(cg, "  ret i64 ");
+                emit_line(cg, val);
+            }
         } else {
-            emit_line(cg, "  ret void");
+            if cg_is_async_fn(cg) != 0 {
+                emit_line(cg, "  ret i64 1");  // Ready(0) = (0 << 1) | 1 = 1
+            } else {
+                emit_line(cg, "  ret void");
+            }
         }
         cg_set_terminated(cg, true);
         return 0;
@@ -6398,6 +7286,11 @@ fn gen_async_fn(cg: i64, fn_def: i64) -> i64 {
     emit_line(cg, "  %state = load i64, ptr %state_ptr");
     emit_line(cg, "  store i64 %state, ptr %async_state");
 
+    // Load inner future from offset 16 (needed for resume after Pending)
+    emit_line(cg, "  %inner_future_ptr = getelementptr i8, ptr %future, i64 16");
+    emit_line(cg, "  %inner_future_val = load i64, ptr %inner_future_ptr");
+    emit_line(cg, "  store i64 %inner_future_val, ptr %async_inner_future");
+
     // Load parameters from future struct into locals (starting at offset 32)
     i = 0;
     while i < n {
@@ -6475,11 +7368,13 @@ fn gen_async_fn(cg: i64, fn_def: i64) -> i64 {
     let body_code: i64 = sb_to_string(body_buffer);
     store_ptr(cg, 0, saved_output);
 
-    // State dispatch switch - now includes all await points
+    // Bug 3 fix: State dispatch switch with proper default handler for invalid states
+    // Previously, default went to state_0 which could re-execute the function body
+    // causing exit code 240 from unreachable/corrupted states
     let await_points: i64 = cg_async_await_points(cg);
     let num_points: i64 = vec_len(await_points);
 
-    emit_line(cg, "  switch i64 %state, label %state_0 [");
+    emit_line(cg, "  switch i64 %state, label %async_invalid_state [");
     emit_line(cg, "    i64 0, label %state_0");
 
     // Add cases for each await resume point
@@ -6496,6 +7391,10 @@ fn gen_async_fn(cg: i64, fn_def: i64) -> i64 {
     }
 
     emit_line(cg, "  ]");
+
+    // Default handler: return Ready(0) for invalid/completed states
+    emit_line(cg, "async_invalid_state:");
+    emit_line(cg, "  ret i64 1");  // Ready(0) = (0 << 1) | 1 = 1
 
     // Now emit the body code we generated earlier
     emit(cg, body_code);
@@ -6524,31 +7423,35 @@ fn gen_fn(cg: i64, fn_def: i64) -> i64 {
     }
 
     // Handle async functions
-    if is_async != 0 {
+    if is_async == 1 {
         return gen_async_fn(cg, fn_def);
     }
 
     // Handle extern function declarations (no body)
     // Emit LLVM 'declare' statement instead of 'define' with body
+    // Skip if already declared by gen_header stdlib declarations
     if body == 0 {
-        emit(cg, "declare ");
-        if ret_ty != 0 {
-            emit(cg, "i64");
-        } else {
-            emit(cg, "void");
+        if cg_has_defined_fn(cg, name) == false {
+            emit(cg, "declare ");
+            if ret_ty != 0 {
+                emit(cg, "i64");
+            } else {
+                emit(cg, "void");
+            }
+            emit(cg, " @\"");
+            emit(cg, name);
+            emit(cg, "\"(");
+            // Parameters - emit types only for declarations
+            let n: i64 = vec_len(params);
+            let i: i64 = 0;
+            while i < n {
+                if i > 0 { emit(cg, ", "); }
+                emit(cg, "i64");
+                i = i + 1;
+            }
+            emit_line(cg, ")");
+            cg_add_defined_fn(cg, name);
         }
-        emit(cg, " @\"");
-        emit(cg, name);
-        emit(cg, "\"(");
-        // Parameters - emit types only for declarations
-        let n: i64 = vec_len(params);
-        let i: i64 = 0;
-        while i < n {
-            if i > 0 { emit(cg, ", "); }
-            emit(cg, "i64");
-            i = i + 1;
-        }
-        emit_line(cg, ")");
         return 0;
     }
 
@@ -6640,12 +7543,90 @@ fn gen_fn(cg: i64, fn_def: i64) -> i64 {
         emit(cg, ", ptr %local.");
         emit_line(cg, pname);
         add_local(cg, pname, pname);  // Params use same name
+        // Track param type for f64 detection and method dispatch
+        let pty: i64 = load_ptr(param, 1);
+        if pty != 0 {
+            add_var_type(cg, pname, pty);
+        }
         i = i + 1;
     }
 
     // Generate body
     cg_set_terminated(cg, false);
     let result: i64 = gen_block(cg, body);
+
+    // Neural gate wrapping: if is_async == 2, add training/inference mode switching
+    if is_async == 2 {
+        if cg_is_terminated(cg) == false {
+            let mode_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(mode_t));
+            emit_line(cg, " = call i64 @\"neural_get_training_mode\"()");
+            let cmp_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(cmp_t));
+            emit(cg, " = icmp eq i64 %t");
+            emit(cg, int_to_string(mode_t));
+            emit_line(cg, ", 1");
+            let lbl: i64 = cg_next_label(cg);
+            let train_lbl: i64 = str_join3("ng_train", int_to_string(lbl), "");
+            let infer_lbl: i64 = str_join3("ng_infer", int_to_string(lbl), "");
+            let done_lbl: i64 = str_join3("ng_done", int_to_string(lbl), "");
+            emit(cg, "  br i1 %t");
+            emit(cg, int_to_string(cmp_t));
+            emit(cg, ", label %");
+            emit(cg, train_lbl);
+            emit(cg, ", label %");
+            emit_line(cg, infer_lbl);
+            emit(cg, train_lbl);
+            emit_line(cg, ":");
+            // Training: sigmoid of first parameter for differentiability
+            let sig_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(sig_t));
+            let first_param: i64 = vec_get(params, 0);
+            let fpname: i64 = load_ptr(first_param, 0);
+            emit(cg, " = call i64 @\"neural_sigmoid\"(i64 %");
+            emit(cg, fpname);
+            emit_line(cg, ")");
+            emit(cg, "  br label %");
+            emit_line(cg, done_lbl);
+            emit(cg, infer_lbl);
+            emit_line(cg, ":");
+            // Inference: convert body result (bool) to f64
+            let sel_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(sel_t));
+            emit(cg, " = icmp ne i64 ");
+            emit(cg, result);
+            emit_line(cg, ", 0");
+            let f64_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(f64_t));
+            emit(cg, " = select i1 %t");
+            emit(cg, int_to_string(sel_t));
+            emit_line(cg, ", i64 4607182418800017408, i64 0");
+            emit(cg, "  br label %");
+            emit_line(cg, done_lbl);
+            emit(cg, done_lbl);
+            emit_line(cg, ":");
+            let phi_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(phi_t));
+            emit(cg, " = phi i64 [ %t");
+            emit(cg, int_to_string(sig_t));
+            emit(cg, ", %");
+            emit(cg, train_lbl);
+            emit(cg, " ], [ %t");
+            emit(cg, int_to_string(f64_t));
+            emit(cg, ", %");
+            emit(cg, infer_lbl);
+            emit_line(cg, " ]");
+            emit(cg, "  ret i64 %t");
+            emit_line(cg, int_to_string(phi_t));
+            cg_set_terminated(cg, true);
+        }
+    }
 
     // Only emit final return if body didn't already terminate
     if cg_is_terminated(cg) == false {
@@ -7269,17 +8250,23 @@ fn gen_specialist(cg: i64, item: i64) -> i64 {
         }
     }
 
-    // Register state fields as struct
+    // Bug 4 fix: Build proper fields vec for register_struct (was passing wrong args,
+    // causing segfaults on belief/epistemic modules due to memory corruption)
     if state_fields != 0 {
+        let fields_vec: i64 = vec_new();
         let n: i64 = vec_len(state_fields);
         let i: i64 = 0;
         while i < n {
             let field: i64 = vec_get(state_fields, i);
             let fname: i64 = load_ptr(field, 0);
             let ftype: i64 = load_ptr(field, 1);
-            register_struct(cg, name, fname, ftype, i);
+            let field_entry: i64 = malloc(16);
+            store_ptr(field_entry, 0, fname);
+            store_ptr(field_entry, 1, ftype);
+            vec_push(fields_vec, field_entry);
             i = i + 1;
         }
+        register_struct(cg, name, fields_vec);
     }
 
     // Generate specialist_new function
@@ -8042,6 +9029,431 @@ fn gen_item(cg: i64, item: i64) -> i64 {
     if tag == TAG_ANIMA() {
         return gen_anima(cg, item);
     }
+    // Neural gate with contract support (TASK-001 Phase 2)
+    // Layout: tag(0), name(1), type_params(2), params(3), ret_ty(4), body(5),
+    //         attrs(6), requires_expr(7), ensures_expr(8), fallback_body(9)
+    if tag == TAG_NEURAL_GATE() {
+        return gen_neural_gate_with_contracts(cg, item);
+    }
+    0
+}
+
+// Generate neural gate as a function with training/inference mode awareness
+// In training mode: apply sigmoid to make output differentiable
+// In inference mode: return raw result (hard decision)
+// Layout: tag(0), name(1), type_params(2), params(3), ret_ty(4), body(5)
+fn gen_neural_gate(cg: i64, item: i64) -> i64 {
+    let name: i64 = load_ptr(item, 1);
+    let params: i64 = load_ptr(item, 3);
+    let body: i64 = load_ptr(item, 5);
+    
+    // Build function - same as gen_fn but wraps result
+    cg_add_defined_fn(cg, name);
+    
+    emit(cg, "define i64 @\"");
+    emit(cg, name);
+    emit(cg, "\"(");
+    
+    let num_params: i64 = vec_len(params);
+    let pi: i64 = 0;
+    while pi < num_params {
+        if pi > 0 {
+            emit(cg, ", ");
+        }
+        let param: i64 = vec_get(params, pi);
+        let pname: i64 = load_ptr(param, 0);
+        emit(cg, "i64 %param.");
+        emit(cg, pname);
+        pi = pi + 1;
+    }
+    emit_line(cg, ") {");
+    emit_line(cg, "entry:");
+    
+    // Save/init locals
+    let saved_locals: i64 = cg_locals(cg);
+    cg_clear_locals(cg);
+    let saved_var_types: i64 = load_ptr(cg, 8);
+    store_ptr(cg, 8, vec_new());
+    let saved_terminated: i64 = cg_is_terminated(cg);
+    cg_set_terminated(cg, false);
+    
+    // Alloca for params
+    pi = 0;
+    while pi < num_params {
+        let param: i64 = vec_get(params, pi);
+        let pname: i64 = load_ptr(param, 0);
+        emit(cg, "  %local.");
+        emit(cg, pname);
+        emit_line(cg, " = alloca i64");
+        emit(cg, "  store i64 %param.");
+        emit(cg, pname);
+        emit(cg, ", ptr %local.");
+        emit_line(cg, pname);
+        add_local(cg, pname, pname);
+        // Track param type for method dispatch
+        let pty: i64 = load_ptr(param, 1);
+        if pty != 0 {
+            add_var_type(cg, pname, pty);
+        }
+        pi = pi + 1;
+    }
+    
+    // Generate body
+    let result: i64 = gen_expr(cg, body);
+    
+    // Wrap result based on training mode
+    // Check neural_get_training_mode() - if training, apply sigmoid
+    if cg_is_terminated(cg) == false {
+        let mode_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(mode_t));
+        emit_line(cg, " = call i64 @\"neural_get_training_mode\"()");
+        
+        let cmp_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, " = icmp eq i64 %t");
+        emit(cg, int_to_string(mode_t));
+        emit_line(cg, ", 1");
+        
+        let lbl: i64 = cg_next_label(cg);
+        let train_lbl: i64 = str_join3("neural_train", int_to_string(lbl), "");
+        let infer_lbl: i64 = str_join3("neural_infer", int_to_string(lbl), "");
+        let done_lbl: i64 = str_join3("neural_done", int_to_string(lbl), "");
+        
+        emit(cg, "  br i1 %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, ", label %");
+        emit(cg, train_lbl);
+        emit(cg, ", label %");
+        emit_line(cg, infer_lbl);
+        
+        // Training: apply sigmoid for differentiability
+        emit(cg, train_lbl);
+        emit_line(cg, ":");
+        let sig_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(sig_t));
+        emit(cg, " = call i64 @\"neural_sigmoid\"(i64 ");
+        emit(cg, result);
+        emit_line(cg, ")");
+        emit(cg, "  br label %");
+        emit_line(cg, done_lbl);
+        
+        // Inference: convert result to f64 (1.0 if truthy, 0.0 if not)
+        emit(cg, infer_lbl);
+        emit_line(cg, ":");
+        // Compare result to 0 - if nonzero, return f64 1.0
+        let cmp2_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(cmp2_t));
+        emit(cg, " = icmp ne i64 ");
+        emit(cg, result);
+        emit_line(cg, ", 0");
+        let sel_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(sel_t));
+        emit(cg, " = select i1 %t");
+        emit(cg, int_to_string(cmp2_t));
+        // 1.0 as i64 bits = 4607182418800017408, 0.0 = 0
+        emit_line(cg, ", i64 4607182418800017408, i64 0");
+        emit(cg, "  br label %");
+        emit_line(cg, done_lbl);
+        
+        // Merge
+        emit(cg, done_lbl);
+        emit_line(cg, ":");
+        let phi_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(phi_t));
+        emit(cg, " = phi i64 [ %t");
+        emit(cg, int_to_string(sig_t));
+        emit(cg, ", %");
+        emit(cg, train_lbl);
+        emit(cg, " ], [ %t");
+        emit(cg, int_to_string(sel_t));
+        emit(cg, ", %");
+        emit(cg, infer_lbl);
+        emit_line(cg, " ]");
+        
+        emit(cg, "  ret i64 %t");
+        emit_line(cg, int_to_string(phi_t));
+    }
+    
+    emit_line(cg, "}");
+    emit_line(cg, "");
+    
+    // Restore
+    store_ptr(cg, 4, saved_locals);
+    store_ptr(cg, 8, saved_var_types);
+    cg_set_terminated(cg, saved_terminated);
+    
+    0
+}
+
+// Generate neural gate with contract enforcement (TASK-001 Phase 2)
+// Layout: tag(0), name(1), type_params(2), params(3), ret_ty(4), body(5),
+//         attrs(6), requires_expr(7), ensures_expr(8), fallback_body(9)
+//
+// Generated code pattern:
+//   entry:
+//     [param allocas]
+//     [if requires_expr:]
+//       %req = <eval requires_expr>
+//       %req_ok = icmp ne i64 %req, 0
+//       br i1 %req_ok, label %req_pass, label %req_fail
+//     req_fail:
+//       [if fallback: eval fallback, ret]
+//       [else: call contract_check_requires, ret 0]
+//     req_pass:
+//       [eval body]
+//     [if ensures_expr:]
+//       %ens = <eval ensures_expr>
+//       %ens_ok = icmp ne i64 %ens, 0
+//       br i1 %ens_ok, label %ens_pass, label %ens_fail
+//     ens_fail:
+//       [if fallback: eval fallback, ret]
+//       [else: call contract_check_ensures, ret 0]
+//     ens_pass:
+//       [training/inference mode wrap + ret]
+fn gen_neural_gate_with_contracts(cg: i64, item: i64) -> i64 {
+    let name: i64 = load_ptr(item, 1);
+    let params: i64 = load_ptr(item, 3);
+    let body: i64 = load_ptr(item, 5);
+    let requires_expr: i64 = load_ptr(item, 7);
+    let ensures_expr: i64 = load_ptr(item, 8);
+    let fallback_body: i64 = load_ptr(item, 9);
+
+    // If no contracts, delegate to existing gen_neural_gate
+    if requires_expr == 0 && ensures_expr == 0 && fallback_body == 0 {
+        return gen_neural_gate(cg, item);
+    }
+
+    // Build function signature
+    cg_add_defined_fn(cg, name);
+
+    emit(cg, "define i64 @\"");
+    emit(cg, name);
+    emit(cg, "\"(");
+
+    let num_params: i64 = vec_len(params);
+    let pi: i64 = 0;
+    while pi < num_params {
+        if pi > 0 {
+            emit(cg, ", ");
+        }
+        let param: i64 = vec_get(params, pi);
+        let pname: i64 = load_ptr(param, 0);
+        emit(cg, "i64 %param.");
+        emit(cg, pname);
+        pi = pi + 1;
+    }
+    emit_line(cg, ") {");
+    emit_line(cg, "entry:");
+
+    // Save/init locals
+    let saved_locals: i64 = cg_locals(cg);
+    cg_clear_locals(cg);
+    let saved_var_types: i64 = load_ptr(cg, 8);
+    store_ptr(cg, 8, vec_new());
+    let saved_terminated: i64 = cg_is_terminated(cg);
+    cg_set_terminated(cg, false);
+
+    // Alloca for params
+    pi = 0;
+    while pi < num_params {
+        let param: i64 = vec_get(params, pi);
+        let pname: i64 = load_ptr(param, 0);
+        emit(cg, "  %local.");
+        emit(cg, pname);
+        emit_line(cg, " = alloca i64");
+        emit(cg, "  store i64 %param.");
+        emit(cg, pname);
+        emit(cg, ", ptr %local.");
+        emit_line(cg, pname);
+        add_local(cg, pname, pname);
+        let pty: i64 = load_ptr(param, 1);
+        if pty != 0 {
+            add_var_type(cg, pname, pty);
+        }
+        pi = pi + 1;
+    }
+
+    // === Requires check ===
+    if requires_expr != 0 {
+        let req_result: i64 = gen_expr(cg, requires_expr);
+        let req_cmp: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(req_cmp));
+        emit(cg, " = icmp ne i64 ");
+        emit(cg, req_result);
+        emit_line(cg, ", 0");
+
+        let lbl: i64 = cg_next_label(cg);
+        let req_pass_lbl: i64 = str_join3("contract_req_pass", int_to_string(lbl), "");
+        let req_fail_lbl: i64 = str_join3("contract_req_fail", int_to_string(lbl), "");
+
+        emit(cg, "  br i1 %t");
+        emit(cg, int_to_string(req_cmp));
+        emit(cg, ", label %");
+        emit(cg, req_pass_lbl);
+        emit(cg, ", label %");
+        emit_line(cg, req_fail_lbl);
+
+        // Requires fail block
+        emit(cg, req_fail_lbl);
+        emit_line(cg, ":");
+
+        if fallback_body != 0 {
+            // Eval fallback and return its result
+            let fb_result: i64 = gen_expr(cg, fallback_body);
+            emit(cg, "  ret i64 ");
+            emit_line(cg, fb_result);
+        } else {
+            // Call contract_check_requires with 0 values to log violation, return 0
+            let viol_t: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(viol_t));
+            emit_line(cg, " = call i64 @\"contract_check_requires\"(i64 0, i64 0, i64 0)");
+            emit_line(cg, "  ret i64 0");
+        }
+
+        // Requires pass block - continue with body
+        emit(cg, req_pass_lbl);
+        emit_line(cg, ":");
+    }
+
+    // === Generate body ===
+    let result: i64 = gen_expr(cg, body);
+
+    // === Ensures check ===
+    if ensures_expr != 0 {
+        if cg_is_terminated(cg) == false {
+            let ens_result: i64 = gen_expr(cg, ensures_expr);
+            let ens_cmp: i64 = cg_next_temp(cg);
+            emit(cg, "  %t");
+            emit(cg, int_to_string(ens_cmp));
+            emit(cg, " = icmp ne i64 ");
+            emit(cg, ens_result);
+            emit_line(cg, ", 0");
+
+            let lbl2: i64 = cg_next_label(cg);
+            let ens_pass_lbl: i64 = str_join3("contract_ens_pass", int_to_string(lbl2), "");
+            let ens_fail_lbl: i64 = str_join3("contract_ens_fail", int_to_string(lbl2), "");
+
+            emit(cg, "  br i1 %t");
+            emit(cg, int_to_string(ens_cmp));
+            emit(cg, ", label %");
+            emit(cg, ens_pass_lbl);
+            emit(cg, ", label %");
+            emit_line(cg, ens_fail_lbl);
+
+            // Ensures fail block
+            emit(cg, ens_fail_lbl);
+            emit_line(cg, ":");
+
+            if fallback_body != 0 {
+                let fb2_result: i64 = gen_expr(cg, fallback_body);
+                emit(cg, "  ret i64 ");
+                emit_line(cg, fb2_result);
+            } else {
+                let viol2_t: i64 = cg_next_temp(cg);
+                emit(cg, "  %t");
+                emit(cg, int_to_string(viol2_t));
+                emit_line(cg, " = call i64 @\"contract_check_ensures\"(i64 0, i64 0, i64 0)");
+                emit_line(cg, "  ret i64 0");
+            }
+
+            // Ensures pass block
+            emit(cg, ens_pass_lbl);
+            emit_line(cg, ":");
+        }
+    }
+
+    // === Training/inference mode wrap ===
+    if cg_is_terminated(cg) == false {
+        let mode_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(mode_t));
+        emit_line(cg, " = call i64 @\"neural_get_training_mode\"()");
+
+        let cmp_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, " = icmp eq i64 %t");
+        emit(cg, int_to_string(mode_t));
+        emit_line(cg, ", 1");
+
+        let lbl3: i64 = cg_next_label(cg);
+        let train_lbl: i64 = str_join3("neural_train", int_to_string(lbl3), "");
+        let infer_lbl: i64 = str_join3("neural_infer", int_to_string(lbl3), "");
+        let done_lbl: i64 = str_join3("neural_done", int_to_string(lbl3), "");
+
+        emit(cg, "  br i1 %t");
+        emit(cg, int_to_string(cmp_t));
+        emit(cg, ", label %");
+        emit(cg, train_lbl);
+        emit(cg, ", label %");
+        emit_line(cg, infer_lbl);
+
+        // Training: apply sigmoid
+        emit(cg, train_lbl);
+        emit_line(cg, ":");
+        let sig_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(sig_t));
+        emit(cg, " = call i64 @\"neural_sigmoid\"(i64 ");
+        emit(cg, result);
+        emit_line(cg, ")");
+        emit(cg, "  br label %");
+        emit_line(cg, done_lbl);
+
+        // Inference: hard decision
+        emit(cg, infer_lbl);
+        emit_line(cg, ":");
+        let cmp2_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(cmp2_t));
+        emit(cg, " = icmp ne i64 ");
+        emit(cg, result);
+        emit_line(cg, ", 0");
+        let sel_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(sel_t));
+        emit(cg, " = select i1 %t");
+        emit(cg, int_to_string(cmp2_t));
+        emit_line(cg, ", i64 4607182418800017408, i64 0");
+        emit(cg, "  br label %");
+        emit_line(cg, done_lbl);
+
+        // Merge
+        emit(cg, done_lbl);
+        emit_line(cg, ":");
+        let phi_t: i64 = cg_next_temp(cg);
+        emit(cg, "  %t");
+        emit(cg, int_to_string(phi_t));
+        emit(cg, " = phi i64 [ %t");
+        emit(cg, int_to_string(sig_t));
+        emit(cg, ", %");
+        emit(cg, train_lbl);
+        emit(cg, " ], [ %t");
+        emit(cg, int_to_string(sel_t));
+        emit(cg, ", %");
+        emit(cg, infer_lbl);
+        emit_line(cg, " ]");
+
+        emit(cg, "  ret i64 %t");
+        emit_line(cg, int_to_string(phi_t));
+    }
+
+    emit_line(cg, "}");
+    emit_line(cg, "");
+
+    // Restore
+    store_ptr(cg, 4, saved_locals);
+    store_ptr(cg, 8, saved_var_types);
+    cg_set_terminated(cg, saved_terminated);
+
     0
 }
 
@@ -8053,10 +9465,12 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, triple_line);
     emit_line(cg, "");
     emit_line(cg, "declare ptr @malloc(i64)");
+    cg_add_defined_fn(cg, "malloc");
     emit_line(cg, "declare void @free(ptr)");
+    cg_add_defined_fn(cg, "free");
     emit_line(cg, "declare void @intrinsic_println(ptr)");
     emit_line(cg, "declare void @intrinsic_print(ptr)");
-    emit_line(cg, "declare void @\"print_i64\"(i64)");
+    emit_stdlib_decl(cg, "print_i64", "declare void @\"print_i64\"(i64)");
     emit_line(cg, "declare ptr @intrinsic_int_to_string(i64)");
     emit_line(cg, "declare ptr @intrinsic_string_new(ptr)");
     emit_line(cg, "declare ptr @intrinsic_string_from_char(i64)");
@@ -8067,8 +9481,8 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare i1 @intrinsic_string_eq(ptr, ptr)");
     emit_line(cg, "declare i64 @intrinsic_string_to_int(ptr)");
     // String methods
-    emit_line(cg, "declare i64 @\"String_from\"(i64)");
-    emit_line(cg, "declare i64 @\"String_len\"(i64)");
+    emit_stdlib_decl(cg, "String_from", "declare i64 @\"String_from\"(i64)");
+    emit_stdlib_decl(cg, "String_len", "declare i64 @\"String_len\"(i64)");
     emit_line(cg, "declare ptr @intrinsic_vec_new()");
     emit_line(cg, "declare void @intrinsic_vec_push(ptr, ptr)");
     emit_line(cg, "declare ptr @intrinsic_vec_get(ptr, i64)");
@@ -8081,9 +9495,13 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare ptr @intrinsic_read_file(ptr)");
     emit_line(cg, "declare void @intrinsic_write_file(ptr, ptr)");
     emit_line(cg, "declare ptr @store_ptr(ptr, i64, ptr)");
+    cg_add_defined_fn(cg, "store_ptr");
     emit_line(cg, "declare ptr @store_i64(ptr, i64, i64)");
+    cg_add_defined_fn(cg, "store_i64");
     emit_line(cg, "declare ptr @load_ptr(ptr, i64)");
+    cg_add_defined_fn(cg, "load_ptr");
     emit_line(cg, "declare i64 @load_i64(ptr, i64)");
+    cg_add_defined_fn(cg, "load_i64");
     emit_line(cg, "; Timing intrinsics");
     emit_line(cg, "declare i64 @intrinsic_get_time_ms()");
     emit_line(cg, "declare i64 @intrinsic_get_time_us()");
@@ -8150,11 +9568,29 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare ptr @intrinsic_get_home_dir()");
     // CLI/Environment intrinsics
     emit_line(cg, "declare i64 @cli_getenv(i64)");
+    emit_stdlib_decl(cg, "env_get", "declare i64 @\"env_get\"(i64)");
     emit_line(cg, "declare i64 @file_read(i64)");
     emit_line(cg, "declare void @file_write(i64, i64)");
     emit_line(cg, "declare i64 @remove_path(i64)");
     // Float parsing
     emit_line(cg, "declare i64 @f64_parse(ptr)");
+    // String construction
+    emit_stdlib_decl(cg, "make_sx_string", "declare i64 @\"make_sx_string\"(i64)");
+
+    // SLM (Small Language Model) native bindings
+    emit_line(cg, "; SLM native bindings");
+    emit_stdlib_decl(cg, "slm_native_load", "declare i64 @\"slm_native_load\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "slm_native_unload", "declare i64 @\"slm_native_unload\"(i64)");
+    emit_stdlib_decl(cg, "slm_native_create_context", "declare i64 @\"slm_native_create_context\"(i64, i64)");
+    emit_stdlib_decl(cg, "slm_native_destroy_context", "declare i64 @\"slm_native_destroy_context\"(i64)");
+    emit_stdlib_decl(cg, "slm_native_tokenize", "declare i64 @\"slm_native_tokenize\"(i64, i64)");
+    emit_stdlib_decl(cg, "slm_native_infer", "declare i64 @\"slm_native_infer\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "slm_native_generate", "declare i64 @\"slm_native_generate\"(i64, i64, i64, i64)");
+    emit_stdlib_decl(cg, "slm_native_embed", "declare i64 @\"slm_native_embed\"(i64, i64)");
+    emit_stdlib_decl(cg, "slm_native_similarity", "declare i64 @\"slm_native_similarity\"(i64, i64)");
+    emit_stdlib_decl(cg, "slm_native_context_size", "declare i64 @\"slm_native_context_size\"(i64)");
+    emit_stdlib_decl(cg, "slm_native_embedding_size", "declare i64 @\"slm_native_embedding_size\"(i64)");
+    emit_stdlib_decl(cg, "slm_native_get_model_info", "declare i64 @\"slm_native_get_model_info\"(i64)");
 
     // Issue 7 fix: Generator intrinsics
     emit_line(cg, "; Generator intrinsics");
@@ -8167,15 +9603,30 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "; Belief guard intrinsics");
     emit_line(cg, "declare i64 @belief_guard_get_confidence(i64)");
     emit_line(cg, "declare i64 @belief_guard_get_derivative(i64)");
-    emit_line(cg, "declare i64 @belief_register(i64, double)");
-    emit_line(cg, "declare void @belief_update(i64, double)");
+    emit_line(cg, "declare i64 @belief_register(i64, double, double)");
+    emit_line(cg, "declare i64 @belief_update(i64, double)");
+    emit_line(cg, "declare i64 @belief_update_dual(i64, double, double)");
     emit_line(cg, "declare double @belief_get_value(i64)");
+    emit_line(cg, "declare i64 @belief_register_i64(i64, i64, i64)");
+    emit_line(cg, "declare i64 @belief_update_i64(i64, i64)");
+    emit_line(cg, "declare i64 @belief_update_dual_i64(i64, i64, i64)");
+
+    // Belief suspend/wake intrinsics (TASK-013-A WAKE mechanism)
+    emit_line(cg, "; Belief suspend/wake intrinsics");
+    emit_line(cg, "declare i64 @belief_suspend_receive(i64, i64, i64, i64, i64, double, i64, i64)");
+    emit_line(cg, "declare i64 @belief_cancel_suspend(i64)");
+    emit_line(cg, "declare i64 @belief_suspended_count()");
+    emit_line(cg, "declare i64 @belief_get_actor_suspends(i64)");
+    emit_line(cg, "declare i64 @belief_clear_actor_suspends(i64)");
+    emit_line(cg, "declare i64 @belief_suspend_get_belief(i64)");
+    emit_line(cg, "declare i64 @belief_suspend_get_actor(i64)");
+    emit_line(cg, "declare i64 @belief_suspend_get_duration_ms(i64)");
 
     // Async runtime
     emit_line(cg, "declare i64 @future_poll(i64)");
     emit_line(cg, "declare i64 @future_ready(i64)");
     emit_line(cg, "declare i64 @future_pending()");
-    emit_line(cg, "declare void @executor_run(i64)");
+    emit_line(cg, "declare i64 @executor_run(i64)");
     emit_line(cg, "declare i64 @executor_spawn(i64)");
     emit_line(cg, "declare i64 @block_on(i64)");
 
@@ -8293,6 +9744,7 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "; Phase 23.3: Lock-Free Mailbox");
     emit_line(cg, "declare i64 @mailbox_new(i64)");
     emit_line(cg, "declare i64 @mailbox_send(i64, i64)");
+    emit_line(cg, "declare i64 @mailbox_ask(i64, i64)");
     emit_line(cg, "declare i64 @mailbox_recv(i64)");
     emit_line(cg, "declare i64 @mailbox_try_recv(i64)");
     emit_line(cg, "declare i64 @mailbox_size(i64)");
@@ -8330,154 +9782,154 @@ fn gen_header(cg: i64) -> i64 {
 
     // Phase 1 Stdlib: Option<T>
     emit_line(cg, "; Phase 1 Stdlib: Option");
-    emit_line(cg, "declare ptr @\"option_some\"(i64)");
-    emit_line(cg, "declare ptr @\"option_none\"()");
-    emit_line(cg, "declare i8 @\"option_is_some\"(i64)");
-    emit_line(cg, "declare i8 @\"option_is_none\"(i64)");
-    emit_line(cg, "declare i64 @\"option_unwrap\"(i64)");
-    emit_line(cg, "declare i64 @\"option_expect\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"option_unwrap_or\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"option_map\"(i64, i64)");
+    emit_stdlib_decl(cg, "option_some", "declare i64 @\"option_some\"(i64)");
+    emit_stdlib_decl(cg, "option_none", "declare i64 @\"option_none\"()");
+    emit_stdlib_decl(cg, "option_is_some", "declare i64 @\"option_is_some\"(i64)");
+    emit_stdlib_decl(cg, "option_is_none", "declare i64 @\"option_is_none\"(i64)");
+    emit_stdlib_decl(cg, "option_unwrap", "declare i64 @\"option_unwrap\"(i64)");
+    emit_stdlib_decl(cg, "option_expect", "declare i64 @\"option_expect\"(i64, i64)");
+    emit_stdlib_decl(cg, "option_unwrap_or", "declare i64 @\"option_unwrap_or\"(i64, i64)");
+    emit_stdlib_decl(cg, "option_map", "declare i64 @\"option_map\"(i64, i64)");
 
     // Phase 1 Stdlib: Result<T, E>
     emit_line(cg, "; Phase 1 Stdlib: Result");
-    emit_line(cg, "declare ptr @\"result_ok\"(i64)");
-    emit_line(cg, "declare ptr @\"result_err\"(i64)");
-    emit_line(cg, "declare i8 @\"result_is_ok\"(i64)");
-    emit_line(cg, "declare i8 @\"result_is_err\"(i64)");
-    emit_line(cg, "declare i64 @\"result_unwrap\"(i64)");
-    emit_line(cg, "declare i64 @\"result_unwrap_err\"(i64)");
-    emit_line(cg, "declare i64 @\"result_unwrap_or\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"result_ok_or\"(i64, i64)");
+    emit_stdlib_decl(cg, "result_ok", "declare i64 @\"result_ok\"(i64)");
+    emit_stdlib_decl(cg, "result_err", "declare i64 @\"result_err\"(i64)");
+    emit_stdlib_decl(cg, "result_is_ok", "declare i64 @\"result_is_ok\"(i64)");
+    emit_stdlib_decl(cg, "result_is_err", "declare i64 @\"result_is_err\"(i64)");
+    emit_stdlib_decl(cg, "result_unwrap", "declare i64 @\"result_unwrap\"(i64)");
+    emit_stdlib_decl(cg, "result_unwrap_err", "declare i64 @\"result_unwrap_err\"(i64)");
+    emit_stdlib_decl(cg, "result_unwrap_or", "declare i64 @\"result_unwrap_or\"(i64, i64)");
+    emit_stdlib_decl(cg, "result_ok_or", "declare i64 @\"result_ok_or\"(i64, i64)");
 
     // Phase 1 Stdlib: Vec extensions
     // Use emit_stdlib_decl to skip declarations for user-defined functions (fixes vec_set redefinition bug)
     emit_line(cg, "; Phase 1 Stdlib: Vec extensions");
     emit_stdlib_decl(cg, "vec_sum", "declare i64 @\"vec_sum\"(i64)");
     emit_stdlib_decl(cg, "vec_find", "declare i64 @\"vec_find\"(i64, i64)");
-    emit_stdlib_decl(cg, "vec_contains", "declare i8 @\"vec_contains\"(i64, i64)");
+    emit_stdlib_decl(cg, "vec_contains", "declare i64 @\"vec_contains\"(i64, i64)");
     emit_stdlib_decl(cg, "vec_reverse", "declare i64 @\"vec_reverse\"(i64)");
     emit_stdlib_decl(cg, "vec_clone", "declare i64 @\"vec_clone\"(i64)");
     emit_stdlib_decl(cg, "vec_first", "declare i64 @\"vec_first\"(i64)");
     emit_stdlib_decl(cg, "vec_last", "declare i64 @\"vec_last\"(i64)");
     emit_stdlib_decl(cg, "vec_pop", "declare i64 @\"vec_pop\"(i64)");
-    emit_stdlib_decl(cg, "vec_set", "declare void @\"vec_set\"(i64, i64, i64)");
-    emit_stdlib_decl(cg, "vec_clear", "declare void @\"vec_clear\"(i64)");
-    emit_stdlib_decl(cg, "vec_remove", "declare void @\"vec_remove\"(i64, i64)");
+    emit_stdlib_decl(cg, "vec_set", "declare i64 @\"vec_set\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "vec_clear", "declare i64 @\"vec_clear\"(i64)");
+    emit_stdlib_decl(cg, "vec_remove", "declare i64 @\"vec_remove\"(i64, i64)");
 
     // Phase 1 Stdlib: HashMap (string keys)
     emit_line(cg, "; Phase 1 Stdlib: HashMap");
-    emit_line(cg, "declare i64 @\"hashmap_new\"()");
-    emit_line(cg, "declare i64 @\"hashmap_insert\"(i64, i64, i64)");
-    emit_line(cg, "declare i64 @\"hashmap_get\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"hashmap_remove\"(i64, i64)");
-    emit_line(cg, "declare i8 @\"hashmap_contains\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"hashmap_len\"(i64)");
-    emit_line(cg, "declare void @\"hashmap_clear\"(i64)");
-    emit_line(cg, "declare i64 @\"hashmap_keys\"(i64)");
-    emit_line(cg, "declare i64 @\"hashmap_values\"(i64)");
+    emit_stdlib_decl(cg, "hashmap_new", "declare i64 @\"hashmap_new\"()");
+    emit_stdlib_decl(cg, "hashmap_insert", "declare i64 @\"hashmap_insert\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "hashmap_get", "declare i64 @\"hashmap_get\"(i64, i64)");
+    emit_stdlib_decl(cg, "hashmap_remove", "declare i64 @\"hashmap_remove\"(i64, i64)");
+    emit_stdlib_decl(cg, "hashmap_contains", "declare i64 @\"hashmap_contains\"(i64, i64)");
+    emit_stdlib_decl(cg, "hashmap_len", "declare i64 @\"hashmap_len\"(i64)");
+    emit_stdlib_decl(cg, "hashmap_clear", "declare i64 @\"hashmap_clear\"(i64)");
+    emit_stdlib_decl(cg, "hashmap_keys", "declare i64 @\"hashmap_keys\"(i64)");
+    emit_stdlib_decl(cg, "hashmap_values", "declare i64 @\"hashmap_values\"(i64)");
 
     // Phase 1 Stdlib: HashSet (string values)
     emit_line(cg, "; Phase 1 Stdlib: HashSet");
-    emit_line(cg, "declare i64 @\"hashset_new\"()");
-    emit_line(cg, "declare i8 @\"hashset_insert\"(i64, i64)");
-    emit_line(cg, "declare i8 @\"hashset_remove\"(i64, i64)");
-    emit_line(cg, "declare i8 @\"hashset_contains\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"hashset_len\"(i64)");
-    emit_line(cg, "declare void @\"hashset_clear\"(i64)");
+    emit_stdlib_decl(cg, "hashset_new", "declare i64 @\"hashset_new\"()");
+    emit_stdlib_decl(cg, "hashset_insert", "declare i64 @\"hashset_insert\"(i64, i64)");
+    emit_stdlib_decl(cg, "hashset_remove", "declare i64 @\"hashset_remove\"(i64, i64)");
+    emit_stdlib_decl(cg, "hashset_contains", "declare i64 @\"hashset_contains\"(i64, i64)");
+    emit_stdlib_decl(cg, "hashset_len", "declare i64 @\"hashset_len\"(i64)");
+    emit_stdlib_decl(cg, "hashset_clear", "declare i64 @\"hashset_clear\"(i64)");
 
     // Phase 1 Stdlib: JSON
     emit_line(cg, "; Phase 1 Stdlib: JSON");
-    emit_line(cg, "declare i64 @\"json_parse_simple\"(i64)");
-    emit_line(cg, "declare i64 @\"json_stringify\"(i64)");
-    emit_line(cg, "declare i64 @\"json_get_sx\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"json_keys\"(i64)");
-    emit_line(cg, "declare i8 @\"json_is_string\"(i64)");
-    emit_line(cg, "declare i8 @\"json_is_object\"(i64)");
-    emit_line(cg, "declare i8 @\"json_is_array\"(i64)");
-    emit_line(cg, "declare i64 @\"json_as_string\"(i64)");
-    emit_line(cg, "declare i64 @\"json_as_array\"(i64)");
-    emit_line(cg, "declare i64 @\"json_object_new\"()");
-    emit_line(cg, "declare i64 @\"json_array_new\"()");
-    emit_line(cg, "declare void @\"json_object_set\"(i64, i64, i64)");
-    emit_line(cg, "declare void @\"json_array_push\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"json_string\"(i64)");
-    emit_line(cg, "declare i64 @\"json_string_sx\"(i64)");
-    emit_line(cg, "declare i64 @\"json_array_len\"(i64)");
-    emit_line(cg, "declare i64 @\"json_object_len\"(i64)");
-    emit_line(cg, "declare i64 @\"json_as_i64\"(i64)");
-    emit_line(cg, "declare i64 @\"json_get_index\"(i64, i64)");
-    emit_line(cg, "declare i8 @\"json_is_null\"(i64)");
-    emit_line(cg, "declare i64 @\"json_object_key_at\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"json_object_value_at\"(i64, i64)");
-    emit_line(cg, "declare void @\"json_object_set_sx\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "json_parse_simple", "declare i64 @\"json_parse_simple\"(i64)");
+    emit_stdlib_decl(cg, "json_stringify", "declare i64 @\"json_stringify\"(i64)");
+    emit_stdlib_decl(cg, "json_get_sx", "declare i64 @\"json_get_sx\"(i64, i64)");
+    emit_stdlib_decl(cg, "json_keys", "declare i64 @\"json_keys\"(i64)");
+    emit_stdlib_decl(cg, "json_is_string", "declare i64 @\"json_is_string\"(i64)");
+    emit_stdlib_decl(cg, "json_is_object", "declare i64 @\"json_is_object\"(i64)");
+    emit_stdlib_decl(cg, "json_is_array", "declare i64 @\"json_is_array\"(i64)");
+    emit_stdlib_decl(cg, "json_as_string", "declare i64 @\"json_as_string\"(i64)");
+    emit_stdlib_decl(cg, "json_as_array", "declare i64 @\"json_as_array\"(i64)");
+    emit_stdlib_decl(cg, "json_object_new", "declare i64 @\"json_object_new\"()");
+    emit_stdlib_decl(cg, "json_array_new", "declare i64 @\"json_array_new\"()");
+    emit_stdlib_decl(cg, "json_object_set", "declare i64 @\"json_object_set\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "json_array_push", "declare i64 @\"json_array_push\"(i64, i64)");
+    emit_stdlib_decl(cg, "json_string", "declare i64 @\"json_string\"(i64)");
+    emit_stdlib_decl(cg, "json_string_sx", "declare i64 @\"json_string_sx\"(i64)");
+    emit_stdlib_decl(cg, "json_array_len", "declare i64 @\"json_array_len\"(i64)");
+    emit_stdlib_decl(cg, "json_object_len", "declare i64 @\"json_object_len\"(i64)");
+    emit_stdlib_decl(cg, "json_as_i64", "declare i64 @\"json_as_i64\"(i64)");
+    emit_stdlib_decl(cg, "json_get_index", "declare i64 @\"json_get_index\"(i64, i64)");
+    emit_stdlib_decl(cg, "json_is_null", "declare i64 @\"json_is_null\"(i64)");
+    emit_stdlib_decl(cg, "json_object_key_at", "declare i64 @\"json_object_key_at\"(i64, i64)");
+    emit_stdlib_decl(cg, "json_object_value_at", "declare i64 @\"json_object_value_at\"(i64, i64)");
+    emit_stdlib_decl(cg, "json_object_set_sx", "declare i64 @\"json_object_set_sx\"(i64, i64, i64)");
 
     // Phase 3: HTTP Client/Server API
     emit_line(cg, "; Phase 3: HTTP Client/Server");
-    emit_line(cg, "declare i64 @\"http_request_new\"(i64, i64)");
-    emit_line(cg, "declare void @\"http_request_header\"(i64, i64, i64)");
-    emit_line(cg, "declare void @\"http_request_body\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"http_request_send\"(i64)");
-    emit_line(cg, "declare void @\"http_request_free\"(i64)");
-    emit_line(cg, "declare i64 @\"http_response_status\"(i64)");
-    emit_line(cg, "declare i64 @\"http_response_body\"(i64)");
-    emit_line(cg, "declare i64 @\"http_response_header\"(i64, i64)");
-    emit_line(cg, "declare void @\"http_response_free\"(i64)");
-    emit_line(cg, "declare i64 @\"http_server_new\"(i64)");
-    emit_line(cg, "declare void @\"http_server_route\"(i64, i64, i64, i64)");
-    emit_line(cg, "declare i64 @\"http_server_start\"(i64)");
-    emit_line(cg, "declare void @\"http_server_stop\"(i64)");
-    emit_line(cg, "declare void @\"http_server_free\"(i64)");
+    emit_stdlib_decl(cg, "http_request_new", "declare i64 @\"http_request_new\"(i64, i64)");
+    emit_stdlib_decl(cg, "http_request_header", "declare i64 @\"http_request_header\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "http_request_body", "declare i64 @\"http_request_body\"(i64, i64)");
+    emit_stdlib_decl(cg, "http_request_send", "declare i64 @\"http_request_send\"(i64)");
+    emit_stdlib_decl(cg, "http_request_free", "declare i64 @\"http_request_free\"(i64)");
+    emit_stdlib_decl(cg, "http_response_status", "declare i64 @\"http_response_status\"(i64)");
+    emit_stdlib_decl(cg, "http_response_body", "declare i64 @\"http_response_body\"(i64)");
+    emit_stdlib_decl(cg, "http_response_header", "declare i64 @\"http_response_header\"(i64, i64)");
+    emit_stdlib_decl(cg, "http_response_free", "declare i64 @\"http_response_free\"(i64)");
+    emit_stdlib_decl(cg, "http_server_new", "declare i64 @\"http_server_new\"(i64)");
+    emit_stdlib_decl(cg, "http_server_route", "declare i64 @\"http_server_route\"(i64, i64, i64, i64)");
+    emit_stdlib_decl(cg, "http_server_start", "declare i64 @\"http_server_start\"(i64)");
+    emit_stdlib_decl(cg, "http_server_stop", "declare i64 @\"http_server_stop\"(i64)");
+    emit_stdlib_decl(cg, "http_server_free", "declare i64 @\"http_server_free\"(i64)");
 
     // Phase 3: SQL Database API
     emit_line(cg, "; Phase 3: SQL Database");
-    emit_line(cg, "declare i64 @\"sql_open\"(i64)");
-    emit_line(cg, "declare void @\"sql_close\"(i64)");
-    emit_line(cg, "declare i64 @\"sql_exec\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_query\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_prepare\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_bind_int\"(i64, i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_bind_text\"(i64, i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_bind_float\"(i64, i64, double)");
-    emit_line(cg, "declare i64 @\"sql_bind_null\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_bind_blob\"(i64, i64, i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_step\"(i64)");
-    emit_line(cg, "declare i64 @\"sql_column_int\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_column_text\"(i64, i64)");
-    emit_line(cg, "declare double @\"sql_column_float\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_column_blob\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_column_blob_len\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"sql_column_is_null\"(i64, i64)");
-    emit_line(cg, "declare void @\"sql_finalize\"(i64)");
-    emit_line(cg, "declare i64 @\"sql_begin\"(i64)");
-    emit_line(cg, "declare i64 @\"sql_commit\"(i64)");
-    emit_line(cg, "declare i64 @\"sql_rollback\"(i64)");
-    emit_line(cg, "declare i64 @\"sql_last_insert_id\"(i64)");
+    emit_stdlib_decl(cg, "sql_open", "declare i64 @\"sql_open\"(i64)");
+    emit_stdlib_decl(cg, "sql_close", "declare void @\"sql_close\"(i64)");
+    emit_stdlib_decl(cg, "sql_exec", "declare i64 @\"sql_exec\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_query", "declare i64 @\"sql_query\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_prepare", "declare i64 @\"sql_prepare\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_bind_int", "declare i64 @\"sql_bind_int\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "sql_bind_text", "declare i64 @\"sql_bind_text\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "sql_bind_float", "declare i64 @\"sql_bind_float\"(i64, i64, double)");
+    emit_stdlib_decl(cg, "sql_bind_null", "declare i64 @\"sql_bind_null\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_bind_blob", "declare i64 @\"sql_bind_blob\"(i64, i64, i64, i64)");
+    emit_stdlib_decl(cg, "sql_step", "declare i64 @\"sql_step\"(i64)");
+    emit_stdlib_decl(cg, "sql_column_int", "declare i64 @\"sql_column_int\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_column_text", "declare i64 @\"sql_column_text\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_column_float", "declare double @\"sql_column_float\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_column_blob", "declare i64 @\"sql_column_blob\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_column_blob_len", "declare i64 @\"sql_column_blob_len\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_column_is_null", "declare i64 @\"sql_column_is_null\"(i64, i64)");
+    emit_stdlib_decl(cg, "sql_finalize", "declare void @\"sql_finalize\"(i64)");
+    emit_stdlib_decl(cg, "sql_begin", "declare i64 @\"sql_begin\"(i64)");
+    emit_stdlib_decl(cg, "sql_commit", "declare i64 @\"sql_commit\"(i64)");
+    emit_stdlib_decl(cg, "sql_rollback", "declare i64 @\"sql_rollback\"(i64)");
+    emit_stdlib_decl(cg, "sql_last_insert_id", "declare i64 @\"sql_last_insert_id\"(i64)");
 
     // Phase 3: UUID API
     emit_line(cg, "; Phase 3: UUID");
-    emit_line(cg, "declare i64 @\"uuid_v4\"()");
-    emit_line(cg, "declare i64 @\"uuid_nil\"()");
-    emit_line(cg, "declare i64 @\"uuid_is_nil\"(i64)");
-    emit_line(cg, "declare i64 @\"uuid_is_valid\"(i64)");
+    emit_stdlib_decl(cg, "uuid_v4", "declare i64 @\"uuid_v4\"()");
+    emit_stdlib_decl(cg, "uuid_nil", "declare i64 @\"uuid_nil\"()");
+    emit_stdlib_decl(cg, "uuid_is_nil", "declare i64 @\"uuid_is_nil\"(i64)");
+    emit_stdlib_decl(cg, "uuid_is_valid", "declare i64 @\"uuid_is_valid\"(i64)");
 
     // Phase 3: TOML API
     emit_line(cg, "; Phase 3: TOML");
-    emit_line(cg, "declare i64 @\"toml_parse\"(i64)");
-    emit_line(cg, "declare i64 @\"toml_get\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"toml_get_string\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"toml_get_int\"(i64, i64)");
-    emit_line(cg, "declare double @\"toml_get_float\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"toml_get_bool\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"toml_get_array\"(i64, i64)");
-    emit_line(cg, "declare i64 @\"toml_get_table\"(i64, i64)");
-    emit_line(cg, "declare void @\"toml_set_string\"(i64, i64, i64)");
-    emit_line(cg, "declare void @\"toml_set_int\"(i64, i64, i64)");
-    emit_line(cg, "declare void @\"toml_set_float\"(i64, i64, double)");
-    emit_line(cg, "declare void @\"toml_set_bool\"(i64, i64, i64)");
-    emit_line(cg, "declare i64 @\"toml_stringify\"(i64)");
-    emit_line(cg, "declare i64 @\"toml_table_new\"()");
-    emit_line(cg, "declare void @\"toml_free\"(i64)");
+    emit_stdlib_decl(cg, "toml_parse", "declare i64 @\"toml_parse\"(i64)");
+    emit_stdlib_decl(cg, "toml_get", "declare i64 @\"toml_get\"(i64, i64)");
+    emit_stdlib_decl(cg, "toml_get_string", "declare i64 @\"toml_get_string\"(i64, i64)");
+    emit_stdlib_decl(cg, "toml_get_int", "declare i64 @\"toml_get_int\"(i64, i64)");
+    emit_stdlib_decl(cg, "toml_get_float", "declare double @\"toml_get_float\"(i64, i64)");
+    emit_stdlib_decl(cg, "toml_get_bool", "declare i64 @\"toml_get_bool\"(i64, i64)");
+    emit_stdlib_decl(cg, "toml_get_array", "declare i64 @\"toml_get_array\"(i64, i64)");
+    emit_stdlib_decl(cg, "toml_get_table", "declare i64 @\"toml_get_table\"(i64, i64)");
+    emit_stdlib_decl(cg, "toml_set_string", "declare i64 @\"toml_set_string\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "toml_set_int", "declare i64 @\"toml_set_int\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "toml_set_float", "declare i64 @\"toml_set_float\"(i64, i64, double)");
+    emit_stdlib_decl(cg, "toml_set_bool", "declare i64 @\"toml_set_bool\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "toml_stringify", "declare i64 @\"toml_stringify\"(i64)");
+    emit_stdlib_decl(cg, "toml_table_new", "declare i64 @\"toml_table_new\"()");
+    emit_stdlib_decl(cg, "toml_free", "declare i64 @\"toml_free\"(i64)");
 
     // Phase G: AI Features
     emit_line(cg, "; Phase G: AI Features");
@@ -8526,6 +9978,291 @@ fn gen_header(cg: i64) -> i64 {
     emit_line(cg, "declare void @hive_add_specialist(i64, i64)");
     emit_line(cg, "declare void @hive_remove_specialist(i64, i64)");
     emit_line(cg, "declare i64 @hive_consensus(i64, i64)");
+
+    // Cast functions
+    emit_stdlib_decl(cg, "sx_int_to_f64", "declare i64 @\"sx_int_to_f64\"(i64)");
+    emit_stdlib_decl(cg, "sx_f64_to_int", "declare i64 @\"sx_f64_to_int\"(i64)");
+
+    // f64 arithmetic runtime
+    emit_stdlib_decl(cg, "sx_f64_add", "declare i64 @\"sx_f64_add\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_sub", "declare i64 @\"sx_f64_sub\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_mul", "declare i64 @\"sx_f64_mul\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_div", "declare i64 @\"sx_f64_div\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_mod", "declare i64 @\"sx_f64_mod\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_gt", "declare i64 @\"sx_f64_gt\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_lt", "declare i64 @\"sx_f64_lt\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_ge", "declare i64 @\"sx_f64_ge\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_le", "declare i64 @\"sx_f64_le\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_eq", "declare i64 @\"sx_f64_eq\"(i64, i64)");
+    emit_stdlib_decl(cg, "sx_f64_ne", "declare i64 @\"sx_f64_ne\"(i64, i64)");
+    emit_stdlib_decl(cg, "f64_neg", "declare i64 @\"f64_neg\"(i64)");
+
+    // v0.13.0 Function aliases
+    emit_stdlib_decl(cg, "json_parse", "declare i64 @\"json_parse\"(i64)");
+    emit_stdlib_decl(cg, "json_get", "declare i64 @\"json_get\"(i64, i64)");
+    emit_stdlib_decl(cg, "json_set", "declare i64 @\"json_set\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "string_from", "declare i64 @\"string_from\"(i64)");
+    emit_stdlib_decl(cg, "infer", "declare i64 @\"infer\"(i64, i64)");
+    emit_stdlib_decl(cg, "path_exists", "declare i64 @\"path_exists\"(i64)");
+
+    // v0.13.0 Additional Runtime (batch 6)
+    emit_stdlib_decl(cg, "tanh_f64", "declare i64 @\"tanh_f64\"(i64)");
+    emit_stdlib_decl(cg, "abs_f64", "declare i64 @\"abs_f64\"(i64)");
+    emit_stdlib_decl(cg, "contract_result_violation_type", "declare i64 @\"contract_result_violation_type\"(i64)");
+    emit_stdlib_decl(cg, "activation_record", "declare i64 @\"activation_record\"(i64, i64)");
+    emit_stdlib_decl(cg, "neural_reset_pruning", "declare i64 @\"neural_reset_pruning\"()");
+    emit_stdlib_decl(cg, "device_type", "declare i64 @\"device_type\"(i64)");
+    emit_stdlib_decl(cg, "lazy_branch_count", "declare i64 @\"lazy_branch_count\"(i64)");
+    emit_stdlib_decl(cg, "lazy_context_new", "declare i64 @\"lazy_context_new\"()");
+    emit_stdlib_decl(cg, "lazy_context_free", "declare i64 @\"lazy_context_free\"(i64)");
+    emit_stdlib_decl(cg, "lazy_dominant_branch", "declare i64 @\"lazy_dominant_branch\"(i64)");
+    emit_stdlib_decl(cg, "lazy_executed_count", "declare i64 @\"lazy_executed_count\"(i64)");
+    emit_stdlib_decl(cg, "lazy_mark_executed", "declare i64 @\"lazy_mark_executed\"(i64, i64)");
+    emit_stdlib_decl(cg, "lazy_should_execute", "declare i64 @\"lazy_should_execute\"(i64, i64)");
+    emit_stdlib_decl(cg, "activation_tracker_init", "declare i64 @\"activation_tracker_init\"()");
+    emit_stdlib_decl(cg, "activation_tracking_enabled", "declare i64 @\"activation_tracking_enabled\"()");
+    emit_stdlib_decl(cg, "neural_gate_new", "declare i64 @\"neural_gate_new\"(i64, i64, i64, i64)");
+    emit_stdlib_decl(cg, "neural_gate_with_contract", "declare i64 @\"neural_gate_with_contract\"(i64, i64, i64, i64, i64)");
+    emit_stdlib_decl(cg, "neural_gate_execute_on_device", "declare i64 @\"neural_gate_execute_on_device\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "gate_bind_device", "declare i64 @\"gate_bind_device\"(i64, i64)");
+    emit_stdlib_decl(cg, "gate_get_device", "declare i64 @\"gate_get_device\"(i64)");
+    emit_stdlib_decl(cg, "gate_has_explicit_binding", "declare i64 @\"gate_has_explicit_binding\"(i64)");
+    emit_stdlib_decl(cg, "dead_path_analyzer_new", "declare i64 @\"dead_path_analyzer_new\"()");
+    emit_stdlib_decl(cg, "dead_path_analyzer_free", "declare i64 @\"dead_path_analyzer_free\"(i64)");
+    emit_stdlib_decl(cg, "dead_path_add_edge", "declare i64 @\"dead_path_add_edge\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "dead_path_mark_entry", "declare i64 @\"dead_path_mark_entry\"(i64, i64)");
+    emit_stdlib_decl(cg, "dead_path_propagate", "declare i64 @\"dead_path_propagate\"(i64)");
+    emit_stdlib_decl(cg, "dead_path_reachable_count", "declare i64 @\"dead_path_reachable_count\"(i64)");
+    emit_stdlib_decl(cg, "graph_new", "declare i64 @\"graph_new\"()");
+    emit_stdlib_decl(cg, "graph_free", "declare i64 @\"graph_free\"(i64)");
+    emit_stdlib_decl(cg, "graph_add_node", "declare i64 @\"graph_add_node\"(i64, i64)");
+    emit_stdlib_decl(cg, "graph_add_edge", "declare i64 @\"graph_add_edge\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "graph_partition", "declare i64 @\"graph_partition\"(i64, i64)");
+    emit_stdlib_decl(cg, "graph_partition_count", "declare i64 @\"graph_partition_count\"(i64)");
+    emit_stdlib_decl(cg, "graph_partition_device", "declare i64 @\"graph_partition_device\"(i64, i64)");
+    emit_stdlib_decl(cg, "pruning_context_new", "declare i64 @\"pruning_context_new\"()");
+    emit_stdlib_decl(cg, "pruning_context_free", "declare i64 @\"pruning_context_free\"(i64)");
+    emit_stdlib_decl(cg, "pruning_add_gate", "declare i64 @\"pruning_add_gate\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "pruning_execute", "declare i64 @\"pruning_execute\"(i64)");
+    emit_stdlib_decl(cg, "pruning_is_pruned", "declare i64 @\"pruning_is_pruned\"(i64, i64)");
+    emit_stdlib_decl(cg, "pruning_ratio", "declare i64 @\"pruning_ratio\"(i64)");
+    emit_stdlib_decl(cg, "pruning_reason", "declare i64 @\"pruning_reason\"(i64, i64)");
+    emit_stdlib_decl(cg, "pruning_total_count", "declare i64 @\"pruning_total_count\"(i64)");
+    emit_stdlib_decl(cg, "structured_pruner_new", "declare i64 @\"structured_pruner_new\"()");
+    emit_stdlib_decl(cg, "structured_pruner_free", "declare i64 @\"structured_pruner_free\"(i64)");
+    emit_stdlib_decl(cg, "speculative_context_new", "declare i64 @\"speculative_context_new\"()");
+    emit_stdlib_decl(cg, "speculative_context_free", "declare i64 @\"speculative_context_free\"(i64)");
+    emit_stdlib_decl(cg, "speculative_add_branch", "declare i64 @\"speculative_add_branch\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "speculative_get_result", "declare i64 @\"speculative_get_result\"(i64, i64)");
+    emit_stdlib_decl(cg, "speculative_set_result", "declare i64 @\"speculative_set_result\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "speculative_weighted_result", "declare i64 @\"speculative_weighted_result\"(i64)");
+    emit_stdlib_decl(cg, "speculative_memory_used", "declare i64 @\"speculative_memory_used\"(i64)");
+    emit_stdlib_decl(cg, "speculative_gc", "declare i64 @\"speculative_gc\"(i64)");
+    emit_stdlib_decl(cg, "optimization_stats_calculate", "declare i64 @\"optimization_stats_calculate\"(i64, i64)");
+    emit_stdlib_decl(cg, "optimization_stats_free", "declare i64 @\"optimization_stats_free\"(i64)");
+    emit_stdlib_decl(cg, "optimization_speedup", "declare i64 @\"optimization_speedup\"(i64)");
+    emit_stdlib_decl(cg, "optimization_size_reduction", "declare i64 @\"optimization_size_reduction\"(i64)");
+    emit_stdlib_decl(cg, "dual_variable", "declare i64 @\"dual_variable\"(i64)");
+    emit_stdlib_decl(cg, "dual_constant", "declare i64 @\"dual_constant\"(i64)");
+    emit_stdlib_decl(cg, "dual_add", "declare i64 @\"dual_add\"(i64, i64)");
+    emit_stdlib_decl(cg, "dual_mul", "declare i64 @\"dual_mul\"(i64, i64)");
+    emit_stdlib_decl(cg, "dual_div", "declare i64 @\"dual_div\"(i64, i64)");
+    emit_stdlib_decl(cg, "dual_mul_scalar", "declare i64 @\"dual_mul_scalar\"(i64, i64)");
+    emit_stdlib_decl(cg, "dual_sin", "declare i64 @\"dual_sin\"(i64)");
+    emit_stdlib_decl(cg, "dual_cos", "declare i64 @\"dual_cos\"(i64)");
+    emit_stdlib_decl(cg, "dual_exp", "declare i64 @\"dual_exp\"(i64)");
+    emit_stdlib_decl(cg, "dual_ln", "declare i64 @\"dual_ln\"(i64)");
+    emit_stdlib_decl(cg, "dual_sqrt", "declare i64 @\"dual_sqrt\"(i64)");
+    emit_stdlib_decl(cg, "dual_tanh", "declare i64 @\"dual_tanh\"(i64)");
+    emit_stdlib_decl(cg, "dual_sigmoid", "declare i64 @\"dual_sigmoid\"(i64)");
+    emit_stdlib_decl(cg, "dual_powi", "declare i64 @\"dual_powi\"(i64, i64)");
+    emit_stdlib_decl(cg, "int_hashset_new", "declare i64 @\"int_hashset_new\"()");
+    emit_stdlib_decl(cg, "int_hashset_insert", "declare i64 @\"int_hashset_insert\"(i64, i64)");
+    emit_stdlib_decl(cg, "int_hashset_contains", "declare i64 @\"int_hashset_contains\"(i64, i64)");
+    emit_stdlib_decl(cg, "int_hashset_len", "declare i64 @\"int_hashset_len\"(i64)");
+    emit_stdlib_decl(cg, "not_approx_eq", "declare i64 @\"not_approx_eq\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "transfer_queue_init", "declare i64 @\"transfer_queue_init\"(i64)");
+    emit_stdlib_decl(cg, "sxiter_from_vec", "declare i64 @\"sxiter_from_vec\"(i64)");
+    emit_stdlib_decl(cg, "sxiter_collect_vec", "declare i64 @\"sxiter_collect_vec\"(i64)");
+    emit_stdlib_decl(cg, "sxiter_filter", "declare i64 @\"sxiter_filter\"(i64, i64)");
+    emit_stdlib_decl(cg, "wref_registry_init", "declare i64 @\"wref_registry_init\"()");
+    emit_stdlib_decl(cg, "wref_new", "declare i64 @\"wref_new\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "wref_ptr", "declare i64 @\"wref_ptr\"(i64)");
+    emit_stdlib_decl(cg, "wref_weight", "declare i64 @\"wref_weight\"(i64)");
+    emit_stdlib_decl(cg, "wref_count", "declare i64 @\"wref_count\"()");
+    emit_stdlib_decl(cg, "wref_state", "declare i64 @\"wref_state\"(i64)");
+    emit_stdlib_decl(cg, "wref_retain", "declare i64 @\"wref_retain\"(i64)");
+    emit_stdlib_decl(cg, "wref_release", "declare i64 @\"wref_release\"(i64)");
+    emit_stdlib_decl(cg, "wref_is_allocated", "declare i64 @\"wref_is_allocated\"(i64)");
+    emit_stdlib_decl(cg, "wref_collapse", "declare i64 @\"wref_collapse\"(i64)");
+    emit_stdlib_decl(cg, "wref_set_weight", "declare i64 @\"wref_set_weight\"(i64, i64)");
+    emit_stdlib_decl(cg, "wref_set_mode", "declare i64 @\"wref_set_mode\"(i64)");
+    emit_stdlib_decl(cg, "wref_get_mode", "declare i64 @\"wref_get_mode\"()");
+    emit_stdlib_decl(cg, "wref_set_weight_threshold", "declare i64 @\"wref_set_weight_threshold\"(i64)");
+    emit_stdlib_decl(cg, "wref_get_weight_threshold", "declare i64 @\"wref_get_weight_threshold\"()");
+    emit_stdlib_decl(cg, "wref_gc", "declare i64 @\"wref_gc\"()");
+    emit_stdlib_decl(cg, "wref_gc_total_runs", "declare i64 @\"wref_gc_total_runs\"()");
+    emit_stdlib_decl(cg, "wref_gc_total_collected", "declare i64 @\"wref_gc_total_collected\"()");
+    emit_stdlib_decl(cg, "wref_gc_last_collected", "declare i64 @\"wref_gc_last_collected\"()");
+    emit_stdlib_decl(cg, "wref_bytes_allocated", "declare i64 @\"wref_bytes_allocated\"()");
+    emit_stdlib_decl(cg, "device_registry_init", "declare i64 @\"device_registry_init\"()");
+    emit_stdlib_decl(cg, "contract_violation_count", "declare i64 @\"contract_violation_count\"()");
+    emit_stdlib_decl(cg, "contract_set_violation_handler", "declare i64 @\"contract_set_violation_handler\"(i64)");
+    emit_stdlib_decl(cg, "neural_gate_weight", "declare i64 @\"neural_gate_weight\"(i64)");
+    emit_stdlib_decl(cg, "lazy_eval", "declare i64 @\"lazy_eval\"(i64)");
+    emit_stdlib_decl(cg, "lazy_best_branch", "declare i64 @\"lazy_best_branch\"(i64)");
+    emit_stdlib_decl(cg, "print_f64", "declare i64 @\"print_f64\"(i64)");
+    emit_stdlib_decl(cg, "device_register", "declare i64 @\"device_register\"(i64, i64, i64, i64, i64, i64)");
+
+    // v0.13.0 Additional Runtime (batch 5)
+    emit_stdlib_decl(cg, "lazy_add_branch", "declare i64 @\"lazy_add_branch\"(i64, i64)");
+    emit_stdlib_decl(cg, "contract_result_satisfied", "declare i64 @\"contract_result_satisfied\"(i64)");
+    emit_stdlib_decl(cg, "neural_set_temperature", "declare i64 @\"neural_set_temperature\"(i64)");
+    emit_stdlib_decl(cg, "activation_rate_get", "declare i64 @\"activation_rate_get\"(i64)");
+    emit_stdlib_decl(cg, "neural_register_gate_weight", "declare i64 @\"neural_register_gate_weight\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "ckpt_context_fork", "declare i64 @\"ckpt_context_fork\"(i64)");
+    emit_stdlib_decl(cg, "ckpt_context_merge", "declare i64 @\"ckpt_context_merge\"(i64, i64)");
+
+    // v0.13.0 Additional Runtime (batch 4)
+    emit_stdlib_decl(cg, "sqrt_f64", "declare i64 @\"sqrt_f64\"(i64)");
+    emit_stdlib_decl(cg, "ckpt_save", "declare i64 @\"ckpt_save\"(i64)");
+    emit_stdlib_decl(cg, "contract_result_ok", "declare i64 @\"contract_result_ok\"()");
+    emit_stdlib_decl(cg, "neural_get_temperature", "declare i64 @\"neural_get_temperature\"()");
+    emit_stdlib_decl(cg, "activation_mean_get", "declare i64 @\"activation_mean_get\"(i64)");
+    emit_stdlib_decl(cg, "neural_prune_by_weight_magnitude", "declare i64 @\"neural_prune_by_weight_magnitude\"(i64)");
+
+    // v0.13.0 Additional Runtime (batch 3)
+    emit_stdlib_decl(cg, "activation_gate_count", "declare i64 @\"activation_gate_count\"()");
+    emit_stdlib_decl(cg, "ckpt_restore", "declare i64 @\"ckpt_restore\"(i64)");
+    emit_stdlib_decl(cg, "contract_result_new", "declare i64 @\"contract_result_new\"(i64, i64)");
+    emit_stdlib_decl(cg, "contract_result_free", "declare i64 @\"contract_result_free\"(i64)");
+    emit_stdlib_decl(cg, "device_get_default", "declare i64 @\"device_get_default\"()");
+    emit_stdlib_decl(cg, "grad_tape_temperature", "declare i64 @\"grad_tape_temperature\"(i64)");
+    emit_stdlib_decl(cg, "json_object_has", "declare i64 @\"json_object_has\"(i64, i64)");
+    emit_stdlib_decl(cg, "neural_is_gate_pruned", "declare i64 @\"neural_is_gate_pruned\"(i64)");
+    emit_stdlib_decl(cg, "ln_f64", "declare i64 @\"ln_f64\"(i64)");
+
+    // v0.13.0 Additional Runtime (batch 2)
+    emit_stdlib_decl(cg, "device_get", "declare i64 @\"device_get\"(i64)");
+    emit_stdlib_decl(cg, "ckpt_count", "declare i64 @\"ckpt_count\"()");
+    emit_stdlib_decl(cg, "contract_in_range", "declare i64 @\"contract_in_range\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "grad_tape_set_training", "declare i64 @\"grad_tape_set_training\"(i64, i64)");
+    emit_stdlib_decl(cg, "activation_epoch_current", "declare i64 @\"activation_epoch_current\"()");
+    emit_stdlib_decl(cg, "neural_get_pruned_gate_count", "declare i64 @\"neural_get_pruned_gate_count\"()");
+    emit_stdlib_decl(cg, "exp_f64", "declare i64 @\"exp_f64\"(i64)");
+    emit_stdlib_decl(cg, "sin_f64", "declare i64 @\"sin_f64\"(i64)");
+    emit_stdlib_decl(cg, "json_is_number", "declare i64 @\"json_is_number\"(i64)");
+    emit_stdlib_decl(cg, "string_to_lowercase", "declare i64 @\"string_to_lowercase\"(i64)");
+    emit_stdlib_decl(cg, "string_split_whitespace", "declare i64 @\"string_split_whitespace\"(i64)");
+
+    // v0.13.0 Additional Runtime
+    emit_stdlib_decl(cg, "device_count", "declare i64 @\"device_count\"()");
+    emit_stdlib_decl(cg, "ckpt_context_new", "declare i64 @\"ckpt_context_new\"()");
+    emit_stdlib_decl(cg, "ckpt_context_free", "declare i64 @\"ckpt_context_free\"(i64)");
+    emit_stdlib_decl(cg, "ckpt_context_save", "declare i64 @\"ckpt_context_save\"(i64)");
+    emit_stdlib_decl(cg, "ckpt_context_restore", "declare i64 @\"ckpt_context_restore\"(i64)");
+    emit_stdlib_decl(cg, "contract_get_panic_mode", "declare i64 @\"contract_get_panic_mode\"()");
+    emit_stdlib_decl(cg, "contract_set_panic_mode", "declare i64 @\"contract_set_panic_mode\"(i64)");
+    emit_stdlib_decl(cg, "grad_tape_set_temperature", "declare i64 @\"grad_tape_set_temperature\"(i64, i64)");
+    emit_stdlib_decl(cg, "activation_epoch_advance", "declare i64 @\"activation_epoch_advance\"(i64)");
+    emit_stdlib_decl(cg, "neural_get_gate_count", "declare i64 @\"neural_get_gate_count\"()");
+    emit_stdlib_decl(cg, "json_is_bool", "declare i64 @\"json_is_bool\"(i64)");
+
+    // v0.13.0 New Runtime
+    emit_line(cg, "; v0.13.0 Runtime");
+    emit_stdlib_decl(cg, "print_string", "declare i64 @\"print_string\"(i64)");
+    emit_stdlib_decl(cg, "file_delete", "declare i64 @\"file_delete\"(i64)");
+    emit_stdlib_decl(cg, "cos_f64", "declare i64 @\"cos_f64\"(i64)");
+    emit_stdlib_decl(cg, "pow_f64", "declare i64 @\"pow_f64\"(i64, i64)");
+    emit_stdlib_decl(cg, "neural_set_training_mode", "declare i64 @\"neural_set_training_mode\"(i64)");
+    emit_stdlib_decl(cg, "neural_get_training_mode", "declare i64 @\"neural_get_training_mode\"()");
+    emit_stdlib_decl(cg, "neural_sigmoid", "declare i64 @\"neural_sigmoid\"(i64)");
+    emit_stdlib_decl(cg, "neural_register_gate", "declare i64 @\"neural_register_gate\"(i64)");
+    emit_stdlib_decl(cg, "neural_clear_gate_registry", "declare i64 @\"neural_clear_gate_registry\"()");
+    emit_stdlib_decl(cg, "neural_gate_count", "declare i64 @\"neural_gate_count\"()");
+    emit_stdlib_decl(cg, "grad_tape_new", "declare i64 @\"grad_tape_new\"()");
+    emit_stdlib_decl(cg, "grad_tape_free", "declare i64 @\"grad_tape_free\"(i64)");
+    emit_stdlib_decl(cg, "grad_tape_len", "declare i64 @\"grad_tape_len\"(i64)");
+    emit_stdlib_decl(cg, "grad_tape_record", "declare i64 @\"grad_tape_record\"(i64, i64)");
+    emit_stdlib_decl(cg, "contract_check_requires", "declare i64 @\"contract_check_requires\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "contract_check_ensures", "declare i64 @\"contract_check_ensures\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "contract_check_invariant", "declare i64 @\"contract_check_invariant\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "device_available", "declare i64 @\"device_available\"(i64)");
+    emit_stdlib_decl(cg, "activation_count_inc", "declare i64 @\"activation_count_inc\"(i64)");
+    emit_stdlib_decl(cg, "activation_count_get", "declare i64 @\"activation_count_get\"(i64)");
+    emit_stdlib_decl(cg, "ckpt_branch_start", "declare i64 @\"ckpt_branch_start\"()");
+    emit_stdlib_decl(cg, "ckpt_branch_end", "declare i64 @\"ckpt_branch_end\"(i64)");
+    emit_stdlib_decl(cg, "anneal_exponential", "declare i64 @\"anneal_exponential\"(i64, i64)");
+    emit_stdlib_decl(cg, "anneal_linear", "declare i64 @\"anneal_linear\"(i64, i64)");
+    emit_stdlib_decl(cg, "json_null", "declare i64 @\"json_null\"()");
+    emit_stdlib_decl(cg, "json_bool", "declare i64 @\"json_bool\"(i64)");
+    emit_stdlib_decl(cg, "json_number_i64", "declare i64 @\"json_number_i64\"(i64)");
+    emit_stdlib_decl(cg, "json_number_f64", "declare i64 @\"json_number_f64\"(i64)");
+    emit_stdlib_decl(cg, "json_array", "declare i64 @\"json_array\"()");
+    emit_stdlib_decl(cg, "json_object", "declare i64 @\"json_object\"()");
+    emit_stdlib_decl(cg, "json_as_bool", "declare i64 @\"json_as_bool\"(i64)");
+    emit_stdlib_decl(cg, "HashMap_new", "declare i64 @\"HashMap_new\"()");
+    emit_stdlib_decl(cg, "hashmap_is_empty", "declare i64 @\"hashmap_is_empty\"(i64)");
+    emit_stdlib_decl(cg, "timer_start", "declare i64 @\"timer_start\"()");
+    emit_stdlib_decl(cg, "timer_elapsed_us", "declare i64 @\"timer_elapsed_us\"(i64)");
+    emit_stdlib_decl(cg, "timer_elapsed_ms", "declare i64 @\"timer_elapsed_ms\"(i64)");
+    emit_stdlib_decl(cg, "timer_elapsed_s", "declare i64 @\"timer_elapsed_s\"(i64)");
+    emit_stdlib_decl(cg, "timer_close", "declare i64 @\"timer_close\"(i64)");
+    emit_stdlib_decl(cg, "timer_record_to", "declare i64 @\"timer_record_to\"(i64, i64)");
+    emit_stdlib_decl(cg, "logger_new", "declare i64 @\"logger_new\"()");
+    emit_stdlib_decl(cg, "logger_global", "declare i64 @\"logger_global\"()");
+    emit_stdlib_decl(cg, "logger_set_level", "declare i64 @\"logger_set_level\"(i64, i64)");
+    emit_stdlib_decl(cg, "logger_set_console", "declare i64 @\"logger_set_console\"(i64, i64)");
+    emit_stdlib_decl(cg, "logger_set_file", "declare i64 @\"logger_set_file\"(i64, i64)");
+    emit_stdlib_decl(cg, "logger_set_json", "declare i64 @\"logger_set_json\"(i64, i64)");
+    emit_stdlib_decl(cg, "logger_add_context", "declare i64 @\"logger_add_context\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "logger_close", "declare i64 @\"logger_close\"(i64)");
+    emit_stdlib_decl(cg, "log_debug", "declare i64 @\"log_debug\"(i64)");
+    emit_stdlib_decl(cg, "log_info", "declare i64 @\"log_info\"(i64)");
+    emit_stdlib_decl(cg, "log_warn", "declare i64 @\"log_warn\"(i64)");
+    emit_stdlib_decl(cg, "log_error", "declare i64 @\"log_error\"(i64)");
+    emit_stdlib_decl(cg, "log_fatal", "declare i64 @\"log_fatal\"(i64)");
+    emit_stdlib_decl(cg, "log_with_field", "declare i64 @\"log_with_field\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "log_with_span", "declare i64 @\"log_with_span\"(i64, i64)");
+    emit_stdlib_decl(cg, "counter_new", "declare i64 @\"counter_new\"(i64)");
+    emit_stdlib_decl(cg, "counter_inc", "declare i64 @\"counter_inc\"(i64)");
+    emit_stdlib_decl(cg, "counter_add", "declare i64 @\"counter_add\"(i64, i64)");
+    emit_stdlib_decl(cg, "counter_add_label", "declare i64 @\"counter_add_label\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "counter_value", "declare i64 @\"counter_value\"(i64)");
+    emit_stdlib_decl(cg, "gauge_new", "declare i64 @\"gauge_new\"(i64)");
+    emit_stdlib_decl(cg, "gauge_set", "declare i64 @\"gauge_set\"(i64, i64)");
+    emit_stdlib_decl(cg, "gauge_inc", "declare i64 @\"gauge_inc\"(i64)");
+    emit_stdlib_decl(cg, "gauge_dec", "declare i64 @\"gauge_dec\"(i64)");
+    emit_stdlib_decl(cg, "gauge_add", "declare i64 @\"gauge_add\"(i64, i64)");
+    emit_stdlib_decl(cg, "gauge_value", "declare i64 @\"gauge_value\"(i64)");
+    emit_stdlib_decl(cg, "histogram_new", "declare i64 @\"histogram_new\"(i64)");
+    emit_stdlib_decl(cg, "histogram_observe", "declare i64 @\"histogram_observe\"(i64, i64)");
+    emit_stdlib_decl(cg, "histogram_count", "declare i64 @\"histogram_count\"(i64)");
+    emit_stdlib_decl(cg, "histogram_sum", "declare i64 @\"histogram_sum\"(i64)");
+    emit_stdlib_decl(cg, "histogram_mean", "declare i64 @\"histogram_mean\"(i64)");
+    emit_stdlib_decl(cg, "histogram_min", "declare i64 @\"histogram_min\"(i64)");
+    emit_stdlib_decl(cg, "histogram_max", "declare i64 @\"histogram_max\"(i64)");
+    emit_stdlib_decl(cg, "histogram_to_json", "declare i64 @\"histogram_to_json\"(i64)");
+    emit_stdlib_decl(cg, "metrics_registry_new", "declare i64 @\"metrics_registry_new\"()");
+    emit_stdlib_decl(cg, "metrics_registry_global", "declare i64 @\"metrics_registry_global\"()");
+    emit_stdlib_decl(cg, "metrics_registry_count", "declare i64 @\"metrics_registry_count\"(i64)");
+    emit_stdlib_decl(cg, "metrics_registry_close", "declare i64 @\"metrics_registry_close\"(i64)");
+    emit_stdlib_decl(cg, "metrics_export_json", "declare i64 @\"metrics_export_json\"(i64)");
+    emit_stdlib_decl(cg, "metrics_export_prometheus", "declare i64 @\"metrics_export_prometheus\"(i64)");
+    emit_stdlib_decl(cg, "span_start", "declare i64 @\"span_start\"(i64)");
+    emit_stdlib_decl(cg, "span_start_child", "declare i64 @\"span_start_child\"(i64, i64)");
+    emit_stdlib_decl(cg, "span_end", "declare i64 @\"span_end\"(i64)");
+    emit_stdlib_decl(cg, "span_close", "declare i64 @\"span_close\"(i64)");
+    emit_stdlib_decl(cg, "span_id", "declare i64 @\"span_id\"(i64)");
+    emit_stdlib_decl(cg, "span_trace_id", "declare i64 @\"span_trace_id\"(i64)");
+    emit_stdlib_decl(cg, "span_duration_us", "declare i64 @\"span_duration_us\"(i64)");
+    emit_stdlib_decl(cg, "span_set_attribute", "declare i64 @\"span_set_attribute\"(i64, i64, i64)");
+    emit_stdlib_decl(cg, "span_set_status", "declare i64 @\"span_set_status\"(i64, i64)");
+    emit_stdlib_decl(cg, "span_add_event", "declare i64 @\"span_add_event\"(i64, i64)");
+    emit_stdlib_decl(cg, "span_to_json", "declare i64 @\"span_to_json\"(i64)");
+    emit_stdlib_decl(cg, "tracer_new", "declare i64 @\"tracer_new\"()");
+    emit_stdlib_decl(cg, "tracer_active_spans", "declare i64 @\"tracer_active_spans\"(i64)");
+    emit_stdlib_decl(cg, "tracer_close", "declare i64 @\"tracer_close\"(i64)");
 
     emit_line(cg, "");
     0
@@ -8590,15 +10327,25 @@ fn gen_program_with_module_and_dir(items: i64, module_name: i64, source_dir: i64
     cg_set_source_dir(cg, source_dir);
     register_builtin_enums(cg);  // Phase 36: Pre-register Option and Result
 
-    // Pre-pass: collect all user-defined function names to prevent stdlib declaration conflicts
+    // Bug 5 fix: Pre-pass collects only user-defined functions WITH bodies
+    // Extern function declarations (body == 0) must NOT be added here, because
+    // emit_stdlib_decl would skip their declarations, and then the extern fn would
+    // emit its own declare with potentially different signature
     let n: i64 = vec_len(items);
     let i: i64 = 0;
     while i < n {
         let item: i64 = vec_get(items, i);
         let tag: i64 = load_i64(item, 0);
         if tag == TAG_FN() {
-            let fn_name: i64 = load_ptr(item, 1);
-            cg_add_defined_fn(cg, fn_name);
+            let fn_body: i64 = load_ptr(item, 5);
+            if fn_body != 0 {
+                let fn_name: i64 = load_ptr(item, 1);
+                cg_add_defined_fn(cg, fn_name);
+            }
+        }
+        if tag == TAG_NEURAL_GATE() {
+            let ng_name: i64 = load_ptr(item, 1);
+            cg_add_defined_fn(cg, ng_name);
         }
         i = i + 1;
     }
@@ -8661,6 +10408,9 @@ fn gen_program_with_module_and_dir(items: i64, module_name: i64, source_dir: i64
             let target_type: i64 = load_ptr(item, 2);
             cg_register_type_alias(cg, alias_name, target_type);
         }
+        if tag == TAG_NEURAL_GATE() {
+            gen_neural_gate_with_contracts(cg, item);
+        }
         // Note: TAG_TRAIT() doesn't generate code (trait definitions are just declarations)
         i = i + 1;
     }
@@ -8676,6 +10426,14 @@ fn gen_program_with_module_and_dir(items: i64, module_name: i64, source_dir: i64
         let type_args: i64 = load_ptr(entry, 2);
         gen_fn_instantiation(cg, fn_def, mangled_name, type_args);
         processed = processed + 1;
+    }
+
+    // Emit pending closure function definitions
+    let closure_code: i64 = sb_to_string(cg_closure_sb(cg));
+    if string_len(closure_code) > 0 {
+        emit_line(cg, "");
+        emit_line(cg, "; Closure function definitions");
+        emit(cg, closure_code);
     }
 
     // Emit string constants
@@ -8712,7 +10470,7 @@ fn gen_program_with_debug(items: i64, module_name: i64, filename: i64, directory
     cg_set_debug_dir(cg, directory);
     register_builtin_enums(cg);
 
-    // Pre-pass: collect all user-defined function names
+    // Bug 5 fix: Pre-pass collects only functions WITH bodies (not extern declarations)
     let n: i64 = vec_len(items);
     let i: i64 = 0;
     while i < n {
@@ -8720,9 +10478,17 @@ fn gen_program_with_debug(items: i64, module_name: i64, filename: i64, directory
         let tag: i64 = load_i64(item, 0);
         if tag == TAG_FN() {
             let fn_name: i64 = load_ptr(item, 1);
-            cg_add_defined_fn(cg, fn_name);
+            let fn_body: i64 = load_ptr(item, 5);
+            if fn_body != 0 {
+                cg_add_defined_fn(cg, fn_name);
+            }
             // Register subprogram for debug info (line 1 as placeholder)
             cg_register_subprogram(cg, fn_name, 1);
+        }
+        if tag == TAG_NEURAL_GATE() {
+            let ng_name: i64 = load_ptr(item, 1);
+            cg_add_defined_fn(cg, ng_name);
+            cg_register_subprogram(cg, ng_name, 1);
         }
         i = i + 1;
     }
@@ -8757,6 +10523,9 @@ fn gen_program_with_debug(items: i64, module_name: i64, filename: i64, directory
         if tag == TAG_IMPL_TRAIT() {
             gen_impl_trait(cg, item);
         }
+        if tag == TAG_NEURAL_GATE() {
+            gen_neural_gate_with_contracts(cg, item);
+        }
         i = i + 1;
     }
 
@@ -8770,6 +10539,14 @@ fn gen_program_with_debug(items: i64, module_name: i64, filename: i64, directory
         let type_args: i64 = load_ptr(entry, 2);
         gen_fn_instantiation(cg, fn_def, mangled_name, type_args);
         processed = processed + 1;
+    }
+
+    // Emit pending closure function definitions
+    let closure_code2: i64 = sb_to_string(cg_closure_sb(cg));
+    if string_len(closure_code2) > 0 {
+        emit_line(cg, "");
+        emit_line(cg, "; Closure function definitions");
+        emit(cg, closure_code2);
     }
 
     // Emit string constants
@@ -8808,7 +10585,7 @@ fn gen_debug_info_footer(cg: i64) -> i64 {
 
     // !0 = DICompileUnit
     emit(cg, "!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !4, producer: \"sxc ");
-    emit(cg, "0.11.0");
+    emit(cg, "0.13.0");
     emit_line(cg, "\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !5)");
 
     // !1 = Module flag for DWARF Version
@@ -8818,7 +10595,7 @@ fn gen_debug_info_footer(cg: i64) -> i64 {
     emit_line(cg, "!2 = !{i32 2, !\"Debug Info Version\", i32 3}");
 
     // !3 = llvm.ident
-    emit_line(cg, "!3 = !{!\"Simplex Compiler 0.11.0\"}");
+    emit_line(cg, "!3 = !{!\"Simplex Compiler 0.13.0\"}");
 
     // !4 = DIFile
     emit(cg, "!4 = !DIFile(filename: \"");
@@ -8866,6 +10643,84 @@ fn gen_debug_info_footer(cg: i64) -> i64 {
     }
 
     0
+}
+
+// =============================================================================
+// Closure Indirect Call Helpers
+// =============================================================================
+
+// Emit an indirect call through a closure struct given the closure value (i64)
+// closure_val is the i64 value holding the closure struct pointer
+// call_args is a vec of i64 argument values (NOT including env)
+fn emit_closure_val_call(cg: i64, closure_val: i64, call_args: i64) -> i64 {
+    // Convert closure value (i64) to ptr
+    let cptr_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(cptr_t));
+    emit(cg, " = inttoptr i64 ");
+    emit(cg, closure_val);
+    emit_line(cg, " to ptr");
+
+    // Load fn_ptr from offset 0
+    let fn_load_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(fn_load_t));
+    emit(cg, " = load i64, ptr %t");
+    emit_line(cg, int_to_string(cptr_t));
+
+    // Load env_ptr from offset 8
+    let env_gep_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(env_gep_t));
+    emit(cg, " = getelementptr i8, ptr %t");
+    emit(cg, int_to_string(cptr_t));
+    emit_line(cg, ", i64 8");
+    let env_load_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(env_load_t));
+    emit(cg, " = load i64, ptr %t");
+    emit_line(cg, int_to_string(env_gep_t));
+
+    // Convert fn_ptr i64 to callable ptr
+    let fn_ptr_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(fn_ptr_t));
+    emit(cg, " = inttoptr i64 %t");
+    emit(cg, int_to_string(fn_load_t));
+    emit_line(cg, " to ptr");
+
+    // Call: fn_ptr(env_ptr, arg1, arg2, ...)
+    let result_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(result_t));
+    emit(cg, " = call i64 %t");
+    emit(cg, int_to_string(fn_ptr_t));
+    emit(cg, "(i64 %t");
+    emit(cg, int_to_string(env_load_t));
+    let na: i64 = vec_len(call_args);
+    let ai: i64 = 0;
+    while ai < na {
+        emit(cg, ", i64 ");
+        emit(cg, vec_get(call_args, ai));
+        ai = ai + 1;
+    }
+    emit_line(cg, ")");
+
+    string_concat("%t", int_to_string(result_t))
+}
+
+// Emit an indirect call through a closure variable (loads the closure struct from local)
+fn emit_closure_indirect_call(cg: i64, var_name: i64, call_args: i64) -> i64 {
+    // Load closure struct value from local variable
+    let unique_name: i64 = lookup_local(cg, var_name);
+    let load_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(load_t));
+    emit(cg, " = load i64, ptr %local.");
+    emit_line(cg, unique_name);
+
+    let closure_val: i64 = string_concat("%t", int_to_string(load_t));
+    emit_closure_val_call(cg, closure_val, call_args)
 }
 
 // Helper functions for intrinsic emission with type conversions

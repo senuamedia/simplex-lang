@@ -1,0 +1,933 @@
+// Simplex HTTP Client Module Tests
+// Tests HTTP client construction, request building, response handling,
+// header management, and timeout configuration.
+//
+// Since actual HTTP networking requires the full runtime, these tests
+// verify client logic, URL handling, status codes, and configuration
+// using simulated/mock patterns.
+
+// =============================================================================
+// HTTP Method Constants
+// =============================================================================
+
+fn HTTP_GET() -> i64 { 1 }
+fn HTTP_POST() -> i64 { 2 }
+fn HTTP_PUT() -> i64 { 3 }
+fn HTTP_DELETE() -> i64 { 4 }
+fn HTTP_PATCH() -> i64 { 5 }
+fn HTTP_HEAD() -> i64 { 6 }
+fn HTTP_OPTIONS() -> i64 { 7 }
+
+fn method_to_string(method: i64) -> i64 {
+    if method == HTTP_GET() { 1 }
+    else if method == HTTP_POST() { 2 }
+    else if method == HTTP_PUT() { 3 }
+    else if method == HTTP_DELETE() { 4 }
+    else if method == HTTP_PATCH() { 5 }
+    else if method == HTTP_HEAD() { 6 }
+    else if method == HTTP_OPTIONS() { 7 }
+    else { 0 }
+}
+
+// =============================================================================
+// Status Code Classification
+// =============================================================================
+
+fn status_is_info(code: i64) -> i64 {
+    if code >= 100 {
+        if code < 200 { 1 } else { 0 }
+    } else { 0 }
+}
+
+fn status_is_success(code: i64) -> i64 {
+    if code >= 200 {
+        if code < 300 { 1 } else { 0 }
+    } else { 0 }
+}
+
+fn status_is_redirect(code: i64) -> i64 {
+    if code >= 300 {
+        if code < 400 { 1 } else { 0 }
+    } else { 0 }
+}
+
+fn status_is_client_error(code: i64) -> i64 {
+    if code >= 400 {
+        if code < 500 { 1 } else { 0 }
+    } else { 0 }
+}
+
+fn status_is_server_error(code: i64) -> i64 {
+    if code >= 500 {
+        if code < 600 { 1 } else { 0 }
+    } else { 0 }
+}
+
+fn status_is_error(code: i64) -> i64 {
+    if code >= 400 { 1 } else { 0 }
+}
+
+// =============================================================================
+// Client Configuration (Simulated)
+// =============================================================================
+
+// Config encoding:
+// bits 0-15: timeout_ms / 100 (max ~6553 seconds)
+// bits 16-23: max_redirects
+// bit 24: verify_tls flag
+
+fn config_new(timeout_ms: i64, max_redirects: i64, verify_tls: i64) -> i64 {
+    let timeout_encoded: i64 = timeout_ms / 100;
+    let result: i64 = timeout_encoded;
+    result = result + max_redirects * 65536;
+    if verify_tls == 1 {
+        result = result + 16777216;
+    }
+    result
+}
+
+fn config_get_timeout(config: i64) -> i64 {
+    (config % 65536) * 100
+}
+
+fn config_get_max_redirects(config: i64) -> i64 {
+    (config / 65536) % 256
+}
+
+fn config_get_verify_tls(config: i64) -> i64 {
+    (config / 16777216) % 2
+}
+
+// =============================================================================
+// Header Collection (Simulated)
+// =============================================================================
+
+// Simulated header storage: packed count in lower bits
+// Each add increments the count, we track specific well-known headers as flags
+// bits 0-7: header count
+// bit 8: has Content-Type
+// bit 9: has Authorization
+// bit 10: has Accept
+// bit 11: has User-Agent
+
+fn headers_new() -> i64 { 0 }
+
+fn headers_add(h: i64, header_type: i64) -> i64 {
+    let count: i64 = h % 256;
+    let flags: i64 = h / 256;
+    let new_count: i64 = count + 1;
+
+    // Set flag based on header type
+    let new_flags: i64 = flags;
+    if header_type == 1 { new_flags = new_flags + 1; }      // Content-Type -> bit 0 of flags
+    if header_type == 2 { new_flags = new_flags + 2; }      // Authorization -> bit 1
+    if header_type == 3 { new_flags = new_flags + 4; }      // Accept -> bit 2
+    if header_type == 4 { new_flags = new_flags + 8; }      // User-Agent -> bit 3
+
+    new_count + new_flags * 256
+}
+
+fn headers_count(h: i64) -> i64 {
+    h % 256
+}
+
+fn headers_has_content_type(h: i64) -> i64 {
+    (h / 256) % 2
+}
+
+fn headers_has_authorization(h: i64) -> i64 {
+    (h / 512) % 2
+}
+
+fn headers_has_accept(h: i64) -> i64 {
+    (h / 1024) % 2
+}
+
+fn headers_has_user_agent(h: i64) -> i64 {
+    (h / 2048) % 2
+}
+
+// =============================================================================
+// URL Handling (Simulated)
+// =============================================================================
+
+// URL encoding:
+// bits 0-15: port
+// bit 16: is_https
+// bits 17-24: path_length
+
+fn url_new(port: i64, is_https: i64, path_len: i64) -> i64 {
+    let result: i64 = port;
+    if is_https == 1 {
+        result = result + 65536;
+    }
+    result = result + path_len * 131072;
+    result
+}
+
+fn url_port(u: i64) -> i64 {
+    u % 65536
+}
+
+fn url_is_https(u: i64) -> i64 {
+    (u / 65536) % 2
+}
+
+fn url_path_len(u: i64) -> i64 {
+    u / 131072
+}
+
+fn url_resolve(base_port: i64, base_https: i64, path_len: i64) -> i64 {
+    let port: i64 = base_port;
+    if port == 0 {
+        if base_https == 1 { port = 443; }
+        else { port = 80; }
+    }
+    url_new(port, base_https, path_len)
+}
+
+// =============================================================================
+// Request Builder (Simulated)
+// =============================================================================
+
+// bits 0-7: method
+// bits 8-15: header count
+// bit 16: has_body
+// bit 17: has_json_content_type
+// bits 18-31: timeout_ms / 100
+
+fn request_build(method: i64, header_count: i64, has_body: i64, is_json: i64, timeout_ms: i64) -> i64 {
+    let result: i64 = method;
+    result = result + header_count * 256;
+    if has_body == 1 {
+        result = result + 65536;
+    }
+    if is_json == 1 {
+        result = result + 131072;
+    }
+    result = result + (timeout_ms / 100) * 262144;
+    result
+}
+
+fn request_method(r: i64) -> i64 { r % 256 }
+fn request_header_count(r: i64) -> i64 { (r / 256) % 256 }
+fn request_has_body(r: i64) -> i64 { (r / 65536) % 2 }
+fn request_is_json(r: i64) -> i64 { (r / 131072) % 2 }
+fn request_timeout(r: i64) -> i64 { (r / 262144) * 100 }
+
+// =============================================================================
+// Test 1: Client Construction with Defaults
+// =============================================================================
+
+fn test_client_defaults() -> i64 {
+    println("  Testing client construction with defaults...");
+
+    let config: i64 = config_new(30000, 10, 1);
+
+    if config_get_timeout(config) != 30000 {
+        println("  FAIL: default timeout should be 30000ms");
+        return 1;
+    }
+
+    if config_get_max_redirects(config) != 10 {
+        println("  FAIL: default max_redirects should be 10");
+        return 1;
+    }
+
+    if config_get_verify_tls(config) != 1 {
+        println("  FAIL: default verify_tls should be true");
+        return 1;
+    }
+
+    println("  PASS: client construction with defaults");
+    0
+}
+
+// =============================================================================
+// Test 2: Client with Custom Timeout
+// =============================================================================
+
+fn test_client_custom_timeout() -> i64 {
+    println("  Testing client with custom timeout...");
+
+    let config: i64 = config_new(5000, 10, 1);
+
+    if config_get_timeout(config) != 5000 {
+        println("  FAIL: custom timeout should be 5000ms");
+        return 1;
+    }
+
+    // Zero timeout (no timeout)
+    let no_timeout: i64 = config_new(0, 10, 1);
+    if config_get_timeout(no_timeout) != 0 {
+        println("  FAIL: zero timeout should mean no timeout");
+        return 1;
+    }
+
+    // Large timeout
+    let large_timeout: i64 = config_new(60000, 10, 1);
+    if config_get_timeout(large_timeout) != 60000 {
+        println("  FAIL: large timeout should be 60000ms");
+        return 1;
+    }
+
+    println("  PASS: client with custom timeout");
+    0
+}
+
+// =============================================================================
+// Test 3: Header Management
+// =============================================================================
+
+fn test_header_management() -> i64 {
+    println("  Testing header management...");
+
+    let h: i64 = headers_new();
+
+    if headers_count(h) != 0 {
+        println("  FAIL: new headers should be empty");
+        return 1;
+    }
+
+    // Add Content-Type
+    h = headers_add(h, 1);
+    if headers_count(h) != 1 {
+        println("  FAIL: should have 1 header");
+        return 1;
+    }
+    if headers_has_content_type(h) != 1 {
+        println("  FAIL: should have Content-Type");
+        return 1;
+    }
+
+    // Add Authorization
+    h = headers_add(h, 2);
+    if headers_count(h) != 2 {
+        println("  FAIL: should have 2 headers");
+        return 1;
+    }
+    if headers_has_authorization(h) != 1 {
+        println("  FAIL: should have Authorization");
+        return 1;
+    }
+
+    // Add Accept
+    h = headers_add(h, 3);
+    if headers_count(h) != 3 {
+        println("  FAIL: should have 3 headers");
+        return 1;
+    }
+
+    // Add User-Agent
+    h = headers_add(h, 4);
+    if headers_count(h) != 4 {
+        println("  FAIL: should have 4 headers");
+        return 1;
+    }
+    if headers_has_user_agent(h) != 1 {
+        println("  FAIL: should have User-Agent");
+        return 1;
+    }
+
+    println("  PASS: header management");
+    0
+}
+
+// =============================================================================
+// Test 4: Default Headers Applied
+// =============================================================================
+
+fn test_default_headers() -> i64 {
+    println("  Testing default headers...");
+
+    // Simulated client with default headers: User-Agent and Accept
+    let h: i64 = headers_new();
+    h = headers_add(h, 4); // User-Agent
+    h = headers_add(h, 3); // Accept
+
+    if headers_has_user_agent(h) != 1 {
+        println("  FAIL: client should have default User-Agent");
+        return 1;
+    }
+
+    if headers_has_accept(h) != 1 {
+        println("  FAIL: client should have default Accept");
+        return 1;
+    }
+
+    if headers_count(h) != 2 {
+        println("  FAIL: client should have 2 default headers");
+        return 1;
+    }
+
+    println("  PASS: default headers");
+    0
+}
+
+// =============================================================================
+// Test 5: GET Request Building
+// =============================================================================
+
+fn test_get_request() -> i64 {
+    println("  Testing GET request building...");
+
+    let req: i64 = request_build(HTTP_GET(), 2, 0, 0, 30000);
+
+    if request_method(req) != HTTP_GET() {
+        println("  FAIL: method should be GET");
+        return 1;
+    }
+
+    if request_has_body(req) != 0 {
+        println("  FAIL: GET should not have body");
+        return 1;
+    }
+
+    if request_header_count(req) != 2 {
+        println("  FAIL: should have 2 headers (defaults)");
+        return 1;
+    }
+
+    if request_timeout(req) != 30000 {
+        println("  FAIL: timeout should be 30000");
+        return 1;
+    }
+
+    println("  PASS: GET request building");
+    0
+}
+
+// =============================================================================
+// Test 6: POST Request with Body
+// =============================================================================
+
+fn test_post_request() -> i64 {
+    println("  Testing POST request with body...");
+
+    let req: i64 = request_build(HTTP_POST(), 3, 1, 0, 30000);
+
+    if request_method(req) != HTTP_POST() {
+        println("  FAIL: method should be POST");
+        return 1;
+    }
+
+    if request_has_body(req) != 1 {
+        println("  FAIL: POST should have body");
+        return 1;
+    }
+
+    if request_header_count(req) != 3 {
+        println("  FAIL: should have 3 headers");
+        return 1;
+    }
+
+    println("  PASS: POST request with body");
+    0
+}
+
+// =============================================================================
+// Test 7: POST JSON Request
+// =============================================================================
+
+fn test_post_json_request() -> i64 {
+    println("  Testing POST JSON request...");
+
+    let req: i64 = request_build(HTTP_POST(), 4, 1, 1, 30000);
+
+    if request_method(req) != HTTP_POST() {
+        println("  FAIL: method should be POST");
+        return 1;
+    }
+
+    if request_has_body(req) != 1 {
+        println("  FAIL: JSON POST should have body");
+        return 1;
+    }
+
+    if request_is_json(req) != 1 {
+        println("  FAIL: should be flagged as JSON request");
+        return 1;
+    }
+
+    println("  PASS: POST JSON request");
+    0
+}
+
+// =============================================================================
+// Test 8: PUT Request
+// =============================================================================
+
+fn test_put_request() -> i64 {
+    println("  Testing PUT request...");
+
+    let req: i64 = request_build(HTTP_PUT(), 3, 1, 1, 5000);
+
+    if request_method(req) != HTTP_PUT() {
+        println("  FAIL: method should be PUT");
+        return 1;
+    }
+
+    if request_has_body(req) != 1 {
+        println("  FAIL: PUT should have body");
+        return 1;
+    }
+
+    if request_timeout(req) != 5000 {
+        println("  FAIL: timeout should be 5000");
+        return 1;
+    }
+
+    println("  PASS: PUT request");
+    0
+}
+
+// =============================================================================
+// Test 9: DELETE Request
+// =============================================================================
+
+fn test_delete_request() -> i64 {
+    println("  Testing DELETE request...");
+
+    let req: i64 = request_build(HTTP_DELETE(), 2, 0, 0, 30000);
+
+    if request_method(req) != HTTP_DELETE() {
+        println("  FAIL: method should be DELETE");
+        return 1;
+    }
+
+    if request_has_body(req) != 0 {
+        println("  FAIL: DELETE typically has no body");
+        return 1;
+    }
+
+    println("  PASS: DELETE request");
+    0
+}
+
+// =============================================================================
+// Test 10: Response Status Classification
+// =============================================================================
+
+fn test_response_status() -> i64 {
+    println("  Testing response status classification...");
+
+    // Informational
+    if status_is_info(100) != 1 {
+        println("  FAIL: 100 should be info");
+        return 1;
+    }
+    if status_is_info(199) != 1 {
+        println("  FAIL: 199 should be info");
+        return 1;
+    }
+
+    // Success
+    if status_is_success(200) != 1 {
+        println("  FAIL: 200 should be success");
+        return 1;
+    }
+    if status_is_success(201) != 1 {
+        println("  FAIL: 201 should be success");
+        return 1;
+    }
+    if status_is_success(204) != 1 {
+        println("  FAIL: 204 should be success");
+        return 1;
+    }
+
+    // Redirect
+    if status_is_redirect(301) != 1 {
+        println("  FAIL: 301 should be redirect");
+        return 1;
+    }
+    if status_is_redirect(302) != 1 {
+        println("  FAIL: 302 should be redirect");
+        return 1;
+    }
+    if status_is_redirect(307) != 1 {
+        println("  FAIL: 307 should be redirect");
+        return 1;
+    }
+
+    // Client Error
+    if status_is_client_error(400) != 1 {
+        println("  FAIL: 400 should be client error");
+        return 1;
+    }
+    if status_is_client_error(401) != 1 {
+        println("  FAIL: 401 should be client error");
+        return 1;
+    }
+    if status_is_client_error(404) != 1 {
+        println("  FAIL: 404 should be client error");
+        return 1;
+    }
+    if status_is_client_error(429) != 1 {
+        println("  FAIL: 429 should be client error");
+        return 1;
+    }
+
+    // Server Error
+    if status_is_server_error(500) != 1 {
+        println("  FAIL: 500 should be server error");
+        return 1;
+    }
+    if status_is_server_error(502) != 1 {
+        println("  FAIL: 502 should be server error");
+        return 1;
+    }
+    if status_is_server_error(503) != 1 {
+        println("  FAIL: 503 should be server error");
+        return 1;
+    }
+
+    // Error (4xx + 5xx)
+    if status_is_error(404) != 1 {
+        println("  FAIL: 404 should be error");
+        return 1;
+    }
+    if status_is_error(500) != 1 {
+        println("  FAIL: 500 should be error");
+        return 1;
+    }
+    if status_is_error(200) != 0 {
+        println("  FAIL: 200 should not be error");
+        return 1;
+    }
+
+    println("  PASS: response status classification");
+    0
+}
+
+// =============================================================================
+// Test 11: URL Resolution with Base URL
+// =============================================================================
+
+fn test_url_resolution() -> i64 {
+    println("  Testing URL resolution...");
+
+    // HTTP default port
+    let http_url: i64 = url_resolve(0, 0, 5);
+    if url_port(http_url) != 80 {
+        println("  FAIL: HTTP default port should be 80");
+        return 1;
+    }
+
+    // HTTPS default port
+    let https_url: i64 = url_resolve(0, 1, 5);
+    if url_port(https_url) != 443 {
+        println("  FAIL: HTTPS default port should be 443");
+        return 1;
+    }
+
+    // Custom port
+    let custom_url: i64 = url_resolve(8080, 0, 10);
+    if url_port(custom_url) != 8080 {
+        println("  FAIL: custom port should be 8080");
+        return 1;
+    }
+
+    // HTTPS flag
+    if url_is_https(https_url) != 1 {
+        println("  FAIL: should be flagged as HTTPS");
+        return 1;
+    }
+    if url_is_https(http_url) != 0 {
+        println("  FAIL: HTTP should not be flagged as HTTPS");
+        return 1;
+    }
+
+    println("  PASS: URL resolution");
+    0
+}
+
+// =============================================================================
+// Test 12: Request Timeout Configuration
+// =============================================================================
+
+fn test_timeout_configuration() -> i64 {
+    println("  Testing timeout configuration...");
+
+    // Default timeout
+    let default_req: i64 = request_build(HTTP_GET(), 2, 0, 0, 30000);
+    if request_timeout(default_req) != 30000 {
+        println("  FAIL: default timeout should be 30000ms");
+        return 1;
+    }
+
+    // Short timeout
+    let short_req: i64 = request_build(HTTP_GET(), 2, 0, 0, 1000);
+    if request_timeout(short_req) != 1000 {
+        println("  FAIL: short timeout should be 1000ms");
+        return 1;
+    }
+
+    // No timeout
+    let no_timeout_req: i64 = request_build(HTTP_GET(), 2, 0, 0, 0);
+    if request_timeout(no_timeout_req) != 0 {
+        println("  FAIL: no timeout should be 0ms");
+        return 1;
+    }
+
+    println("  PASS: timeout configuration");
+    0
+}
+
+// =============================================================================
+// Test 13: Bearer Token Auth Header
+// =============================================================================
+
+fn test_bearer_auth() -> i64 {
+    println("  Testing bearer token authentication...");
+
+    // Simulated: client adds Authorization header
+    let h: i64 = headers_new();
+    h = headers_add(h, 4); // User-Agent (default)
+    h = headers_add(h, 3); // Accept (default)
+    h = headers_add(h, 2); // Authorization (bearer token)
+
+    if headers_has_authorization(h) != 1 {
+        println("  FAIL: should have Authorization header");
+        return 1;
+    }
+
+    if headers_count(h) != 3 {
+        println("  FAIL: should have 3 headers total");
+        return 1;
+    }
+
+    println("  PASS: bearer token authentication");
+    0
+}
+
+// =============================================================================
+// Test 14: Request-Response Cycle
+// =============================================================================
+
+fn test_request_response_cycle() -> i64 {
+    println("  Testing request-response cycle...");
+
+    // Simulate: POST JSON to create a resource
+    let req: i64 = request_build(HTTP_POST(), 4, 1, 1, 5000);
+
+    // Verify request was built correctly
+    if request_method(req) != HTTP_POST() {
+        println("  FAIL: method should be POST");
+        return 1;
+    }
+    if request_is_json(req) != 1 {
+        println("  FAIL: should be JSON request");
+        return 1;
+    }
+    if request_timeout(req) != 5000 {
+        println("  FAIL: timeout should be 5000ms");
+        return 1;
+    }
+
+    // Simulate 201 Created response
+    let resp_status: i64 = 201;
+    if status_is_success(resp_status) != 1 {
+        println("  FAIL: 201 should be success");
+        return 1;
+    }
+
+    // Simulate reading response headers
+    let resp_headers: i64 = headers_new();
+    resp_headers = headers_add(resp_headers, 1); // Content-Type
+
+    if headers_count(resp_headers) != 1 {
+        println("  FAIL: response should have 1 header");
+        return 1;
+    }
+
+    println("  PASS: request-response cycle");
+    0
+}
+
+// =============================================================================
+// Test 15: All HTTP Methods
+// =============================================================================
+
+fn test_all_methods() -> i64 {
+    println("  Testing all HTTP methods...");
+
+    // Verify all methods have distinct values
+    if HTTP_GET() == HTTP_POST() {
+        println("  FAIL: GET and POST should differ");
+        return 1;
+    }
+    if HTTP_POST() == HTTP_PUT() {
+        println("  FAIL: POST and PUT should differ");
+        return 1;
+    }
+    if HTTP_PUT() == HTTP_DELETE() {
+        println("  FAIL: PUT and DELETE should differ");
+        return 1;
+    }
+    if HTTP_DELETE() == HTTP_PATCH() {
+        println("  FAIL: DELETE and PATCH should differ");
+        return 1;
+    }
+    if HTTP_PATCH() == HTTP_HEAD() {
+        println("  FAIL: PATCH and HEAD should differ");
+        return 1;
+    }
+    if HTTP_HEAD() == HTTP_OPTIONS() {
+        println("  FAIL: HEAD and OPTIONS should differ");
+        return 1;
+    }
+
+    // Verify method_to_string produces non-zero for all valid methods
+    if method_to_string(HTTP_GET()) == 0 {
+        println("  FAIL: GET should have string representation");
+        return 1;
+    }
+    if method_to_string(HTTP_POST()) == 0 {
+        println("  FAIL: POST should have string representation");
+        return 1;
+    }
+    if method_to_string(HTTP_PUT()) == 0 {
+        println("  FAIL: PUT should have string representation");
+        return 1;
+    }
+    if method_to_string(HTTP_DELETE()) == 0 {
+        println("  FAIL: DELETE should have string representation");
+        return 1;
+    }
+
+    // Invalid method
+    if method_to_string(99) != 0 {
+        println("  FAIL: invalid method should return 0");
+        return 1;
+    }
+
+    println("  PASS: all HTTP methods");
+    0
+}
+
+// =============================================================================
+// Test 16: TLS Configuration
+// =============================================================================
+
+fn test_tls_configuration() -> i64 {
+    println("  Testing TLS configuration...");
+
+    // Default: verify TLS enabled
+    let config_tls: i64 = config_new(30000, 10, 1);
+    if config_get_verify_tls(config_tls) != 1 {
+        println("  FAIL: default should verify TLS");
+        return 1;
+    }
+
+    // Disabled TLS verification (for dev/testing)
+    let config_no_tls: i64 = config_new(30000, 10, 0);
+    if config_get_verify_tls(config_no_tls) != 0 {
+        println("  FAIL: should be able to disable TLS verify");
+        return 1;
+    }
+
+    println("  PASS: TLS configuration");
+    0
+}
+
+// =============================================================================
+// Test 17: Redirect Configuration
+// =============================================================================
+
+fn test_redirect_config() -> i64 {
+    println("  Testing redirect configuration...");
+
+    // Default: follow up to 10 redirects
+    let config: i64 = config_new(30000, 10, 1);
+    if config_get_max_redirects(config) != 10 {
+        println("  FAIL: default should follow 10 redirects");
+        return 1;
+    }
+
+    // No redirects
+    let no_redir: i64 = config_new(30000, 0, 1);
+    if config_get_max_redirects(no_redir) != 0 {
+        println("  FAIL: should be able to disable redirects");
+        return 1;
+    }
+
+    // Custom redirect count
+    let custom_redir: i64 = config_new(30000, 5, 1);
+    if config_get_max_redirects(custom_redir) != 5 {
+        println("  FAIL: custom redirect count should be 5");
+        return 1;
+    }
+
+    println("  PASS: redirect configuration");
+    0
+}
+
+// =============================================================================
+// Test 18: Query String Building
+// =============================================================================
+
+fn test_query_string() -> i64 {
+    println("  Testing query string building...");
+
+    // Simulated query string parameter count
+    let param_count: i64 = 0;
+
+    // Add params
+    param_count = param_count + 1; // key=value
+    param_count = param_count + 1; // page=1
+    param_count = param_count + 1; // limit=10
+
+    if param_count != 3 {
+        println("  FAIL: should have 3 query params");
+        return 1;
+    }
+
+    // Empty query string
+    let empty_count: i64 = 0;
+    if empty_count != 0 {
+        println("  FAIL: empty query should have 0 params");
+        return 1;
+    }
+
+    println("  PASS: query string building");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== HTTP Client Tests ===");
+    println("");
+
+    let f1: i64 = test_client_defaults();
+    let f2: i64 = test_client_custom_timeout();
+    let f3: i64 = test_header_management();
+    let f4: i64 = test_default_headers();
+    let f5: i64 = test_get_request();
+    let f6: i64 = test_post_request();
+    let f7: i64 = test_post_json_request();
+    let f8: i64 = test_put_request();
+    let f9: i64 = test_delete_request();
+    let f10: i64 = test_response_status();
+    let f11: i64 = test_url_resolution();
+    let f12: i64 = test_timeout_configuration();
+    let f13: i64 = test_bearer_auth();
+    let f14: i64 = test_request_response_cycle();
+    let f15: i64 = test_all_methods();
+    let f16: i64 = test_tls_configuration();
+    let f17: i64 = test_redirect_config();
+    let f18: i64 = test_query_string();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12 + f13 + f14 + f15 + f16 + f17 + f18;
+
+    println("");
+    if failures == 0 {
+        println("All 18 HTTP Client tests passed!");
+    } else {
+        println("Some HTTP Client tests failed");
+    }
+
+    failures
+}

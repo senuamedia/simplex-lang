@@ -27,7 +27,7 @@ Hello, Simplex!
 
 Every Simplex program needs a `main` function—that's where execution begins. The `print` function outputs text to the console.
 
-> **Tip (v0.12.0)**: Use `sxfmt hello.sx` to automatically format your code, and `sxlint hello.sx` to check for potential issues. If you encounter a compiler error, run `sxc explain <error-code>` for a detailed explanation. See [Chapter 11](11-capstone.md#developer-tools-v0100) for the full developer tools guide.
+> **Tip (v0.13.0)**: Use `sxfmt hello.sx` to automatically format your code, and `sxlint hello.sx` to check for potential issues. If you encounter a compiler error, run `sxc explain <error-code>` for a detailed explanation. See [Chapter 11](11-capstone.md#developer-tools-v0100) for the full developer tools guide.
 
 ---
 

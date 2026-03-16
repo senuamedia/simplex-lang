@@ -61,7 +61,7 @@ By the end of this tutorial, you'll understand:
 |---------|-------|-------------------|
 | [11](11-capstone.md) | Capstone Project | Build a complete AI-powered document processor |
 
-### Part 5: Advanced Topics (v0.12.0)
+### Part 5: Advanced Topics (v0.13.0)
 
 | Chapter | Topic | What You'll Learn |
 |---------|-------|-------------------|
@@ -118,9 +118,9 @@ As you work through the tutorials, you might find these helpful:
 
 ---
 
-## Developer Tools (v0.12.0)
+## Developer Tools (v0.13.0)
 
-Simplex 0.12.0 includes a comprehensive developer toolchain:
+Simplex 0.13.0 includes a comprehensive developer toolchain:
 
 | Tool | Command | Purpose |
 |------|---------|---------|
@@ -150,7 +150,7 @@ If you get stuck:
 ```bash
 simplex help              # Built-in help
 simplex help <command>    # Help for specific command
-sxc explain <error-code>  # Explain compiler errors (v0.12.0)
+sxc explain <error-code>  # Explain compiler errors (v0.13.0)
 ```
 
 ---

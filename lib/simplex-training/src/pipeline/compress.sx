@@ -1,0 +1,588 @@
+// simplex-training::pipeline::compress - Staged Compression Pipeline
+//
+// Chains distillation, pruning, and quantization with quality gates:
+// - Staged execution: distill -> prune -> quantize (configurable order)
+// - Quality gates between stages prevent excessive degradation
+// - Early exit if quality drops beyond threshold
+// - Reports compression ratio and quality metrics
+//
+// Uses learned schedules from the meta-optimizer for optimal compression.
+
+use simplex_std::dual::dual;
+use simplex_std::{Clone, Default, Vec};
+use simplex_std::string::String;
+use simplex_std::option::Option;
+
+use crate::schedules::{
+    LearnableDistillation,
+    LearnablePruning,
+    LearnableQuantization,
+    LearnedSchedules,
+};
+
+// =============================================================================
+// Pipeline Configuration
+// =============================================================================
+
+/// Compression stage type
+#[derive(Clone, Copy, PartialEq)]
+pub enum CompressionStage {
+    /// Knowledge distillation from teacher
+    Distillation,
+    /// Weight pruning (structured or unstructured)
+    Pruning,
+    /// Weight quantization (reduced precision)
+    Quantization,
+}
+
+impl CompressionStage {
+    pub fn name(&self) -> &str {
+        match self {
+            CompressionStage::Distillation => "distillation",
+            CompressionStage::Pruning => "pruning",
+            CompressionStage::Quantization => "quantization",
+        }
+    }
+}
+
+/// Quality gate: checks if model quality is still acceptable after a stage
+#[derive(Clone)]
+pub struct QualityGate {
+    /// Maximum allowed accuracy drop (fraction, e.g., 0.02 = 2%)
+    pub max_accuracy_drop: f64,
+    /// Maximum allowed loss increase (fraction, e.g., 0.1 = 10%)
+    pub max_loss_increase: f64,
+    /// Baseline accuracy before compression
+    pub baseline_accuracy: f64,
+    /// Baseline loss before compression
+    pub baseline_loss: f64,
+}
+
+impl QualityGate {
+    pub fn new(max_accuracy_drop: f64, max_loss_increase: f64) -> QualityGate {
+        QualityGate {
+            max_accuracy_drop,
+            max_loss_increase,
+            baseline_accuracy: 0.0,
+            baseline_loss: f64::MAX,
+        }
+    }
+
+    /// Set baselines from initial evaluation
+    pub fn set_baseline(&mut self, accuracy: f64, loss: f64) {
+        self.baseline_accuracy = accuracy;
+        self.baseline_loss = loss;
+    }
+
+    /// Check if quality is still acceptable
+    ///
+    /// Returns true if the quality gate passes (model is still good enough).
+    pub fn check(&self, current_accuracy: f64, current_loss: f64) -> bool {
+        let accuracy_drop = self.baseline_accuracy - current_accuracy;
+        let loss_increase = if self.baseline_loss > 0.0 {
+            (current_loss - self.baseline_loss) / self.baseline_loss
+        } else {
+            0.0
+        };
+
+        accuracy_drop <= self.max_accuracy_drop && loss_increase <= self.max_loss_increase
+    }
+
+    /// Get the quality degradation amounts
+    pub fn degradation(&self, current_accuracy: f64, current_loss: f64) -> QualityDegradation {
+        QualityDegradation {
+            accuracy_drop: self.baseline_accuracy - current_accuracy,
+            loss_increase: if self.baseline_loss > 0.0 {
+                (current_loss - self.baseline_loss) / self.baseline_loss
+            } else {
+                0.0
+            },
+            passed: self.check(current_accuracy, current_loss),
+        }
+    }
+}
+
+impl Default for QualityGate {
+    fn default() -> QualityGate {
+        QualityGate::new(0.02, 0.10)  // 2% accuracy drop, 10% loss increase
+    }
+}
+
+/// Quality degradation metrics
+#[derive(Clone)]
+pub struct QualityDegradation {
+    /// Accuracy drop (positive = worse)
+    pub accuracy_drop: f64,
+    /// Loss increase (fraction)
+    pub loss_increase: f64,
+    /// Whether quality gate passed
+    pub passed: bool,
+}
+
+/// Configuration for the staged compression pipeline
+#[derive(Clone)]
+pub struct StagedCompressionConfig {
+    /// Ordered list of compression stages to execute
+    pub stages: Vec<CompressionStage>,
+    /// Quality gate between stages
+    pub quality_gate: QualityGate,
+    /// Steps per distillation stage
+    pub distill_steps: u64,
+    /// Steps per pruning stage
+    pub prune_steps: u64,
+    /// Steps per quantization stage
+    pub quant_steps: u64,
+    /// Target sparsity after pruning
+    pub target_sparsity: f64,
+    /// Target bits after quantization
+    pub target_bits: f64,
+    /// Distillation temperature
+    pub distill_temperature: f64,
+    /// Enable early exit on quality degradation
+    pub early_exit: bool,
+    /// Fine-tuning steps after each compression stage
+    pub finetune_steps_per_stage: u64,
+}
+
+impl StagedCompressionConfig {
+    /// Default: distill -> prune -> quantize
+    pub fn new() -> StagedCompressionConfig {
+        StagedCompressionConfig {
+            stages: vec![
+                CompressionStage::Distillation,
+                CompressionStage::Pruning,
+                CompressionStage::Quantization,
+            ],
+            quality_gate: QualityGate::default(),
+            distill_steps: 200,
+            prune_steps: 100,
+            quant_steps: 100,
+            target_sparsity: 0.5,
+            target_bits: 4.0,
+            distill_temperature: 4.0,
+            early_exit: true,
+            finetune_steps_per_stage: 50,
+        }
+    }
+
+    /// Aggressive compression (more pruning, lower bits)
+    pub fn aggressive() -> StagedCompressionConfig {
+        var config = StagedCompressionConfig::new();
+        config.target_sparsity = 0.7;
+        config.target_bits = 4.0;
+        config.quality_gate = QualityGate::new(0.05, 0.20);
+        config
+    }
+
+    /// Conservative compression (less pruning, higher bits)
+    pub fn conservative() -> StagedCompressionConfig {
+        var config = StagedCompressionConfig::new();
+        config.target_sparsity = 0.3;
+        config.target_bits = 8.0;
+        config.quality_gate = QualityGate::new(0.01, 0.05);
+        config
+    }
+
+    /// Pruning only (no distillation or quantization)
+    pub fn prune_only() -> StagedCompressionConfig {
+        var config = StagedCompressionConfig::new();
+        config.stages = vec![CompressionStage::Pruning];
+        config
+    }
+
+    /// Quantization only
+    pub fn quant_only() -> StagedCompressionConfig {
+        var config = StagedCompressionConfig::new();
+        config.stages = vec![CompressionStage::Quantization];
+        config
+    }
+
+    /// Custom stage ordering
+    pub fn with_stages(mut self, stages: Vec<CompressionStage>) -> Self {
+        self.stages = stages;
+        self
+    }
+
+    /// Set quality gate
+    pub fn with_gate(mut self, max_accuracy_drop: f64, max_loss_increase: f64) -> Self {
+        self.quality_gate = QualityGate::new(max_accuracy_drop, max_loss_increase);
+        self
+    }
+}
+
+impl Default for StagedCompressionConfig {
+    fn default() -> StagedCompressionConfig {
+        StagedCompressionConfig::new()
+    }
+}
+
+// =============================================================================
+// Stage Result
+// =============================================================================
+
+/// Result of a single compression stage
+#[derive(Clone)]
+pub struct StageResult {
+    /// Which stage was executed
+    pub stage: CompressionStage,
+    /// Model size before this stage (bytes)
+    pub size_before: u64,
+    /// Model size after this stage (bytes)
+    pub size_after: u64,
+    /// Accuracy before this stage
+    pub accuracy_before: f64,
+    /// Accuracy after this stage
+    pub accuracy_after: f64,
+    /// Loss before this stage
+    pub loss_before: f64,
+    /// Loss after this stage
+    pub loss_after: f64,
+    /// Whether quality gate passed
+    pub gate_passed: bool,
+    /// Number of steps executed
+    pub steps: u64,
+    /// Stage-specific compression ratio
+    pub compression_ratio: f64,
+}
+
+impl StageResult {
+    pub fn new(stage: CompressionStage) -> StageResult {
+        StageResult {
+            stage,
+            size_before: 0,
+            size_after: 0,
+            accuracy_before: 0.0,
+            accuracy_after: 0.0,
+            loss_before: 0.0,
+            loss_after: 0.0,
+            gate_passed: true,
+            steps: 0,
+            compression_ratio: 1.0,
+        }
+    }
+
+    pub fn compute_ratio(&mut self) {
+        if self.size_after > 0 {
+            self.compression_ratio = self.size_before as f64 / self.size_after as f64;
+        }
+    }
+}
+
+// =============================================================================
+// Pipeline Result
+// =============================================================================
+
+/// Complete result of the staged compression pipeline
+#[derive(Clone)]
+pub struct StagedCompressionResult {
+    /// Results per stage
+    pub stage_results: Vec<StageResult>,
+    /// Original model size (bytes)
+    pub original_size: u64,
+    /// Final compressed model size (bytes)
+    pub final_size: u64,
+    /// Overall compression ratio
+    pub compression_ratio: f64,
+    /// Original accuracy
+    pub original_accuracy: f64,
+    /// Final accuracy after all stages
+    pub final_accuracy: f64,
+    /// Accuracy preserved (ratio)
+    pub accuracy_preserved: f64,
+    /// Original loss
+    pub original_loss: f64,
+    /// Final loss
+    pub final_loss: f64,
+    /// Whether pipeline completed all stages
+    pub completed: bool,
+    /// Stage at which early exit occurred (if any)
+    pub exit_stage: Option<usize>,
+    /// Number of stages completed
+    pub stages_completed: usize,
+}
+
+impl StagedCompressionResult {
+    pub fn new() -> StagedCompressionResult {
+        StagedCompressionResult {
+            stage_results: Vec::new(),
+            original_size: 0,
+            final_size: 0,
+            compression_ratio: 1.0,
+            original_accuracy: 0.0,
+            final_accuracy: 0.0,
+            accuracy_preserved: 1.0,
+            original_loss: 0.0,
+            final_loss: 0.0,
+            completed: false,
+            exit_stage: None,
+            stages_completed: 0,
+        }
+    }
+
+    pub fn compute_metrics(&mut self) {
+        if self.final_size > 0 {
+            self.compression_ratio = self.original_size as f64 / self.final_size as f64;
+        }
+        if self.original_accuracy > 0.0 {
+            self.accuracy_preserved = self.final_accuracy / self.original_accuracy;
+        }
+    }
+}
+
+impl Default for StagedCompressionResult {
+    fn default() -> StagedCompressionResult {
+        StagedCompressionResult::new()
+    }
+}
+
+// =============================================================================
+// Staged Compression Pipeline
+// =============================================================================
+
+/// Staged compression pipeline that chains distillation, pruning, quantization
+/// with quality gates between stages.
+///
+/// The pipeline executes stages in the configured order. After each stage,
+/// a quality gate checks if the model is still acceptable. If not, the
+/// pipeline can early-exit to prevent excessive degradation.
+pub struct StagedCompressionPipeline {
+    /// Configuration
+    pub config: StagedCompressionConfig,
+    /// Distillation schedule
+    pub distill_schedule: LearnableDistillation,
+    /// Pruning schedule
+    pub prune_schedule: LearnablePruning,
+    /// Quantization schedule
+    pub quant_schedule: LearnableQuantization,
+    /// Result accumulator
+    pub result: StagedCompressionResult,
+    /// Current stage index
+    pub current_stage: usize,
+    /// Overall step counter
+    pub step: u64,
+}
+
+impl StagedCompressionPipeline {
+    /// Create new staged compression pipeline
+    pub fn new(config: StagedCompressionConfig) -> StagedCompressionPipeline {
+        var prune = LearnablePruning::new();
+        prune.final_sparsity = dual::variable(config.target_sparsity);
+
+        var quant = LearnableQuantization::new();
+        quant.final_bits = dual::variable(config.target_bits);
+
+        var distill = LearnableDistillation::new();
+        distill.initial_temp = dual::variable(config.distill_temperature);
+
+        StagedCompressionPipeline {
+            config,
+            distill_schedule: distill,
+            prune_schedule: prune,
+            quant_schedule: quant,
+            result: StagedCompressionResult::new(),
+            current_stage: 0,
+            step: 0,
+        }
+    }
+
+    /// Create from learned schedules (after meta-optimization)
+    pub fn from_schedules(
+        config: StagedCompressionConfig,
+        schedules: &LearnedSchedules,
+    ) -> StagedCompressionPipeline {
+        StagedCompressionPipeline {
+            config,
+            distill_schedule: schedules.distill.clone(),
+            prune_schedule: schedules.prune.clone(),
+            quant_schedule: schedules.quant.clone(),
+            result: StagedCompressionResult::new(),
+            current_stage: 0,
+            step: 0,
+        }
+    }
+
+    /// Run the full staged compression pipeline
+    ///
+    /// - eval_fn: evaluates model quality, returns (accuracy, loss)
+    /// - distill_fn: performs one distillation step on weights
+    /// - prune_fn: performs one pruning step on weights
+    /// - quant_fn: performs one quantization step on weights
+    /// - size_fn: estimates current model size in bytes
+    pub fn run<E, D, P, Q, S>(
+        &mut self,
+        mut eval_fn: E,
+        mut distill_fn: D,
+        mut prune_fn: P,
+        mut quant_fn: Q,
+        mut size_fn: S,
+    ) -> StagedCompressionResult
+    where
+        E: FnMut() -> (f64, f64),       // () -> (accuracy, loss)
+        D: FnMut(u64) -> f64,           // (step) -> loss
+        P: FnMut(u64, f64) -> f64,      // (step, target_sparsity) -> loss
+        Q: FnMut(u64, f64) -> f64,      // (step, target_bits) -> loss
+        S: FnMut() -> u64,              // () -> size_bytes
+    {
+        // Initial evaluation
+        let (init_accuracy, init_loss) = eval_fn();
+        let init_size = size_fn();
+
+        self.result.original_accuracy = init_accuracy;
+        self.result.original_loss = init_loss;
+        self.result.original_size = init_size;
+        self.config.quality_gate.set_baseline(init_accuracy, init_loss);
+
+        var current_accuracy = init_accuracy;
+        var current_loss = init_loss;
+        var current_size = init_size;
+
+        // Execute each stage
+        let num_stages = self.config.stages.len();
+        for stage_idx in 0..num_stages {
+            let stage = self.config.stages[stage_idx];
+            self.current_stage = stage_idx;
+
+            var stage_result = StageResult::new(stage);
+            stage_result.size_before = current_size;
+            stage_result.accuracy_before = current_accuracy;
+            stage_result.loss_before = current_loss;
+
+            // Execute compression stage
+            let steps = match stage {
+                CompressionStage::Distillation => {
+                    self.run_distillation(&mut distill_fn)
+                }
+                CompressionStage::Pruning => {
+                    self.run_pruning(&mut prune_fn)
+                }
+                CompressionStage::Quantization => {
+                    self.run_quantization(&mut quant_fn)
+                }
+            };
+            stage_result.steps = steps;
+
+            // Evaluate after stage
+            let (post_accuracy, post_loss) = eval_fn();
+            let post_size = size_fn();
+
+            stage_result.accuracy_after = post_accuracy;
+            stage_result.loss_after = post_loss;
+            stage_result.size_after = post_size;
+            stage_result.compute_ratio();
+
+            // Quality gate check
+            let degradation = self.config.quality_gate.degradation(post_accuracy, post_loss);
+            stage_result.gate_passed = degradation.passed;
+
+            self.result.stage_results.push(stage_result);
+            self.result.stages_completed = stage_idx + 1;
+
+            current_accuracy = post_accuracy;
+            current_loss = post_loss;
+            current_size = post_size;
+
+            // Early exit if quality gate fails
+            if !degradation.passed && self.config.early_exit {
+                self.result.exit_stage = Some(stage_idx);
+                break;
+            }
+        }
+
+        // Final metrics
+        self.result.final_accuracy = current_accuracy;
+        self.result.final_loss = current_loss;
+        self.result.final_size = current_size;
+        self.result.completed = self.result.exit_stage.is_none();
+        self.result.compute_metrics();
+
+        self.result.clone()
+    }
+
+    /// Execute distillation stage
+    fn run_distillation<F>(&mut self, distill_fn: &mut F) -> u64
+    where
+        F: FnMut(u64) -> f64,
+    {
+        let steps = self.config.distill_steps;
+        for i in 0..steps {
+            let _loss = distill_fn(self.step);
+            self.step = self.step + 1;
+        }
+        // Fine-tuning
+        for i in 0..self.config.finetune_steps_per_stage {
+            let _loss = distill_fn(self.step);
+            self.step = self.step + 1;
+        }
+        steps + self.config.finetune_steps_per_stage
+    }
+
+    /// Execute pruning stage
+    fn run_pruning<F>(&mut self, prune_fn: &mut F) -> u64
+    where
+        F: FnMut(u64, f64) -> f64,
+    {
+        let steps = self.config.prune_steps;
+        for i in 0..steps {
+            let step_dual = dual::constant(self.step as f64);
+            let target = self.prune_schedule.target_sparsity(step_dual).val;
+            let _loss = prune_fn(self.step, target);
+            self.step = self.step + 1;
+        }
+        // Fine-tuning (prune with final target)
+        for i in 0..self.config.finetune_steps_per_stage {
+            let _loss = prune_fn(self.step, self.config.target_sparsity);
+            self.step = self.step + 1;
+        }
+        steps + self.config.finetune_steps_per_stage
+    }
+
+    /// Execute quantization stage
+    fn run_quantization<F>(&mut self, quant_fn: &mut F) -> u64
+    where
+        F: FnMut(u64, f64) -> f64,
+    {
+        let steps = self.config.quant_steps;
+        for i in 0..steps {
+            let step_dual = dual::constant(self.step as f64);
+            let bits = self.quant_schedule.current_bits(step_dual).val;
+            let _loss = quant_fn(self.step, bits);
+            self.step = self.step + 1;
+        }
+        // Fine-tuning
+        for i in 0..self.config.finetune_steps_per_stage {
+            let _loss = quant_fn(self.step, self.config.target_bits);
+            self.step = self.step + 1;
+        }
+        steps + self.config.finetune_steps_per_stage
+    }
+
+    /// Get current stage name
+    pub fn current_stage_name(&self) -> &str {
+        if self.current_stage < self.config.stages.len() {
+            self.config.stages[self.current_stage].name()
+        } else {
+            "complete"
+        }
+    }
+
+    /// Get overall progress (0.0 to 1.0)
+    pub fn progress(&self) -> f64 {
+        if self.config.stages.is_empty() {
+            return 1.0;
+        }
+        self.current_stage as f64 / self.config.stages.len() as f64
+    }
+
+    /// Reset pipeline for re-run
+    pub fn reset(&mut self) {
+        self.result = StagedCompressionResult::new();
+        self.current_stage = 0;
+        self.step = 0;
+    }
+}
+
+impl Default for StagedCompressionPipeline {
+    fn default() -> StagedCompressionPipeline {
+        StagedCompressionPipeline::new(StagedCompressionConfig::default())
+    }
+}

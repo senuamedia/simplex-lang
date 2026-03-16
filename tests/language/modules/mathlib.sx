@@ -1,0 +1,49 @@
+// mathlib.sx - Test library module for module system
+// Tests pub visibility and cross-module imports
+
+// Public function - can be imported by other modules
+pub fn add(a: i64, b: i64) -> i64 {
+ a + b
+}
+
+// Public function
+pub fn subtract(a: i64, b: i64) -> i64 {
+ a - b
+}
+
+// Private function - not exported (default visibility)
+fn internal_helper(x: i64) -> i64 {
+ x * 2
+}
+
+// Public struct
+pub struct Point {
+ x: i64,
+ y: i64
+}
+
+// Public function using struct
+pub fn point_new(x: i64, y: i64) -> Point {
+ Point { x: x, y: y }
+}
+
+pub fn point_distance_squared(p1: Point, p2: Point) -> i64 {
+ let dx: i64 = p2.x - p1.x;
+ let dy: i64 = p2.y - p1.y;
+ dx * dx + dy * dy
+}
+
+// Public enum
+pub enum Color {
+ Red,
+ Green,
+ Blue
+}
+
+pub fn color_to_int(c: Color) -> i64 {
+ match c {
+ Color::Red => 0,
+ Color::Green => 1,
+ Color::Blue => 2
+ }
+}

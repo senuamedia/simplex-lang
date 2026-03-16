@@ -1,0 +1,650 @@
+// simplex-std::complex - Complex Numbers
+//
+// Complex numbers of the form z = a + bi where i² = -1.
+//
+// Provides a full complex arithmetic type with support for polar form,
+// transcendental functions, and numeric utilities.
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::complex;
+//
+// let z1 = Complex::new(3.0, 4.0);   // 3 + 4i
+// let z2 = Complex::new(1.0, -2.0);  // 1 - 2i
+//
+// let sum = z1.add(z2);              // 4 + 2i
+// let mag = z1.magnitude();          // 5.0
+// let conj = z1.conjugate();         // 3 - 4i
+//
+// // Euler's formula: e^(iπ) + 1 = 0
+// let euler = Complex::from_imaginary(PI).exp().add(Complex::one());
+// // euler ≈ 0 + 0i
+// ```
+//
+// # Mathematical Foundation
+//
+// Complex multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+// Complex division:       (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c²+d²)
+// Euler's formula:        e^(iθ) = cos(θ) + i·sin(θ)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use super::{Clone, Copy, Eq, Display, Default};
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// Pi (π)
+const PI: f64 = 3.14159265358979323846;
+
+/// Euler's number (e)
+const E: f64 = 2.71828182845904523536;
+
+// =============================================================================
+// Extern Math Functions (provided by C runtime)
+// =============================================================================
+
+extern "C" {
+    fn sin(x: f64) -> f64;
+    fn cos(x: f64) -> f64;
+    fn tan(x: f64) -> f64;
+    fn exp(x: f64) -> f64;
+    fn sqrt(x: f64) -> f64;
+    fn atan2(y: f64, x: f64) -> f64;
+    fn ln(x: f64) -> f64;
+    fn log(x: f64) -> f64;
+    fn pow(base: f64, exp: f64) -> f64;
+    fn sinh(x: f64) -> f64;
+    fn cosh(x: f64) -> f64;
+    fn fabs(x: f64) -> f64;
+}
+
+// =============================================================================
+// Complex Number Type
+// =============================================================================
+
+/// Complex number: re + im·i where i² = -1
+///
+/// The `re` field holds the real part.
+/// The `im` field holds the imaginary part.
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct Complex {
+    /// Real part
+    pub re: f64,
+    /// Imaginary part
+    pub im: f64,
+}
+
+impl Complex {
+    // =========================================================================
+    // Constructors
+    // =========================================================================
+
+    /// Create a complex number from real and imaginary parts.
+    #[inline]
+    pub fn new(re: f64, im: f64) -> Complex {
+        Complex { re, im }
+    }
+
+    /// Create a complex number from a real value (imaginary part = 0).
+    #[inline]
+    pub fn from_real(r: f64) -> Complex {
+        Complex { re: r, im: 0.0 }
+    }
+
+    /// Create a complex number from an imaginary value (real part = 0).
+    #[inline]
+    pub fn from_imaginary(i: f64) -> Complex {
+        Complex { re: 0.0, im: i }
+    }
+
+    /// Create the complex zero: 0 + 0i.
+    #[inline]
+    pub fn zero() -> Complex {
+        Complex { re: 0.0, im: 0.0 }
+    }
+
+    /// Create the complex one: 1 + 0i.
+    #[inline]
+    pub fn one() -> Complex {
+        Complex { re: 1.0, im: 0.0 }
+    }
+
+    /// Create the imaginary unit: 0 + 1i.
+    #[inline]
+    pub fn i() -> Complex {
+        Complex { re: 0.0, im: 1.0 }
+    }
+
+    /// Create a complex number from polar coordinates.
+    /// z = r·(cos(θ) + i·sin(θ))
+    #[inline]
+    pub fn from_polar(r: f64, theta: f64) -> Complex {
+        Complex {
+            re: r * cos(theta),
+            im: r * sin(theta),
+        }
+    }
+
+    // =========================================================================
+    // Arithmetic Operations
+    // =========================================================================
+
+    /// Addition: (a+bi) + (c+di) = (a+c) + (b+d)i
+    #[inline]
+    pub fn add(self, other: Complex) -> Complex {
+        Complex {
+            re: self.re + other.re,
+            im: self.im + other.im,
+        }
+    }
+
+    /// Add a real scalar to this complex number.
+    #[inline]
+    pub fn add_f64(self, scalar: f64) -> Complex {
+        Complex {
+            re: self.re + scalar,
+            im: self.im,
+        }
+    }
+
+    /// Subtraction: (a+bi) - (c+di) = (a-c) + (b-d)i
+    #[inline]
+    pub fn sub(self, other: Complex) -> Complex {
+        Complex {
+            re: self.re - other.re,
+            im: self.im - other.im,
+        }
+    }
+
+    /// Subtract a real scalar from this complex number.
+    #[inline]
+    pub fn sub_f64(self, scalar: f64) -> Complex {
+        Complex {
+            re: self.re - scalar,
+            im: self.im,
+        }
+    }
+
+    /// Multiplication: (a+bi)(c+di) = (ac-bd) + (ad+bc)i
+    #[inline]
+    pub fn mul(self, other: Complex) -> Complex {
+        Complex {
+            re: self.re * other.re - self.im * other.im,
+            im: self.re * other.im + self.im * other.re,
+        }
+    }
+
+    /// Multiply by a real scalar.
+    #[inline]
+    pub fn mul_f64(self, scalar: f64) -> Complex {
+        Complex {
+            re: self.re * scalar,
+            im: self.im * scalar,
+        }
+    }
+
+    /// Division: (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c²+d²)
+    #[inline]
+    pub fn div(self, other: Complex) -> Complex {
+        let denom = other.re * other.re + other.im * other.im;
+        Complex {
+            re: (self.re * other.re + self.im * other.im) / denom,
+            im: (self.im * other.re - self.re * other.im) / denom,
+        }
+    }
+
+    /// Divide by a real scalar.
+    #[inline]
+    pub fn div_f64(self, scalar: f64) -> Complex {
+        Complex {
+            re: self.re / scalar,
+            im: self.im / scalar,
+        }
+    }
+
+    /// Negation: -(a+bi) = -a + (-b)i
+    #[inline]
+    pub fn neg(self) -> Complex {
+        Complex {
+            re: -self.re,
+            im: -self.im,
+        }
+    }
+
+    /// Reciprocal: 1/(a+bi) = (a-bi)/(a²+b²)
+    #[inline]
+    pub fn recip(self) -> Complex {
+        let denom = self.re * self.re + self.im * self.im;
+        Complex {
+            re: self.re / denom,
+            im: -self.im / denom,
+        }
+    }
+
+    // =========================================================================
+    // Complex-Specific Operations
+    // =========================================================================
+
+    /// Complex conjugate: conj(a+bi) = a - bi
+    #[inline]
+    pub fn conjugate(self) -> Complex {
+        Complex {
+            re: self.re,
+            im: -self.im,
+        }
+    }
+
+    /// Magnitude (absolute value): |z| = sqrt(re² + im²)
+    #[inline]
+    pub fn magnitude(self) -> f64 {
+        sqrt(self.re * self.re + self.im * self.im)
+    }
+
+    /// Magnitude squared: |z|² = re² + im²
+    /// More efficient than magnitude() when you don't need the square root.
+    #[inline]
+    pub fn magnitude_squared(self) -> f64 {
+        self.re * self.re + self.im * self.im
+    }
+
+    /// Phase (argument/angle) in radians: arg(z) = atan2(im, re)
+    /// Returns a value in (-π, π].
+    #[inline]
+    pub fn phase(self) -> f64 {
+        atan2(self.im, self.re)
+    }
+
+    /// Normalize to unit magnitude: z / |z|
+    /// Returns a complex number with magnitude 1 and the same phase.
+    #[inline]
+    pub fn normalize(self) -> Complex {
+        let mag = self.magnitude();
+        if mag == 0.0 {
+            Complex::zero()
+        } else {
+            Complex {
+                re: self.re / mag,
+                im: self.im / mag,
+            }
+        }
+    }
+
+    /// Convert to polar form: (magnitude, phase).
+    #[inline]
+    pub fn to_polar(self) -> (f64, f64) {
+        (self.magnitude(), self.phase())
+    }
+
+    // =========================================================================
+    // Transcendental Functions
+    // =========================================================================
+
+    /// Complex exponential: e^(a+bi) = e^a · (cos(b) + i·sin(b))
+    /// This is Euler's formula generalized.
+    #[inline]
+    pub fn exp(self) -> Complex {
+        let ea = exp(self.re);
+        Complex {
+            re: ea * cos(self.im),
+            im: ea * sin(self.im),
+        }
+    }
+
+    /// Complex natural logarithm: ln(z) = ln|z| + i·arg(z)
+    /// Principal branch with imaginary part in (-π, π].
+    #[inline]
+    pub fn ln(self) -> Complex {
+        Complex {
+            re: log(self.magnitude()),
+            im: self.phase(),
+        }
+    }
+
+    /// Complex square root.
+    /// Uses the principal branch: sqrt(z) = sqrt(|z|) · e^(i·arg(z)/2)
+    #[inline]
+    pub fn sqrt(self) -> Complex {
+        let mag = self.magnitude();
+        let angle = self.phase();
+        let r = sqrt(mag);
+        Complex {
+            re: r * cos(angle / 2.0),
+            im: r * sin(angle / 2.0),
+        }
+    }
+
+    /// Complex power: z^n where n is a complex number.
+    /// Computed as e^(n · ln(z)).
+    #[inline]
+    pub fn pow(self, n: Complex) -> Complex {
+        // z^n = e^(n * ln(z))
+        n.mul(self.ln()).exp()
+    }
+
+    /// Complex power with real exponent: z^n.
+    #[inline]
+    pub fn pow_f64(self, n: f64) -> Complex {
+        self.pow(Complex::from_real(n))
+    }
+
+    /// Complex power with integer exponent: z^n.
+    /// More efficient for small integer exponents using repeated squaring.
+    #[inline]
+    pub fn powi(self, n: i64) -> Complex {
+        if n == 0 {
+            return Complex::one();
+        }
+        if n < 0 {
+            return self.powi(-n).recip();
+        }
+        // Exponentiation by squaring
+        var result = Complex::one();
+        var base = self;
+        var exp = n;
+        while exp > 0 {
+            if exp % 2 == 1 {
+                result = result.mul(base);
+            }
+            base = base.mul(base);
+            exp = exp / 2;
+        }
+        result
+    }
+
+    // =========================================================================
+    // Complex Trigonometric Functions
+    // =========================================================================
+
+    /// Complex sine: sin(z) = (e^(iz) - e^(-iz)) / (2i)
+    #[inline]
+    pub fn sin(self) -> Complex {
+        // sin(a+bi) = sin(a)cosh(b) + i·cos(a)sinh(b)
+        Complex {
+            re: sin(self.re) * cosh(self.im),
+            im: cos(self.re) * sinh(self.im),
+        }
+    }
+
+    /// Complex cosine: cos(z) = (e^(iz) + e^(-iz)) / 2
+    #[inline]
+    pub fn cos(self) -> Complex {
+        // cos(a+bi) = cos(a)cosh(b) - i·sin(a)sinh(b)
+        Complex {
+            re: cos(self.re) * cosh(self.im),
+            im: -sin(self.re) * sinh(self.im),
+        }
+    }
+
+    /// Complex tangent: tan(z) = sin(z) / cos(z)
+    #[inline]
+    pub fn tan(self) -> Complex {
+        self.sin().div(self.cos())
+    }
+
+    // =========================================================================
+    // Complex Hyperbolic Functions
+    // =========================================================================
+
+    /// Complex hyperbolic sine: sinh(z) = (e^z - e^(-z)) / 2
+    #[inline]
+    pub fn sinh(self) -> Complex {
+        // sinh(a+bi) = sinh(a)cos(b) + i·cosh(a)sin(b)
+        Complex {
+            re: sinh(self.re) * cos(self.im),
+            im: cosh(self.re) * sin(self.im),
+        }
+    }
+
+    /// Complex hyperbolic cosine: cosh(z) = (e^z + e^(-z)) / 2
+    #[inline]
+    pub fn cosh(self) -> Complex {
+        // cosh(a+bi) = cosh(a)cos(b) + i·sinh(a)sin(b)
+        Complex {
+            re: cosh(self.re) * cos(self.im),
+            im: sinh(self.re) * sin(self.im),
+        }
+    }
+
+    /// Complex hyperbolic tangent: tanh(z) = sinh(z) / cosh(z)
+    #[inline]
+    pub fn tanh(self) -> Complex {
+        self.sinh().div(self.cosh())
+    }
+
+    // =========================================================================
+    // Utility Methods
+    // =========================================================================
+
+    /// Check if this complex number is purely real (imaginary part is zero).
+    #[inline]
+    pub fn is_real(self) -> bool {
+        self.im == 0.0
+    }
+
+    /// Check if this complex number is purely imaginary (real part is zero).
+    #[inline]
+    pub fn is_imaginary(self) -> bool {
+        self.re == 0.0
+    }
+
+    /// Check if this complex number is zero.
+    #[inline]
+    pub fn is_zero(self) -> bool {
+        self.re == 0.0 && self.im == 0.0
+    }
+
+    /// Check approximate equality within an epsilon tolerance.
+    /// Compares both real and imaginary parts independently.
+    #[inline]
+    pub fn approx_eq(self, other: Complex, epsilon: f64) -> bool {
+        fabs(self.re - other.re) < epsilon && fabs(self.im - other.im) < epsilon
+    }
+
+    /// Get the real part.
+    #[inline]
+    pub fn real(self) -> f64 {
+        self.re
+    }
+
+    /// Get the imaginary part.
+    #[inline]
+    pub fn imag(self) -> f64 {
+        self.im
+    }
+
+    /// Create a new complex with the same imaginary part but a different real part.
+    #[inline]
+    pub fn with_real(self, re: f64) -> Complex {
+        Complex { re, im: self.im }
+    }
+
+    /// Create a new complex with the same real part but a different imaginary part.
+    #[inline]
+    pub fn with_imag(self, im: f64) -> Complex {
+        Complex { re: self.re, im }
+    }
+
+    /// Distance between two complex numbers: |z1 - z2|.
+    #[inline]
+    pub fn distance(self, other: Complex) -> f64 {
+        self.sub(other).magnitude()
+    }
+
+    /// Linear interpolation between two complex numbers.
+    /// lerp(z1, z2, 0) = z1, lerp(z1, z2, 1) = z2.
+    #[inline]
+    pub fn lerp(self, other: Complex, t: f64) -> Complex {
+        Complex {
+            re: self.re + (other.re - self.re) * t,
+            im: self.im + (other.im - self.im) * t,
+        }
+    }
+}
+
+// =============================================================================
+// Operator Overloading
+// =============================================================================
+
+impl std::ops::Add for Complex {
+    type Output = Complex;
+    fn add(self, other: Complex) -> Complex { self.add(other) }
+}
+
+impl std::ops::Add<f64> for Complex {
+    type Output = Complex;
+    fn add(self, other: f64) -> Complex { self.add_f64(other) }
+}
+
+impl std::ops::Sub for Complex {
+    type Output = Complex;
+    fn sub(self, other: Complex) -> Complex { self.sub(other) }
+}
+
+impl std::ops::Sub<f64> for Complex {
+    type Output = Complex;
+    fn sub(self, other: f64) -> Complex { self.sub_f64(other) }
+}
+
+impl std::ops::Mul for Complex {
+    type Output = Complex;
+    fn mul(self, other: Complex) -> Complex { self.mul(other) }
+}
+
+impl std::ops::Mul<f64> for Complex {
+    type Output = Complex;
+    fn mul(self, other: f64) -> Complex { self.mul_f64(other) }
+}
+
+impl std::ops::Div for Complex {
+    type Output = Complex;
+    fn div(self, other: Complex) -> Complex { self.div(other) }
+}
+
+impl std::ops::Div<f64> for Complex {
+    type Output = Complex;
+    fn div(self, other: f64) -> Complex { self.div_f64(other) }
+}
+
+impl std::ops::Neg for Complex {
+    type Output = Complex;
+    fn neg(self) -> Complex { self.neg() }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl Default for Complex {
+    fn default() -> Complex {
+        Complex::zero()
+    }
+}
+
+impl Display for Complex {
+    fn fmt(&self) -> String {
+        if self.im == 0.0 {
+            format!("{}", self.re)
+        } else if self.re == 0.0 {
+            if self.im == 1.0 {
+                format!("i")
+            } else if self.im == -1.0 {
+                format!("-i")
+            } else {
+                format!("{}i", self.im)
+            }
+        } else if self.im > 0.0 {
+            if self.im == 1.0 {
+                format!("{}+i", self.re)
+            } else {
+                format!("{}+{}i", self.re, self.im)
+            }
+        } else {
+            if self.im == -1.0 {
+                format!("{}-i", self.re)
+            } else {
+                format!("{}{}i", self.re, self.im)
+            }
+        }
+    }
+}
+
+impl Eq for Complex {
+    fn eq(&self, other: &Complex) -> bool {
+        self.re == other.re && self.im == other.im
+    }
+}
+
+// =============================================================================
+// Module-Level Convenience Functions
+// =============================================================================
+
+/// Create a complex number from real and imaginary parts.
+pub fn complex(re: f64, im: f64) -> Complex {
+    Complex::new(re, im)
+}
+
+/// Create a purely real complex number.
+pub fn real(r: f64) -> Complex {
+    Complex::from_real(r)
+}
+
+/// Create a purely imaginary complex number.
+pub fn imaginary(i: f64) -> Complex {
+    Complex::from_imaginary(i)
+}
+
+/// Compute the nth roots of unity: e^(2πik/n) for k = 0..n-1.
+/// Returns a vector of n complex numbers equally spaced on the unit circle.
+pub fn roots_of_unity(n: i64) -> Vec<Complex> {
+    var roots = Vec::new();
+    let angle_step = 2.0 * PI / (n as f64);
+    for k in 0..n {
+        let theta = angle_step * (k as f64);
+        roots.push(Complex::from_polar(1.0, theta));
+    }
+    roots
+}
+
+/// Compute the nth roots of a complex number.
+/// Returns n complex numbers z_k such that z_k^n = z.
+pub fn nth_roots(z: Complex, n: i64) -> Vec<Complex> {
+    let (r, theta) = z.to_polar();
+    let root_r = pow(r, 1.0 / (n as f64));
+    let angle_step = 2.0 * PI / (n as f64);
+    var roots = Vec::new();
+    for k in 0..n {
+        let angle = (theta + angle_step * (k as f64)) / (n as f64);
+        roots.push(Complex::from_polar(root_r, angle));
+    }
+    roots
+}
+
+/// Sum of a vector of complex numbers.
+pub fn sum(v: &[Complex]) -> Complex {
+    var result = Complex::zero();
+    for z in v {
+        result = result.add(*z);
+    }
+    result
+}
+
+/// Mean of a vector of complex numbers.
+pub fn mean(v: &[Complex]) -> Complex {
+    sum(v).div_f64(v.len() as f64)
+}
+
+/// Dot product of two complex vectors: sum(a_k * conj(b_k)).
+/// This is the standard Hermitian inner product.
+pub fn dot(a: &[Complex], b: &[Complex]) -> Complex {
+    assert!(a.len() == b.len(), "Vector lengths must match");
+    var result = Complex::zero();
+    for k in 0..a.len() {
+        result = result.add(a[k].mul(b[k].conjugate()));
+    }
+    result
+}

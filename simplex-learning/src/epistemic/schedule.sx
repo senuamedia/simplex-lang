@@ -2,8 +2,8 @@
 //
 // Temperature schedules that respond to epistemic health.
 //
-// Standard annealing: cool when confident -> explore less -> find less
-// disconfirming evidence -> remain confident -> cool further -> STABLE BUT WRONG
+// Standard annealing: cool when confident → explore less → find less
+// disconfirming evidence → remain confident → cool further → STABLE BUT WRONG
 //
 // Epistemic annealing: temperature governed by epistemic health, not just confidence.
 // When beliefs conflict, predictions fail, or confidence grows suspiciously,
@@ -281,8 +281,8 @@ impl EpistemicSchedule {
 
     /// Heat proportional to belief conflict
     fn conflict_heat(&self, source_agreement: dual) -> dual {
-        // Low agreement -> high heat
-        // agreement of 1.0 -> no heat, agreement of 0.0 -> max heat
+        // Low agreement → high heat
+        // agreement of 1.0 → no heat, agreement of 0.0 → max heat
         let disagreement = dual::constant(1.0) - source_agreement;
         disagreement * dual::constant(self.base.params.reheat_intensity * self.conflict_heat_weight)
     }
@@ -297,7 +297,7 @@ impl EpistemicSchedule {
 
     /// Heat when predictions fail
     fn prediction_failure_heat(&self, predictive_accuracy: dual) -> dual {
-        // Low accuracy -> high heat
+        // Low accuracy → high heat
         let failure_rate = dual::constant(1.0) - predictive_accuracy;
         let threshold = dual::constant(self.prediction_failure_threshold);
         let significant_failure = (failure_rate - threshold).relu();
@@ -307,7 +307,7 @@ impl EpistemicSchedule {
 
     /// Heat when evidence is getting stale
     fn staleness_heat(&self, evidence_staleness: dual) -> dual {
-        // Old evidence -> need to re-explore
+        // Old evidence → need to re-explore
         let threshold = dual::constant(self.staleness_threshold);
         let excess_staleness = (evidence_staleness - threshold).relu();
         excess_staleness * dual::constant(0.01 * self.staleness_heat_weight)

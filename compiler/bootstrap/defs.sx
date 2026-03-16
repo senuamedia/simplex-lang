@@ -1,0 +1,404 @@
+// Simplex Compiler - Shared Definitions
+// This file contains constants shared across lexer, parser, and codegen
+// to eliminate code duplication and ensure consistency.
+
+// =============================================================================
+// Token Types
+// =============================================================================
+
+fn TOKEN_EOF() -> i64 { 0 }
+fn TOKEN_IDENT() -> i64 { 1 }
+fn TOKEN_INT() -> i64 { 2 }
+fn TOKEN_FLOAT() -> i64 { 3 }
+fn TOKEN_STRING() -> i64 { 4 }
+fn TOKEN_CHAR() -> i64 { 5 }
+
+// Keywords
+fn TOKEN_FN() -> i64 { 10 }
+fn TOKEN_LET() -> i64 { 11 }
+fn TOKEN_MUT() -> i64 { 12 }
+fn TOKEN_IF() -> i64 { 13 }
+fn TOKEN_ELSE() -> i64 { 14 }
+fn TOKEN_WHILE() -> i64 { 15 }
+fn TOKEN_FOR() -> i64 { 16 }
+fn TOKEN_IN() -> i64 { 17 }
+fn TOKEN_RETURN() -> i64 { 18 }
+fn TOKEN_BREAK() -> i64 { 19 }
+fn TOKEN_CONTINUE() -> i64 { 20 }
+fn TOKEN_STRUCT() -> i64 { 21 }
+fn TOKEN_ENUM() -> i64 { 22 }
+fn TOKEN_IMPL() -> i64 { 23 }
+fn TOKEN_TRAIT() -> i64 { 24 }
+fn TOKEN_TYPE() -> i64 { 25 }
+fn TOKEN_CONST() -> i64 { 26 }
+fn TOKEN_STATIC() -> i64 { 27 }
+fn TOKEN_PUB() -> i64 { 28 }
+fn TOKEN_USE() -> i64 { 29 }
+fn TOKEN_MOD() -> i64 { 30 }
+fn TOKEN_EXTERN() -> i64 { 31 }
+fn TOKEN_AS() -> i64 { 32 }
+fn TOKEN_MATCH() -> i64 { 33 }
+fn TOKEN_TRUE() -> i64 { 34 }
+fn TOKEN_FALSE() -> i64 { 35 }
+fn TOKEN_SELF() -> i64 { 36 }
+fn TOKEN_SUPER() -> i64 { 37 }
+fn TOKEN_WHERE() -> i64 { 38 }
+fn TOKEN_ASYNC() -> i64 { 39 }
+fn TOKEN_AWAIT() -> i64 { 40 }
+fn TOKEN_LOOP() -> i64 { 41 }
+fn TOKEN_MOVE() -> i64 { 42 }
+fn TOKEN_REF() -> i64 { 43 }
+fn TOKEN_UNSAFE() -> i64 { 44 }
+fn TOKEN_DYN() -> i64 { 45 }
+
+// Operators
+fn TOKEN_PLUS() -> i64 { 50 }
+fn TOKEN_MINUS() -> i64 { 51 }
+fn TOKEN_STAR() -> i64 { 52 }
+fn TOKEN_SLASH() -> i64 { 53 }
+fn TOKEN_PERCENT() -> i64 { 54 }
+fn TOKEN_AMPERSAND() -> i64 { 55 }
+fn TOKEN_PIPE() -> i64 { 56 }
+fn TOKEN_CARET() -> i64 { 57 }
+fn TOKEN_TILDE() -> i64 { 58 }
+fn TOKEN_BANG() -> i64 { 59 }
+fn TOKEN_LT() -> i64 { 60 }
+fn TOKEN_GT() -> i64 { 61 }
+fn TOKEN_EQ() -> i64 { 62 }
+fn TOKEN_DOT() -> i64 { 63 }
+fn TOKEN_COMMA() -> i64 { 64 }
+fn TOKEN_COLON() -> i64 { 65 }
+fn TOKEN_SEMICOLON() -> i64 { 66 }
+fn TOKEN_QUESTION() -> i64 { 67 }
+fn TOKEN_AT() -> i64 { 68 }
+fn TOKEN_HASH() -> i64 { 69 }
+fn TOKEN_DOLLAR() -> i64 { 70 }
+
+// Compound operators
+fn TOKEN_DOUBLE_COLON() -> i64 { 80 }
+fn TOKEN_ARROW() -> i64 { 81 }
+fn TOKEN_FAT_ARROW() -> i64 { 82 }
+fn TOKEN_DOUBLE_EQ() -> i64 { 83 }
+fn TOKEN_NOT_EQ() -> i64 { 84 }
+fn TOKEN_LT_EQ() -> i64 { 85 }
+fn TOKEN_GT_EQ() -> i64 { 86 }
+fn TOKEN_DOUBLE_AMP() -> i64 { 87 }
+fn TOKEN_DOUBLE_PIPE() -> i64 { 88 }
+fn TOKEN_DOUBLE_LT() -> i64 { 89 }
+fn TOKEN_DOUBLE_GT() -> i64 { 90 }
+fn TOKEN_PLUS_EQ() -> i64 { 91 }
+fn TOKEN_MINUS_EQ() -> i64 { 92 }
+fn TOKEN_STAR_EQ() -> i64 { 93 }
+fn TOKEN_SLASH_EQ() -> i64 { 94 }
+fn TOKEN_PERCENT_EQ() -> i64 { 95 }
+fn TOKEN_AMP_EQ() -> i64 { 96 }
+fn TOKEN_PIPE_EQ() -> i64 { 97 }
+fn TOKEN_CARET_EQ() -> i64 { 98 }
+fn TOKEN_DOUBLE_DOT() -> i64 { 99 }
+fn TOKEN_TRIPLE_DOT() -> i64 { 100 }
+fn TOKEN_DOUBLE_DOT_EQ() -> i64 { 101 }
+
+// Delimiters
+fn TOKEN_LPAREN() -> i64 { 110 }
+fn TOKEN_RPAREN() -> i64 { 111 }
+fn TOKEN_LBRACKET() -> i64 { 112 }
+fn TOKEN_RBRACKET() -> i64 { 113 }
+fn TOKEN_LBRACE() -> i64 { 114 }
+fn TOKEN_RBRACE() -> i64 { 115 }
+
+// =============================================================================
+// AST Node Tags
+// =============================================================================
+
+fn AST_PROGRAM() -> i64 { 1 }
+fn AST_FUNCTION() -> i64 { 2 }
+fn AST_PARAM() -> i64 { 3 }
+fn AST_BLOCK() -> i64 { 4 }
+fn AST_LET() -> i64 { 5 }
+fn AST_ASSIGN() -> i64 { 6 }
+fn AST_IF() -> i64 { 7 }
+fn AST_WHILE() -> i64 { 8 }
+fn AST_FOR() -> i64 { 9 }
+fn AST_RETURN() -> i64 { 10 }
+fn AST_BREAK() -> i64 { 11 }
+fn AST_CONTINUE() -> i64 { 12 }
+fn AST_EXPR_STMT() -> i64 { 13 }
+
+// Expressions
+fn AST_BINARY() -> i64 { 20 }
+fn AST_UNARY() -> i64 { 21 }
+fn AST_CALL() -> i64 { 22 }
+fn AST_INDEX() -> i64 { 23 }
+fn AST_FIELD() -> i64 { 24 }
+fn AST_METHOD() -> i64 { 25 }
+fn AST_CAST() -> i64 { 26 }
+fn AST_IDENT() -> i64 { 27 }
+fn AST_INT_LIT() -> i64 { 28 }
+fn AST_FLOAT_LIT() -> i64 { 29 }
+fn AST_STRING_LIT() -> i64 { 30 }
+fn AST_CHAR_LIT() -> i64 { 31 }
+fn AST_BOOL_LIT() -> i64 { 32 }
+fn AST_ARRAY_LIT() -> i64 { 33 }
+fn AST_STRUCT_LIT() -> i64 { 34 }
+fn AST_LAMBDA() -> i64 { 35 }
+fn AST_RANGE() -> i64 { 36 }
+fn AST_MATCH() -> i64 { 37 }
+fn AST_IF_EXPR() -> i64 { 38 }
+
+// Types
+fn AST_TYPE_NAME() -> i64 { 50 }
+fn AST_TYPE_REF() -> i64 { 51 }
+fn AST_TYPE_MUT_REF() -> i64 { 52 }
+fn AST_TYPE_PTR() -> i64 { 53 }
+fn AST_TYPE_ARRAY() -> i64 { 54 }
+fn AST_TYPE_SLICE() -> i64 { 55 }
+fn AST_TYPE_TUPLE() -> i64 { 56 }
+fn AST_TYPE_FN() -> i64 { 57 }
+fn AST_TYPE_GENERIC() -> i64 { 58 }
+fn AST_TYPE_PATH() -> i64 { 59 }
+
+// Definitions
+fn AST_STRUCT_DEF() -> i64 { 70 }
+fn AST_ENUM_DEF() -> i64 { 71 }
+fn AST_IMPL_DEF() -> i64 { 72 }
+fn AST_TRAIT_DEF() -> i64 { 73 }
+fn AST_TYPE_ALIAS() -> i64 { 74 }
+fn AST_CONST_DEF() -> i64 { 75 }
+fn AST_STATIC_DEF() -> i64 { 76 }
+fn AST_USE_DECL() -> i64 { 77 }
+fn AST_MOD_DECL() -> i64 { 78 }
+fn AST_EXTERN_BLOCK() -> i64 { 79 }
+
+// =============================================================================
+// Binary Operators
+// =============================================================================
+
+fn OP_ADD() -> i64 { 1 }
+fn OP_SUB() -> i64 { 2 }
+fn OP_MUL() -> i64 { 3 }
+fn OP_DIV() -> i64 { 4 }
+fn OP_REM() -> i64 { 5 }
+fn OP_AND() -> i64 { 6 }
+fn OP_OR() -> i64 { 7 }
+fn OP_XOR() -> i64 { 8 }
+fn OP_SHL() -> i64 { 9 }
+fn OP_SHR() -> i64 { 10 }
+fn OP_EQ() -> i64 { 11 }
+fn OP_NE() -> i64 { 12 }
+fn OP_LT() -> i64 { 13 }
+fn OP_LE() -> i64 { 14 }
+fn OP_GT() -> i64 { 15 }
+fn OP_GE() -> i64 { 16 }
+fn OP_LAND() -> i64 { 17 }
+fn OP_LOR() -> i64 { 18 }
+
+// =============================================================================
+// Unary Operators
+// =============================================================================
+
+fn UNARY_NEG() -> i64 { 1 }
+fn UNARY_NOT() -> i64 { 2 }
+fn UNARY_BITNOT() -> i64 { 3 }
+fn UNARY_REF() -> i64 { 4 }
+fn UNARY_MUT_REF() -> i64 { 5 }
+fn UNARY_DEREF() -> i64 { 6 }
+
+// =============================================================================
+// Error Codes
+// =============================================================================
+
+// Lexer errors (E001-E099)
+fn E_UNEXPECTED_CHAR() -> i64 { 1 }
+fn E_UNTERMINATED_STRING() -> i64 { 2 }
+fn E_UNTERMINATED_CHAR() -> i64 { 3 }
+fn E_INVALID_ESCAPE() -> i64 { 4 }
+fn E_INVALID_NUMBER() -> i64 { 5 }
+fn E_INVALID_CHAR_LIT() -> i64 { 6 }
+
+// Parser errors (E100-E199)
+fn E_EXPECTED_TOKEN() -> i64 { 100 }
+fn E_EXPECTED_IDENT() -> i64 { 101 }
+fn E_EXPECTED_TYPE() -> i64 { 102 }
+fn E_EXPECTED_EXPR() -> i64 { 103 }
+fn E_EXPECTED_STMT() -> i64 { 104 }
+fn E_EXPECTED_BLOCK() -> i64 { 105 }
+fn E_UNEXPECTED_EOF() -> i64 { 106 }
+fn E_UNCLOSED_PAREN() -> i64 { 107 }
+fn E_UNCLOSED_BRACKET() -> i64 { 108 }
+fn E_UNCLOSED_BRACE() -> i64 { 109 }
+
+// Semantic errors (E200-E299)
+fn E_UNDEFINED_VAR() -> i64 { 200 }
+fn E_UNDEFINED_FN() -> i64 { 201 }
+fn E_UNDEFINED_TYPE() -> i64 { 202 }
+fn E_DUPLICATE_DEF() -> i64 { 203 }
+fn E_TYPE_MISMATCH() -> i64 { 204 }
+fn E_ARG_COUNT() -> i64 { 205 }
+fn E_IMMUTABLE_ASSIGN() -> i64 { 206 }
+
+// Codegen errors (E300-E399)
+fn E_CODEGEN_FAIL() -> i64 { 300 }
+fn E_UNSUPPORTED() -> i64 { 301 }
+
+// IO errors (E400-E499)
+fn E_FILE_NOT_FOUND() -> i64 { 400 }
+fn E_FILE_READ() -> i64 { 401 }
+fn E_FILE_WRITE() -> i64 { 402 }
+fn E_PERMISSION_DENIED() -> i64 { 403 }
+
+// =============================================================================
+// CLI Argument Indices
+// =============================================================================
+
+fn CLI_INPUT_FILE() -> i64 { 0 }
+fn CLI_OUTPUT_FILE() -> i64 { 1 }
+fn CLI_TARGET() -> i64 { 2 }
+fn CLI_OPT_LEVEL() -> i64 { 3 }
+fn CLI_EMIT_TYPE() -> i64 { 4 }
+fn CLI_VERBOSE() -> i64 { 5 }
+fn CLI_DEBUG() -> i64 { 6 }
+fn CLI_HELP() -> i64 { 7 }
+
+// Emit types
+fn EMIT_LLVM() -> i64 { 0 }
+fn EMIT_ASM() -> i64 { 1 }
+fn EMIT_OBJ() -> i64 { 2 }
+fn EMIT_EXE() -> i64 { 3 }
+
+// =============================================================================
+// Target Triples
+// =============================================================================
+
+fn TARGET_UNKNOWN() -> i64 { 0 }
+fn TARGET_X86_64_LINUX() -> i64 { 1 }
+fn TARGET_X86_64_MACOS() -> i64 { 2 }
+fn TARGET_X86_64_WINDOWS() -> i64 { 3 }
+fn TARGET_AARCH64_LINUX() -> i64 { 4 }
+fn TARGET_AARCH64_MACOS() -> i64 { 5 }
+fn TARGET_WASM32() -> i64 { 6 }
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+// Convert token type to string name for debugging
+fn token_type_name(token_type: i64) -> i64 {
+    if token_type == TOKEN_EOF() { return string_from("EOF"); }
+    if token_type == TOKEN_IDENT() { return string_from("IDENT"); }
+    if token_type == TOKEN_INT() { return string_from("INT"); }
+    if token_type == TOKEN_FLOAT() { return string_from("FLOAT"); }
+    if token_type == TOKEN_STRING() { return string_from("STRING"); }
+    if token_type == TOKEN_FN() { return string_from("fn"); }
+    if token_type == TOKEN_LET() { return string_from("let"); }
+    if token_type == TOKEN_IF() { return string_from("if"); }
+    if token_type == TOKEN_ELSE() { return string_from("else"); }
+    if token_type == TOKEN_WHILE() { return string_from("while"); }
+    if token_type == TOKEN_FOR() { return string_from("for"); }
+    if token_type == TOKEN_RETURN() { return string_from("return"); }
+    if token_type == TOKEN_STRUCT() { return string_from("struct"); }
+    if token_type == TOKEN_ENUM() { return string_from("enum"); }
+    if token_type == TOKEN_IMPL() { return string_from("impl"); }
+    if token_type == TOKEN_TRAIT() { return string_from("trait"); }
+    string_from("?")
+}
+
+// Convert AST node tag to string name for debugging
+fn ast_tag_name(tag: i64) -> i64 {
+    if tag == AST_PROGRAM() { return string_from("Program"); }
+    if tag == AST_FUNCTION() { return string_from("Function"); }
+    if tag == AST_BLOCK() { return string_from("Block"); }
+    if tag == AST_LET() { return string_from("Let"); }
+    if tag == AST_IF() { return string_from("If"); }
+    if tag == AST_WHILE() { return string_from("While"); }
+    if tag == AST_RETURN() { return string_from("Return"); }
+    if tag == AST_BINARY() { return string_from("Binary"); }
+    if tag == AST_UNARY() { return string_from("Unary"); }
+    if tag == AST_CALL() { return string_from("Call"); }
+    if tag == AST_IDENT() { return string_from("Ident"); }
+    if tag == AST_INT_LIT() { return string_from("IntLit"); }
+    if tag == AST_STRING_LIT() { return string_from("StringLit"); }
+    string_from("?")
+}
+
+// Convert error code to error message prefix
+fn error_prefix(code: i64) -> i64 {
+    let prefix: i64 = string_from("E");
+    if code < 10 {
+        prefix = string_concat(prefix, string_from("00"));
+    } else if code < 100 {
+        prefix = string_concat(prefix, string_from("0"));
+    }
+    string_concat(prefix, i64_to_string(code))
+}
+
+// =============================================================================
+// Efficient String Building Helpers
+// Use these instead of nested string_concat() for O(n) instead of O(n²)
+// =============================================================================
+
+// Join 3 strings: join3("a", "b", "c") -> "abc"
+fn join3(a: i64, b: i64, c: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, a);
+    sb_append(sb, b);
+    sb_append(sb, c);
+    sb_build(sb)
+}
+
+// Join 4 strings
+fn join4(a: i64, b: i64, c: i64, d: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, a);
+    sb_append(sb, b);
+    sb_append(sb, c);
+    sb_append(sb, d);
+    sb_build(sb)
+}
+
+// Join 5 strings
+fn join5(a: i64, b: i64, c: i64, d: i64, e: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, a);
+    sb_append(sb, b);
+    sb_append(sb, c);
+    sb_append(sb, d);
+    sb_append(sb, e);
+    sb_build(sb)
+}
+
+// Build mangled name: mangle("Type", "method") -> "Type_method"
+fn mangle(type_name: i64, method_name: i64) -> i64 {
+    join3(type_name, string_from("_"), method_name)
+}
+
+// Build path: path_join("Type", "Assoc") -> "Type::Assoc"
+fn path_join(a: i64, b: i64) -> i64 {
+    join3(a, string_from("::"), b)
+}
+
+// Build unique name: unique_name("var", 42) -> "var.42"
+fn unique_name(name: i64, id: i64) -> i64 {
+    join3(name, string_from("."), int_to_string(id))
+}
+
+// Build error message: error_msg("undefined", name) -> "Error: undefined 'name'"
+fn error_msg(what: i64, name: i64) -> i64 {
+    join5(string_from("Error: "), what, string_from(" '"), name, string_from("'"))
+}
+
+// Build label: label_with_suffix("arm", 3) -> "arm_3"
+fn label_with_suffix(base: i64, suffix: i64) -> i64 {
+    join3(base, string_from("_"), int_to_string(suffix))
+}
+
+// =============================================================================
+// Runtime stubs (provided by runtime)
+// =============================================================================
+
+extern fn string_from(s: &str) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn int_to_string(n: i64) -> i64;
+extern fn sb_new() -> i64;
+extern fn sb_append(sb: i64, s: i64) -> i64;
+extern fn sb_build(sb: i64) -> i64;

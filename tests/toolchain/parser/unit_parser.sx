@@ -1,5 +1,5 @@
 // Wave 1: Parser Critical Tests
-// All tests verify parser capabilities for v0.12.0
+// All tests verify parser capabilities for v0.13.0
 // Tests exercise struct, enum, trait, impl, generics, and expression parsing
 
 // ============================================

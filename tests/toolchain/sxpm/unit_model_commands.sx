@@ -30,7 +30,7 @@ fn println(s: i64);
 fn print_i64(n: i64);
 fn print_string(s: i64);
 
-fn main() {
+fn main() -> i64 {
  println("=== sxpm Model Commands Test ===");
  println("v0.5.0: SLM Provisioning");
  println("");
@@ -265,4 +265,5 @@ fn main() {
 
  println("");
  println("=== sxpm Model Commands Test Complete! ===");
+ 0
 }
