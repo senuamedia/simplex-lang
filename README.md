@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.12.0**
+**Version 0.13.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -294,13 +294,13 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.12.0 | Simplex Compiler with Neural IR, Dual Numbers, and Module System |
-| **sxpm** | 0.12.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.12.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.12.0 | Documentation Generator |
-| **sxlsp** | 0.12.0 | Language Server Protocol |
-| **sxfmt** | 0.12.0 | Code Formatter |
-| **sxlint** | 0.12.0 | Static Linter |
+| **sxc** | 0.13.0 | Simplex Compiler with Neural IR, Dual Numbers, and Module System |
+| **sxpm** | 0.13.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.13.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.13.0 | Documentation Generator |
+| **sxlsp** | 0.13.0 | Language Server Protocol |
+| **sxfmt** | 0.13.0 | Code Formatter |
+| **sxlint** | 0.13.0 | Static Linter |
 
 ## Release History
 

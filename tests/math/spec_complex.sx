@@ -1,0 +1,725 @@
+// Complex Number Module - Comprehensive Tests
+// Tests construction, arithmetic, transcendentals, polar form, and identities.
+// v0.13.0: Validates simplex-std::complex subsystem
+
+// ============================================
+// Complex Number Representation
+// ============================================
+// A complex number (re, im) represents re + im·i where i² = -1.
+
+struct Complex {
+    re: f64,
+    im: f64
+}
+
+// ============================================
+// Constants
+// ============================================
+
+const PI: f64 = 3.14159265358979323846;
+const E: f64 = 2.71828182845904523536;
+const EPSILON: f64 = 0.000001;
+
+// ============================================
+// Extern math functions (C runtime)
+// ============================================
+
+extern "C" {
+    fn sin(x: f64) -> f64;
+    fn cos(x: f64) -> f64;
+    fn exp(x: f64) -> f64;
+    fn sqrt(x: f64) -> f64;
+    fn atan2(y: f64, x: f64) -> f64;
+    fn log(x: f64) -> f64;
+    fn pow(base: f64, exp: f64) -> f64;
+    fn fabs(x: f64) -> f64;
+    fn sinh(x: f64) -> f64;
+    fn cosh(x: f64) -> f64;
+}
+
+// ============================================
+// Constructors
+// ============================================
+
+impl Complex {
+    fn new(re: f64, im: f64) -> Complex {
+        Complex { re: re, im: im }
+    }
+
+    fn from_real(r: f64) -> Complex {
+        Complex { re: r, im: 0.0 }
+    }
+
+    fn from_imaginary(i: f64) -> Complex {
+        Complex { re: 0.0, im: i }
+    }
+
+    fn zero() -> Complex {
+        Complex { re: 0.0, im: 0.0 }
+    }
+
+    fn one() -> Complex {
+        Complex { re: 1.0, im: 0.0 }
+    }
+
+    fn i_unit() -> Complex {
+        Complex { re: 0.0, im: 1.0 }
+    }
+
+    fn from_polar(r: f64, theta: f64) -> Complex {
+        Complex { re: r * cos(theta), im: r * sin(theta) }
+    }
+}
+
+// ============================================
+// Arithmetic
+// ============================================
+
+fn complex_add(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re + b.re, im: a.im + b.im }
+}
+
+fn complex_sub(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re - b.re, im: a.im - b.im }
+}
+
+fn complex_mul(a: Complex, b: Complex) -> Complex {
+    Complex {
+        re: a.re * b.re - a.im * b.im,
+        im: a.re * b.im + a.im * b.re,
+    }
+}
+
+fn complex_div(a: Complex, b: Complex) -> Complex {
+    let denom: f64 = b.re * b.re + b.im * b.im;
+    Complex {
+        re: (a.re * b.re + a.im * b.im) / denom,
+        im: (a.im * b.re - a.re * b.im) / denom,
+    }
+}
+
+fn complex_neg(a: Complex) -> Complex {
+    Complex { re: -a.re, im: -a.im }
+}
+
+fn complex_scale(a: Complex, s: f64) -> Complex {
+    Complex { re: a.re * s, im: a.im * s }
+}
+
+// ============================================
+// Operations
+// ============================================
+
+fn complex_conjugate(z: Complex) -> Complex {
+    Complex { re: z.re, im: -z.im }
+}
+
+fn complex_magnitude(z: Complex) -> f64 {
+    sqrt(z.re * z.re + z.im * z.im)
+}
+
+fn complex_magnitude_squared(z: Complex) -> f64 {
+    z.re * z.re + z.im * z.im
+}
+
+fn complex_phase(z: Complex) -> f64 {
+    atan2(z.im, z.re)
+}
+
+fn complex_normalize(z: Complex) -> Complex {
+    let mag: f64 = complex_magnitude(z);
+    if mag == 0.0 {
+        Complex::zero()
+    } else {
+        Complex { re: z.re / mag, im: z.im / mag }
+    }
+}
+
+fn complex_exp(z: Complex) -> Complex {
+    let ea: f64 = exp(z.re);
+    Complex { re: ea * cos(z.im), im: ea * sin(z.im) }
+}
+
+fn complex_ln(z: Complex) -> Complex {
+    Complex { re: log(complex_magnitude(z)), im: complex_phase(z) }
+}
+
+fn complex_sqrt(z: Complex) -> Complex {
+    let mag: f64 = complex_magnitude(z);
+    let angle: f64 = complex_phase(z);
+    let r: f64 = sqrt(mag);
+    Complex { re: r * cos(angle / 2.0), im: r * sin(angle / 2.0) }
+}
+
+fn complex_pow(z: Complex, n: Complex) -> Complex {
+    complex_exp(complex_mul(n, complex_ln(z)))
+}
+
+fn complex_sin(z: Complex) -> Complex {
+    Complex {
+        re: sin(z.re) * cosh(z.im),
+        im: cos(z.re) * sinh(z.im),
+    }
+}
+
+fn complex_cos(z: Complex) -> Complex {
+    Complex {
+        re: cos(z.re) * cosh(z.im),
+        im: -sin(z.re) * sinh(z.im),
+    }
+}
+
+fn complex_tan(z: Complex) -> Complex {
+    complex_div(complex_sin(z), complex_cos(z))
+}
+
+// ============================================
+// Utility
+// ============================================
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> bool {
+    fabs(a - b) < eps
+}
+
+fn complex_approx_eq(a: Complex, b: Complex, eps: f64) -> bool {
+    fabs(a.re - b.re) < eps && fabs(a.im - b.im) < eps
+}
+
+fn is_real(z: Complex) -> bool {
+    z.im == 0.0
+}
+
+fn is_imaginary(z: Complex) -> bool {
+    z.re == 0.0
+}
+
+fn is_zero(z: Complex) -> bool {
+    z.re == 0.0 && z.im == 0.0
+}
+
+// ============================================
+// Test 1: Construction and Field Access
+// ============================================
+
+fn test_construction() -> i64 {
+    let z1: Complex = Complex::new(3.0, 4.0);
+    let z2: Complex = Complex::from_real(5.0);
+    let z3: Complex = Complex::from_imaginary(2.0);
+    let z4: Complex = Complex::zero();
+    let z5: Complex = Complex::one();
+    let z6: Complex = Complex::i_unit();
+
+    if z1.re != 3.0 { return 0; }
+    if z1.im != 4.0 { return 0; }
+    if z2.re != 5.0 { return 0; }
+    if z2.im != 0.0 { return 0; }
+    if z3.re != 0.0 { return 0; }
+    if z3.im != 2.0 { return 0; }
+    if z4.re != 0.0 { return 0; }
+    if z4.im != 0.0 { return 0; }
+    if z5.re != 1.0 { return 0; }
+    if z5.im != 0.0 { return 0; }
+    if z6.re != 0.0 { return 0; }
+    if z6.im != 1.0 { return 0; }
+    1
+}
+
+// ============================================
+// Test 2: Addition
+// ============================================
+
+fn test_addition() -> i64 {
+    // (3+4i) + (1-2i) = (4+2i)
+    let a: Complex = Complex::new(3.0, 4.0);
+    let b: Complex = Complex::new(1.0, -2.0);
+    let result: Complex = complex_add(a, b);
+    if result.re != 4.0 { return 0; }
+    if result.im != 2.0 { return 0; }
+
+    // z + 0 = z (identity)
+    let z: Complex = Complex::new(7.0, -3.0);
+    let sum: Complex = complex_add(z, Complex::zero());
+    if sum.re != 7.0 { return 0; }
+    if sum.im != -3.0 { return 0; }
+    1
+}
+
+// ============================================
+// Test 3: Subtraction
+// ============================================
+
+fn test_subtraction() -> i64 {
+    // (5+3i) - (2+1i) = (3+2i)
+    let a: Complex = Complex::new(5.0, 3.0);
+    let b: Complex = Complex::new(2.0, 1.0);
+    let result: Complex = complex_sub(a, b);
+    if result.re != 3.0 { return 0; }
+    if result.im != 2.0 { return 0; }
+
+    // z - z = 0
+    let z: Complex = Complex::new(4.0, -5.0);
+    let diff: Complex = complex_sub(z, z);
+    if diff.re != 0.0 { return 0; }
+    if diff.im != 0.0 { return 0; }
+    1
+}
+
+// ============================================
+// Test 4: Multiplication
+// ============================================
+
+fn test_multiplication() -> i64 {
+    // (1+2i)(3+4i) = (1*3 - 2*4) + (1*4 + 2*3)i = (-5 + 10i)
+    let a: Complex = Complex::new(1.0, 2.0);
+    let b: Complex = Complex::new(3.0, 4.0);
+    let result: Complex = complex_mul(a, b);
+    if result.re != -5.0 { return 0; }
+    if result.im != 10.0 { return 0; }
+
+    // i * i = -1
+    let ii: Complex = Complex::i_unit();
+    let i_squared: Complex = complex_mul(ii, ii);
+    if !approx_eq(i_squared.re, -1.0, EPSILON) { return 0; }
+    if !approx_eq(i_squared.im, 0.0, EPSILON) { return 0; }
+
+    // z * 1 = z (identity)
+    let z: Complex = Complex::new(3.0, 7.0);
+    let prod: Complex = complex_mul(z, Complex::one());
+    if prod.re != 3.0 { return 0; }
+    if prod.im != 7.0 { return 0; }
+
+    // z * 0 = 0
+    let zero_prod: Complex = complex_mul(z, Complex::zero());
+    if zero_prod.re != 0.0 { return 0; }
+    if zero_prod.im != 0.0 { return 0; }
+    1
+}
+
+// ============================================
+// Test 5: Division
+// ============================================
+
+fn test_division() -> i64 {
+    // (1+2i)/(3+4i) = ((1*3+2*4) + (2*3-1*4)i) / (9+16) = (11 + 2i)/25
+    let a: Complex = Complex::new(1.0, 2.0);
+    let b: Complex = Complex::new(3.0, 4.0);
+    let result: Complex = complex_div(a, b);
+    if !approx_eq(result.re, 11.0 / 25.0, EPSILON) { return 0; }
+    if !approx_eq(result.im, 2.0 / 25.0, EPSILON) { return 0; }
+
+    // z / z = 1 (self-division)
+    let z: Complex = Complex::new(3.0, 4.0);
+    let self_div: Complex = complex_div(z, z);
+    if !approx_eq(self_div.re, 1.0, EPSILON) { return 0; }
+    if !approx_eq(self_div.im, 0.0, EPSILON) { return 0; }
+
+    // z / 1 = z (identity)
+    let div_one: Complex = complex_div(z, Complex::one());
+    if !approx_eq(div_one.re, 3.0, EPSILON) { return 0; }
+    if !approx_eq(div_one.im, 4.0, EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 6: Negation
+// ============================================
+
+fn test_negation() -> i64 {
+    let z: Complex = Complex::new(3.0, -4.0);
+    let neg: Complex = complex_neg(z);
+    if neg.re != -3.0 { return 0; }
+    if neg.im != 4.0 { return 0; }
+
+    // z + (-z) = 0
+    let sum: Complex = complex_add(z, neg);
+    if sum.re != 0.0 { return 0; }
+    if sum.im != 0.0 { return 0; }
+    1
+}
+
+// ============================================
+// Test 7: Conjugate Properties
+// ============================================
+
+fn test_conjugate() -> i64 {
+    let z: Complex = Complex::new(3.0, 4.0);
+    let conj: Complex = complex_conjugate(z);
+
+    // conj(a+bi) = a-bi
+    if conj.re != 3.0 { return 0; }
+    if conj.im != -4.0 { return 0; }
+
+    // z * conj(z) = |z|^2 (real number)
+    let product: Complex = complex_mul(z, conj);
+    let mag_sq: f64 = complex_magnitude_squared(z);
+    if !approx_eq(product.re, mag_sq, EPSILON) { return 0; }
+    if !approx_eq(product.im, 0.0, EPSILON) { return 0; }
+
+    // conj(conj(z)) = z
+    let double_conj: Complex = complex_conjugate(conj);
+    if double_conj.re != z.re { return 0; }
+    if double_conj.im != z.im { return 0; }
+
+    // conj(z) for real z is z itself
+    let real_z: Complex = Complex::from_real(5.0);
+    let real_conj: Complex = complex_conjugate(real_z);
+    if real_conj.re != 5.0 { return 0; }
+    if real_conj.im != 0.0 { return 0; }
+    1
+}
+
+// ============================================
+// Test 8: Magnitude and Phase
+// ============================================
+
+fn test_magnitude_and_phase() -> i64 {
+    // |3+4i| = 5
+    let z: Complex = Complex::new(3.0, 4.0);
+    if !approx_eq(complex_magnitude(z), 5.0, EPSILON) { return 0; }
+
+    // |3+4i|^2 = 25
+    if !approx_eq(complex_magnitude_squared(z), 25.0, EPSILON) { return 0; }
+
+    // |1+0i| = 1
+    if !approx_eq(complex_magnitude(Complex::one()), 1.0, EPSILON) { return 0; }
+
+    // |0+0i| = 0
+    if !approx_eq(complex_magnitude(Complex::zero()), 0.0, EPSILON) { return 0; }
+
+    // phase(1+i) = pi/4
+    let z2: Complex = Complex::new(1.0, 1.0);
+    if !approx_eq(complex_phase(z2), PI / 4.0, EPSILON) { return 0; }
+
+    // phase(0+i) = pi/2
+    let z3: Complex = Complex::i_unit();
+    if !approx_eq(complex_phase(z3), PI / 2.0, EPSILON) { return 0; }
+
+    // phase(-1+0i) = pi
+    let z4: Complex = Complex::from_real(-1.0);
+    if !approx_eq(complex_phase(z4), PI, EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 9: Normalize
+// ============================================
+
+fn test_normalize() -> i64 {
+    let z: Complex = Complex::new(3.0, 4.0);
+    let norm: Complex = complex_normalize(z);
+
+    // |normalize(z)| = 1
+    if !approx_eq(complex_magnitude(norm), 1.0, EPSILON) { return 0; }
+
+    // normalize(z) has same phase as z
+    if !approx_eq(complex_phase(norm), complex_phase(z), EPSILON) { return 0; }
+
+    // normalize(0) = 0
+    let zero_norm: Complex = complex_normalize(Complex::zero());
+    if zero_norm.re != 0.0 { return 0; }
+    if zero_norm.im != 0.0 { return 0; }
+    1
+}
+
+// ============================================
+// Test 10: Polar Conversion Round-Trip
+// ============================================
+
+fn test_polar_roundtrip() -> i64 {
+    let z: Complex = Complex::new(3.0, 4.0);
+    let r: f64 = complex_magnitude(z);
+    let theta: f64 = complex_phase(z);
+
+    // Reconstruct from polar
+    let reconstructed: Complex = Complex::from_polar(r, theta);
+    if !complex_approx_eq(z, reconstructed, EPSILON) { return 0; }
+
+    // Test with negative imaginary part
+    let z2: Complex = Complex::new(1.0, -1.0);
+    let r2: f64 = complex_magnitude(z2);
+    let theta2: f64 = complex_phase(z2);
+    let recon2: Complex = Complex::from_polar(r2, theta2);
+    if !complex_approx_eq(z2, recon2, EPSILON) { return 0; }
+
+    // Polar construction: r=1, theta=pi/4 should give (sqrt(2)/2, sqrt(2)/2)
+    let unit: Complex = Complex::from_polar(1.0, PI / 4.0);
+    let expected_comp: f64 = sqrt(2.0) / 2.0;
+    if !approx_eq(unit.re, expected_comp, EPSILON) { return 0; }
+    if !approx_eq(unit.im, expected_comp, EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 11: Euler's Formula - e^(i*pi) + 1 = 0
+// ============================================
+
+fn test_euler_formula() -> i64 {
+    // e^(i*pi) = cos(pi) + i*sin(pi) = -1 + 0i
+    let i_pi: Complex = Complex::new(0.0, PI);
+    let result: Complex = complex_exp(i_pi);
+
+    // e^(i*pi) + 1 should be approximately 0
+    let euler: Complex = complex_add(result, Complex::one());
+    if !complex_approx_eq(euler, Complex::zero(), EPSILON) { return 0; }
+
+    // e^(i*pi/2) = cos(pi/2) + i*sin(pi/2) = 0 + i = i
+    let i_half_pi: Complex = Complex::new(0.0, PI / 2.0);
+    let result2: Complex = complex_exp(i_half_pi);
+    if !complex_approx_eq(result2, Complex::i_unit(), EPSILON) { return 0; }
+
+    // e^0 = 1
+    let exp_zero: Complex = complex_exp(Complex::zero());
+    if !complex_approx_eq(exp_zero, Complex::one(), EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 12: Complex Exponential and Logarithm Round-Trip
+// ============================================
+
+fn test_exp_ln_roundtrip() -> i64 {
+    // exp(ln(z)) = z for z in the principal branch
+    let z: Complex = Complex::new(2.0, 3.0);
+    let roundtrip: Complex = complex_exp(complex_ln(z));
+    if !complex_approx_eq(z, roundtrip, EPSILON) { return 0; }
+
+    // ln(exp(z)) = z (for im(z) in (-pi, pi])
+    let z2: Complex = Complex::new(1.0, 1.0);
+    let roundtrip2: Complex = complex_ln(complex_exp(z2));
+    if !complex_approx_eq(z2, roundtrip2, EPSILON) { return 0; }
+
+    // ln(1) = 0
+    let ln_one: Complex = complex_ln(Complex::one());
+    if !complex_approx_eq(ln_one, Complex::zero(), EPSILON) { return 0; }
+
+    // ln(e) = 1
+    let ln_e: Complex = complex_ln(Complex::from_real(E));
+    if !complex_approx_eq(ln_e, Complex::one(), EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 13: Complex Square Root
+// ============================================
+
+fn test_sqrt() -> i64 {
+    // sqrt(4) = 2
+    let root4: Complex = complex_sqrt(Complex::from_real(4.0));
+    if !complex_approx_eq(root4, Complex::from_real(2.0), EPSILON) { return 0; }
+
+    // sqrt(-1) = i
+    let root_neg1: Complex = complex_sqrt(Complex::from_real(-1.0));
+    if !complex_approx_eq(root_neg1, Complex::i_unit(), EPSILON) { return 0; }
+
+    // sqrt(z)^2 = z
+    let z: Complex = Complex::new(3.0, 4.0);
+    let root_z: Complex = complex_sqrt(z);
+    let squared: Complex = complex_mul(root_z, root_z);
+    if !complex_approx_eq(squared, z, EPSILON) { return 0; }
+
+    // sqrt(i) = (1+i)/sqrt(2)
+    let root_i: Complex = complex_sqrt(Complex::i_unit());
+    let expected: Complex = Complex::new(sqrt(2.0) / 2.0, sqrt(2.0) / 2.0);
+    if !complex_approx_eq(root_i, expected, EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 14: Complex Power
+// ============================================
+
+fn test_power() -> i64 {
+    // (1+i)^2 = 2i
+    let z: Complex = Complex::new(1.0, 1.0);
+    let z_sq: Complex = complex_pow(z, Complex::from_real(2.0));
+    let expected: Complex = Complex::new(0.0, 2.0);
+    if !complex_approx_eq(z_sq, expected, EPSILON) { return 0; }
+
+    // z^1 = z
+    let z2: Complex = Complex::new(2.0, 3.0);
+    let z2_one: Complex = complex_pow(z2, Complex::one());
+    if !complex_approx_eq(z2_one, z2, EPSILON) { return 0; }
+
+    // i^2 = -1
+    let ii: Complex = Complex::i_unit();
+    let i_sq: Complex = complex_pow(ii, Complex::from_real(2.0));
+    if !complex_approx_eq(i_sq, Complex::from_real(-1.0), EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 15: Complex Trigonometric Functions
+// ============================================
+
+fn test_trig() -> i64 {
+    // sin(0) = 0, cos(0) = 1
+    let sin_zero: Complex = complex_sin(Complex::zero());
+    if !complex_approx_eq(sin_zero, Complex::zero(), EPSILON) { return 0; }
+
+    let cos_zero: Complex = complex_cos(Complex::zero());
+    if !complex_approx_eq(cos_zero, Complex::one(), EPSILON) { return 0; }
+
+    // sin^2(z) + cos^2(z) = 1 (Pythagorean identity for complex z)
+    let z: Complex = Complex::new(1.0, 2.0);
+    let sin_z: Complex = complex_sin(z);
+    let cos_z: Complex = complex_cos(z);
+    let sin_sq: Complex = complex_mul(sin_z, sin_z);
+    let cos_sq: Complex = complex_mul(cos_z, cos_z);
+    let identity: Complex = complex_add(sin_sq, cos_sq);
+    if !complex_approx_eq(identity, Complex::one(), EPSILON) { return 0; }
+
+    // sin(pi) = 0, cos(pi) = -1 (real arguments)
+    let sin_pi: Complex = complex_sin(Complex::from_real(PI));
+    if !approx_eq(sin_pi.re, 0.0, EPSILON) { return 0; }
+    if !approx_eq(sin_pi.im, 0.0, EPSILON) { return 0; }
+
+    let cos_pi: Complex = complex_cos(Complex::from_real(PI));
+    if !approx_eq(cos_pi.re, -1.0, EPSILON) { return 0; }
+    if !approx_eq(cos_pi.im, 0.0, EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 16: Utility Functions
+// ============================================
+
+fn test_utility() -> i64 {
+    // is_real
+    if !is_real(Complex::from_real(5.0)) { return 0; }
+    if is_real(Complex::new(1.0, 1.0)) { return 0; }
+
+    // is_imaginary
+    if !is_imaginary(Complex::from_imaginary(3.0)) { return 0; }
+    if is_imaginary(Complex::new(1.0, 1.0)) { return 0; }
+
+    // is_zero
+    if !is_zero(Complex::zero()) { return 0; }
+    if is_zero(Complex::one()) { return 0; }
+
+    // approx_eq
+    let a: Complex = Complex::new(1.0, 2.0);
+    let b: Complex = Complex::new(1.0000001, 2.0000001);
+    if !complex_approx_eq(a, b, 0.001) { return 0; }
+    if complex_approx_eq(a, Complex::new(2.0, 2.0), 0.001) { return 0; }
+    1
+}
+
+// ============================================
+// Test 17: Scale by Real
+// ============================================
+
+fn test_scalar_operations() -> i64 {
+    let z: Complex = Complex::new(2.0, 3.0);
+
+    // 2 * (2+3i) = 4+6i
+    let scaled: Complex = complex_scale(z, 2.0);
+    if scaled.re != 4.0 { return 0; }
+    if scaled.im != 6.0 { return 0; }
+
+    // 0 * z = 0
+    let zero_scaled: Complex = complex_scale(z, 0.0);
+    if zero_scaled.re != 0.0 { return 0; }
+    if zero_scaled.im != 0.0 { return 0; }
+
+    // -1 * z = -z
+    let neg_scaled: Complex = complex_scale(z, -1.0);
+    let neg_z: Complex = complex_neg(z);
+    if neg_scaled.re != neg_z.re { return 0; }
+    if neg_scaled.im != neg_z.im { return 0; }
+    1
+}
+
+// ============================================
+// Test 18: Distributive Property
+// ============================================
+
+fn test_distributive() -> i64 {
+    // z1 * (z2 + z3) = z1*z2 + z1*z3
+    let z1: Complex = Complex::new(1.0, 2.0);
+    let z2: Complex = Complex::new(3.0, 4.0);
+    let z3: Complex = Complex::new(-1.0, 5.0);
+
+    let lhs: Complex = complex_mul(z1, complex_add(z2, z3));
+    let rhs: Complex = complex_add(complex_mul(z1, z2), complex_mul(z1, z3));
+    if !complex_approx_eq(lhs, rhs, EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 19: Commutativity
+// ============================================
+
+fn test_commutativity() -> i64 {
+    let z1: Complex = Complex::new(2.0, 3.0);
+    let z2: Complex = Complex::new(4.0, -1.0);
+
+    // Addition is commutative
+    let add1: Complex = complex_add(z1, z2);
+    let add2: Complex = complex_add(z2, z1);
+    if !complex_approx_eq(add1, add2, EPSILON) { return 0; }
+
+    // Multiplication is commutative
+    let mul1: Complex = complex_mul(z1, z2);
+    let mul2: Complex = complex_mul(z2, z1);
+    if !complex_approx_eq(mul1, mul2, EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Test 20: Magnitude Properties
+// ============================================
+
+fn test_magnitude_properties() -> i64 {
+    let z1: Complex = Complex::new(3.0, 4.0);
+    let z2: Complex = Complex::new(1.0, -2.0);
+
+    // |z1 * z2| = |z1| * |z2|
+    let prod: Complex = complex_mul(z1, z2);
+    let mag_prod: f64 = complex_magnitude(prod);
+    let mag_product: f64 = complex_magnitude(z1) * complex_magnitude(z2);
+    if !approx_eq(mag_prod, mag_product, EPSILON) { return 0; }
+
+    // |conj(z)| = |z|
+    let conj: Complex = complex_conjugate(z1);
+    if !approx_eq(complex_magnitude(conj), complex_magnitude(z1), EPSILON) { return 0; }
+
+    // |z|^2 = z * conj(z)  (real part; imaginary part is 0)
+    let z_conj: Complex = complex_mul(z1, complex_conjugate(z1));
+    let mag_sq: f64 = complex_magnitude_squared(z1);
+    if !approx_eq(z_conj.re, mag_sq, EPSILON) { return 0; }
+    if !approx_eq(z_conj.im, 0.0, EPSILON) { return 0; }
+    1
+}
+
+// ============================================
+// Main - Run All Tests
+// ============================================
+
+fn main() -> i64 {
+    var passed: i64 = 0;
+    var failed: i64 = 0;
+
+    if test_construction() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_addition() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_subtraction() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_multiplication() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_division() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_negation() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_conjugate() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_magnitude_and_phase() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_normalize() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_polar_roundtrip() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_euler_formula() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_exp_ln_roundtrip() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_sqrt() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_power() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_trig() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_utility() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_scalar_operations() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_distributive() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_commutativity() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+    if test_magnitude_properties() == 1 { passed = passed + 1; } else { failed = failed + 1; }
+
+    // Return 0 if all 20 tests pass, otherwise return number of failures
+    if failed == 0 { 0 } else { failed }
+}

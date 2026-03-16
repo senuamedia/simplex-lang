@@ -1,0 +1,295 @@
+// Unit tests for dual number integration with beliefs (TASK-013-A)
+// Tests: belief confidence as dual, derivative tracking, update propagation
+// v0.13.0: Validates that belief system uses dual numbers for autodiff
+
+// IEEE 754 bit patterns for f64 constants used as i64
+// 0.0   = 0
+// 0.1   = 4591870180066957722
+// 0.2   = 4596373779694112358
+// 0.3   = 4599075939470750515
+// 0.5   = 4602678819172646912
+// 0.6   = 4603579539098312499
+// 0.7   = 4604480259023978086
+// 0.8   = 4604930618986332314
+// 0.9   = 4606281698874543309
+// -0.1  = -4616189618054758400
+// -0.15 = -4610842590788288205
+// -0.2  = -4615288898129092813
+// 0.05  = 4587366580439210842
+// 1.0   = 4607182418800017408
+
+fn main() -> i64 {
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+    print("=== Belief Derivative Integration Tests ===\n");
+
+    // ===================================
+    // Test 1: Belief confidence is a dual number (val + derivative)
+    // Register belief with both value and derivative
+    // ===================================
+    print("Test 1: Register belief with dual (val, der)... ");
+    let name_obs: i64 = make_sx_string("obstacle_d");
+    let conf_08: i64 = 4604930618986332314;  // 0.8
+    let der_neg01: i64 = -4616189618054758400;  // -0.1
+    let reg: i64 = belief_register_i64(name_obs, conf_08, der_neg01);
+    if reg > 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 2: Retrieve confidence value (dual.val)
+    // ===================================
+    print("Test 2: Get confidence value... ");
+    let val_bits: i64 = belief_guard_get_confidence(name_obs);
+    let diff: i64 = val_bits - conf_08;
+    if diff < 100 && diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (bits mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 3: Retrieve derivative (dual.der)
+    // ===================================
+    print("Test 3: Get derivative value... ");
+    let der_bits: i64 = belief_guard_get_derivative(name_obs);
+    let der_diff: i64 = der_bits - der_neg01;
+    if der_diff < 100 && der_diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (derivative mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 4: Derivative tracks rate of change (negative = decreasing)
+    // ===================================
+    print("Test 4: Negative derivative means decreasing confidence... ");
+    // der = -0.1, as i64 bit pattern is negative
+    if der_bits < 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (expected negative bit pattern)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 5: Positive derivative means increasing confidence
+    // ===================================
+    print("Test 5: Positive derivative means increasing confidence... ");
+    let name_vel: i64 = make_sx_string("velocity_d");
+    let conf_05: i64 = 4602678819172646912;  // 0.5
+    let der_pos02: i64 = 4596373779694112358;  // 0.2
+    belief_register_i64(name_vel, conf_05, der_pos02);
+
+    let vel_der: i64 = belief_guard_get_derivative(name_vel);
+    if vel_der > 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (expected positive derivative)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 6: Zero derivative means stable confidence
+    // ===================================
+    print("Test 6: Zero derivative means stable... ");
+    let name_stable: i64 = make_sx_string("stable_d");
+    let conf_07: i64 = 4604480259023978086;  // 0.7
+    let zero: i64 = 0;
+    belief_register_i64(name_stable, conf_07, zero);
+
+    let stable_der: i64 = belief_guard_get_derivative(name_stable);
+    if stable_der == 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (expected zero derivative)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 7: Update propagates new value
+    // ===================================
+    print("Test 7: Update belief value... ");
+    let conf_09: i64 = 4606281698874543309;  // 0.9
+    belief_update_i64(name_obs, conf_09);
+
+    let updated_val: i64 = belief_guard_get_confidence(name_obs);
+    let upd_diff: i64 = updated_val - conf_09;
+    if upd_diff < 100 && upd_diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (update not propagated)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 8: Update with dual propagates both value and derivative
+    // ===================================
+    print("Test 8: Update dual (val + derivative)... ");
+    let new_conf: i64 = 4603579539098312499;   // 0.6
+    let new_der: i64 = -4610842590788288205;    // -0.15
+    belief_update_dual_i64(name_vel, new_conf, new_der);
+
+    let vel_val2: i64 = belief_guard_get_confidence(name_vel);
+    let vel_der2: i64 = belief_guard_get_derivative(name_vel);
+
+    let v_diff: i64 = vel_val2 - new_conf;
+    let d_diff: i64 = vel_der2 - new_der;
+    if v_diff < 100 && v_diff > -100 && d_diff < 100 && d_diff > -100 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (dual update mismatch)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 9: Derivative sign change detection
+    // Belief was increasing (0.2), now decreasing (-0.15)
+    // ===================================
+    print("Test 9: Derivative sign change detection... ");
+    // After update, velocity derivative should now be negative
+    if vel_der2 < 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (expected sign change to negative)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 10: Multiple beliefs maintain independent duals
+    // ===================================
+    print("Test 10: Independent belief duals... ");
+    let obs_val: i64 = belief_guard_get_confidence(name_obs);
+    let vel_val3: i64 = belief_guard_get_confidence(name_vel);
+    let stb_val: i64 = belief_guard_get_confidence(name_stable);
+
+    // obstacle was updated to 0.9, velocity to 0.6, stable stays 0.7
+    let obs_ok: i64 = 0;
+    let obs_d: i64 = obs_val - conf_09;
+    if obs_d < 100 && obs_d > -100 { obs_ok = 1; }
+
+    let vel_ok: i64 = 0;
+    let vel_d: i64 = vel_val3 - new_conf;
+    if vel_d < 100 && vel_d > -100 { vel_ok = 1; }
+
+    let stb_ok: i64 = 0;
+    let stb_d: i64 = stb_val - conf_07;
+    if stb_d < 100 && stb_d > -100 { stb_ok = 1; }
+
+    if obs_ok == 1 && vel_ok == 1 && stb_ok == 1 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (beliefs not independent)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 11: Derivative threshold guard
+    // Emergency brake: derivative < -0.1
+    // ===================================
+    print("Test 11: Derivative threshold guard (emergency)... ");
+    let der_threshold: i64 = -4616189618054758400;  // -0.1
+    // velocity derivative is -0.15, which is < -0.1
+    // As bit patterns: -0.15 has a "more negative" double, but as i64 we need careful comparison
+    // In IEEE 754: -0.15 < -0.1 (more negative), bit pattern comparison works for same-sign negatives
+    // -0.15 as i64 = -4610842590788288205, -0.1 as i64 = -4616189618054758400
+    // For negative f64s, smaller value has LARGER i64 bit pattern (closer to 0)
+    // So -0.15 < -0.1 means vel_der2 bit pattern > der_threshold bit pattern (inverted for negatives)
+    // Actually: we check the runtime comparison using the fcmp approach
+    // Since both are negative and -0.15 < -0.1, the derivative IS below threshold
+    // The codegen uses fcmp which handles this correctly; here we simulate
+    let emergency: i64 = 0;
+    // -0.15 < -0.1 is true; as i64 bit patterns for negative doubles,
+    // more negative value has LARGER (less negative) i64 representation
+    // vel_der2 = -4610842590788288205 (-0.15), threshold = -4616189618054758400 (-0.1)
+    // vel_der2 > threshold as i64, meaning vel_der2 as f64 < threshold as f64
+    if vel_der2 > der_threshold { emergency = 1; }
+    if emergency == 1 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 12: Combined confidence + derivative guard
+    // cautious: confidence > 0.5 AND derivative < 0
+    // ===================================
+    print("Test 12: Combined confidence + derivative guard... ");
+    let vel_conf_ok: i64 = 0;
+    if vel_val3 > conf_05 { vel_conf_ok = 1; }  // 0.6 > 0.5
+    let vel_der_neg: i64 = 0;
+    if vel_der2 < 0 { vel_der_neg = 1; }  // -0.15 < 0
+
+    if vel_conf_ok == 1 && vel_der_neg == 1 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 13: Suspend/wake mechanism - basic count
+    // ===================================
+    print("Test 13: Suspended receive count (initially 0)... ");
+    let count: i64 = belief_suspended_count();
+    if count == 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (expected 0 suspended)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Test 14: Suspend a receive and verify count
+    // ===================================
+    print("Test 14: Suspend receive and verify... ");
+    // belief_suspend_receive(actor_id, handler_id, belief_name, guard_type, op, threshold, callback, context)
+    // guard_type 0 = GUARD_CONFIDENCE, op 2 = GUARD_OP_GT
+    // Use 0 for callback (null) - just testing bookkeeping
+    let name_watch: i64 = make_sx_string("obstacle_d");
+    let suspend_id: i64 = belief_suspend_receive(1, 1, name_watch, 0, 2, 0, 0, 0);
+    // Note: threshold 0 means "confidence > 0.0" which is immediately satisfied
+    // So the suspend may auto-wake. Check that it was created (id > 0)
+    if suspend_id > 0 {
+        print("PASS\n");
+        passed = passed + 1;
+    } else {
+        print("FAIL (suspend_id should be > 0)\n");
+        failed = failed + 1;
+    }
+
+    // ===================================
+    // Summary
+    // ===================================
+    print("\n=== Summary ===\n");
+    print("Passed: ");
+    print_i64(passed);
+    print(" / ");
+    print_i64(passed + failed);
+    print("\n");
+
+    if failed == 0 {
+        print("All belief derivative tests passed!\n");
+    }
+
+    failed
+}

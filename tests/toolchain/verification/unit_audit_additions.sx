@@ -1,6 +1,6 @@
 // Validation: Audit Additions (Section 34.11)
 // Tests for items discovered during comprehensive phase 1-33 audit
-// v0.12.0: Validates core language features, type system, and stdlib
+// v0.13.0: Validates core language features, type system, and stdlib
 
 // ============================================
 // 34.11.1 Struct Fields and Method Dispatch

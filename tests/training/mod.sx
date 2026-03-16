@@ -16,6 +16,7 @@ pub mod unit_generators;
 pub mod unit_annealing;
 pub mod unit_neural_gates;
 pub mod integration_pipeline;
+pub mod integ_meta_training;
 
 // Re-export test utilities
 pub use unit_tensor_ops::*;
@@ -25,6 +26,7 @@ pub use unit_generators::*;
 pub use unit_annealing::*;
 pub use unit_neural_gates::*;
 pub use integration_pipeline::*;
+pub use integ_meta_training::*;
 
 /// Run all training tests
 pub fn run_all_tests() {
@@ -43,6 +45,7 @@ pub fn run_all_tests() {
  // Integration tests
  println!("\nIntegration Tests:");
  println!(" - Pipeline: end-to-end training workflow");
+ println!(" - Meta Training: meta-optimizer, curriculum, compression pipeline");
 
  println!("\n================================");
  println!("Test suite loaded.");

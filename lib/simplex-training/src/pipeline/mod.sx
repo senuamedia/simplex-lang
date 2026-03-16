@@ -21,7 +21,12 @@
 pub mod specialist;
 pub mod batch;
 pub mod anneal;
+pub mod compress;
 
 pub use specialist::{SpecialistPipeline, PipelineConfig, TrainedSpecialist, PipelineResult};
 pub use batch::{BatchTrainer, BatchConfig, BatchResult};
 pub use anneal::{AnnealTrainingState, AnnealOptimizer};
+pub use compress::{
+    StagedCompressionPipeline, StagedCompressionConfig, StagedCompressionResult,
+    CompressionStage, QualityGate, StageResult,
+};

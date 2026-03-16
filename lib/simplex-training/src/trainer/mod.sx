@@ -9,7 +9,7 @@
 pub mod meta;
 pub mod specialist;
 
-pub use meta::{MetaTrainer, MetaConfig, MetaLoss};
+pub use meta::{MetaTrainer, MetaConfig, MetaLoss, MetaOptimizer, MetaDiagnostics};
 pub use specialist::{SpecialistTrainer, SpecialistConfig};
 
 use simplex_std::dual::dual;

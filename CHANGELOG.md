@@ -5,6 +5,62 @@ All notable changes to Simplex will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-03-16
+
+### Highlights
+
+**Completion & Foundations** - Completes all outstanding work from v0.9.0-v0.12.0 — zero task debt entering v0.14.0. Adds mathematical foundations for Quantum Computing Bridge. 162/162 tests passing (100%).
+
+### Added
+
+- Complex number type (`simplex-std::complex`) — 650 lines, full complex arithmetic, Euler's formula, polar form
+- Matrix & linear algebra (`simplex-std::matrix`) — 1,457 lines, matmul, LU decomposition, inverse, Kronecker product, eigenvalue estimation
+- Multi-dimensional dual numbers (`simplex-std::multidual`) — N-dimensional gradients in single forward pass
+- Second-order dual numbers (`simplex-std::dual2`) — exact Hessian computation
+- Differentiation utilities (`simplex-std::diff`) — gradient(), jacobian(), hessian() functions
+- HTTP client module (`simplex-std::http_client`) — GET/POST/PUT/DELETE with TLS, JSON convenience
+- JSON parser module (`simplex-std::json`) — full parse/stringify with nested traversal and builders
+- Contract logic: `requires`, `ensures`, `invariant`, `fallback` keywords for neural gates
+- Staged compression pipeline (`lib/simplex-training/src/pipeline/compress.sx`)
+- Meta-optimizer for all 5 learnable training schedules
+- Curriculum learning with meta-gradient integration
+- SLM native C bindings (GGUF validation, tokenizer, cosine similarity)
+- sxdoc `--manifest` and `--category` flags for API documentation generation
+- GitHub issue templates (bug report, feature request)
+- SECURITY.md vulnerability reporting policy
+- 8 new test files across math, stdlib, contracts, belief guards, toolchain
+
+### Changed
+
+- All tools bumped to v0.13.0
+- `temp_attention.sx` renamed to `temperature_attention.sx`
+- Toolchain functions synced with shared modules (`lib/platform.sx`, `lib/version.sx`)
+- Cursus VM stack push now has bounds checking
+- CONTRIBUTING.md expanded with project structure and test instructions
+- Spec docs updated for v0.12.0 accuracy (6 files corrected)
+- simplex-docs/spec/12-http-server.md renumbered to 18-http-server.md
+- Tutorial chapter links corrected in docs README
+
+### Fixed
+
+- Compiler: vec_set redefinition in LLVM IR generation
+- Compiler: undefined 'Get' variable in actor message patterns
+- Compiler: async/await exit code 240 (state machine default handler)
+- Compiler: segfaults on belief/epistemic modules (gen_specialist register_struct args)
+- Compiler: missing FFI declarations for extern functions
+- Compiler: duplicate declare statements for extern fn
+- Async: state persistence before returning Pending
+- Async: inner future loaded from struct on re-entry
+- Async: return statements now tag values as Ready
+- Belief guards: missing suspend/wake declarations in codegen and stage0
+- Neural gates: training mode test accuracy
+
+### Removed
+
+- Nothing
+
+---
+
 ## [0.12.0] - 2026-03-16
 
 ### Highlights

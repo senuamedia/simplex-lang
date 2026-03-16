@@ -109,7 +109,16 @@ enum TokenKind {
     KwConfidence,    // confidence(belief_id)
     KwDerivative,    // .derivative accessor
     // Attribute tokens
-    Hash             // # for #[attr] syntax
+    Hash,            // # for #[attr] syntax
+    // Type cast keyword
+    KwAs,            // as keyword for type casting
+    // Neural gate keyword
+    KwNeuralGate,    // neural_gate keyword for neural gates
+    // Contract keywords (TASK-001 Phase 2)
+    KwRequires,      // requires precondition
+    KwEnsures,       // ensures postcondition
+    KwInvariant,     // invariant struct/type constraint
+    KwFallback       // fallback handler on contract failure
 }
 
 // AST node tags - using i64 since stage1 doesn't have proper enums for everything
@@ -127,6 +136,7 @@ fn TAG_SPECIALIST() -> i64 { 9 }  // AI specialist
 fn TAG_HIVE() -> i64 { 10 }       // cognitive hive
 fn TAG_ANIMA() -> i64 { 11 }      // cognitive soul
 fn TAG_TYPE_ALIAS() -> i64 { 12 } // type alias: type Name = Type;
+fn TAG_NEURAL_GATE() -> i64 { 13 } // neural gate definition
 
 // Stmt tags
 fn STMT_LET() -> i64 { 0 }
@@ -907,6 +917,16 @@ fn ast_try(inner: i64) -> i64 {
     node
 }
 
+// Expr: Cast (expr as Type)
+// Layout: tag(0), inner(1), target_type(2)
+fn ast_cast(inner: i64, target_type: i64) -> i64 {
+    let node: i64 = malloc(24);
+    store_i64(node, 0, EXPR_CAST());
+    store_ptr(node, 1, inner);
+    store_ptr(node, 2, target_type);
+    node
+}
+
 // Expr: Await (.await)
 // Layout: tag(0), inner(1)
 fn ast_await(inner: i64) -> i64 {
@@ -1075,6 +1095,8 @@ fn OP_SHR() -> i64 { 17 }
 // Unary operator codes
 fn OP_NEG() -> i64 { 0 }
 fn OP_NOT() -> i64 { 1 }
+fn OP_REF() -> i64 { 102 }
+fn OP_DEREF() -> i64 { 103 }
 
 // Parse f-string content into parts and expressions
 // Content like "Hello {name}, you are {age} years old" becomes:
@@ -1666,6 +1688,37 @@ fn parse_primary(parser: i64) -> i64 {
         return ast_closure(params, body);
     }
 
+    // Treat keyword tokens as identifier when used as variable names
+    // This allows keywords like 'confidence' to be used as variable names
+    if parser_check(parser, TokenKind::KwConfidence) {
+        let tok: i64 = parser_advance(parser);
+        return ast_ident(token_text(tok));
+    }
+    if parser_check(parser, TokenKind::KwDerivative) {
+        let tok: i64 = parser_advance(parser);
+        return ast_ident(token_text(tok));
+    }
+    if parser_check(parser, TokenKind::KwSpecialist) {
+        let tok: i64 = parser_advance(parser);
+        return ast_ident(token_text(tok));
+    }
+    if parser_check(parser, TokenKind::KwHive) {
+        let tok: i64 = parser_advance(parser);
+        return ast_ident(token_text(tok));
+    }
+    if parser_check(parser, TokenKind::KwAnima) {
+        let tok: i64 = parser_advance(parser);
+        return ast_ident(token_text(tok));
+    }
+    if parser_check(parser, TokenKind::KwInit) {
+        let tok: i64 = parser_advance(parser);
+        return ast_ident(token_text(tok));
+    }
+    if parser_check(parser, TokenKind::KwMut) {
+        let tok: i64 = parser_advance(parser);
+        return ast_ident(token_text(tok));
+    }
+
     // Error - advance past unrecognized token to prevent infinite loop
     if parser_at_end(parser) == false {
         parser_advance(parser);
@@ -1683,6 +1736,11 @@ fn parse_postfix(parser: i64) -> i64 {
             if parser_check(parser, TokenKind::KwAwait) {
                 parser_advance(parser);
                 expr = ast_await(expr);
+            } else if parser_check(parser, TokenKind::Int) {
+                // Tuple field access: expr.0, expr.1, etc.
+                let idx_tok: i64 = parser_advance(parser);
+                let idx_str: i64 = token_text(idx_tok);
+                expr = ast_field_access(expr, idx_str);
             } else {
                 let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
                 let name: i64 = token_text(name_tok);
@@ -1767,24 +1825,51 @@ fn parse_unary(parser: i64) -> i64 {
         let operand: i64 = parse_unary(parser);
         return ast_unary(OP_NOT(), operand);
     }
+    // Reference operator: &expr or &mut expr
+    if parser_match(parser, TokenKind::Amp) {
+        // Skip optional 'mut' keyword
+        if parser_check(parser, TokenKind::KwMut) {
+            parser_advance(parser);
+        }
+        let operand: i64 = parse_unary(parser);
+        return ast_unary(OP_REF(), operand);
+    }
+    // Dereference operator: *expr
+    if parser_match(parser, TokenKind::Star) {
+        let operand: i64 = parse_unary(parser);
+        return ast_unary(OP_DEREF(), operand);
+    }
     parse_postfix(parser)
+}
+
+// Parse cast expression: expr as Type
+fn parse_cast(parser: i64) -> i64 {
+    let left: i64 = parse_unary(parser);
+
+    while parser_check(parser, TokenKind::KwAs) {
+        parser_advance(parser);
+        let target_type: i64 = parse_type(parser);
+        left = ast_cast(left, target_type);
+    }
+
+    left
 }
 
 // Parse multiplicative expression
 fn parse_multiplicative(parser: i64) -> i64 {
-    let left: i64 = parse_unary(parser);
+    let left: i64 = parse_cast(parser);
 
     while true {
         if parser_match(parser, TokenKind::Star) {
-            let right: i64 = parse_unary(parser);
+            let right: i64 = parse_cast(parser);
             left = ast_binary(OP_MUL(), left, right);
         } else {
             if parser_match(parser, TokenKind::Slash) {
-                let right: i64 = parse_unary(parser);
+                let right: i64 = parse_cast(parser);
                 left = ast_binary(OP_DIV(), left, right);
             } else {
                 if parser_match(parser, TokenKind::Percent) {
-                    let right: i64 = parse_unary(parser);
+                    let right: i64 = parse_cast(parser);
                     left = ast_binary(OP_MOD(), left, right);
                 } else {
                     return left;
@@ -2003,6 +2088,26 @@ fn parse_block(parser: i64) -> i64 {
                     let value: i64 = parse_expr(parser);
                     parser_match(parser, TokenKind::Semi);
                     vec_push(stmts, ast_field_assign(expr, value));
+                } else if expr_tag == EXPR_UNARY() {
+                    // Dereference assignment: *x = value
+                    // Extract the inner identifier from the unary expr
+                    let inner: i64 = load_ptr(expr, 2);
+                    let inner_tag: i64 = load_i64(inner, 0);
+                    if inner_tag == EXPR_IDENT() {
+                        let name: i64 = load_ptr(inner, 1);
+                        let value: i64 = parse_expr(parser);
+                        parser_match(parser, TokenKind::Semi);
+                        vec_push(stmts, ast_assign(name, value));
+                    } else {
+                        let value: i64 = parse_expr(parser);
+                        parser_match(parser, TokenKind::Semi);
+                        vec_push(stmts, ast_expr_stmt(expr));
+                    }
+                } else if expr_tag == EXPR_INDEX() {
+                    // Index assignment: arr[i] = value
+                    let value: i64 = parse_expr(parser);
+                    parser_match(parser, TokenKind::Semi);
+                    vec_push(stmts, ast_field_assign(expr, value));
                 } else {
                     // Invalid assignment target, treat as expression
                     parser_match(parser, TokenKind::Semi);
@@ -2038,7 +2143,8 @@ fn parse_block(parser: i64) -> i64 {
 // Parse var statement (mutable binding)
 fn parse_var(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwVar);
-    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    // Accept Ident or keyword tokens as variable name
+    let name_tok: i64 = parser_advance(parser);
     let name: i64 = token_text(name_tok);
 
     let ty: i64 = 0;
@@ -2287,7 +2393,8 @@ fn parse_while(parser: i64) -> i64 {
 // Parse for expression: for i in start..end { body }
 fn parse_for(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwFor);
-    let var_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    // Accept Ident or keyword tokens as loop variable name
+    let var_tok: i64 = parser_advance(parser);
     let var_name: i64 = token_text(var_tok);
     parser_expect(parser, TokenKind::KwIn);
     let start: i64 = parse_expr(parser);
@@ -2352,7 +2459,8 @@ fn parse_match(parser: i64) -> i64 {
 // Parse let statement
 fn parse_let(parser: i64) -> i64 {
     parser_expect(parser, TokenKind::KwLet);
-    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    // Accept Ident or keyword tokens as variable name
+    let name_tok: i64 = parser_advance(parser);
     let name: i64 = token_text(name_tok);
 
     let ty: i64 = 0;
@@ -2394,6 +2502,19 @@ fn parse_return(parser: i64) -> i64 {
 
 // Parse type: handles simple idents, Self, Self::AssocType, tuples, dyn Trait, and reference types (&T, &str)
 fn parse_type(parser: i64) -> i64 {
+    // Check for pointer type (*T, *i64, *mut T)
+    if parser_check(parser, TokenKind::Star) {
+        parser_advance(parser);  // consume '*'
+        // Check for *mut (mutable pointer)
+        if parser_check(parser, TokenKind::KwMut) {
+            parser_advance(parser);  // consume 'mut'
+            let inner_type: i64 = parse_type(parser);
+            return string_concat(string_from("*mut "), inner_type);
+        }
+        let inner_type: i64 = parse_type(parser);
+        return string_concat(string_from("*"), inner_type);
+    }
+
     // Check for reference type (&T, &str, &mut T)
     if parser_check(parser, TokenKind::Amp) {
         parser_advance(parser);  // consume '&'
@@ -2549,20 +2670,11 @@ fn parse_params(parser: i64) -> i64 {
         // &self or &mut self
         parser_advance(parser);  // consume &
         // Check for 'mut' identifier before self
-        if parser_check(parser, TokenKind::Ident) {
-            let tok: i64 = parser_current(parser);
-            if string_eq(token_text(tok), "mut") {
-                parser_advance(parser);  // consume mut
-                parser_expect(parser, TokenKind::KwSelf);
-                name = string_from("self");
-                ty = string_from("&mut Self");
-            } else {
-                // Not mut, should not happen in normal code
-                // Try to recover
-                parser_expect(parser, TokenKind::KwSelf);
-                name = string_from("self");
-                ty = string_from("&Self");
-            }
+        if parser_check(parser, TokenKind::KwMut) {
+            parser_advance(parser);  // consume mut
+            parser_expect(parser, TokenKind::KwSelf);
+            name = string_from("self");
+            ty = string_from("&mut Self");
         } else {
             parser_expect(parser, TokenKind::KwSelf);
             name = string_from("self");
@@ -2581,7 +2693,9 @@ fn parse_params(parser: i64) -> i64 {
             ty = string_from("Self");
         }
     } else {
-        let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+        // Accept Ident or any keyword token as parameter name
+        // This allows keywords like 'confidence' to be used as param names
+        let name_tok: i64 = parser_advance(parser);
         name = token_text(name_tok);
         parser_expect(parser, TokenKind::Colon);
         ty = parse_type(parser);
@@ -2596,20 +2710,11 @@ fn parse_params(parser: i64) -> i64 {
         if parser_check(parser, TokenKind::Amp) {
             // &self or &mut self
             parser_advance(parser);  // consume &
-            // Check for 'mut' identifier before self
-            if parser_check(parser, TokenKind::Ident) {
-                let tok: i64 = parser_current(parser);
-                if string_eq(token_text(tok), "mut") {
-                    parser_advance(parser);  // consume mut
-                    parser_expect(parser, TokenKind::KwSelf);
-                    pname = string_from("self");
-                    pty = string_from("&mut Self");
-                } else {
-                    // Not mut, should not happen in normal code
-                    parser_expect(parser, TokenKind::KwSelf);
-                    pname = string_from("self");
-                    pty = string_from("&Self");
-                }
+            if parser_check(parser, TokenKind::KwMut) {
+                parser_advance(parser);  // consume mut
+                parser_expect(parser, TokenKind::KwSelf);
+                pname = string_from("self");
+                pty = string_from("&mut Self");
             } else {
                 parser_expect(parser, TokenKind::KwSelf);
                 pname = string_from("self");
@@ -2625,7 +2730,8 @@ fn parse_params(parser: i64) -> i64 {
                 pty = string_from("Self");
             }
         } else {
-            let pname_tok: i64 = parser_expect(parser, TokenKind::Ident);
+            // Accept Ident or any keyword token as parameter name
+            let pname_tok: i64 = parser_advance(parser);
             pname = token_text(pname_tok);
             parser_expect(parser, TokenKind::Colon);
             pty = parse_type(parser);
@@ -3295,6 +3401,11 @@ fn parse_hive(parser: i64) -> i64 {
                 // Parse mnemonic sub-blocks: episodic, semantic, beliefs
                 parser_advance(parser);
                 while parser_check(parser, TokenKind::RBrace) == false {
+                    // EOF check to prevent infinite loop
+                    if parser_at_end(parser) {
+                        parser_add_error(parser, string_from("Unexpected end of file in mnemonic block"));
+                        return 0;
+                    }
                     let block_tok: i64 = parser_expect(parser, TokenKind::Ident);
                     let block_name: i64 = token_text(block_tok);
                     parser_expect(parser, TokenKind::Colon);
@@ -3315,6 +3426,11 @@ fn parse_hive(parser: i64) -> i64 {
                 parser_advance(parser);
                 let items: i64 = vec_new();
                 while parser_check(parser, TokenKind::RBracket) == false {
+                    // EOF check to prevent infinite loop
+                    if parser_at_end(parser) {
+                        parser_add_error(parser, string_from("Unexpected end of file in array"));
+                        return 0;
+                    }
                     let item_tok: i64 = parser_expect(parser, TokenKind::Ident);
                     vec_push(items, token_text(item_tok));
                     parser_match(parser, TokenKind::Comma);
@@ -3363,6 +3479,11 @@ fn parse_config_block(parser: i64) -> i64 {
             parser_advance(parser);
             let items: i64 = vec_new();
             while parser_check(parser, TokenKind::RBracket) == false {
+                // EOF check to prevent infinite loop
+                if parser_at_end(parser) {
+                    parser_add_error(parser, string_from("Unexpected end of file in config array"));
+                    return config;
+                }
                 if parser_check(parser, TokenKind::String) {
                     let s_tok: i64 = parser_advance(parser);
                     vec_push(items, token_text(s_tok));
@@ -3437,6 +3558,11 @@ fn parse_anima(parser: i64) -> i64 {
                 parser_advance(parser);
                 let depth: i64 = 1;
                 while depth > 0 {
+                    // EOF check to prevent infinite loop
+                    if parser_at_end(parser) {
+                        parser_add_error(parser, string_from("Unexpected end of file while skipping block"));
+                        return 0;
+                    }
                     if parser_check(parser, TokenKind::LBrace) {
                         depth = depth + 1;
                     }
@@ -3481,6 +3607,14 @@ fn skip_attributes(parser: i64) -> i64 {
                 }
                 parser_advance(parser);
             }
+        }
+    }
+    // Also handle @ident annotations (e.g., @cpu, @gpu)
+    while parser_check(parser, TokenKind::At) {
+        parser_advance(parser);  // consume @
+        // Skip the annotation identifier
+        if parser_check(parser, TokenKind::Ident) {
+            parser_advance(parser);  // consume annotation name
         }
     }
     0
@@ -3544,9 +3678,148 @@ fn parse_item(parser: i64) -> i64 {
     if parser_check(parser, TokenKind::KwAnima) {
         return parse_anima(parser);
     }
+    if parser_check(parser, TokenKind::KwNeuralGate) {
+        return parse_neural_gate(parser);
+    }
+    if parser_check(parser, TokenKind::KwInvariant) {
+        return parse_invariant_decl(parser);
+    }
 
     // Unknown item
     0
+}
+
+// ========================================
+// Neural Gate Parsing
+// ========================================
+
+// Parse neural_gate definition with contract clauses:
+//   neural_gate name(params) -> ret_type
+//       requires <expr>
+//       ensures <expr>
+//       fallback { body }
+//   { body }
+//
+// Layout: tag(0), name(1), type_params(2), params(3), ret_ty(4), body(5),
+//         attrs(6), requires_expr(7), ensures_expr(8), fallback_body(9)
+fn parse_neural_gate(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwNeuralGate);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+
+    let type_params: i64 = vec_new();
+    let params: i64 = parse_params(parser);
+
+    let ret_ty: i64 = 0;
+    if parser_match(parser, TokenKind::Arrow) {
+        ret_ty = parse_type(parser);
+    }
+
+    // Parse optional contract clauses before the body block
+    let requires_expr: i64 = 0;
+    let ensures_expr: i64 = 0;
+    let fallback_body: i64 = 0;
+
+    // Contract clauses appear between signature and body '{'
+    while parser_check(parser, TokenKind::LBrace) == false {
+        if parser_at_end(parser) {
+            parser_add_error(parser, string_from("unexpected end in neural gate declaration"));
+            return 0;
+        }
+        if parser_check(parser, TokenKind::KwRequires) {
+            parser_advance(parser);  // consume 'requires'
+            requires_expr = parse_expr(parser);
+        } else {
+            if parser_check(parser, TokenKind::KwEnsures) {
+                parser_advance(parser);  // consume 'ensures'
+                ensures_expr = parse_expr(parser);
+            } else {
+                if parser_check(parser, TokenKind::KwFallback) {
+                    parser_advance(parser);  // consume 'fallback'
+                    fallback_body = parse_block(parser);
+                } else {
+                    // Unknown token before '{' - break to avoid infinite loop
+                    break;
+                }
+            }
+        }
+    }
+
+    let body: i64 = parse_block(parser);
+
+    // Build AST node with TAG_NEURAL_GATE
+    // 10 slots * 8 bytes = 80 bytes
+    let node: i64 = malloc(80);
+    store_i64(node, 0, TAG_NEURAL_GATE());
+    store_ptr(node, 1, name);
+    store_ptr(node, 2, type_params);
+    store_ptr(node, 3, params);
+    store_ptr(node, 4, ret_ty);
+    store_ptr(node, 5, body);
+    store_i64(node, 6, 2);  // 2 = neural_gate attr flag
+    store_ptr(node, 7, requires_expr);
+    store_ptr(node, 8, ensures_expr);
+    store_ptr(node, 9, fallback_body);
+    node
+}
+
+// Parse function-level contract clauses (for regular fn with contracts)
+// Returns: vec of [requires_expr, ensures_expr, fallback_body] (0 if not present)
+fn parse_fn_contracts(parser: i64) -> i64 {
+    let requires_expr: i64 = 0;
+    let ensures_expr: i64 = 0;
+    let fallback_body: i64 = 0;
+
+    while parser_check(parser, TokenKind::LBrace) == false {
+        if parser_at_end(parser) {
+            break;
+        }
+        if parser_check(parser, TokenKind::KwRequires) {
+            parser_advance(parser);
+            requires_expr = parse_expr(parser);
+        } else {
+            if parser_check(parser, TokenKind::KwEnsures) {
+                parser_advance(parser);
+                ensures_expr = parse_expr(parser);
+            } else {
+                if parser_check(parser, TokenKind::KwFallback) {
+                    parser_advance(parser);
+                    fallback_body = parse_block(parser);
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    // Pack into a small struct: 3 slots
+    let contracts: i64 = malloc(24);
+    store_ptr(contracts, 0, requires_expr);
+    store_ptr(contracts, 1, ensures_expr);
+    store_ptr(contracts, 2, fallback_body);
+    contracts
+}
+
+// Parse invariant declaration on struct:
+//   invariant <expr>
+// This is parsed as a top-level item when the invariant keyword is seen.
+// Layout: tag(0)=TAG_FN, name(1)="__invariant_<struct>", body(5)=expr
+fn parse_invariant_decl(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwInvariant);
+
+    // Parse the condition expression
+    let condition: i64 = parse_expr(parser);
+
+    // Build as a zero-arg function that evaluates the invariant
+    let node: i64 = malloc(56);
+    store_i64(node, 0, TAG_FN());
+    store_ptr(node, 1, string_from("__invariant_check"));
+    store_ptr(node, 2, vec_new());  // no type params
+    store_ptr(node, 3, vec_new());  // no params
+    store_ptr(node, 4, 0);         // no return type
+    store_ptr(node, 5, condition); // body is the condition
+    store_i64(node, 6, 0);        // no attrs
+    node
 }
 
 // ========================================
@@ -3561,10 +3834,18 @@ fn parse_belief_guard(parser: i64) -> i64 {
 // Parse OR expression in belief guards
 fn parse_belief_or(parser: i64) -> i64 {
     let left: i64 = parse_belief_and(parser);
+    // NULL check to prevent segfault on malformed input
+    if left == 0 {
+        return 0;
+    }
 
     while parser_check(parser, TokenKind::PipePipe) {
         parser_advance(parser);
         let right: i64 = parse_belief_and(parser);
+        // NULL check for right operand
+        if right == 0 {
+            return left;
+        }
         let node: i64 = malloc(24);
         store_i64(node, 0, EXPR_BELIEF_OR());
         store_ptr(node, 1, left);
@@ -3578,10 +3859,18 @@ fn parse_belief_or(parser: i64) -> i64 {
 // Parse AND expression in belief guards
 fn parse_belief_and(parser: i64) -> i64 {
     let left: i64 = parse_belief_comparison(parser);
+    // NULL check to prevent segfault on malformed input
+    if left == 0 {
+        return 0;
+    }
 
     while parser_check(parser, TokenKind::AmpAmp) {
         parser_advance(parser);
         let right: i64 = parse_belief_comparison(parser);
+        // NULL check for right operand
+        if right == 0 {
+            return left;
+        }
         let node: i64 = malloc(24);
         store_i64(node, 0, EXPR_BELIEF_AND());
         store_ptr(node, 1, left);
@@ -3595,6 +3884,10 @@ fn parse_belief_and(parser: i64) -> i64 {
 // Parse comparison in belief guards
 fn parse_belief_comparison(parser: i64) -> i64 {
     let left: i64 = parse_belief_primary(parser);
+    // NULL check to prevent segfault on malformed input
+    if left == 0 {
+        return 0;
+    }
 
     // Check for comparison operator
     if parser_check(parser, TokenKind::Lt) {

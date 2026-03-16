@@ -1,0 +1,1457 @@
+// simplex-std::matrix - Matrix & Linear Algebra
+//
+// A dense matrix type backed by a flat Vec<f64> with row-major storage.
+// Provides core linear algebra operations including LU decomposition,
+// determinant, inverse, and quantum-relevant checks (unitary, hermitian,
+// Kronecker product).
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::matrix::Matrix;
+//
+// let a = Matrix::identity(3);
+// let b = Matrix::from_vec(3, 3, vec![
+//     1.0, 2.0, 3.0,
+//     4.0, 5.0, 6.0,
+//     7.0, 8.0, 9.0,
+// ]);
+// let c = a.matmul(&b);  // Identity * B = B
+// assert(c.approx_eq(&b, 1e-10));
+// ```
+//
+// # Storage
+//
+// Elements are stored in row-major order in a flat Vec<f64>.
+// Element (i, j) is at index i * cols + j.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use super::math::{fabs, sqrt, PI};
+use super::collections::Vec;
+
+// =============================================================================
+// Matrix Struct
+// =============================================================================
+
+/// A dense matrix of f64 values with row-major storage.
+///
+/// The matrix stores `rows * cols` elements in a flat vector.
+/// Element at position (i, j) is stored at index `i * cols + j`.
+pub struct Matrix {
+    /// Flat data storage (row-major)
+    data: Vec<f64>,
+    /// Number of rows
+    nrows: i64,
+    /// Number of columns
+    ncols: i64,
+}
+
+// =============================================================================
+// Construction
+// =============================================================================
+
+impl Matrix {
+    /// Create a new matrix filled with zeros.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::new(3, 4);  // 3x4 zero matrix
+    /// ```
+    pub fn new(rows: i64, cols: i64) -> Matrix {
+        Matrix::zeros(rows, cols)
+    }
+
+    /// Create a matrix filled with zeros.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::zeros(2, 3);
+    /// assert(m.get(0, 0) == 0.0);
+    /// ```
+    pub fn zeros(rows: i64, cols: i64) -> Matrix {
+        let size = rows * cols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(0.0);
+            i += 1;
+        }
+        Matrix { data, nrows: rows, ncols: cols }
+    }
+
+    /// Create a matrix filled with ones.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::ones(2, 2);
+    /// assert(m.get(1, 1) == 1.0);
+    /// ```
+    pub fn ones(rows: i64, cols: i64) -> Matrix {
+        let size = rows * cols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(1.0);
+            i += 1;
+        }
+        Matrix { data, nrows: rows, ncols: cols }
+    }
+
+    /// Create an identity matrix of size n x n.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let eye = Matrix::identity(3);
+    /// assert(eye.get(0, 0) == 1.0);
+    /// assert(eye.get(0, 1) == 0.0);
+    /// ```
+    pub fn identity(n: i64) -> Matrix {
+        var m = Matrix::zeros(n, n);
+        var i: i64 = 0;
+        while i < n {
+            m.set(i, i, 1.0);
+            i += 1;
+        }
+        m
+    }
+
+    /// Create a matrix from a flat vector of data (row-major order).
+    ///
+    /// The length of `data` must equal `rows * cols`.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::from_vec(2, 2, vec![1.0, 2.0, 3.0, 4.0]);
+    /// assert(m.get(0, 0) == 1.0);
+    /// assert(m.get(1, 1) == 4.0);
+    /// ```
+    pub fn from_vec(rows: i64, cols: i64, data: Vec<f64>) -> Matrix {
+        // Caller must ensure data.len() == rows * cols
+        Matrix { data, nrows: rows, ncols: cols }
+    }
+
+    /// Create a diagonal matrix from a vector of values.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let d = Matrix::diagonal(vec![1.0, 2.0, 3.0]);
+    /// assert(d.get(1, 1) == 2.0);
+    /// ```
+    pub fn diagonal(values: Vec<f64>) -> Matrix {
+        let n = values.len() as i64;
+        var m = Matrix::zeros(n, n);
+        var i: i64 = 0;
+        while i < n {
+            m.set(i, i, values[i as usize]);
+            i += 1;
+        }
+        m
+    }
+
+    /// Create a matrix filled with a single value.
+    pub fn fill(rows: i64, cols: i64, value: f64) -> Matrix {
+        let size = rows * cols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(value);
+            i += 1;
+        }
+        Matrix { data, nrows: rows, ncols: cols }
+    }
+}
+
+// =============================================================================
+// Element Access
+// =============================================================================
+
+impl Matrix {
+    /// Get the element at (row, col).
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::identity(2);
+    /// assert(m.get(0, 0) == 1.0);
+    /// ```
+    #[inline]
+    pub fn get(&self, row: i64, col: i64) -> f64 {
+        self.data[(row * self.ncols + col) as usize]
+    }
+
+    /// Set the element at (row, col).
+    ///
+    /// # Example
+    /// ```simplex
+    /// var m = Matrix::zeros(2, 2);
+    /// m.set(0, 1, 3.14);
+    /// ```
+    #[inline]
+    pub fn set(&mut self, row: i64, col: i64, val: f64) {
+        self.data[(row * self.ncols + col) as usize] = val;
+    }
+
+    /// Get the number of rows.
+    #[inline]
+    pub fn rows(&self) -> i64 {
+        self.nrows
+    }
+
+    /// Get the number of columns.
+    #[inline]
+    pub fn cols(&self) -> i64 {
+        self.ncols
+    }
+
+    /// Get the total number of elements.
+    #[inline]
+    pub fn numel(&self) -> i64 {
+        self.nrows * self.ncols
+    }
+}
+
+// =============================================================================
+// Properties
+// =============================================================================
+
+impl Matrix {
+    /// Check if the matrix is square (rows == cols).
+    pub fn is_square(&self) -> bool {
+        self.nrows == self.ncols
+    }
+
+    /// Check if the matrix is symmetric (M = M^T) within tolerance.
+    ///
+    /// Only meaningful for square matrices.
+    pub fn is_symmetric(&self, epsilon: f64) -> bool {
+        if !self.is_square() {
+            return false;
+        }
+        var i: i64 = 0;
+        while i < self.nrows {
+            var j: i64 = i + 1;
+            while j < self.ncols {
+                let diff = fabs(self.get(i, j) - self.get(j, i));
+                if diff > epsilon {
+                    return false;
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// Check if the matrix is diagonal within tolerance.
+    pub fn is_diagonal(&self, epsilon: f64) -> bool {
+        if !self.is_square() {
+            return false;
+        }
+        var i: i64 = 0;
+        while i < self.nrows {
+            var j: i64 = 0;
+            while j < self.ncols {
+                if i != j && fabs(self.get(i, j)) > epsilon {
+                    return false;
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// Check if the matrix is upper triangular within tolerance.
+    pub fn is_upper_triangular(&self, epsilon: f64) -> bool {
+        if !self.is_square() {
+            return false;
+        }
+        var i: i64 = 1;
+        while i < self.nrows {
+            var j: i64 = 0;
+            while j < i {
+                if fabs(self.get(i, j)) > epsilon {
+                    return false;
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// Check if the matrix is lower triangular within tolerance.
+    pub fn is_lower_triangular(&self, epsilon: f64) -> bool {
+        if !self.is_square() {
+            return false;
+        }
+        var i: i64 = 0;
+        while i < self.nrows - 1 {
+            var j: i64 = i + 1;
+            while j < self.ncols {
+                if fabs(self.get(i, j)) > epsilon {
+                    return false;
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+        true
+    }
+}
+
+// =============================================================================
+// Core Arithmetic Operations
+// =============================================================================
+
+impl Matrix {
+    /// Element-wise addition: C = A + B.
+    ///
+    /// Both matrices must have the same dimensions.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let a = Matrix::ones(2, 2);
+    /// let b = Matrix::ones(2, 2);
+    /// let c = a.add(&b);
+    /// assert(c.get(0, 0) == 2.0);
+    /// ```
+    pub fn add(&self, other: &Matrix) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize] + other.data[i as usize]);
+            i += 1;
+        }
+        Matrix { data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    /// Element-wise subtraction: C = A - B.
+    ///
+    /// Both matrices must have the same dimensions.
+    pub fn sub(&self, other: &Matrix) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize] - other.data[i as usize]);
+            i += 1;
+        }
+        Matrix { data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    /// Scalar multiplication: C = scalar * A.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let a = Matrix::identity(2);
+    /// let b = a.scale(3.0);
+    /// assert(b.get(0, 0) == 3.0);
+    /// ```
+    pub fn scale(&self, scalar: f64) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize] * scalar);
+            i += 1;
+        }
+        Matrix { data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    /// Negation: C = -A.
+    pub fn neg(&self) -> Matrix {
+        self.scale(-1.0)
+    }
+
+    /// Element-wise multiplication (Hadamard product).
+    pub fn hadamard(&self, other: &Matrix) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize] * other.data[i as usize]);
+            i += 1;
+        }
+        Matrix { data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    /// Matrix multiplication: C = A * B.
+    ///
+    /// A is (m x n), B is (n x p), result is (m x p).
+    /// This is the standard O(n^3) algorithm.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let a = Matrix::identity(3);
+    /// let b = Matrix::ones(3, 2);
+    /// let c = a.matmul(&b);
+    /// assert(c.rows() == 3);
+    /// assert(c.cols() == 2);
+    /// ```
+    pub fn matmul(&self, other: &Matrix) -> Matrix {
+        // self is (m x n), other is (n x p)
+        let m = self.nrows;
+        let n = self.ncols;
+        let p = other.ncols;
+
+        var result = Matrix::zeros(m, p);
+
+        var i: i64 = 0;
+        while i < m {
+            var j: i64 = 0;
+            while j < p {
+                var sum: f64 = 0.0;
+                var k: i64 = 0;
+                while k < n {
+                    sum += self.get(i, k) * other.get(k, j);
+                    k += 1;
+                }
+                result.set(i, j, sum);
+                j += 1;
+            }
+            i += 1;
+        }
+
+        result
+    }
+}
+
+// =============================================================================
+// Transpose & Reshape
+// =============================================================================
+
+impl Matrix {
+    /// Transpose: C = A^T.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let a = Matrix::from_vec(2, 3, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    /// let at = a.transpose();
+    /// assert(at.rows() == 3);
+    /// assert(at.cols() == 2);
+    /// assert(at.get(0, 1) == 4.0);
+    /// ```
+    pub fn transpose(&self) -> Matrix {
+        var data = Vec::new();
+        var j: i64 = 0;
+        while j < self.ncols {
+            var i: i64 = 0;
+            while i < self.nrows {
+                data.push(self.get(i, j));
+                i += 1;
+            }
+            j += 1;
+        }
+        Matrix { data, nrows: self.ncols, ncols: self.nrows }
+    }
+
+    /// Extract a sub-matrix from (row_start, col_start) to (row_end, col_end) exclusive.
+    pub fn submatrix(&self, row_start: i64, col_start: i64, row_end: i64, col_end: i64) -> Matrix {
+        let new_rows = row_end - row_start;
+        let new_cols = col_end - col_start;
+        var data = Vec::new();
+        var i: i64 = row_start;
+        while i < row_end {
+            var j: i64 = col_start;
+            while j < col_end {
+                data.push(self.get(i, j));
+                j += 1;
+            }
+            i += 1;
+        }
+        Matrix { data, nrows: new_rows, ncols: new_cols }
+    }
+
+    /// Extract a column as a column vector (n x 1 matrix).
+    pub fn col(&self, j: i64) -> Matrix {
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < self.nrows {
+            data.push(self.get(i, j));
+            i += 1;
+        }
+        Matrix { data, nrows: self.nrows, ncols: 1 }
+    }
+
+    /// Extract a row as a row vector (1 x n matrix).
+    pub fn row(&self, i: i64) -> Matrix {
+        var data = Vec::new();
+        var j: i64 = 0;
+        while j < self.ncols {
+            data.push(self.get(i, j));
+            j += 1;
+        }
+        Matrix { data, nrows: 1, ncols: self.ncols }
+    }
+}
+
+// =============================================================================
+// Map & Apply
+// =============================================================================
+
+impl Matrix {
+    /// Apply a function to each element, producing a new matrix.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::ones(2, 2);
+    /// let doubled = m.map(|x| x * 2.0);
+    /// assert(doubled.get(0, 0) == 2.0);
+    /// ```
+    pub fn map(&self, f: fn(f64) -> f64) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(f(self.data[i as usize]));
+            i += 1;
+        }
+        Matrix { data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    /// Apply a function that takes (row, col, value) to each element.
+    pub fn map_indexed(&self, f: fn(i64, i64, f64) -> f64) -> Matrix {
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < self.nrows {
+            var j: i64 = 0;
+            while j < self.ncols {
+                data.push(f(i, j, self.get(i, j)));
+                j += 1;
+            }
+            i += 1;
+        }
+        Matrix { data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    /// Reduce all elements to a single value.
+    pub fn fold(&self, init: f64, f: fn(f64, f64) -> f64) -> f64 {
+        let size = self.nrows * self.ncols;
+        var acc = init;
+        var i: i64 = 0;
+        while i < size {
+            acc = f(acc, self.data[i as usize]);
+            i += 1;
+        }
+        acc
+    }
+
+    /// Sum of all elements.
+    pub fn sum(&self) -> f64 {
+        self.fold(0.0, |a, b| a + b)
+    }
+
+    /// Maximum element.
+    pub fn max_element(&self) -> f64 {
+        let size = self.nrows * self.ncols;
+        var m = self.data[0];
+        var i: i64 = 1;
+        while i < size {
+            let v = self.data[i as usize];
+            if v > m {
+                m = v;
+            }
+            i += 1;
+        }
+        m
+    }
+
+    /// Minimum element.
+    pub fn min_element(&self) -> f64 {
+        let size = self.nrows * self.ncols;
+        var m = self.data[0];
+        var i: i64 = 1;
+        while i < size {
+            let v = self.data[i as usize];
+            if v < m {
+                m = v;
+            }
+            i += 1;
+        }
+        m
+    }
+}
+
+// =============================================================================
+// Linear Algebra - Trace, Norm, Determinant
+// =============================================================================
+
+impl Matrix {
+    /// Trace: sum of diagonal elements.
+    ///
+    /// Only defined for square matrices.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::identity(4);
+    /// assert(m.trace() == 4.0);
+    /// ```
+    pub fn trace(&self) -> f64 {
+        var sum: f64 = 0.0;
+        let n = if self.nrows < self.ncols { self.nrows } else { self.ncols };
+        var i: i64 = 0;
+        while i < n {
+            sum += self.get(i, i);
+            i += 1;
+        }
+        sum
+    }
+
+    /// Frobenius norm: sqrt(sum of squares of all elements).
+    pub fn frobenius_norm(&self) -> f64 {
+        var sum: f64 = 0.0;
+        let size = self.nrows * self.ncols;
+        var i: i64 = 0;
+        while i < size {
+            let v = self.data[i as usize];
+            sum += v * v;
+            i += 1;
+        }
+        sqrt(sum)
+    }
+
+    /// Infinity norm: maximum absolute row sum.
+    pub fn inf_norm(&self) -> f64 {
+        var max_sum: f64 = 0.0;
+        var i: i64 = 0;
+        while i < self.nrows {
+            var row_sum: f64 = 0.0;
+            var j: i64 = 0;
+            while j < self.ncols {
+                row_sum += fabs(self.get(i, j));
+                j += 1;
+            }
+            if row_sum > max_sum {
+                max_sum = row_sum;
+            }
+            i += 1;
+        }
+        max_sum
+    }
+
+    /// Determinant of a square matrix.
+    ///
+    /// Uses direct formulas for 1x1, 2x2, 3x3 and LU decomposition for larger.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::identity(3);
+    /// assert(fabs(m.determinant() - 1.0) < 1e-10);
+    /// ```
+    pub fn determinant(&self) -> f64 {
+        let n = self.nrows;
+
+        // 1x1
+        if n == 1 {
+            return self.get(0, 0);
+        }
+
+        // 2x2: ad - bc
+        if n == 2 {
+            return self.get(0, 0) * self.get(1, 1) - self.get(0, 1) * self.get(1, 0);
+        }
+
+        // 3x3: Sarrus' rule
+        if n == 3 {
+            let a = self.get(0, 0);
+            let b = self.get(0, 1);
+            let c = self.get(0, 2);
+            let d = self.get(1, 0);
+            let e = self.get(1, 1);
+            let f = self.get(1, 2);
+            let g = self.get(2, 0);
+            let h = self.get(2, 1);
+            let k = self.get(2, 2);
+            return a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+        }
+
+        // General case: LU decomposition
+        let lu_result = self.lu_decompose();
+        let u = lu_result.1;
+        let swaps = lu_result.3;
+
+        // det = (-1)^swaps * product of U diagonal
+        var det: f64 = 1.0;
+        var i: i64 = 0;
+        while i < n {
+            det *= u.get(i, i);
+            i += 1;
+        }
+
+        if swaps % 2 == 1 {
+            det = -det;
+        }
+
+        det
+    }
+}
+
+// =============================================================================
+// Row Operations
+// =============================================================================
+
+impl Matrix {
+    /// Swap two rows in place.
+    pub fn swap_rows(&mut self, r1: i64, r2: i64) {
+        if r1 == r2 {
+            return;
+        }
+        var j: i64 = 0;
+        while j < self.ncols {
+            let tmp = self.get(r1, j);
+            self.set(r1, j, self.get(r2, j));
+            self.set(r2, j, tmp);
+            j += 1;
+        }
+    }
+
+    /// Scale a row by a scalar in place.
+    pub fn scale_row(&mut self, row: i64, scalar: f64) {
+        var j: i64 = 0;
+        while j < self.ncols {
+            self.set(row, j, self.get(row, j) * scalar);
+            j += 1;
+        }
+    }
+
+    /// Add a scaled row to another row in place: row_dst += scalar * row_src.
+    pub fn add_scaled_row(&mut self, dst: i64, src: i64, scalar: f64) {
+        var j: i64 = 0;
+        while j < self.ncols {
+            self.set(dst, j, self.get(dst, j) + scalar * self.get(src, j));
+            j += 1;
+        }
+    }
+}
+
+// =============================================================================
+// LU Decomposition
+// =============================================================================
+
+impl Matrix {
+    /// LU decomposition with partial pivoting.
+    ///
+    /// Returns (L, U, P, num_swaps) where P * A = L * U.
+    /// - L is lower triangular with 1s on diagonal
+    /// - U is upper triangular
+    /// - P is a permutation matrix
+    /// - num_swaps is the number of row swaps (for determinant sign)
+    ///
+    /// # Example
+    /// ```simplex
+    /// let a = Matrix::from_vec(3, 3, vec![
+    ///     2.0, 1.0, 1.0,
+    ///     4.0, 3.0, 3.0,
+    ///     8.0, 7.0, 9.0,
+    /// ]);
+    /// let (l, u, p, swaps) = a.lu_decompose();
+    /// let pa = p.matmul(&a);
+    /// let lu = l.matmul(&u);
+    /// assert(pa.approx_eq(&lu, 1e-10));
+    /// ```
+    pub fn lu_decompose(&self) -> (Matrix, Matrix, Matrix, i64) {
+        let n = self.nrows;
+
+        // Copy self into U
+        var u = self.clone();
+
+        // L starts as identity
+        var l = Matrix::identity(n);
+
+        // P starts as identity; track permutation
+        var perm = Vec::new();
+        var i: i64 = 0;
+        while i < n {
+            perm.push(i as f64);
+            i += 1;
+        }
+
+        var swaps: i64 = 0;
+
+        // Forward elimination with partial pivoting
+        var col: i64 = 0;
+        while col < n {
+            // Find pivot: row with largest absolute value in column
+            var max_val: f64 = fabs(u.get(col, col));
+            var max_row: i64 = col;
+            var row: i64 = col + 1;
+            while row < n {
+                let val = fabs(u.get(row, col));
+                if val > max_val {
+                    max_val = val;
+                    max_row = row;
+                }
+                row += 1;
+            }
+
+            // Swap rows in U
+            if max_row != col {
+                u.swap_rows(col, max_row);
+
+                // Swap permutation entries
+                let tmp = perm[col as usize];
+                perm[col as usize] = perm[max_row as usize];
+                perm[max_row as usize] = tmp;
+
+                // Swap previously computed L entries (below diagonal, left of col)
+                var k: i64 = 0;
+                while k < col {
+                    let tmp_l = l.get(col, k);
+                    l.set(col, k, l.get(max_row, k));
+                    l.set(max_row, k, tmp_l);
+                    k += 1;
+                }
+
+                swaps += 1;
+            }
+
+            // Eliminate below pivot
+            let pivot = u.get(col, col);
+            if fabs(pivot) > 1e-15 {
+                var row2: i64 = col + 1;
+                while row2 < n {
+                    let factor = u.get(row2, col) / pivot;
+                    l.set(row2, col, factor);
+
+                    // U[row2] -= factor * U[col]
+                    u.set(row2, col, 0.0);
+                    var j: i64 = col + 1;
+                    while j < n {
+                        u.set(row2, j, u.get(row2, j) - factor * u.get(col, j));
+                        j += 1;
+                    }
+
+                    row2 += 1;
+                }
+            }
+
+            col += 1;
+        }
+
+        // Build permutation matrix P
+        var p = Matrix::zeros(n, n);
+        var idx: i64 = 0;
+        while idx < n {
+            p.set(idx, perm[idx as usize] as i64, 1.0);
+            idx += 1;
+        }
+
+        (l, u, p, swaps)
+    }
+}
+
+// =============================================================================
+// Inverse
+// =============================================================================
+
+impl Matrix {
+    /// Compute the inverse of a square matrix using Gauss-Jordan elimination.
+    ///
+    /// Returns None if the matrix is singular (determinant ~= 0).
+    ///
+    /// # Example
+    /// ```simplex
+    /// let a = Matrix::from_vec(2, 2, vec![4.0, 7.0, 2.0, 6.0]);
+    /// let a_inv = a.inverse().unwrap();
+    /// let product = a.matmul(&a_inv);
+    /// assert(product.approx_eq(&Matrix::identity(2), 1e-10));
+    /// ```
+    pub fn inverse(&self) -> Option<Matrix> {
+        let n = self.nrows;
+
+        // Build augmented matrix [A | I] as a single n x 2n matrix
+        var aug = Matrix::zeros(n, 2 * n);
+        var i: i64 = 0;
+        while i < n {
+            var j: i64 = 0;
+            while j < n {
+                aug.set(i, j, self.get(i, j));
+                j += 1;
+            }
+            aug.set(i, n + i, 1.0);
+            i += 1;
+        }
+
+        // Forward elimination with partial pivoting
+        var col: i64 = 0;
+        while col < n {
+            // Find pivot
+            var max_val: f64 = fabs(aug.get(col, col));
+            var max_row: i64 = col;
+            var row: i64 = col + 1;
+            while row < n {
+                let val = fabs(aug.get(row, col));
+                if val > max_val {
+                    max_val = val;
+                    max_row = row;
+                }
+                row += 1;
+            }
+
+            // Check for singular matrix
+            if max_val < 1e-15 {
+                return None;
+            }
+
+            // Swap rows
+            if max_row != col {
+                aug.swap_rows(col, max_row);
+            }
+
+            // Scale pivot row so pivot = 1
+            let pivot = aug.get(col, col);
+            var j: i64 = 0;
+            while j < 2 * n {
+                aug.set(col, j, aug.get(col, j) / pivot);
+                j += 1;
+            }
+
+            // Eliminate all other rows
+            var row2: i64 = 0;
+            while row2 < n {
+                if row2 != col {
+                    let factor = aug.get(row2, col);
+                    var j2: i64 = 0;
+                    while j2 < 2 * n {
+                        aug.set(row2, j2, aug.get(row2, j2) - factor * aug.get(col, j2));
+                        j2 += 1;
+                    }
+                }
+                row2 += 1;
+            }
+
+            col += 1;
+        }
+
+        // Extract the right half as the inverse
+        var result = Matrix::zeros(n, n);
+        var ri: i64 = 0;
+        while ri < n {
+            var rj: i64 = 0;
+            while rj < n {
+                result.set(ri, rj, aug.get(ri, n + rj));
+                rj += 1;
+            }
+            ri += 1;
+        }
+
+        Some(result)
+    }
+}
+
+// =============================================================================
+// Solve Linear Systems
+// =============================================================================
+
+impl Matrix {
+    /// Solve Ax = b using LU decomposition.
+    ///
+    /// Returns the solution vector x as an (n x 1) matrix,
+    /// or None if A is singular.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let a = Matrix::from_vec(2, 2, vec![2.0, 1.0, 5.0, 3.0]);
+    /// let b = Matrix::from_vec(2, 1, vec![4.0, 7.0]);
+    /// let x = a.solve(&b).unwrap();
+    /// ```
+    pub fn solve(&self, b: &Matrix) -> Option<Matrix> {
+        let n = self.nrows;
+        let lu_result = self.lu_decompose();
+        let l = lu_result.0;
+        let u = lu_result.1;
+        let p = lu_result.2;
+
+        // Pb
+        let pb = p.matmul(b);
+
+        // Forward substitution: Ly = Pb
+        var y = Matrix::zeros(n, 1);
+        var i: i64 = 0;
+        while i < n {
+            var sum: f64 = pb.get(i, 0);
+            var j: i64 = 0;
+            while j < i {
+                sum -= l.get(i, j) * y.get(j, 0);
+                j += 1;
+            }
+            y.set(i, 0, sum);
+            i += 1;
+        }
+
+        // Back substitution: Ux = y
+        var x = Matrix::zeros(n, 1);
+        var i2: i64 = n - 1;
+        while i2 >= 0 {
+            var sum2: f64 = y.get(i2, 0);
+            var j2: i64 = i2 + 1;
+            while j2 < n {
+                sum2 -= u.get(i2, j2) * x.get(j2, 0);
+                j2 += 1;
+            }
+            let diag = u.get(i2, i2);
+            if fabs(diag) < 1e-15 {
+                return None;
+            }
+            x.set(i2, 0, sum2 / diag);
+            i2 -= 1;
+        }
+
+        Some(x)
+    }
+}
+
+// =============================================================================
+// Quantum-Relevant Operations
+// =============================================================================
+
+impl Matrix {
+    /// Conjugate transpose (adjoint / dagger).
+    ///
+    /// For real matrices this is the same as transpose.
+    /// Included for API completeness with quantum computing conventions.
+    pub fn adjoint(&self) -> Matrix {
+        self.transpose()
+    }
+
+    /// Check if the matrix is unitary: M * M^dagger ≈ I.
+    ///
+    /// A unitary matrix preserves inner products and is essential
+    /// for quantum gate representations.
+    ///
+    /// # Example
+    /// ```simplex
+    /// // 2x2 rotation matrix is unitary
+    /// let theta = PI / 4.0;
+    /// let r = Matrix::from_vec(2, 2, vec![
+    ///     cos(theta), -sin(theta),
+    ///     sin(theta),  cos(theta),
+    /// ]);
+    /// assert(r.is_unitary(1e-10));
+    /// ```
+    pub fn is_unitary(&self, epsilon: f64) -> bool {
+        if !self.is_square() {
+            return false;
+        }
+        let mt = self.adjoint();
+        let product = self.matmul(&mt);
+        let eye = Matrix::identity(self.nrows);
+        product.approx_eq(&eye, epsilon)
+    }
+
+    /// Check if the matrix is hermitian (self-adjoint): M = M^dagger.
+    ///
+    /// For real matrices, this is equivalent to checking symmetry.
+    /// Hermitian matrices have real eigenvalues and are fundamental
+    /// to quantum observables.
+    pub fn is_hermitian(&self, epsilon: f64) -> bool {
+        if !self.is_square() {
+            return false;
+        }
+        let mt = self.adjoint();
+        self.approx_eq(&mt, epsilon)
+    }
+
+    /// Check if the matrix is orthogonal: M^T * M ≈ I.
+    ///
+    /// For real matrices, orthogonal is the same as unitary.
+    pub fn is_orthogonal(&self, epsilon: f64) -> bool {
+        self.is_unitary(epsilon)
+    }
+
+    /// Kronecker (tensor) product: A ⊗ B.
+    ///
+    /// If A is (m x n) and B is (p x q), the result is (m*p x n*q).
+    /// This is essential for constructing multi-qubit gate matrices
+    /// from single-qubit gates.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let a = Matrix::identity(2);
+    /// let b = Matrix::identity(2);
+    /// let c = a.kronecker_product(&b);
+    /// assert(c.rows() == 4);
+    /// assert(c.cols() == 4);
+    /// ```
+    pub fn kronecker_product(&self, other: &Matrix) -> Matrix {
+        let m = self.nrows;
+        let n = self.ncols;
+        let p = other.nrows;
+        let q = other.ncols;
+
+        var result = Matrix::zeros(m * p, n * q);
+
+        var i: i64 = 0;
+        while i < m {
+            var j: i64 = 0;
+            while j < n {
+                let a_ij = self.get(i, j);
+                // Place a_ij * B into the appropriate block
+                var k: i64 = 0;
+                while k < p {
+                    var l: i64 = 0;
+                    while l < q {
+                        result.set(i * p + k, j * q + l, a_ij * other.get(k, l));
+                        l += 1;
+                    }
+                    k += 1;
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+
+        result
+    }
+
+    /// Direct sum: A ⊕ B.
+    ///
+    /// Creates a block diagonal matrix with A in the top-left and B in the bottom-right.
+    pub fn direct_sum(&self, other: &Matrix) -> Matrix {
+        let m = self.nrows + other.nrows;
+        let n = self.ncols + other.ncols;
+        var result = Matrix::zeros(m, n);
+
+        // Copy A into top-left
+        var i: i64 = 0;
+        while i < self.nrows {
+            var j: i64 = 0;
+            while j < self.ncols {
+                result.set(i, j, self.get(i, j));
+                j += 1;
+            }
+            i += 1;
+        }
+
+        // Copy B into bottom-right
+        var i2: i64 = 0;
+        while i2 < other.nrows {
+            var j2: i64 = 0;
+            while j2 < other.ncols {
+                result.set(self.nrows + i2, self.ncols + j2, other.get(i2, j2));
+                j2 += 1;
+            }
+            i2 += 1;
+        }
+
+        result
+    }
+
+    /// Commutator: [A, B] = AB - BA.
+    ///
+    /// Important in quantum mechanics for checking if observables
+    /// can be simultaneously measured.
+    pub fn commutator(&self, other: &Matrix) -> Matrix {
+        let ab = self.matmul(other);
+        let ba = other.matmul(self);
+        ab.sub(&ba)
+    }
+
+    /// Matrix exponential approximation via Taylor series.
+    ///
+    /// exp(M) ≈ I + M + M^2/2! + M^3/3! + ...
+    ///
+    /// Uses `terms` terms of the Taylor expansion.
+    /// Useful for generating unitary operators from Hamiltonians: U = exp(-iHt).
+    pub fn matrix_exp(&self, terms: i64) -> Matrix {
+        let n = self.nrows;
+        var result = Matrix::identity(n);
+        var term = Matrix::identity(n);  // current M^k / k!
+
+        var k: i64 = 1;
+        while k < terms {
+            term = term.matmul(self).scale(1.0 / (k as f64));
+            result = result.add(&term);
+            k += 1;
+        }
+
+        result
+    }
+}
+
+// =============================================================================
+// Common Quantum Gates (convenience constructors)
+// =============================================================================
+
+impl Matrix {
+    /// Pauli-X gate (NOT gate / bit flip).
+    /// ```
+    /// [0, 1]
+    /// [1, 0]
+    /// ```
+    pub fn pauli_x() -> Matrix {
+        Matrix::from_vec(2, 2, vec![0.0, 1.0, 1.0, 0.0])
+    }
+
+    /// Pauli-Y gate (with real approximation; imaginary components set to sign).
+    /// For real matrices, this represents the structure:
+    /// ```
+    /// [ 0, -1]
+    /// [ 1,  0]
+    /// ```
+    pub fn pauli_y_real() -> Matrix {
+        Matrix::from_vec(2, 2, vec![0.0, -1.0, 1.0, 0.0])
+    }
+
+    /// Pauli-Z gate (phase flip).
+    /// ```
+    /// [1,  0]
+    /// [0, -1]
+    /// ```
+    pub fn pauli_z() -> Matrix {
+        Matrix::from_vec(2, 2, vec![1.0, 0.0, 0.0, -1.0])
+    }
+
+    /// Hadamard gate.
+    /// ```
+    /// (1/sqrt(2)) * [1,  1]
+    ///               [1, -1]
+    /// ```
+    pub fn hadamard_gate() -> Matrix {
+        let s = 1.0 / sqrt(2.0);
+        Matrix::from_vec(2, 2, vec![s, s, s, -s])
+    }
+
+    /// 2D rotation matrix.
+    ///
+    /// R(theta) = [[cos(theta), -sin(theta)],
+    ///             [sin(theta),  cos(theta)]]
+    pub fn rotation_2d(theta: f64) -> Matrix {
+        let c = unsafe { math_cos(theta) };
+        let s = unsafe { math_sin(theta) };
+        Matrix::from_vec(2, 2, vec![c, -s, s, c])
+    }
+}
+
+// =============================================================================
+// Comparison & Utility
+// =============================================================================
+
+impl Matrix {
+    /// Check if two matrices are approximately equal within epsilon.
+    ///
+    /// Compares element-by-element using absolute difference.
+    pub fn approx_eq(&self, other: &Matrix, epsilon: f64) -> bool {
+        if self.nrows != other.nrows || self.ncols != other.ncols {
+            return false;
+        }
+        let size = self.nrows * self.ncols;
+        var i: i64 = 0;
+        while i < size {
+            if fabs(self.data[i as usize] - other.data[i as usize]) > epsilon {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    /// Deep clone the matrix.
+    pub fn clone(&self) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize]);
+            i += 1;
+        }
+        Matrix { data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    /// Convert to a human-readable string representation.
+    ///
+    /// # Example
+    /// ```simplex
+    /// let m = Matrix::identity(2);
+    /// println(m.to_string());
+    /// // Output:
+    /// // [1.000000, 0.000000]
+    /// // [0.000000, 1.000000]
+    /// ```
+    pub fn to_string(&self) -> String {
+        var s = String::new();
+        var i: i64 = 0;
+        while i < self.nrows {
+            s.push_str("[");
+            var j: i64 = 0;
+            while j < self.ncols {
+                if j > 0 {
+                    s.push_str(", ");
+                }
+                s.push_str(&float_to_string(self.get(i, j)));
+                j += 1;
+            }
+            s.push_str("]");
+            if i < self.nrows - 1 {
+                s.push_str("\n");
+            }
+            i += 1;
+        }
+        s
+    }
+
+    /// Check exact equality (not recommended for floating point).
+    pub fn eq(&self, other: &Matrix) -> bool {
+        if self.nrows != other.nrows || self.ncols != other.ncols {
+            return false;
+        }
+        let size = self.nrows * self.ncols;
+        var i: i64 = 0;
+        while i < size {
+            if self.data[i as usize] != other.data[i as usize] {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+}
+
+// =============================================================================
+// Eigenvalue Estimation (Power Iteration)
+// =============================================================================
+
+impl Matrix {
+    /// Estimate the dominant eigenvalue and eigenvector using power iteration.
+    ///
+    /// Returns (eigenvalue, eigenvector) after `max_iter` iterations.
+    /// The eigenvector is returned as an (n x 1) matrix.
+    ///
+    /// Only works reliably when there is a single dominant eigenvalue.
+    pub fn power_iteration(&self, max_iter: i64, tolerance: f64) -> (f64, Matrix) {
+        let n = self.nrows;
+
+        // Start with a vector of ones
+        var v = Matrix::fill(n, 1, 1.0);
+
+        // Normalize
+        let norm = v.frobenius_norm();
+        v = v.scale(1.0 / norm);
+
+        var eigenvalue: f64 = 0.0;
+        var iter: i64 = 0;
+
+        while iter < max_iter {
+            // w = A * v
+            let w = self.matmul(&v);
+
+            // Rayleigh quotient: eigenvalue = v^T * w / (v^T * v)
+            let vt = v.transpose();
+            let numerator = vt.matmul(&w);
+            let denominator = vt.matmul(&v);
+            let new_eigenvalue = numerator.get(0, 0) / denominator.get(0, 0);
+
+            // Normalize w
+            let w_norm = w.frobenius_norm();
+            if w_norm < 1e-15 {
+                return (0.0, v);
+            }
+            v = w.scale(1.0 / w_norm);
+
+            // Check convergence
+            if fabs(new_eigenvalue - eigenvalue) < tolerance {
+                return (new_eigenvalue, v);
+            }
+
+            eigenvalue = new_eigenvalue;
+            iter += 1;
+        }
+
+        (eigenvalue, v)
+    }
+
+    /// Compute the condition number estimate using power iteration.
+    ///
+    /// cond(A) = |lambda_max| / |lambda_min| (approximation).
+    /// Uses the matrix and its inverse for max and min eigenvalues.
+    pub fn condition_number_estimate(&self, max_iter: i64) -> f64 {
+        let result_max = self.power_iteration(max_iter, 1e-10);
+        let lambda_max = fabs(result_max.0);
+
+        match self.inverse() {
+            Some(inv) => {
+                let result_min = inv.power_iteration(max_iter, 1e-10);
+                let lambda_min_inv = fabs(result_min.0);
+                lambda_max * lambda_min_inv
+            }
+            None => {
+                // Singular matrix: infinite condition number
+                1e308
+            }
+        }
+    }
+}
+
+// =============================================================================
+// Static Utility Functions
+// =============================================================================
+
+/// Create a vector (n x 1 matrix) from a list of values.
+pub fn vec_to_col(values: Vec<f64>) -> Matrix {
+    let n = values.len() as i64;
+    Matrix::from_vec(n, 1, values)
+}
+
+/// Create a row vector (1 x n matrix) from a list of values.
+pub fn vec_to_row(values: Vec<f64>) -> Matrix {
+    let n = values.len() as i64;
+    Matrix::from_vec(1, n, values)
+}
+
+/// Compute the dot product of two column vectors.
+pub fn dot(a: &Matrix, b: &Matrix) -> f64 {
+    let n = a.nrows;
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        sum += a.get(i, 0) * b.get(i, 0);
+        i += 1;
+    }
+    sum
+}
+
+/// Compute the outer product of two column vectors: a * b^T.
+pub fn outer(a: &Matrix, b: &Matrix) -> Matrix {
+    let m = a.nrows;
+    let n = b.nrows;
+    var result = Matrix::zeros(m, n);
+    var i: i64 = 0;
+    while i < m {
+        var j: i64 = 0;
+        while j < n {
+            result.set(i, j, a.get(i, 0) * b.get(j, 0));
+            j += 1;
+        }
+        i += 1;
+    }
+    result
+}
+
+/// Compute the cross product of two 3D column vectors.
+pub fn cross(a: &Matrix, b: &Matrix) -> Matrix {
+    let ax = a.get(0, 0);
+    let ay = a.get(1, 0);
+    let az = a.get(2, 0);
+    let bx = b.get(0, 0);
+    let by = b.get(1, 0);
+    let bz = b.get(2, 0);
+    Matrix::from_vec(3, 1, vec![
+        ay * bz - az * by,
+        az * bx - ax * bz,
+        ax * by - ay * bx,
+    ])
+}
+
+// =============================================================================
+// FFI Declarations
+// =============================================================================
+
+extern "C" {
+    fn math_sqrt(x: f64) -> f64;
+    fn math_cos(x: f64) -> f64;
+    fn math_sin(x: f64) -> f64;
+    fn float_to_string(x: f64) -> String;
+}

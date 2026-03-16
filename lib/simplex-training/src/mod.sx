@@ -54,12 +54,17 @@ pub use schedules::{
     LearnablePruning,
     LearnableQuantization,
     LearnedSchedules,
+    LearnableCurriculum,
+    CurriculumGradient,
+    TaskDescriptor,
 };
 
 pub use trainer::{
     MetaTrainer,
     MetaConfig,
     MetaLoss,
+    MetaOptimizer,
+    MetaDiagnostics,
     SpecialistTrainer,
     SpecialistConfig,
     StepResult,

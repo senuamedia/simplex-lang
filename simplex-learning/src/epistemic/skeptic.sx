@@ -392,7 +392,7 @@ impl Skeptic {
         observations: &[(String, f64)],
     ) -> f64 {
         // Use belief confidence as expected accuracy
-        // Higher confidence -> expect observations to match predictions
+        // Higher confidence → expect observations to match predictions
         let confidence = belief.confidence_value();
 
         // Simple divergence: average absolute error weighted by confidence
@@ -402,7 +402,7 @@ impl Skeptic {
         }
 
         // For now, return inverse of confidence as baseline divergence
-        // (high confidence -> low expected divergence)
+        // (high confidence → low expected divergence)
         (1.0 - confidence) * 0.5
     }
 

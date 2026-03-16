@@ -1,0 +1,372 @@
+// simplex-std::diff - Differentiation Utilities
+//
+// High-level functions for computing derivatives, gradients, Jacobians,
+// and Hessians using the dual number types from simplex-std.
+//
+// These functions abstract away the dual number mechanics, providing a
+// clean API for differentiation tasks.
+//
+// # Overview
+//
+// | Function                  | Computes        | Uses           |
+// |---------------------------|-----------------|----------------|
+// | `derivative(f, x)`       | f'(x)           | dual           |
+// | `derivative_at(f, x)`    | (f(x), f'(x))   | dual           |
+// | `gradient(f, x_vec)`     | ∇f(x)           | MultiDual      |
+// | `jacobian(f, x_vec)`     | J_f(x)          | MultiDual      |
+// | `hessian(f, x)`          | (f, f', f'')    | Dual2          |
+// | `directional_derivative` | ∇f(x)·v         | MultiDual      |
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::diff;
+//
+// // Single-variable derivative
+// fn square(x: dual) -> dual { x * x }
+// let df = diff::derivative(square, 3.0);  // 6.0
+//
+// // Multi-variable gradient
+// fn bowl(x: &[MultiDual]) -> MultiDual { x[0] * x[0] + x[1] * x[1] }
+// let grad = diff::gradient(bowl, &[1.0, 2.0]);  // [2.0, 4.0]
+//
+// // Second derivative
+// fn cubic(x: Dual2) -> Dual2 { x * x * x }
+// let (val, d1, d2) = diff::hessian(cubic, 2.0);  // (8.0, 12.0, 12.0)
+// ```
+
+use super::dual::dual;
+use super::multidual::MultiDual;
+use super::dual2::Dual2;
+
+// =============================================================================
+// Single-Variable Differentiation (using dual)
+// =============================================================================
+
+/// Compute the derivative of a single-variable function at a point.
+///
+/// Given f: dual -> dual and a point x, returns f'(x).
+///
+/// # How it works
+/// 1. Create dual number x + ε (value = x, derivative seed = 1)
+/// 2. Evaluate f(x + ε), which propagates derivatives via chain rule
+/// 3. Extract the ε coefficient = f'(x)
+///
+/// # Example
+/// ```
+/// fn square(x: dual) -> dual { x * x }
+/// let df = derivative(square, 3.0);  // 6.0
+/// ```
+#[inline]
+pub fn derivative<F>(f: F, x: f64) -> f64
+where
+    F: Fn(dual) -> dual,
+{
+    let dx = dual::variable(x);
+    let result = f(dx);
+    result.der
+}
+
+/// Compute both value and derivative at a point: (f(x), f'(x)).
+///
+/// More efficient than calling f(x) and derivative(f, x) separately.
+#[inline]
+pub fn derivative_at<F>(f: F, x: f64) -> (f64, f64)
+where
+    F: Fn(dual) -> dual,
+{
+    let dx = dual::variable(x);
+    let result = f(dx);
+    (result.val, result.der)
+}
+
+// =============================================================================
+// Multi-Variable Differentiation (using MultiDual)
+// =============================================================================
+
+/// Compute the gradient of a scalar function at a point.
+///
+/// Given f: R^n -> R and a point x ∈ R^n, returns ∇f(x) ∈ R^n.
+///
+/// Uses multi-dual numbers to compute all N partial derivatives
+/// in a single forward pass through the function.
+///
+/// # Arguments
+/// * `f` - Function that takes a slice of MultiDual and returns a MultiDual
+/// * `x` - Point at which to evaluate the gradient
+///
+/// # Returns
+/// Vec<f64> containing [∂f/∂x₁, ∂f/∂x₂, ..., ∂f/∂xₙ]
+///
+/// # Example
+/// ```
+/// // Gradient of f(x,y) = x² + y² at (3, 4)
+/// fn sphere(v: &[MultiDual]) -> MultiDual { v[0] * v[0] + v[1] * v[1] }
+/// let grad = gradient(sphere, &[3.0, 4.0]);
+/// // grad = [6.0, 8.0]
+/// ```
+pub fn gradient<F>(f: F, x: &[f64]) -> Vec<f64>
+where
+    F: Fn(&[MultiDual]) -> MultiDual,
+{
+    let n = x.len();
+    // Create multi-dual variables with identity seeding
+    var vars = Vec::new();
+    for i in 0..n {
+        vars.push(MultiDual::variable(x[i], i, n));
+    }
+    let result = f(&vars);
+    result.gradient()
+}
+
+/// Compute the Jacobian matrix of a vector-valued function.
+///
+/// Given f: R^n -> R^m and a point x ∈ R^n, returns J ∈ R^(m×n)
+/// where J[i][j] = ∂fᵢ/∂xⱼ.
+///
+/// Uses multi-dual numbers: each output component's derivative vector
+/// forms one row of the Jacobian.
+///
+/// # Arguments
+/// * `f` - Function that takes a slice of MultiDual and returns a Vec of MultiDual
+/// * `x` - Point at which to evaluate the Jacobian
+///
+/// # Returns
+/// Vec<Vec<f64>> — the Jacobian matrix (m rows, n columns)
+///
+/// # Example
+/// ```
+/// // Jacobian of f(x,y) = (x²+y, xy) at (1, 2)
+/// fn f(v: &[MultiDual]) -> Vec<MultiDual> {
+///     vec![v[0]*v[0] + v[1], v[0]*v[1]]
+/// }
+/// let J = jacobian(f, &[1.0, 2.0]);
+/// // J = [[2, 1], [2, 1]]
+/// ```
+pub fn jacobian<F>(f: F, x: &[f64]) -> Vec<Vec<f64>>
+where
+    F: Fn(&[MultiDual]) -> Vec<MultiDual>,
+{
+    let n = x.len();
+    var vars = Vec::new();
+    for i in 0..n {
+        vars.push(MultiDual::variable(x[i], i, n));
+    }
+    let outputs = f(&vars);
+
+    var jac = Vec::new();
+    for out in outputs.iter() {
+        jac.push(out.gradient());
+    }
+    jac
+}
+
+// =============================================================================
+// Second-Order Differentiation (using Dual2)
+// =============================================================================
+
+/// Compute value, first derivative, and second derivative at a point.
+///
+/// Given f: R -> R, returns (f(x), f'(x), f''(x)) in a single pass.
+///
+/// Uses second-order dual numbers — no numerical approximation.
+///
+/// # Arguments
+/// * `f` - Function that takes a Dual2 and returns a Dual2
+/// * `x` - Point at which to evaluate
+///
+/// # Returns
+/// (value, first_derivative, second_derivative)
+///
+/// # Example
+/// ```
+/// fn cubic(x: Dual2) -> Dual2 { x * x * x }
+/// let (val, d1, d2) = hessian(cubic, 2.0);
+/// // val = 8.0, d1 = 12.0, d2 = 12.0
+/// ```
+pub fn hessian<F>(f: F, x: f64) -> (f64, f64, f64)
+where
+    F: Fn(Dual2) -> Dual2,
+{
+    let dx = Dual2::variable(x);
+    let result = f(dx);
+    (result.val, result.d1, result.d2)
+}
+
+/// Compute only the second derivative at a point.
+pub fn second_derivative<F>(f: F, x: f64) -> f64
+where
+    F: Fn(Dual2) -> Dual2,
+{
+    let dx = Dual2::variable(x);
+    let result = f(dx);
+    result.d2
+}
+
+// =============================================================================
+// Directional Derivative
+// =============================================================================
+
+/// Compute the directional derivative of a scalar function.
+///
+/// Given f: R^n -> R, a point x, and a direction v,
+/// computes ∇f(x)·v — the rate of change of f in direction v.
+///
+/// Uses multi-dual numbers with the direction vector as the derivative seed.
+///
+/// # Arguments
+/// * `f` - Scalar function of multiple variables
+/// * `x` - Point at which to compute
+/// * `direction` - Direction vector (should be unit length for standard interpretation)
+///
+/// # Returns
+/// The directional derivative ∇f(x)·v
+///
+/// # Example
+/// ```
+/// fn bowl(v: &[MultiDual]) -> MultiDual { v[0]*v[0] + v[1]*v[1] }
+/// // Directional derivative at (1,1) in direction (1/√2, 1/√2)
+/// let dd = directional_derivative(bowl, &[1.0, 1.0], &[0.7071, 0.7071]);
+/// // ≈ 2.828 (gradient [2,2] dot direction)
+/// ```
+pub fn directional_derivative<F>(f: F, x: &[f64], direction: &[f64]) -> f64
+where
+    F: Fn(&[MultiDual]) -> MultiDual,
+{
+    assert!(x.len() == direction.len(), "x and direction must have same length");
+    let n = x.len();
+
+    // Seed the derivative with the direction vector rather than unit vectors.
+    // This computes ∇f(x)·direction in a single pass (1-dimensional derivative space).
+    var vars = Vec::new();
+    for i in 0..n {
+        var der = Vec::new();
+        der.push(direction[i]);
+        vars.push(MultiDual::new(x[i], der));
+    }
+    let result = f(&vars);
+    result.partial(0)
+}
+
+// =============================================================================
+// Higher-Order Single-Variable Derivatives
+// =============================================================================
+
+/// Compute the n-th derivative of a single-variable function at a point.
+///
+/// - n=0: returns f(x)
+/// - n=1: returns f'(x) using dual numbers (exact)
+/// - n=2: returns f''(x) using Dual2 (exact)
+/// - n>2: uses recursive finite differences on the (n-2)-th Dual2 derivative
+///
+/// For n <= 2, this is exact (no numerical error).
+pub fn nth_derivative<F1, F2>(f_dual: F1, f_dual2: F2, x: f64, n: usize) -> f64
+where
+    F1: Fn(dual) -> dual + Copy,
+    F2: Fn(Dual2) -> Dual2 + Copy,
+{
+    if n == 0 {
+        f_dual(dual::constant(x)).val
+    } else if n == 1 {
+        derivative(f_dual, x)
+    } else if n == 2 {
+        second_derivative(f_dual2, x)
+    } else {
+        // For n > 2, use central differences on the (n-1)-th derivative
+        // This is still more accurate than pure numerical because the
+        // base case uses exact dual number derivatives
+        let h = 1e-6;
+        let d_plus = nth_derivative(f_dual, f_dual2, x + h, n - 1);
+        let d_minus = nth_derivative(f_dual, f_dual2, x - h, n - 1);
+        (d_plus - d_minus) / (2.0 * h)
+    }
+}
+
+// =============================================================================
+// Optimization Helpers
+// =============================================================================
+
+/// Perform one gradient descent step on a multi-variable function.
+///
+/// Returns the updated parameter vector: x_new = x - lr * ∇f(x).
+///
+/// # Arguments
+/// * `f` - Objective function
+/// * `x` - Current parameter vector
+/// * `lr` - Learning rate
+///
+/// # Returns
+/// (updated_x, gradient_norm) — the new parameters and the L2 norm of the gradient
+pub fn gradient_step<F>(f: F, x: &[f64], lr: f64) -> (Vec<f64>, f64)
+where
+    F: Fn(&[MultiDual]) -> MultiDual,
+{
+    let grad = gradient(&f, x);
+    var new_x = Vec::new();
+    var norm_sq = 0.0;
+    for i in 0..x.len() {
+        new_x.push(x[i] - lr * grad[i]);
+        norm_sq = norm_sq + grad[i] * grad[i];
+    }
+    (new_x, norm_sq.sqrt())
+}
+
+/// Minimize a single-variable function using Newton's method with second derivatives.
+///
+/// Uses Dual2 to compute both f'(x) and f''(x) for the Newton step:
+///   x_{n+1} = x_n - f'(x_n) / f''(x_n)
+///
+/// # Returns
+/// (x*, f(x*)) — the minimum point and value, or last iterate if not converged
+pub fn newton_minimize<F>(f: F, x0: f64, max_iters: usize, tol: f64) -> (f64, f64)
+where
+    F: Fn(Dual2) -> Dual2,
+{
+    var x = x0;
+
+    for _ in 0..max_iters {
+        let result = f(Dual2::variable(x));
+        let grad = result.d1;
+        let hess = result.d2;
+
+        if grad.abs() < tol {
+            return (x, result.val);
+        }
+
+        if hess.abs() < 1e-15 {
+            // Hessian too small, fall back to gradient step
+            x = x - 0.01 * grad;
+        } else {
+            x = x - grad / hess;
+        }
+    }
+
+    let final_val = f(Dual2::constant(x)).val;
+    (x, final_val)
+}
+
+/// Check if a function is differentiable at a point.
+///
+/// Returns true if both f(x) and f'(x) are finite.
+pub fn is_differentiable<F>(f: F, x: f64) -> bool
+where
+    F: Fn(dual) -> dual,
+{
+    let result = f(dual::variable(x));
+    result.val.is_finite() && result.der.is_finite()
+}
+
+/// Compare dual derivative with numerical derivative for validation.
+///
+/// Returns the absolute error between exact (dual) and numerical derivatives.
+pub fn derivative_error<F>(f: F, x: f64) -> f64
+where
+    F: Fn(dual) -> dual + Copy,
+{
+    let dual_der = derivative(f, x);
+    let h = 1e-8;
+    let f_plus = f(dual::constant(x + h)).val;
+    let f_minus = f(dual::constant(x - h)).val;
+    let num_der = (f_plus - f_minus) / (2.0 * h);
+    (dual_der - num_der).abs()
+}

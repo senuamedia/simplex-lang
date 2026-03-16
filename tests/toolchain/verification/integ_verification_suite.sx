@@ -1,6 +1,6 @@
 // Integration Verification Suite
 // End-to-end tests combining multiple language features
-// v0.12.0: Validates feature integration across the compiler pipeline
+// v0.13.0: Validates feature integration across the compiler pipeline
 
 // ============================================
 // Integration 1: Type System + Methods + Traits

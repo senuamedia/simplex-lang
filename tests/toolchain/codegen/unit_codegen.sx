@@ -1,6 +1,6 @@
 // Wave 2: Codegen Critical Tests
 // Tests for code generation correctness
-// Tests verify COMPILE and correct RUNTIME results for v0.12.0
+// Tests verify COMPILE and correct RUNTIME results for v0.13.0
 
 // ============================================
 // 35.2.1 Arithmetic Code Generation

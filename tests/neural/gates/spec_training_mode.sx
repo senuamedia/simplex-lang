@@ -1,40 +1,61 @@
 // Neural gate test - training mode
+// Tests that neural_gate functions switch between sigmoid (training)
+// and hard threshold (inference) based on runtime mode.
+//
+// Note: The gate body expression is evaluated, then:
+//   Training mode: sigmoid(result) applied for differentiability
+//   Inference mode: hard threshold (!=0 → 1.0, ==0 → 0.0)
 
-neural_gate threshold_gate(x: f64) -> bool {
- x > 0.5
+neural_gate simple_gate(x: f64) -> f64 {
+  x
 }
 
 fn main() -> i64 {
- println("Test: Training mode");
+  println("Test: Training mode");
 
- // Set training mode
- neural_set_training_mode(1);
- println("Set training mode");
+  // Set training mode
+  neural_set_training_mode(1);
+  println("Set training mode");
 
- // In training mode, sigmoid is applied
- let r: f64 = threshold_gate(0.8);
- println("Called gate in training mode");
+  // In training mode, sigmoid is applied to the gate body result
+  // sigmoid(5.0) ≈ 0.9933
+  let r: f64 = simple_gate(5.0);
+  println("Called gate in training mode");
 
- // Result should be > 0.5 (soft output)
- if r > 0.5 {
- println("Test PASS: training mode returns soft output");
- } else {
- println("Test FAIL");
- return 1;
- }
+  if r > 0.5 {
+    println("Test PASS: training mode returns soft sigmoid output");
+  } else {
+    println("Test FAIL: training mode not returning soft output");
+    return 1;
+  }
 
- // Switch back to inference
- neural_set_training_mode(0);
- let r2: f64 = threshold_gate(0.8);
- println("Called gate in inference mode");
+  // sigmoid(0.0) = 0.5 exactly
+  let r_zero: f64 = simple_gate(0.0);
+  if r_zero > 0.49 {
+    if r_zero < 0.51 {
+      println("Test PASS: sigmoid(0) ≈ 0.5");
+    } else {
+      println("Test FAIL: sigmoid(0) not 0.5");
+      return 1;
+    }
+  } else {
+    println("Test FAIL: sigmoid(0) not 0.5");
+    return 1;
+  }
 
- if r2 > 0.9 {
- println("Test PASS: inference mode returns hard output");
- } else {
- println("Test FAIL: inference mode not working");
- return 1;
- }
+  // Switch to inference mode
+  neural_set_training_mode(0);
+  let r2: f64 = simple_gate(5.0);
+  println("Called gate in inference mode");
 
- println("ALL TESTS PASSED");
- 0
+  // In inference mode, non-zero → 1.0
+  if r2 > 0.9 {
+    println("Test PASS: inference mode returns hard output");
+  } else {
+    println("Test FAIL: inference mode not working");
+    return 1;
+  }
+
+  println("ALL TESTS PASSED");
+  0
 }

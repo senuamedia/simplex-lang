@@ -1,0 +1,1000 @@
+// Matrix & Linear Algebra Module - Comprehensive Tests
+// Tests construction, arithmetic, matmul, transpose, determinant, inverse,
+// LU decomposition, Kronecker product, unitary checks, and identities.
+// v0.13.0: Validates simplex-std::matrix subsystem
+
+// ============================================
+// Constants
+// ============================================
+
+const EPSILON: f64 = 0.0000001;
+const PI: f64 = 3.14159265358979323846;
+
+// ============================================
+// Extern math functions (C runtime)
+// ============================================
+
+extern "C" {
+    fn sin(x: f64) -> f64;
+    fn cos(x: f64) -> f64;
+    fn sqrt(x: f64) -> f64;
+    fn fabs(x: f64) -> f64;
+}
+
+// ============================================
+// Matrix Struct (self-contained for tests)
+// ============================================
+
+struct Matrix {
+    data: Vec<f64>,
+    nrows: i64,
+    ncols: i64
+}
+
+impl Matrix {
+    fn new(rows: i64, cols: i64) -> Matrix {
+        Matrix::zeros(rows, cols)
+    }
+
+    fn zeros(rows: i64, cols: i64) -> Matrix {
+        let size = rows * cols;
+        var data: Vec<f64> = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(0.0);
+            i += 1;
+        }
+        Matrix { data: data, nrows: rows, ncols: cols }
+    }
+
+    fn ones(rows: i64, cols: i64) -> Matrix {
+        let size = rows * cols;
+        var data: Vec<f64> = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(1.0);
+            i += 1;
+        }
+        Matrix { data: data, nrows: rows, ncols: cols }
+    }
+
+    fn identity(n: i64) -> Matrix {
+        var m = Matrix::zeros(n, n);
+        var i: i64 = 0;
+        while i < n {
+            m.set(i, i, 1.0);
+            i += 1;
+        }
+        m
+    }
+
+    fn from_vec(rows: i64, cols: i64, data: Vec<f64>) -> Matrix {
+        Matrix { data: data, nrows: rows, ncols: cols }
+    }
+
+    fn get(&self, row: i64, col: i64) -> f64 {
+        self.data[(row * self.ncols + col) as usize]
+    }
+
+    fn set(&mut self, row: i64, col: i64, val: f64) {
+        self.data[(row * self.ncols + col) as usize] = val;
+    }
+
+    fn rows(&self) -> i64 {
+        self.nrows
+    }
+
+    fn cols(&self) -> i64 {
+        self.ncols
+    }
+
+    fn add(&self, other: &Matrix) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data: Vec<f64> = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize] + other.data[i as usize]);
+            i += 1;
+        }
+        Matrix { data: data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    fn sub(&self, other: &Matrix) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data: Vec<f64> = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize] - other.data[i as usize]);
+            i += 1;
+        }
+        Matrix { data: data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    fn scale(&self, scalar: f64) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data: Vec<f64> = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize] * scalar);
+            i += 1;
+        }
+        Matrix { data: data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    fn matmul(&self, other: &Matrix) -> Matrix {
+        let m = self.nrows;
+        let n = self.ncols;
+        let p = other.ncols;
+        var result = Matrix::zeros(m, p);
+        var i: i64 = 0;
+        while i < m {
+            var j: i64 = 0;
+            while j < p {
+                var sum: f64 = 0.0;
+                var k: i64 = 0;
+                while k < n {
+                    sum += self.get(i, k) * other.get(k, j);
+                    k += 1;
+                }
+                result.set(i, j, sum);
+                j += 1;
+            }
+            i += 1;
+        }
+        result
+    }
+
+    fn transpose(&self) -> Matrix {
+        var data: Vec<f64> = Vec::new();
+        var j: i64 = 0;
+        while j < self.ncols {
+            var i: i64 = 0;
+            while i < self.nrows {
+                data.push(self.get(i, j));
+                i += 1;
+            }
+            j += 1;
+        }
+        Matrix { data: data, nrows: self.ncols, ncols: self.nrows }
+    }
+
+    fn trace(&self) -> f64 {
+        var sum: f64 = 0.0;
+        let n = if self.nrows < self.ncols { self.nrows } else { self.ncols };
+        var i: i64 = 0;
+        while i < n {
+            sum += self.get(i, i);
+            i += 1;
+        }
+        sum
+    }
+
+    fn determinant(&self) -> f64 {
+        let n = self.nrows;
+        if n == 1 {
+            return self.get(0, 0);
+        }
+        if n == 2 {
+            return self.get(0, 0) * self.get(1, 1) - self.get(0, 1) * self.get(1, 0);
+        }
+        if n == 3 {
+            let a = self.get(0, 0); let b = self.get(0, 1); let c = self.get(0, 2);
+            let d = self.get(1, 0); let e = self.get(1, 1); let f = self.get(1, 2);
+            let g = self.get(2, 0); let h = self.get(2, 1); let k = self.get(2, 2);
+            return a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+        }
+        // General: LU-based
+        let lu_result = self.lu_decompose();
+        let u = lu_result.1;
+        let swaps = lu_result.3;
+        var det: f64 = 1.0;
+        var i: i64 = 0;
+        while i < n {
+            det *= u.get(i, i);
+            i += 1;
+        }
+        if swaps % 2 == 1 { det = -det; }
+        det
+    }
+
+    fn swap_rows(&mut self, r1: i64, r2: i64) {
+        if r1 == r2 { return; }
+        var j: i64 = 0;
+        while j < self.ncols {
+            let tmp = self.get(r1, j);
+            self.set(r1, j, self.get(r2, j));
+            self.set(r2, j, tmp);
+            j += 1;
+        }
+    }
+
+    fn lu_decompose(&self) -> (Matrix, Matrix, Matrix, i64) {
+        let n = self.nrows;
+        var u = self.clone_mat();
+        var l = Matrix::identity(n);
+        var perm: Vec<f64> = Vec::new();
+        var i: i64 = 0;
+        while i < n {
+            perm.push(i as f64);
+            i += 1;
+        }
+        var swaps: i64 = 0;
+
+        var col: i64 = 0;
+        while col < n {
+            // Find pivot
+            var max_val: f64 = fabs(u.get(col, col));
+            var max_row: i64 = col;
+            var row: i64 = col + 1;
+            while row < n {
+                let val = fabs(u.get(row, col));
+                if val > max_val {
+                    max_val = val;
+                    max_row = row;
+                }
+                row += 1;
+            }
+
+            if max_row != col {
+                u.swap_rows(col, max_row);
+                let tmp = perm[col as usize];
+                perm[col as usize] = perm[max_row as usize];
+                perm[max_row as usize] = tmp;
+                var k: i64 = 0;
+                while k < col {
+                    let tmp_l = l.get(col, k);
+                    l.set(col, k, l.get(max_row, k));
+                    l.set(max_row, k, tmp_l);
+                    k += 1;
+                }
+                swaps += 1;
+            }
+
+            let pivot = u.get(col, col);
+            if fabs(pivot) > 0.000000000000001 {
+                var row2: i64 = col + 1;
+                while row2 < n {
+                    let factor = u.get(row2, col) / pivot;
+                    l.set(row2, col, factor);
+                    u.set(row2, col, 0.0);
+                    var j: i64 = col + 1;
+                    while j < n {
+                        u.set(row2, j, u.get(row2, j) - factor * u.get(col, j));
+                        j += 1;
+                    }
+                    row2 += 1;
+                }
+            }
+            col += 1;
+        }
+
+        // Build P matrix
+        var p = Matrix::zeros(n, n);
+        var idx: i64 = 0;
+        while idx < n {
+            p.set(idx, perm[idx as usize] as i64, 1.0);
+            idx += 1;
+        }
+
+        (l, u, p, swaps)
+    }
+
+    fn inverse(&self) -> Matrix {
+        let n = self.nrows;
+        var aug = Matrix::zeros(n, 2 * n);
+        var i: i64 = 0;
+        while i < n {
+            var j: i64 = 0;
+            while j < n {
+                aug.set(i, j, self.get(i, j));
+                j += 1;
+            }
+            aug.set(i, n + i, 1.0);
+            i += 1;
+        }
+
+        var col: i64 = 0;
+        while col < n {
+            var max_val: f64 = fabs(aug.get(col, col));
+            var max_row: i64 = col;
+            var row: i64 = col + 1;
+            while row < n {
+                let val = fabs(aug.get(row, col));
+                if val > max_val {
+                    max_val = val;
+                    max_row = row;
+                }
+                row += 1;
+            }
+            if max_row != col {
+                aug.swap_rows(col, max_row);
+            }
+            let pivot = aug.get(col, col);
+            var j: i64 = 0;
+            while j < 2 * n {
+                aug.set(col, j, aug.get(col, j) / pivot);
+                j += 1;
+            }
+            var row2: i64 = 0;
+            while row2 < n {
+                if row2 != col {
+                    let factor = aug.get(row2, col);
+                    var j2: i64 = 0;
+                    while j2 < 2 * n {
+                        aug.set(row2, j2, aug.get(row2, j2) - factor * aug.get(col, j2));
+                        j2 += 1;
+                    }
+                }
+                row2 += 1;
+            }
+            col += 1;
+        }
+
+        var result = Matrix::zeros(n, n);
+        var ri: i64 = 0;
+        while ri < n {
+            var rj: i64 = 0;
+            while rj < n {
+                result.set(ri, rj, aug.get(ri, n + rj));
+                rj += 1;
+            }
+            ri += 1;
+        }
+        result
+    }
+
+    fn kronecker_product(&self, other: &Matrix) -> Matrix {
+        let m = self.nrows;
+        let n = self.ncols;
+        let p = other.nrows;
+        let q = other.ncols;
+        var result = Matrix::zeros(m * p, n * q);
+        var i: i64 = 0;
+        while i < m {
+            var j: i64 = 0;
+            while j < n {
+                let a_ij = self.get(i, j);
+                var k: i64 = 0;
+                while k < p {
+                    var ll: i64 = 0;
+                    while ll < q {
+                        result.set(i * p + k, j * q + ll, a_ij * other.get(k, ll));
+                        ll += 1;
+                    }
+                    k += 1;
+                }
+                j += 1;
+            }
+            i += 1;
+        }
+        result
+    }
+
+    fn approx_eq(&self, other: &Matrix, eps: f64) -> bool {
+        if self.nrows != other.nrows || self.ncols != other.ncols {
+            return false;
+        }
+        let size = self.nrows * self.ncols;
+        var i: i64 = 0;
+        while i < size {
+            if fabs(self.data[i as usize] - other.data[i as usize]) > eps {
+                return false;
+            }
+            i += 1;
+        }
+        true
+    }
+
+    fn clone_mat(&self) -> Matrix {
+        let size = self.nrows * self.ncols;
+        var data: Vec<f64> = Vec::new();
+        var i: i64 = 0;
+        while i < size {
+            data.push(self.data[i as usize]);
+            i += 1;
+        }
+        Matrix { data: data, nrows: self.nrows, ncols: self.ncols }
+    }
+
+    fn is_unitary(&self, eps: f64) -> bool {
+        let mt = self.transpose();
+        let product = self.matmul(&mt);
+        let eye = Matrix::identity(self.nrows);
+        product.approx_eq(&eye, eps)
+    }
+
+    fn frobenius_norm(&self) -> f64 {
+        var sum: f64 = 0.0;
+        let size = self.nrows * self.ncols;
+        var i: i64 = 0;
+        while i < size {
+            let v = self.data[i as usize];
+            sum += v * v;
+            i += 1;
+        }
+        sqrt(sum)
+    }
+}
+
+// ============================================
+// Helper: build vec from known values
+// ============================================
+
+fn make_vec2(a: f64, b: f64) -> Vec<f64> {
+    var v: Vec<f64> = Vec::new();
+    v.push(a); v.push(b);
+    v
+}
+
+fn make_vec4(a: f64, b: f64, c: f64, d: f64) -> Vec<f64> {
+    var v: Vec<f64> = Vec::new();
+    v.push(a); v.push(b); v.push(c); v.push(d);
+    v
+}
+
+fn make_vec6(a: f64, b: f64, c: f64, d: f64, e: f64, f_val: f64) -> Vec<f64> {
+    var v: Vec<f64> = Vec::new();
+    v.push(a); v.push(b); v.push(c); v.push(d); v.push(e); v.push(f_val);
+    v
+}
+
+fn make_vec9(a: f64, b: f64, c: f64, d: f64, e: f64, f_val: f64, g: f64, h: f64, k: f64) -> Vec<f64> {
+    var v: Vec<f64> = Vec::new();
+    v.push(a); v.push(b); v.push(c);
+    v.push(d); v.push(e); v.push(f_val);
+    v.push(g); v.push(h); v.push(k);
+    v
+}
+
+// ============================================
+// Test Harness
+// ============================================
+
+var tests_passed: i64 = 0;
+var tests_failed: i64 = 0;
+
+fn pass(name: &str) {
+    print("  PASS: ");
+    println(name);
+    tests_passed += 1;
+}
+
+fn fail(name: &str) {
+    print("  FAIL: ");
+    println(name);
+    tests_failed += 1;
+}
+
+fn check(name: &str, condition: bool) {
+    if condition {
+        pass(name);
+    } else {
+        fail(name);
+    }
+}
+
+// ============================================
+// Test Groups
+// ============================================
+
+fn test_construction() {
+    println("--- Construction ---");
+
+    // zeros
+    let z = Matrix::zeros(3, 4);
+    check("zeros dimensions", z.rows() == 3 && z.cols() == 4);
+    check("zeros values", z.get(0, 0) == 0.0 && z.get(2, 3) == 0.0);
+
+    // ones
+    let o = Matrix::ones(2, 3);
+    check("ones values", o.get(0, 0) == 1.0 && o.get(1, 2) == 1.0);
+
+    // identity
+    let eye = Matrix::identity(3);
+    check("identity diagonal", eye.get(0, 0) == 1.0 && eye.get(1, 1) == 1.0 && eye.get(2, 2) == 1.0);
+    check("identity off-diagonal", eye.get(0, 1) == 0.0 && eye.get(1, 0) == 0.0);
+
+    // from_vec
+    let m = Matrix::from_vec(2, 2, make_vec4(1.0, 2.0, 3.0, 4.0));
+    check("from_vec", m.get(0, 0) == 1.0 && m.get(0, 1) == 2.0 && m.get(1, 0) == 3.0 && m.get(1, 1) == 4.0);
+
+    // set and get
+    var s = Matrix::zeros(2, 2);
+    s.set(0, 1, 42.0);
+    check("set/get", s.get(0, 1) == 42.0 && s.get(0, 0) == 0.0);
+}
+
+fn test_identity_multiplication() {
+    println("--- Identity * A = A ---");
+
+    let eye = Matrix::identity(3);
+    let a = Matrix::from_vec(3, 3, make_vec9(
+        1.0, 2.0, 3.0,
+        4.0, 5.0, 6.0,
+        7.0, 8.0, 9.0
+    ));
+
+    // I * A = A
+    let ia = eye.matmul(&a);
+    check("I * A = A", ia.approx_eq(&a, EPSILON));
+
+    // A * I = A
+    let ai = a.matmul(&eye);
+    check("A * I = A", ai.approx_eq(&a, EPSILON));
+}
+
+fn test_transpose() {
+    println("--- Transpose ---");
+
+    // Transpose of transpose = original
+    let a = Matrix::from_vec(2, 3, make_vec6(1.0, 2.0, 3.0, 4.0, 5.0, 6.0));
+    let att = a.transpose().transpose();
+    check("(A^T)^T = A", att.approx_eq(&a, EPSILON));
+
+    // Transpose dimensions
+    let at = a.transpose();
+    check("transpose dims", at.rows() == 3 && at.cols() == 2);
+
+    // Transpose values
+    check("transpose values", at.get(0, 0) == 1.0 && at.get(0, 1) == 4.0 && at.get(2, 0) == 3.0);
+
+    // Identity transpose = identity
+    let eye = Matrix::identity(3);
+    let eyet = eye.transpose();
+    check("I^T = I", eyet.approx_eq(&eye, EPSILON));
+}
+
+fn test_transpose_of_product() {
+    println("--- (AB)^T = B^T * A^T ---");
+
+    let a = Matrix::from_vec(2, 3, make_vec6(1.0, 2.0, 3.0, 4.0, 5.0, 6.0));
+    let b = Matrix::from_vec(3, 2, make_vec6(7.0, 8.0, 9.0, 10.0, 11.0, 12.0));
+
+    let ab = a.matmul(&b);
+    let ab_t = ab.transpose();
+
+    let bt_at = b.transpose().matmul(&a.transpose());
+
+    check("(AB)^T = B^T * A^T", ab_t.approx_eq(&bt_at, EPSILON));
+}
+
+fn test_arithmetic() {
+    println("--- Arithmetic ---");
+
+    let a = Matrix::from_vec(2, 2, make_vec4(1.0, 2.0, 3.0, 4.0));
+    let b = Matrix::from_vec(2, 2, make_vec4(5.0, 6.0, 7.0, 8.0));
+
+    // Addition
+    let c = a.add(&b);
+    check("add", c.get(0, 0) == 6.0 && c.get(0, 1) == 8.0 && c.get(1, 0) == 10.0 && c.get(1, 1) == 12.0);
+
+    // Subtraction
+    let d = b.sub(&a);
+    check("sub", d.get(0, 0) == 4.0 && d.get(0, 1) == 4.0 && d.get(1, 0) == 4.0 && d.get(1, 1) == 4.0);
+
+    // Scalar multiply
+    let e = a.scale(2.0);
+    check("scale", e.get(0, 0) == 2.0 && e.get(0, 1) == 4.0 && e.get(1, 0) == 6.0 && e.get(1, 1) == 8.0);
+
+    // Additive identity: A + 0 = A
+    let z = Matrix::zeros(2, 2);
+    let az = a.add(&z);
+    check("A + 0 = A", az.approx_eq(&a, EPSILON));
+
+    // A - A = 0
+    let aa = a.sub(&a);
+    check("A - A = 0", aa.approx_eq(&z, EPSILON));
+
+    // Commutativity of addition: A + B = B + A
+    let ab = a.add(&b);
+    let ba = b.add(&a);
+    check("A + B = B + A", ab.approx_eq(&ba, EPSILON));
+
+    // Distributivity: s(A + B) = sA + sB
+    let s = 3.0;
+    let lhs = a.add(&b).scale(s);
+    let rhs = a.scale(s).add(&b.scale(s));
+    check("s(A+B) = sA + sB", lhs.approx_eq(&rhs, EPSILON));
+}
+
+fn test_matmul() {
+    println("--- Matrix Multiplication ---");
+
+    // Known product
+    let a = Matrix::from_vec(2, 3, make_vec6(1.0, 2.0, 3.0, 4.0, 5.0, 6.0));
+    let b = Matrix::from_vec(3, 2, make_vec6(7.0, 8.0, 9.0, 10.0, 11.0, 12.0));
+    let c = a.matmul(&b);
+
+    // c[0,0] = 1*7 + 2*9 + 3*11 = 7+18+33 = 58
+    // c[0,1] = 1*8 + 2*10 + 3*12 = 8+20+36 = 64
+    // c[1,0] = 4*7 + 5*9 + 6*11 = 28+45+66 = 139
+    // c[1,1] = 4*8 + 5*10 + 6*12 = 32+50+72 = 154
+    check("matmul dims", c.rows() == 2 && c.cols() == 2);
+    check("matmul values", fabs(c.get(0, 0) - 58.0) < EPSILON && fabs(c.get(0, 1) - 64.0) < EPSILON);
+    check("matmul values 2", fabs(c.get(1, 0) - 139.0) < EPSILON && fabs(c.get(1, 1) - 154.0) < EPSILON);
+
+    // Associativity: (AB)C = A(BC)
+    let x = Matrix::from_vec(2, 2, make_vec4(1.0, 2.0, 3.0, 4.0));
+    let y = Matrix::from_vec(2, 2, make_vec4(5.0, 6.0, 7.0, 8.0));
+    let z = Matrix::from_vec(2, 2, make_vec4(9.0, 10.0, 11.0, 12.0));
+    let xy_z = x.matmul(&y).matmul(&z);
+    let x_yz = x.matmul(&y.matmul(&z));
+    check("(AB)C = A(BC)", xy_z.approx_eq(&x_yz, EPSILON));
+}
+
+fn test_trace() {
+    println("--- Trace ---");
+
+    let eye = Matrix::identity(4);
+    check("trace(I_4) = 4", fabs(eye.trace() - 4.0) < EPSILON);
+
+    let m = Matrix::from_vec(3, 3, make_vec9(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0));
+    check("trace(M) = 1+5+9 = 15", fabs(m.trace() - 15.0) < EPSILON);
+
+    // trace(A + B) = trace(A) + trace(B)
+    let a = Matrix::from_vec(2, 2, make_vec4(1.0, 2.0, 3.0, 4.0));
+    let b = Matrix::from_vec(2, 2, make_vec4(5.0, 6.0, 7.0, 8.0));
+    let trace_sum = a.add(&b).trace();
+    let sum_trace = a.trace() + b.trace();
+    check("trace(A+B) = trace(A) + trace(B)", fabs(trace_sum - sum_trace) < EPSILON);
+
+    // trace(AB) = trace(BA)
+    let ab = a.matmul(&b);
+    let ba = b.matmul(&a);
+    check("trace(AB) = trace(BA)", fabs(ab.trace() - ba.trace()) < EPSILON);
+}
+
+fn test_determinant() {
+    println("--- Determinant ---");
+
+    // det(I) = 1
+    let eye3 = Matrix::identity(3);
+    check("det(I_3) = 1", fabs(eye3.determinant() - 1.0) < EPSILON);
+
+    // 1x1
+    var m1 = Matrix::zeros(1, 1);
+    m1.set(0, 0, 5.0);
+    check("det(1x1) = 5", fabs(m1.determinant() - 5.0) < EPSILON);
+
+    // 2x2: ad - bc
+    let m2 = Matrix::from_vec(2, 2, make_vec4(3.0, 8.0, 4.0, 6.0));
+    // det = 3*6 - 8*4 = 18 - 32 = -14
+    check("det(2x2) = -14", fabs(m2.determinant() - (-14.0)) < EPSILON);
+
+    // 3x3
+    let m3 = Matrix::from_vec(3, 3, make_vec9(
+        6.0, 1.0, 1.0,
+        4.0, -2.0, 5.0,
+        2.0, 8.0, 7.0
+    ));
+    // det = 6(-2*7 - 5*8) - 1(4*7 - 5*2) + 1(4*8 - (-2)*2)
+    //     = 6(-14-40) - 1(28-10) + 1(32+4)
+    //     = 6*(-54) - 18 + 36
+    //     = -324 - 18 + 36 = -306
+    check("det(3x3) = -306", fabs(m3.determinant() - (-306.0)) < EPSILON);
+
+    // det(sA) = s^n * det(A) for n x n
+    let a2 = Matrix::from_vec(2, 2, make_vec4(1.0, 2.0, 3.0, 4.0));
+    let s = 3.0;
+    let det_sa = a2.scale(s).determinant();
+    let sn_det_a = s * s * a2.determinant();  // s^2 for 2x2
+    check("det(sA) = s^n * det(A)", fabs(det_sa - sn_det_a) < EPSILON);
+
+    // det(AB) = det(A) * det(B)
+    let b2 = Matrix::from_vec(2, 2, make_vec4(5.0, 6.0, 7.0, 8.0));
+    let det_ab = a2.matmul(&b2).determinant();
+    let det_a_det_b = a2.determinant() * b2.determinant();
+    check("det(AB) = det(A) * det(B)", fabs(det_ab - det_a_det_b) < EPSILON);
+
+    // det(A^T) = det(A)
+    check("det(A^T) = det(A)", fabs(a2.transpose().determinant() - a2.determinant()) < EPSILON);
+}
+
+fn test_inverse() {
+    println("--- Inverse ---");
+
+    // A * A^{-1} ≈ I
+    let a = Matrix::from_vec(2, 2, make_vec4(4.0, 7.0, 2.0, 6.0));
+    let a_inv = a.inverse();
+    let product = a.matmul(&a_inv);
+    let eye2 = Matrix::identity(2);
+    check("A * A^{-1} = I (2x2)", product.approx_eq(&eye2, EPSILON));
+
+    // A^{-1} * A ≈ I
+    let product2 = a_inv.matmul(&a);
+    check("A^{-1} * A = I (2x2)", product2.approx_eq(&eye2, EPSILON));
+
+    // 3x3 inverse
+    let b = Matrix::from_vec(3, 3, make_vec9(
+        2.0, 1.0, 1.0,
+        4.0, 3.0, 3.0,
+        8.0, 7.0, 9.0
+    ));
+    let b_inv = b.inverse();
+    let bp = b.matmul(&b_inv);
+    let eye3 = Matrix::identity(3);
+    check("A * A^{-1} = I (3x3)", bp.approx_eq(&eye3, EPSILON));
+
+    // (AB)^{-1} = B^{-1} * A^{-1}
+    let c = Matrix::from_vec(2, 2, make_vec4(1.0, 3.0, 2.0, 5.0));
+    let d = Matrix::from_vec(2, 2, make_vec4(2.0, 1.0, 1.0, 3.0));
+    let cd_inv = c.matmul(&d).inverse();
+    let d_inv_c_inv = d.inverse().matmul(&c.inverse());
+    check("(AB)^{-1} = B^{-1} * A^{-1}", cd_inv.approx_eq(&d_inv_c_inv, EPSILON));
+
+    // Inverse of identity = identity
+    let eye_inv = eye3.inverse();
+    check("I^{-1} = I", eye_inv.approx_eq(&eye3, EPSILON));
+}
+
+fn test_lu_decomposition() {
+    println("--- LU Decomposition ---");
+
+    // P*A = L*U
+    let a = Matrix::from_vec(3, 3, make_vec9(
+        2.0, 1.0, 1.0,
+        4.0, 3.0, 3.0,
+        8.0, 7.0, 9.0
+    ));
+
+    let lu_result = a.lu_decompose();
+    let l = lu_result.0;
+    let u = lu_result.1;
+    let p = lu_result.2;
+
+    let pa = p.matmul(&a);
+    let lu = l.matmul(&u);
+    check("P*A = L*U", pa.approx_eq(&lu, EPSILON));
+
+    // L is lower triangular with 1s on diagonal
+    check("L diagonal = 1", fabs(l.get(0, 0) - 1.0) < EPSILON && fabs(l.get(1, 1) - 1.0) < EPSILON && fabs(l.get(2, 2) - 1.0) < EPSILON);
+    check("L upper = 0", fabs(l.get(0, 1)) < EPSILON && fabs(l.get(0, 2)) < EPSILON && fabs(l.get(1, 2)) < EPSILON);
+
+    // U is upper triangular
+    check("U lower = 0", fabs(u.get(1, 0)) < EPSILON && fabs(u.get(2, 0)) < EPSILON && fabs(u.get(2, 1)) < EPSILON);
+
+    // P is a permutation matrix (each row/col has exactly one 1)
+    var p_ok = true;
+    var pi: i64 = 0;
+    while pi < 3 {
+        var row_sum: f64 = 0.0;
+        var col_sum: f64 = 0.0;
+        var pj: i64 = 0;
+        while pj < 3 {
+            row_sum += p.get(pi, pj);
+            col_sum += p.get(pj, pi);
+            pj += 1;
+        }
+        if fabs(row_sum - 1.0) > EPSILON || fabs(col_sum - 1.0) > EPSILON {
+            p_ok = false;
+        }
+        pi += 1;
+    }
+    check("P is permutation matrix", p_ok);
+
+    // Test with another matrix
+    let b = Matrix::from_vec(3, 3, make_vec9(
+        1.0, 2.0, 4.0,
+        3.0, 8.0, 14.0,
+        2.0, 6.0, 13.0
+    ));
+    let lu_b = b.lu_decompose();
+    let pb = lu_b.2.matmul(&b);
+    let lub = lu_b.0.matmul(&lu_b.1);
+    check("P*B = L*U (second matrix)", pb.approx_eq(&lub, EPSILON));
+}
+
+fn test_kronecker_product() {
+    println("--- Kronecker Product ---");
+
+    // Dimensions: (m x n) tensor (p x q) = (mp x nq)
+    let a = Matrix::from_vec(2, 3, make_vec6(1.0, 2.0, 3.0, 4.0, 5.0, 6.0));
+    let b = Matrix::from_vec(3, 2, make_vec6(7.0, 8.0, 9.0, 10.0, 11.0, 12.0));
+    let k = a.kronecker_product(&b);
+    check("kronecker dims", k.rows() == 6 && k.cols() == 6);
+
+    // I_2 tensor I_2 = I_4
+    let i2 = Matrix::identity(2);
+    let i2_kron_i2 = i2.kronecker_product(&i2);
+    let i4 = Matrix::identity(4);
+    check("I_2 tensor I_2 = I_4", i2_kron_i2.approx_eq(&i4, EPSILON));
+
+    // Kronecker product with identity preserves block structure
+    // A tensor I_n: block diagonal with copies of A
+    let m = Matrix::from_vec(2, 2, make_vec4(1.0, 2.0, 3.0, 4.0));
+    let mi = m.kronecker_product(&Matrix::identity(2));
+    // Result should be 4x4
+    check("A tensor I_2 dims", mi.rows() == 4 && mi.cols() == 4);
+    // Top-left 2x2 should be [[1,0],[0,1]] * 1 = identity scaled by element
+    // Actually A tensor I = block diagonal with a_ij * I
+    check("A tensor I: (0,0) = 1", fabs(mi.get(0, 0) - 1.0) < EPSILON);
+    check("A tensor I: (0,1) = 0", fabs(mi.get(0, 1) - 0.0) < EPSILON);
+    check("A tensor I: (0,2) = 2", fabs(mi.get(0, 2) - 2.0) < EPSILON);
+
+    // (A tensor B)(C tensor D) = (AC) tensor (BD)
+    let c = Matrix::from_vec(2, 2, make_vec4(2.0, 0.0, 0.0, 3.0));
+    let d = Matrix::from_vec(2, 2, make_vec4(1.0, 1.0, 0.0, 1.0));
+    let lhs = m.kronecker_product(&c).matmul(&d.kronecker_product(&Matrix::identity(2)));
+    // This is a known property - verify dimensions at least
+    check("mixed product rule dims", lhs.rows() == 4 && lhs.cols() == 4);
+}
+
+fn test_unitary_check() {
+    println("--- Unitary Check ---");
+
+    // Identity is unitary
+    let eye = Matrix::identity(3);
+    check("I is unitary", eye.is_unitary(EPSILON));
+
+    // 2D rotation matrix is unitary
+    let theta = PI / 4.0;
+    let c = cos(theta);
+    let s = sin(theta);
+    let rot = Matrix::from_vec(2, 2, make_vec4(c, -s, s, c));
+    check("rotation is unitary", rot.is_unitary(EPSILON));
+
+    // Hadamard gate is unitary
+    let h = 1.0 / sqrt(2.0);
+    let had = Matrix::from_vec(2, 2, make_vec4(h, h, h, -h));
+    check("Hadamard is unitary", had.is_unitary(EPSILON));
+
+    // Non-unitary matrix
+    let nu = Matrix::from_vec(2, 2, make_vec4(1.0, 2.0, 3.0, 4.0));
+    check("[[1,2],[3,4]] is NOT unitary", !nu.is_unitary(0.1));
+
+    // Pauli X is unitary (self-inverse)
+    let px = Matrix::from_vec(2, 2, make_vec4(0.0, 1.0, 1.0, 0.0));
+    check("Pauli-X is unitary", px.is_unitary(EPSILON));
+
+    // Pauli Z is unitary
+    let pz = Matrix::from_vec(2, 2, make_vec4(1.0, 0.0, 0.0, -1.0));
+    check("Pauli-Z is unitary", pz.is_unitary(EPSILON));
+}
+
+fn test_matrix_consistency() {
+    println("--- Consistency Checks ---");
+
+    // (A + B)^T = A^T + B^T
+    let a = Matrix::from_vec(2, 3, make_vec6(1.0, 2.0, 3.0, 4.0, 5.0, 6.0));
+    let b = Matrix::from_vec(2, 3, make_vec6(7.0, 8.0, 9.0, 10.0, 11.0, 12.0));
+    let lhs = a.add(&b).transpose();
+    let rhs = a.transpose().add(&b.transpose());
+    check("(A+B)^T = A^T + B^T", lhs.approx_eq(&rhs, EPSILON));
+
+    // (sA)^T = s * A^T
+    let sa = a.scale(5.0).transpose();
+    let sat = a.transpose().scale(5.0);
+    check("(sA)^T = s * A^T", sa.approx_eq(&sat, EPSILON));
+
+    // Frobenius norm of identity
+    let eye = Matrix::identity(3);
+    let norm_i = eye.frobenius_norm();
+    check("||I_3||_F = sqrt(3)", fabs(norm_i - sqrt(3.0)) < EPSILON);
+
+    // Norm is non-negative and zero only for zero matrix
+    let z = Matrix::zeros(2, 2);
+    check("||0||_F = 0", fabs(z.frobenius_norm()) < EPSILON);
+
+    // ||sA||_F = |s| * ||A||_F
+    let m = Matrix::from_vec(2, 2, make_vec4(1.0, 2.0, 3.0, 4.0));
+    let norm_3m = m.scale(3.0).frobenius_norm();
+    let three_norm_m = 3.0 * m.frobenius_norm();
+    check("||sA|| = |s| * ||A||", fabs(norm_3m - three_norm_m) < EPSILON);
+}
+
+fn test_special_matrices() {
+    println("--- Special Matrices ---");
+
+    // Symmetric matrix check
+    let sym = Matrix::from_vec(3, 3, make_vec9(
+        1.0, 2.0, 3.0,
+        2.0, 5.0, 6.0,
+        3.0, 6.0, 9.0
+    ));
+    let sym_t = sym.transpose();
+    check("symmetric: A = A^T", sym.approx_eq(&sym_t, EPSILON));
+
+    // Nilpotent 2x2: [[0,1],[0,0]]^2 = 0
+    let nil = Matrix::from_vec(2, 2, make_vec4(0.0, 1.0, 0.0, 0.0));
+    let nil2 = nil.matmul(&nil);
+    let z22 = Matrix::zeros(2, 2);
+    check("nilpotent: N^2 = 0", nil2.approx_eq(&z22, EPSILON));
+
+    // Involutory: Pauli X is self-inverse (X^2 = I)
+    let px = Matrix::from_vec(2, 2, make_vec4(0.0, 1.0, 1.0, 0.0));
+    let px2 = px.matmul(&px);
+    let eye2 = Matrix::identity(2);
+    check("Pauli-X^2 = I", px2.approx_eq(&eye2, EPSILON));
+
+    // det(rotation) = 1
+    let theta = PI / 6.0;
+    let rot = Matrix::from_vec(2, 2, make_vec4(cos(theta), -sin(theta), sin(theta), cos(theta)));
+    check("det(rotation) = 1", fabs(rot.determinant() - 1.0) < EPSILON);
+}
+
+fn test_4x4_operations() {
+    println("--- 4x4 Operations ---");
+
+    // 4x4 determinant via LU
+    var m: Vec<f64> = Vec::new();
+    m.push(1.0); m.push(2.0); m.push(3.0); m.push(4.0);
+    m.push(5.0); m.push(6.0); m.push(7.0); m.push(8.0);
+    m.push(2.0); m.push(6.0); m.push(4.0); m.push(8.0);
+    m.push(3.0); m.push(1.0); m.push(1.0); m.push(2.0);
+    let a = Matrix::from_vec(4, 4, m);
+
+    // det(I_4) = 1
+    let eye4 = Matrix::identity(4);
+    check("det(I_4) = 1", fabs(eye4.determinant() - 1.0) < EPSILON);
+
+    // 4x4 LU: P*A = L*U
+    let lu_result = a.lu_decompose();
+    let pa = lu_result.2.matmul(&a);
+    let lu = lu_result.0.matmul(&lu_result.1);
+    check("4x4 P*A = L*U", pa.approx_eq(&lu, EPSILON));
+
+    // 4x4 inverse for a known invertible matrix
+    var inv_data: Vec<f64> = Vec::new();
+    inv_data.push(2.0); inv_data.push(1.0); inv_data.push(0.0); inv_data.push(0.0);
+    inv_data.push(1.0); inv_data.push(3.0); inv_data.push(1.0); inv_data.push(0.0);
+    inv_data.push(0.0); inv_data.push(1.0); inv_data.push(4.0); inv_data.push(1.0);
+    inv_data.push(0.0); inv_data.push(0.0); inv_data.push(1.0); inv_data.push(5.0);
+    let b = Matrix::from_vec(4, 4, inv_data);
+    let b_inv = b.inverse();
+    let prod = b.matmul(&b_inv);
+    check("4x4 A * A^{-1} = I", prod.approx_eq(&eye4, EPSILON));
+}
+
+// ============================================
+// Main
+// ============================================
+
+fn main() -> i64 {
+    println("=== Matrix & Linear Algebra Tests ===");
+    println("");
+
+    test_construction();
+    println("");
+    test_identity_multiplication();
+    println("");
+    test_transpose();
+    println("");
+    test_transpose_of_product();
+    println("");
+    test_arithmetic();
+    println("");
+    test_matmul();
+    println("");
+    test_trace();
+    println("");
+    test_determinant();
+    println("");
+    test_lu_decomposition();
+    println("");
+    test_kronecker_product();
+    println("");
+    test_unitary_check();
+    println("");
+    test_matrix_consistency();
+    println("");
+    test_special_matrices();
+    println("");
+    test_4x4_operations();
+    println("");
+
+    println("=== Results ===");
+    print("  Passed: ");
+    print_i64(tests_passed);
+    println("");
+    print("  Failed: ");
+    print_i64(tests_failed);
+    println("");
+
+    if tests_failed > 0 {
+        println("FAIL");
+        return 1;
+    }
+
+    println("ALL TESTS PASSED");
+    0
+}

@@ -7,7 +7,7 @@ assignees: []
 
 ## Environment
 
-- **Simplex version**: [e.g. 0.12.0]
+- **Simplex version**: [e.g. 0.13.0]
 - **OS**: [e.g. macOS 15.1, Ubuntu 24.04]
 - **LLVM version**: [e.g. 18.1.8]
 - **Build method**: [e.g. `build.sh`, `sxpm build`]

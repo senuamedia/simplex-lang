@@ -243,7 +243,7 @@ print_header() {
     if [ -n "$USE_PYTHON" ]; then
         echo -e "  Compiler: ${YELLOW}stage0.py (Python bootstrap)${NC}"
     else
-        echo -e "  Compiler: ${GREEN}sxc v0.12.0 (self-hosted)${NC}"
+        echo -e "  Compiler: ${GREEN}sxc v0.13.0 (self-hosted)${NC}"
     fi
     if [ "$TEST_TYPE" != "all" ]; then
         echo -e "  Filter: ${CYAN}$TEST_TYPE${NC} tests only"

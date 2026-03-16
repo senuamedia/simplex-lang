@@ -1,0 +1,912 @@
+// Simplex HTTP Client Library
+// High-level HTTP client with async support and JSON integration
+//
+// Design principles:
+// - Simple API: get/post/put/delete with sensible defaults
+// - Configurable: Timeout, headers, base URL support
+// - Safe: Proper error handling for network failures
+// - Composable: Works with JSON module for API interactions
+//
+// # Usage
+//
+// ```simplex
+// use simplex_std::http_client::{HttpClient, HttpResponse};
+//
+// let client = HttpClient::new();
+// let resp = client.get("https://api.example.com/data");
+// if resp.is_ok() {
+//     let response = resp.unwrap();
+//     println(response.body);
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+//
+// These functions are implemented in standalone_runtime.c and provide the
+// actual HTTP networking capability. The Simplex code wraps them with a
+// high-level, safe API.
+
+/// Create a new HTTP request with method and URL
+extern fn http_request_new(method: i64, url: i64) -> i64;
+
+/// Add a header to an HTTP request
+extern fn http_request_header(req: i64, name: i64, value: i64) -> i64;
+
+/// Set the body on an HTTP request
+extern fn http_request_body(req: i64, body: i64) -> i64;
+
+/// Send an HTTP request and receive a response
+extern fn http_request_send(req: i64) -> i64;
+
+/// Free an HTTP request
+extern fn http_request_free(req: i64) -> i64;
+
+/// Get status code from HTTP response
+extern fn http_response_status(resp: i64) -> i64;
+
+/// Get status text from HTTP response
+extern fn http_response_status_text(resp: i64) -> i64;
+
+/// Get a header value from HTTP response by name
+extern fn http_response_header(resp: i64, name: i64) -> i64;
+
+/// Get body from HTTP response
+extern fn http_response_body(resp: i64) -> i64;
+
+/// Get body length from HTTP response
+extern fn http_response_body_len(resp: i64) -> i64;
+
+/// Free an HTTP response
+extern fn http_response_free(resp: i64) -> i64;
+
+/// Simple GET convenience function
+extern fn http_get(url: i64) -> i64;
+
+/// Simple POST convenience function
+extern fn http_post(url: i64, body: i64) -> i64;
+
+/// String concatenation runtime function
+extern fn string_concat(a: i64, b: i64) -> i64;
+
+/// String equality check
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+/// String length
+extern fn string_length(s: i64) -> i64;
+
+// =============================================================================
+// HTTP Method Enum
+// =============================================================================
+
+/// HTTP request methods
+pub enum HttpMethod {
+    Get,
+    Post,
+    Put,
+    Delete,
+    Patch,
+    Head,
+    Options,
+}
+
+impl HttpMethod {
+    /// Convert method to string representation
+    pub fn as_str(&self) -> String {
+        match self {
+            HttpMethod::Get => "GET",
+            HttpMethod::Post => "POST",
+            HttpMethod::Put => "PUT",
+            HttpMethod::Delete => "DELETE",
+            HttpMethod::Patch => "PATCH",
+            HttpMethod::Head => "HEAD",
+            HttpMethod::Options => "OPTIONS",
+        }
+    }
+
+    /// Parse method from string
+    pub fn from_str(s: &str) -> Option<HttpMethod> {
+        match s {
+            "GET" => Some(HttpMethod::Get),
+            "POST" => Some(HttpMethod::Post),
+            "PUT" => Some(HttpMethod::Put),
+            "DELETE" => Some(HttpMethod::Delete),
+            "PATCH" => Some(HttpMethod::Patch),
+            "HEAD" => Some(HttpMethod::Head),
+            "OPTIONS" => Some(HttpMethod::Options),
+            _ => None,
+        }
+    }
+}
+
+// =============================================================================
+// HTTP Header
+// =============================================================================
+
+/// A single HTTP header key-value pair
+pub struct Header {
+    pub name: String,
+    pub value: String,
+}
+
+impl Header {
+    /// Create a new header
+    pub fn new(name: String, value: String) -> Self {
+        Header { name, value }
+    }
+}
+
+/// Collection of HTTP headers
+pub struct Headers {
+    entries: Vec<Header>,
+}
+
+impl Headers {
+    /// Create empty header collection
+    pub fn new() -> Self {
+        Headers { entries: Vec::new() }
+    }
+
+    /// Add a header (appends; does not replace)
+    pub fn add(&mut self, name: String, value: String) {
+        self.entries.push(Header::new(name, value));
+    }
+
+    /// Set a header (replaces existing with same name, or adds)
+    pub fn set(&mut self, name: String, value: String) {
+        let len = self.entries.len();
+        let mut i: i64 = 0;
+        while i < len {
+            if self.entries[i].name == name {
+                self.entries[i].value = value;
+                return;
+            }
+            i = i + 1;
+        }
+        self.entries.push(Header::new(name, value));
+    }
+
+    /// Get a header value by name (first match)
+    pub fn get(&self, name: &str) -> Option<String> {
+        let len = self.entries.len();
+        let mut i: i64 = 0;
+        while i < len {
+            if self.entries[i].name == name {
+                return Some(self.entries[i].value.clone());
+            }
+            i = i + 1;
+        }
+        None
+    }
+
+    /// Check if a header exists
+    pub fn contains(&self, name: &str) -> bool {
+        self.get(name).is_some()
+    }
+
+    /// Remove a header by name
+    pub fn remove(&mut self, name: &str) {
+        let len = self.entries.len();
+        let mut i: i64 = 0;
+        while i < len {
+            if self.entries[i].name == name {
+                self.entries.remove(i);
+                return;
+            }
+            i = i + 1;
+        }
+    }
+
+    /// Number of headers
+    pub fn len(&self) -> i64 {
+        self.entries.len()
+    }
+
+    /// Check if empty
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+// =============================================================================
+// HTTP Response
+// =============================================================================
+
+/// HTTP response from a request
+pub struct HttpResponse {
+    /// HTTP status code (200, 404, etc.)
+    pub status: i64,
+    /// Response body as string
+    pub body: String,
+    /// Response headers
+    pub headers: Headers,
+    /// Status text (e.g. "OK", "Not Found")
+    pub status_text: String,
+    /// Raw response handle for cleanup
+    raw_handle: i64,
+}
+
+impl HttpResponse {
+    /// Create a response from a raw runtime response handle
+    fn from_raw(handle: i64) -> Option<HttpResponse> {
+        if handle == 0 {
+            return None;
+        }
+
+        let status = http_response_status(handle);
+        let body_ptr = http_response_body(handle);
+        let status_text_ptr = http_response_status_text(handle);
+
+        Some(HttpResponse {
+            status: status,
+            body: body_ptr as String,
+            headers: Headers::new(),
+            status_text: status_text_ptr as String,
+            raw_handle: handle,
+        })
+    }
+
+    /// Check if status code indicates success (2xx)
+    pub fn is_success(&self) -> bool {
+        self.status >= 200 && self.status < 300
+    }
+
+    /// Check if status code indicates redirect (3xx)
+    pub fn is_redirect(&self) -> bool {
+        self.status >= 300 && self.status < 400
+    }
+
+    /// Check if status code indicates client error (4xx)
+    pub fn is_client_error(&self) -> bool {
+        self.status >= 400 && self.status < 500
+    }
+
+    /// Check if status code indicates server error (5xx)
+    pub fn is_server_error(&self) -> bool {
+        self.status >= 500 && self.status < 600
+    }
+
+    /// Check if status code indicates any error (4xx or 5xx)
+    pub fn is_error(&self) -> bool {
+        self.status >= 400
+    }
+
+    /// Get a response header by name
+    pub fn header(&self, name: &str) -> Option<String> {
+        if self.raw_handle != 0 {
+            let val = http_response_header(self.raw_handle, name as i64);
+            if val != 0 {
+                return Some(val as String);
+            }
+        }
+        self.headers.get(name)
+    }
+
+    /// Get Content-Type header
+    pub fn content_type(&self) -> Option<String> {
+        self.header("Content-Type")
+    }
+
+    /// Get Content-Length header as i64
+    pub fn content_length(&self) -> Option<i64> {
+        if self.raw_handle != 0 {
+            let len = http_response_body_len(self.raw_handle);
+            if len > 0 {
+                return Some(len);
+            }
+        }
+        None
+    }
+
+    /// Free the underlying response resources
+    pub fn close(&mut self) {
+        if self.raw_handle != 0 {
+            http_response_free(self.raw_handle);
+            self.raw_handle = 0;
+        }
+    }
+}
+
+impl Drop for HttpResponse {
+    fn drop(&mut self) {
+        self.close();
+    }
+}
+
+// =============================================================================
+// HTTP Error
+// =============================================================================
+
+/// Errors that can occur during HTTP operations
+pub enum HttpError {
+    /// Connection failed (host unreachable, DNS failure, etc.)
+    ConnectionFailed(String),
+    /// Request timed out
+    Timeout(String),
+    /// Invalid URL
+    InvalidUrl(String),
+    /// Request was cancelled
+    Cancelled,
+    /// TLS/SSL error
+    TlsError(String),
+    /// I/O error during send or receive
+    IoError(String),
+    /// Response could not be parsed
+    ParseError(String),
+    /// Other error
+    Other(String),
+}
+
+impl HttpError {
+    /// Get human-readable error message
+    pub fn message(&self) -> String {
+        match self {
+            HttpError::ConnectionFailed(msg) => string_concat("Connection failed: ", msg),
+            HttpError::Timeout(msg) => string_concat("Timeout: ", msg),
+            HttpError::InvalidUrl(msg) => string_concat("Invalid URL: ", msg),
+            HttpError::Cancelled => "Request cancelled",
+            HttpError::TlsError(msg) => string_concat("TLS error: ", msg),
+            HttpError::IoError(msg) => string_concat("I/O error: ", msg),
+            HttpError::ParseError(msg) => string_concat("Parse error: ", msg),
+            HttpError::Other(msg) => msg.clone(),
+        }
+    }
+}
+
+// =============================================================================
+// HTTP Client Configuration
+// =============================================================================
+
+/// Configuration for the HTTP client
+pub struct ClientConfig {
+    /// Request timeout in milliseconds (0 = no timeout)
+    pub timeout_ms: i64,
+    /// Maximum number of redirects to follow (0 = don't follow)
+    pub max_redirects: i64,
+    /// User-Agent header value
+    pub user_agent: String,
+    /// Whether to verify TLS certificates
+    pub verify_tls: bool,
+}
+
+impl ClientConfig {
+    /// Create default configuration
+    pub fn default() -> Self {
+        ClientConfig {
+            timeout_ms: 30000,      // 30 second default timeout
+            max_redirects: 10,       // Follow up to 10 redirects
+            user_agent: "Simplex-HttpClient/0.13.0",
+            verify_tls: true,
+        }
+    }
+}
+
+// =============================================================================
+// HTTP Client
+// =============================================================================
+
+/// High-level HTTP client for making requests
+///
+/// # Example
+///
+/// ```simplex
+/// let client = HttpClient::new();
+/// let resp = client.get("https://example.com/api/users");
+/// match resp {
+///     Ok(response) => println(response.body),
+///     Err(e) => println(e.message()),
+/// }
+/// ```
+pub struct HttpClient {
+    /// Client configuration
+    pub config: ClientConfig,
+    /// Default headers sent with every request
+    pub default_headers: Headers,
+    /// Base URL prepended to relative URLs
+    pub base_url: Option<String>,
+}
+
+impl HttpClient {
+    /// Create a new HTTP client with default settings
+    pub fn new() -> Self {
+        let mut headers = Headers::new();
+        headers.set("User-Agent", "Simplex-HttpClient/0.13.0");
+        headers.set("Accept", "*/*");
+
+        HttpClient {
+            config: ClientConfig::default(),
+            default_headers: headers,
+            base_url: None,
+        }
+    }
+
+    /// Create a new HTTP client with a custom timeout
+    pub fn with_timeout(timeout_ms: i64) -> Self {
+        let mut client = HttpClient::new();
+        client.config.timeout_ms = timeout_ms;
+        client
+    }
+
+    /// Create a new HTTP client with a base URL
+    pub fn with_base_url(base_url: String) -> Self {
+        let mut client = HttpClient::new();
+        client.base_url = Some(base_url);
+        client
+    }
+
+    /// Set the base URL for this client
+    pub fn set_base_url(&mut self, url: String) {
+        self.base_url = Some(url);
+    }
+
+    /// Set the request timeout in milliseconds
+    pub fn set_timeout(&mut self, ms: i64) {
+        self.config.timeout_ms = ms;
+    }
+
+    /// Set a default header that will be included in all requests
+    pub fn set_default_header(&mut self, name: String, value: String) {
+        self.default_headers.set(name, value);
+    }
+
+    /// Set the User-Agent header
+    pub fn set_user_agent(&mut self, agent: String) {
+        self.default_headers.set("User-Agent", agent);
+        self.config.user_agent = agent;
+    }
+
+    /// Set authorization header with Bearer token
+    pub fn set_bearer_token(&mut self, token: String) {
+        let value = string_concat("Bearer ", token);
+        self.default_headers.set("Authorization", value);
+    }
+
+    /// Set basic auth header
+    pub fn set_basic_auth(&mut self, username: String, password: String) {
+        // Basic auth: base64(username:password)
+        // For now, store as plain text - base64 encoding done at runtime level
+        let credentials = string_concat(username, string_concat(":", password));
+        let value = string_concat("Basic ", credentials);
+        self.default_headers.set("Authorization", value);
+    }
+
+    // =========================================================================
+    // Core request methods
+    // =========================================================================
+
+    /// Build the full URL from base_url and the provided path/URL
+    fn resolve_url(&self, url: String) -> String {
+        match &self.base_url {
+            Some(base) => {
+                // If url starts with http:// or https://, use it as-is
+                if string_length(url) > 7 {
+                    let prefix = url.substring(0, 4);
+                    if prefix == "http" {
+                        return url;
+                    }
+                }
+                // Otherwise prepend base URL
+                string_concat(base, url)
+            },
+            None => url,
+        }
+    }
+
+    /// Send a raw HTTP request with full control
+    fn send_request(
+        &self,
+        method: String,
+        url: String,
+        body: Option<String>,
+        extra_headers: Option<&Headers>,
+    ) -> Result<HttpResponse, HttpError> {
+        let full_url = self.resolve_url(url);
+
+        // Create the request via runtime
+        let req = http_request_new(method as i64, full_url as i64);
+        if req == 0 {
+            return Err(HttpError::InvalidUrl(full_url));
+        }
+
+        // Apply default headers
+        let num_defaults = self.default_headers.len();
+        let mut i: i64 = 0;
+        while i < num_defaults {
+            let h = &self.default_headers.entries[i];
+            http_request_header(req, h.name as i64, h.value as i64);
+            i = i + 1;
+        }
+
+        // Apply extra headers if provided
+        match extra_headers {
+            Some(headers) => {
+                let num_extra = headers.len();
+                let mut j: i64 = 0;
+                while j < num_extra {
+                    let h = &headers.entries[j];
+                    http_request_header(req, h.name as i64, h.value as i64);
+                    j = j + 1;
+                }
+            },
+            None => {},
+        }
+
+        // Set body if provided
+        match body {
+            Some(b) => {
+                http_request_body(req, b as i64);
+            },
+            None => {},
+        }
+
+        // Send the request
+        let resp_handle = http_request_send(req);
+
+        // Free the request
+        http_request_free(req);
+
+        // Check for failure
+        if resp_handle == 0 {
+            return Err(HttpError::ConnectionFailed(full_url));
+        }
+
+        // Parse response
+        match HttpResponse::from_raw(resp_handle) {
+            Some(response) => Ok(response),
+            None => Err(HttpError::ParseError("Failed to parse response")),
+        }
+    }
+
+    // =========================================================================
+    // High-level request methods
+    // =========================================================================
+
+    /// Perform an HTTP GET request
+    ///
+    /// # Example
+    /// ```simplex
+    /// let resp = client.get("https://api.example.com/users");
+    /// ```
+    pub fn get(&self, url: String) -> Result<HttpResponse, HttpError> {
+        self.send_request("GET", url, None, None)
+    }
+
+    /// Perform an HTTP POST request with a body
+    ///
+    /// # Example
+    /// ```simplex
+    /// let resp = client.post("https://api.example.com/users", body);
+    /// ```
+    pub fn post(&self, url: String, body: String) -> Result<HttpResponse, HttpError> {
+        self.send_request("POST", url, Some(body), None)
+    }
+
+    /// Perform an HTTP PUT request with a body
+    ///
+    /// # Example
+    /// ```simplex
+    /// let resp = client.put("https://api.example.com/users/1", body);
+    /// ```
+    pub fn put(&self, url: String, body: String) -> Result<HttpResponse, HttpError> {
+        self.send_request("PUT", url, Some(body), None)
+    }
+
+    /// Perform an HTTP DELETE request
+    ///
+    /// # Example
+    /// ```simplex
+    /// let resp = client.delete("https://api.example.com/users/1");
+    /// ```
+    pub fn delete(&self, url: String) -> Result<HttpResponse, HttpError> {
+        self.send_request("DELETE", url, None, None)
+    }
+
+    /// Perform an HTTP PATCH request with a body
+    pub fn patch(&self, url: String, body: String) -> Result<HttpResponse, HttpError> {
+        self.send_request("PATCH", url, Some(body), None)
+    }
+
+    /// Perform an HTTP HEAD request (returns headers only)
+    pub fn head(&self, url: String) -> Result<HttpResponse, HttpError> {
+        self.send_request("HEAD", url, None, None)
+    }
+
+    /// Perform an HTTP OPTIONS request
+    pub fn options(&self, url: String) -> Result<HttpResponse, HttpError> {
+        self.send_request("OPTIONS", url, None, None)
+    }
+
+    // =========================================================================
+    // JSON-specific convenience methods
+    // =========================================================================
+
+    /// POST JSON data (sets Content-Type: application/json automatically)
+    pub fn post_json(&self, url: String, json_body: String) -> Result<HttpResponse, HttpError> {
+        let mut headers = Headers::new();
+        headers.set("Content-Type", "application/json");
+        headers.set("Accept", "application/json");
+        self.send_request("POST", url, Some(json_body), Some(&headers))
+    }
+
+    /// PUT JSON data (sets Content-Type: application/json automatically)
+    pub fn put_json(&self, url: String, json_body: String) -> Result<HttpResponse, HttpError> {
+        let mut headers = Headers::new();
+        headers.set("Content-Type", "application/json");
+        headers.set("Accept", "application/json");
+        self.send_request("PUT", url, Some(json_body), Some(&headers))
+    }
+
+    /// PATCH JSON data (sets Content-Type: application/json automatically)
+    pub fn patch_json(&self, url: String, json_body: String) -> Result<HttpResponse, HttpError> {
+        let mut headers = Headers::new();
+        headers.set("Content-Type", "application/json");
+        headers.set("Accept", "application/json");
+        self.send_request("PATCH", url, Some(json_body), Some(&headers))
+    }
+
+    /// GET with Accept: application/json header
+    pub fn get_json(&self, url: String) -> Result<HttpResponse, HttpError> {
+        let mut headers = Headers::new();
+        headers.set("Accept", "application/json");
+        self.send_request("GET", url, None, Some(&headers))
+    }
+
+    // =========================================================================
+    // Form data convenience methods
+    // =========================================================================
+
+    /// POST form-encoded data
+    pub fn post_form(&self, url: String, form_body: String) -> Result<HttpResponse, HttpError> {
+        let mut headers = Headers::new();
+        headers.set("Content-Type", "application/x-www-form-urlencoded");
+        self.send_request("POST", url, Some(form_body), Some(&headers))
+    }
+}
+
+// =============================================================================
+// Request Builder (Fluent API)
+// =============================================================================
+
+/// Fluent request builder for complex requests
+///
+/// # Example
+///
+/// ```simplex
+/// let resp = RequestBuilder::new(HttpMethod::Post, "https://api.example.com/data")
+///     .header("Content-Type", "application/json")
+///     .header("Authorization", "Bearer token123")
+///     .body("{\"key\": \"value\"}")
+///     .timeout(5000)
+///     .send(&client);
+/// ```
+pub struct RequestBuilder {
+    method: HttpMethod,
+    url: String,
+    headers: Headers,
+    body: Option<String>,
+    timeout_ms: Option<i64>,
+}
+
+impl RequestBuilder {
+    /// Create a new request builder
+    pub fn new(method: HttpMethod, url: String) -> Self {
+        RequestBuilder {
+            method: method,
+            url: url,
+            headers: Headers::new(),
+            body: None,
+            timeout_ms: None,
+        }
+    }
+
+    /// Set a header
+    pub fn header(mut self, name: String, value: String) -> Self {
+        self.headers.set(name, value);
+        self
+    }
+
+    /// Set the request body
+    pub fn body(mut self, body: String) -> Self {
+        self.body = Some(body);
+        self
+    }
+
+    /// Set JSON body (also sets Content-Type header)
+    pub fn json(mut self, json_body: String) -> Self {
+        self.headers.set("Content-Type", "application/json");
+        self.body = Some(json_body);
+        self
+    }
+
+    /// Set request timeout in milliseconds
+    pub fn timeout(mut self, ms: i64) -> Self {
+        self.timeout_ms = Some(ms);
+        self
+    }
+
+    /// Send the request using the provided client
+    pub fn send(&self, client: &HttpClient) -> Result<HttpResponse, HttpError> {
+        client.send_request(
+            self.method.as_str(),
+            self.url.clone(),
+            self.body.clone(),
+            Some(&self.headers),
+        )
+    }
+}
+
+// =============================================================================
+// Convenience Functions (Module-level)
+// =============================================================================
+
+/// Quick GET request without creating a client
+///
+/// # Example
+/// ```simplex
+/// let resp = http_client::get("https://example.com");
+/// ```
+pub fn get(url: String) -> Result<HttpResponse, HttpError> {
+    let client = HttpClient::new();
+    client.get(url)
+}
+
+/// Quick POST request without creating a client
+pub fn post(url: String, body: String) -> Result<HttpResponse, HttpError> {
+    let client = HttpClient::new();
+    client.post(url, body)
+}
+
+/// Quick PUT request without creating a client
+pub fn put(url: String, body: String) -> Result<HttpResponse, HttpError> {
+    let client = HttpClient::new();
+    client.put(url, body)
+}
+
+/// Quick DELETE request without creating a client
+pub fn delete(url: String) -> Result<HttpResponse, HttpError> {
+    let client = HttpClient::new();
+    client.delete(url)
+}
+
+/// Quick JSON POST without creating a client
+pub fn post_json(url: String, json_body: String) -> Result<HttpResponse, HttpError> {
+    let client = HttpClient::new();
+    client.post_json(url, json_body)
+}
+
+/// Quick JSON GET without creating a client
+pub fn get_json(url: String) -> Result<HttpResponse, HttpError> {
+    let client = HttpClient::new();
+    client.get_json(url)
+}
+
+// =============================================================================
+// URL Utilities
+// =============================================================================
+
+/// Simple URL components for basic URL manipulation
+pub struct Url {
+    pub scheme: String,
+    pub host: String,
+    pub port: Option<i64>,
+    pub path: String,
+    pub query: Option<String>,
+}
+
+impl Url {
+    /// Create a URL from components
+    pub fn new(scheme: String, host: String, port: Option<i64>, path: String) -> Self {
+        Url {
+            scheme: scheme,
+            host: host,
+            port: port,
+            path: path,
+            query: None,
+        }
+    }
+
+    /// Get the default port for the scheme
+    pub fn default_port(&self) -> i64 {
+        if self.scheme == "https" { 443 } else { 80 }
+    }
+
+    /// Get the effective port (explicit or default)
+    pub fn effective_port(&self) -> i64 {
+        match &self.port {
+            Some(p) => *p,
+            None => self.default_port(),
+        }
+    }
+
+    /// Check if this URL uses HTTPS
+    pub fn is_https(&self) -> bool {
+        self.scheme == "https"
+    }
+
+    /// Convert to string representation
+    pub fn to_string(&self) -> String {
+        let mut result = string_concat(self.scheme.clone(), "://");
+        result = string_concat(result, self.host.clone());
+
+        match &self.port {
+            Some(p) => {
+                result = string_concat(result, ":");
+                result = string_concat(result, p.to_string());
+            },
+            None => {},
+        }
+
+        result = string_concat(result, self.path.clone());
+
+        match &self.query {
+            Some(q) => {
+                result = string_concat(result, "?");
+                result = string_concat(result, q.clone());
+            },
+            None => {},
+        }
+
+        result
+    }
+}
+
+// =============================================================================
+// Query String Builder
+// =============================================================================
+
+/// Builds URL query strings from key-value pairs
+pub struct QueryString {
+    params: Vec<(String, String)>,
+}
+
+impl QueryString {
+    /// Create empty query string builder
+    pub fn new() -> Self {
+        QueryString { params: Vec::new() }
+    }
+
+    /// Add a parameter
+    pub fn add(&mut self, key: String, value: String) {
+        self.params.push((key, value));
+    }
+
+    /// Build the query string (without leading ?)
+    pub fn build(&self) -> String {
+        let len = self.params.len();
+        if len == 0 {
+            return "";
+        }
+
+        let mut result = "";
+        let mut i: i64 = 0;
+        while i < len {
+            if i > 0 {
+                result = string_concat(result, "&");
+            }
+            let (key, value) = &self.params[i];
+            result = string_concat(result, key.clone());
+            result = string_concat(result, "=");
+            result = string_concat(result, value.clone());
+            i = i + 1;
+        }
+        result
+    }
+
+    /// Build a full URL with this query string appended
+    pub fn build_url(&self, base_url: String) -> String {
+        let qs = self.build();
+        if string_length(qs) == 0 {
+            return base_url;
+        }
+        string_concat(string_concat(base_url, "?"), qs)
+    }
+
+    /// Number of parameters
+    pub fn len(&self) -> i64 {
+        self.params.len()
+    }
+}

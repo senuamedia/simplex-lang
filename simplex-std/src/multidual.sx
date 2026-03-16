@@ -1,0 +1,609 @@
+// simplex-std::multidual - Multi-Dimensional Dual Numbers for Gradient Computation
+//
+// Multi-dual numbers extend dual numbers to compute N partial derivatives
+// simultaneously in a single forward pass. Where a standard dual number
+// carries one derivative component, a multi-dual carries an N-dimensional
+// derivative vector — one element per input variable.
+//
+// This enables computing the full gradient ∇f(x) in one evaluation,
+// rather than N separate evaluations.
+//
+// # Mathematical Foundation
+//
+// A multi-dual number has the form:
+//   v = a + b₁ε₁ + b₂ε₂ + ... + bₙεₙ
+//
+// where εᵢεⱼ = 0 for all i,j (all infinitesimals are nilpotent).
+//
+// Multiplication:
+//   (a + Σbᵢεᵢ)(c + Σdᵢεᵢ) = ac + Σ(adᵢ + bᵢc)εᵢ
+//
+// This is the product rule applied to each dimension independently.
+//
+// # Example
+//
+// ```simplex
+// use simplex_std::multidual::MultiDual;
+//
+// // Compute gradient of f(x,y) = x²y + sin(y) at (2, π/4)
+// let x = MultiDual::variable(2.0, 0, 2);   // ∂/∂x seed
+// let y = MultiDual::variable(0.7854, 1, 2); // ∂/∂y seed
+//
+// let f = x * x * y + y.sin();
+// let grad = f.gradient();
+// // grad[0] = ∂f/∂x = 2xy = 2*2*0.7854
+// // grad[1] = ∂f/∂y = x² + cos(y)
+// ```
+//
+// # Performance
+//
+// Computing the gradient of an N-variable function costs O(N) per arithmetic
+// operation, but requires only ONE forward pass through the function.
+// This is optimal for functions with few inputs and many outputs (Jacobians).
+
+use super::{Clone, Display, Default};
+
+// =============================================================================
+// Core Type
+// =============================================================================
+
+/// Multi-dimensional dual number for computing N partial derivatives.
+///
+/// `val` holds the primal (function) value.
+/// `der` holds the N-dimensional derivative vector (gradient components).
+///
+/// Each element der[i] represents ∂f/∂xᵢ for the i-th input variable.
+pub struct MultiDual {
+    /// Primal value
+    pub val: f64,
+    /// Derivative vector — one component per input dimension
+    pub der: Vec<f64>,
+}
+
+impl MultiDual {
+    // =========================================================================
+    // Constructors
+    // =========================================================================
+
+    /// Create a multi-dual variable seeded at dimension `dim_index`.
+    ///
+    /// Sets der[dim_index] = 1.0, all others = 0.0.
+    /// This seeds the forward-mode derivative for the dim_index-th variable.
+    ///
+    /// # Arguments
+    /// * `val` - The value of this variable
+    /// * `dim_index` - Which partial derivative dimension to seed
+    /// * `total_dims` - Total number of input dimensions
+    ///
+    /// # Example
+    /// ```
+    /// // For f(x, y, z), create x with ∂/∂x seed:
+    /// let x = MultiDual::variable(3.0, 0, 3);
+    /// // x.der = [1.0, 0.0, 0.0]
+    /// ```
+    pub fn variable(val: f64, dim_index: usize, total_dims: usize) -> MultiDual {
+        assert!(dim_index < total_dims, "dim_index must be < total_dims");
+        var der = Vec::new();
+        for i in 0..total_dims {
+            if i == dim_index {
+                der.push(1.0);
+            } else {
+                der.push(0.0);
+            }
+        }
+        MultiDual { val, der }
+    }
+
+    /// Create a multi-dual constant (all derivatives = 0).
+    ///
+    /// Use for literal values and parameters that are not differentiated.
+    ///
+    /// # Arguments
+    /// * `val` - The constant value
+    /// * `total_dims` - Total number of input dimensions (must match variables)
+    pub fn constant(val: f64, total_dims: usize) -> MultiDual {
+        var der = Vec::new();
+        for _ in 0..total_dims {
+            der.push(0.0);
+        }
+        MultiDual { val, der }
+    }
+
+    /// Create a multi-dual with explicit value and derivative vector.
+    pub fn new(val: f64, der: Vec<f64>) -> MultiDual {
+        MultiDual { val, der }
+    }
+
+    /// Create a zero multi-dual (val=0, all derivatives=0).
+    pub fn zero(total_dims: usize) -> MultiDual {
+        MultiDual::constant(0.0, total_dims)
+    }
+
+    /// Create a one multi-dual (val=1, all derivatives=0).
+    pub fn one(total_dims: usize) -> MultiDual {
+        MultiDual::constant(1.0, total_dims)
+    }
+
+    /// Create from an f64 scalar (same as constant).
+    pub fn from_f64(val: f64, total_dims: usize) -> MultiDual {
+        MultiDual::constant(val, total_dims)
+    }
+
+    // =========================================================================
+    // Accessors
+    // =========================================================================
+
+    /// Get the number of derivative dimensions.
+    #[inline]
+    pub fn dims(&self) -> usize {
+        self.der.len()
+    }
+
+    /// Get the primal value.
+    #[inline]
+    pub fn value(&self) -> f64 {
+        self.val
+    }
+
+    /// Extract the gradient vector (all partial derivatives).
+    ///
+    /// Returns a Vec<f64> where element i is ∂f/∂xᵢ.
+    #[inline]
+    pub fn gradient(&self) -> Vec<f64> {
+        self.der.clone()
+    }
+
+    /// Get the partial derivative for a specific dimension.
+    #[inline]
+    pub fn partial(&self, dim: usize) -> f64 {
+        self.der[dim]
+    }
+
+    /// Check if this is a constant (all derivatives zero).
+    pub fn is_constant(&self) -> bool {
+        for d in self.der.iter() {
+            if *d != 0.0 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Detach from the computation graph (zero out derivatives).
+    pub fn detach(&self) -> MultiDual {
+        MultiDual::constant(self.val, self.dims())
+    }
+
+    // =========================================================================
+    // Arithmetic Operations
+    // =========================================================================
+
+    /// Addition: (a + Σbᵢεᵢ) + (c + Σdᵢεᵢ) = (a+c) + Σ(bᵢ+dᵢ)εᵢ
+    pub fn add(self, other: MultiDual) -> MultiDual {
+        let n = self.dims();
+        assert!(n == other.dims(), "MultiDual dimensions must match");
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(self.der[i] + other.der[i]);
+        }
+        MultiDual {
+            val: self.val + other.val,
+            der,
+        }
+    }
+
+    /// Subtraction: (a + Σbᵢεᵢ) - (c + Σdᵢεᵢ) = (a-c) + Σ(bᵢ-dᵢ)εᵢ
+    pub fn sub(self, other: MultiDual) -> MultiDual {
+        let n = self.dims();
+        assert!(n == other.dims(), "MultiDual dimensions must match");
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(self.der[i] - other.der[i]);
+        }
+        MultiDual {
+            val: self.val - other.val,
+            der,
+        }
+    }
+
+    /// Multiplication (product rule across all dimensions):
+    /// (a + Σbᵢεᵢ)(c + Σdᵢεᵢ) = ac + Σ(a·dᵢ + bᵢ·c)εᵢ
+    ///
+    /// Each derivative component follows the product rule independently:
+    ///   ∂(fg)/∂xᵢ = f · ∂g/∂xᵢ + ∂f/∂xᵢ · g
+    pub fn mul(self, other: MultiDual) -> MultiDual {
+        let n = self.dims();
+        assert!(n == other.dims(), "MultiDual dimensions must match");
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(self.val * other.der[i] + self.der[i] * other.val);
+        }
+        MultiDual {
+            val: self.val * other.val,
+            der,
+        }
+    }
+
+    /// Division (quotient rule across all dimensions):
+    /// (a/c) with ∂/∂xᵢ = (bᵢ·c - a·dᵢ) / c²
+    ///
+    /// Each derivative component follows the quotient rule independently:
+    ///   ∂(f/g)/∂xᵢ = (∂f/∂xᵢ · g - f · ∂g/∂xᵢ) / g²
+    pub fn div(self, other: MultiDual) -> MultiDual {
+        let n = self.dims();
+        assert!(n == other.dims(), "MultiDual dimensions must match");
+        let val = self.val / other.val;
+        let denom = other.val * other.val;
+        var der = Vec::new();
+        for i in 0..n {
+            der.push((self.der[i] * other.val - self.val * other.der[i]) / denom);
+        }
+        MultiDual { val, der }
+    }
+
+    /// Negation: -(a + Σbᵢεᵢ) = -a + Σ(-bᵢ)εᵢ
+    pub fn neg(self) -> MultiDual {
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(-self.der[i]);
+        }
+        MultiDual {
+            val: -self.val,
+            der,
+        }
+    }
+
+    /// Add a scalar constant.
+    pub fn add_scalar(self, s: f64) -> MultiDual {
+        MultiDual {
+            val: self.val + s,
+            der: self.der,
+        }
+    }
+
+    /// Multiply by a scalar constant.
+    pub fn mul_scalar(self, s: f64) -> MultiDual {
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(self.der[i] * s);
+        }
+        MultiDual {
+            val: self.val * s,
+            der,
+        }
+    }
+
+    /// Divide by a scalar constant.
+    pub fn div_scalar(self, s: f64) -> MultiDual {
+        self.mul_scalar(1.0 / s)
+    }
+
+    // =========================================================================
+    // Mathematical Functions
+    // =========================================================================
+    // Each function applies the chain rule to every derivative dimension:
+    //   ∂f(g)/∂xᵢ = f'(g) · ∂g/∂xᵢ
+
+    /// Sine: sin(a + Σbᵢεᵢ) = sin(a) + cos(a)·Σbᵢεᵢ
+    pub fn sin(self) -> MultiDual {
+        let cos_val = self.val.cos();
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(cos_val * self.der[i]);
+        }
+        MultiDual {
+            val: self.val.sin(),
+            der,
+        }
+    }
+
+    /// Cosine: cos(a + Σbᵢεᵢ) = cos(a) - sin(a)·Σbᵢεᵢ
+    pub fn cos(self) -> MultiDual {
+        let neg_sin_val = -self.val.sin();
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(neg_sin_val * self.der[i]);
+        }
+        MultiDual {
+            val: self.val.cos(),
+            der,
+        }
+    }
+
+    /// Exponential: exp(a + Σbᵢεᵢ) = exp(a) + exp(a)·Σbᵢεᵢ
+    pub fn exp(self) -> MultiDual {
+        let e = self.val.exp();
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(e * self.der[i]);
+        }
+        MultiDual { val: e, der }
+    }
+
+    /// Natural logarithm: ln(a + Σbᵢεᵢ) = ln(a) + (1/a)·Σbᵢεᵢ
+    pub fn ln(self) -> MultiDual {
+        let inv_val = 1.0 / self.val;
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(inv_val * self.der[i]);
+        }
+        MultiDual {
+            val: self.val.ln(),
+            der,
+        }
+    }
+
+    /// Square root: sqrt(a + Σbᵢεᵢ) = sqrt(a) + 1/(2·sqrt(a))·Σbᵢεᵢ
+    pub fn sqrt(self) -> MultiDual {
+        let s = self.val.sqrt();
+        let coeff = 1.0 / (2.0 * s);
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(coeff * self.der[i]);
+        }
+        MultiDual { val: s, der }
+    }
+
+    /// Power with constant exponent: x^n
+    /// Derivative: n·x^(n-1) applied to each dimension.
+    pub fn pow(self, n: f64) -> MultiDual {
+        let val = self.val.powf(n);
+        let coeff = n * self.val.powf(n - 1.0);
+        let dims = self.dims();
+        var der = Vec::new();
+        for i in 0..dims {
+            der.push(coeff * self.der[i]);
+        }
+        MultiDual { val, der }
+    }
+
+    /// Power with integer exponent.
+    pub fn powi(self, n: i32) -> MultiDual {
+        let val = self.val.powi(n);
+        let coeff = (n as f64) * self.val.powi(n - 1);
+        let dims = self.dims();
+        var der = Vec::new();
+        for i in 0..dims {
+            der.push(coeff * self.der[i]);
+        }
+        MultiDual { val, der }
+    }
+
+    /// Hyperbolic tangent: tanh(a + Σbᵢεᵢ) = tanh(a) + (1-tanh²(a))·Σbᵢεᵢ
+    pub fn tanh(self) -> MultiDual {
+        let t = self.val.tanh();
+        let coeff = 1.0 - t * t;
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(coeff * self.der[i]);
+        }
+        MultiDual { val: t, der }
+    }
+
+    /// Sigmoid: σ(x) = 1/(1 + e^(-x))
+    /// Derivative: σ(x)·(1 - σ(x))
+    pub fn sigmoid(self) -> MultiDual {
+        let s = 1.0 / (1.0 + (-self.val).exp());
+        let coeff = s * (1.0 - s);
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(coeff * self.der[i]);
+        }
+        MultiDual { val: s, der }
+    }
+
+    /// Tangent: tan(x), derivative = sec²(x) = 1 + tan²(x)
+    pub fn tan(self) -> MultiDual {
+        let t = self.val.tan();
+        let coeff = 1.0 + t * t;
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(coeff * self.der[i]);
+        }
+        MultiDual { val: t, der }
+    }
+
+    /// Absolute value with subgradient.
+    pub fn abs(self) -> MultiDual {
+        if self.val >= 0.0 {
+            self
+        } else {
+            self.neg()
+        }
+    }
+
+    /// ReLU activation: max(0, x)
+    pub fn relu(self) -> MultiDual {
+        if self.val > 0.0 {
+            self
+        } else {
+            MultiDual::zero(self.dims())
+        }
+    }
+
+    /// Softplus: ln(1 + e^x) — smooth approximation to ReLU
+    pub fn softplus(self) -> MultiDual {
+        let e = self.val.exp();
+        let coeff = e / (1.0 + e);
+        let n = self.dims();
+        var der = Vec::new();
+        for i in 0..n {
+            der.push(coeff * self.der[i]);
+        }
+        MultiDual {
+            val: (1.0 + e).ln(),
+            der,
+        }
+    }
+
+    // =========================================================================
+    // Comparison Operations
+    // =========================================================================
+
+    /// Smooth minimum (piecewise).
+    pub fn min(self, other: MultiDual) -> MultiDual {
+        if self.val <= other.val { self } else { other }
+    }
+
+    /// Smooth maximum (piecewise).
+    pub fn max(self, other: MultiDual) -> MultiDual {
+        if self.val >= other.val { self } else { other }
+    }
+
+    /// Clamp to range [min_val, max_val].
+    pub fn clamp(self, min_val: f64, max_val: f64) -> MultiDual {
+        let dims = self.dims();
+        self.max(MultiDual::constant(min_val, dims))
+            .min(MultiDual::constant(max_val, dims))
+    }
+}
+
+// =============================================================================
+// Operator Overloading
+// =============================================================================
+
+impl std::ops::Add for MultiDual {
+    type Output = MultiDual;
+    fn add(self, other: MultiDual) -> MultiDual { self.add(other) }
+}
+
+impl std::ops::Add<f64> for MultiDual {
+    type Output = MultiDual;
+    fn add(self, other: f64) -> MultiDual { self.add_scalar(other) }
+}
+
+impl std::ops::Sub for MultiDual {
+    type Output = MultiDual;
+    fn sub(self, other: MultiDual) -> MultiDual { self.sub(other) }
+}
+
+impl std::ops::Sub<f64> for MultiDual {
+    type Output = MultiDual;
+    fn sub(self, other: f64) -> MultiDual { self.add_scalar(-other) }
+}
+
+impl std::ops::Mul for MultiDual {
+    type Output = MultiDual;
+    fn mul(self, other: MultiDual) -> MultiDual { self.mul(other) }
+}
+
+impl std::ops::Mul<f64> for MultiDual {
+    type Output = MultiDual;
+    fn mul(self, other: f64) -> MultiDual { self.mul_scalar(other) }
+}
+
+impl std::ops::Div for MultiDual {
+    type Output = MultiDual;
+    fn div(self, other: MultiDual) -> MultiDual { self.div(other) }
+}
+
+impl std::ops::Div<f64> for MultiDual {
+    type Output = MultiDual;
+    fn div(self, other: f64) -> MultiDual { self.div_scalar(other) }
+}
+
+impl std::ops::Neg for MultiDual {
+    type Output = MultiDual;
+    fn neg(self) -> MultiDual { self.neg() }
+}
+
+// =============================================================================
+// Trait Implementations
+// =============================================================================
+
+impl Default for MultiDual {
+    fn default() -> MultiDual {
+        MultiDual { val: 0.0, der: Vec::new() }
+    }
+}
+
+impl Display for MultiDual {
+    fn fmt(&self) -> String {
+        var s = format!("{}", self.val);
+        for i in 0..self.dims() {
+            if self.der[i] != 0.0 {
+                if self.der[i] == 1.0 {
+                    s = format!("{}+ε{}", s, i);
+                } else {
+                    s = format!("{}+{}ε{}", s, self.der[i], i);
+                }
+            }
+        }
+        s
+    }
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// Create a set of multi-dual variables from a vector of values.
+///
+/// Returns a Vec where each element has the derivative seed set
+/// for its corresponding dimension.
+///
+/// # Example
+/// ```
+/// let vars = variables(&[1.0, 2.0, 3.0]);
+/// // vars[0] = MultiDual { val: 1.0, der: [1, 0, 0] }
+/// // vars[1] = MultiDual { val: 2.0, der: [0, 1, 0] }
+/// // vars[2] = MultiDual { val: 3.0, der: [0, 0, 1] }
+/// ```
+pub fn variables(values: &[f64]) -> Vec<MultiDual> {
+    let n = values.len();
+    var result = Vec::new();
+    for i in 0..n {
+        result.push(MultiDual::variable(values[i], i, n));
+    }
+    result
+}
+
+/// Dot product of multi-dual vectors.
+pub fn dot(a: &[MultiDual], b: &[MultiDual]) -> MultiDual {
+    assert!(a.len() == b.len(), "Vector lengths must match for dot product");
+    assert!(a.len() > 0, "Cannot compute dot product of empty vectors");
+    let dims = a[0].dims();
+    var result = MultiDual::zero(dims);
+    for i in 0..a.len() {
+        result = result + a[i].clone() * b[i].clone();
+    }
+    result
+}
+
+/// Sum of a multi-dual vector.
+pub fn sum(v: &[MultiDual]) -> MultiDual {
+    assert!(v.len() > 0, "Cannot sum empty vector");
+    let dims = v[0].dims();
+    var result = MultiDual::zero(dims);
+    for x in v.iter() {
+        result = result + x.clone();
+    }
+    result
+}
+
+/// Mean of a multi-dual vector.
+pub fn mean(v: &[MultiDual]) -> MultiDual {
+    let s = sum(v);
+    s.div_scalar(v.len() as f64)
+}
+
+/// L2 norm squared: Σxᵢ²
+pub fn norm_squared(v: &[MultiDual]) -> MultiDual {
+    assert!(v.len() > 0, "Cannot compute norm of empty vector");
+    let dims = v[0].dims();
+    var result = MultiDual::zero(dims);
+    for x in v.iter() {
+        result = result + x.clone() * x.clone();
+    }
+    result
+}

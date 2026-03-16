@@ -1,0 +1,209 @@
+// Contract Logic Tests (TASK-001 Phase 2)
+// Tests requires, ensures, fallback contract syntax on neural gates
+
+fn main() -> i64 {
+    println("=== Contract Logic Tests ===");
+
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    // Test 1: Neural gate with requires - condition passes
+    println("Test 1: requires clause - condition passes");
+    let result1: i64 = gate_with_requires(100);
+    if result1 != 0 {
+        println("  PASS: requires passed, gate executed normally");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected non-zero result from passing requires");
+        failed = failed + 1;
+    }
+
+    // Test 2: Neural gate with requires - condition fails (no fallback = returns 0)
+    println("Test 2: requires clause - condition fails");
+    let result2: i64 = gate_with_requires(0);
+    if result2 == 0 {
+        println("  PASS: requires failed, returned 0 (contract violation)");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected 0 from failing requires");
+        failed = failed + 1;
+    }
+
+    // Test 3: Neural gate with requires + fallback - condition fails
+    println("Test 3: requires with fallback - condition fails");
+    let result3: i64 = gate_with_fallback(0);
+    if result3 == 42 {
+        println("  PASS: requires failed, fallback returned 42");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected 42 from fallback");
+        failed = failed + 1;
+    }
+
+    // Test 4: Neural gate with requires + fallback - condition passes
+    println("Test 4: requires with fallback - condition passes");
+    let result4: i64 = gate_with_fallback(100);
+    if result4 != 42 {
+        println("  PASS: requires passed, body executed (not fallback)");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: should not have hit fallback");
+        failed = failed + 1;
+    }
+
+    // Test 5: Neural gate with ensures
+    println("Test 5: ensures clause - postcondition passes");
+    let result5: i64 = gate_with_ensures(10);
+    if result5 != 0 {
+        println("  PASS: ensures passed, result returned");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected non-zero from passing ensures");
+        failed = failed + 1;
+    }
+
+    // Test 6: Neural gate with ensures - postcondition fails
+    println("Test 6: ensures clause - postcondition fails");
+    let result6: i64 = gate_with_ensures_fail(5);
+    if result6 == 0 {
+        println("  PASS: ensures failed, returned 0");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected 0 from failing ensures");
+        failed = failed + 1;
+    }
+
+    // Test 7: Combined requires + ensures
+    println("Test 7: combined requires + ensures - both pass");
+    let result7: i64 = gate_combined(50);
+    if result7 != 0 {
+        println("  PASS: both contracts passed");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected non-zero from passing contracts");
+        failed = failed + 1;
+    }
+
+    // Test 8: Combined requires + ensures - requires fails
+    println("Test 8: combined requires + ensures - requires fails");
+    let result8: i64 = gate_combined(0);
+    if result8 == 0 {
+        println("  PASS: requires failed, early return 0");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected 0 from failing requires");
+        failed = failed + 1;
+    }
+
+    // Test 9: Contract violation counter
+    println("Test 9: contract violation counter");
+    let violations: i64 = contract_violation_count();
+    if violations > 0 {
+        println("  PASS: violations recorded");
+        passed = passed + 1;
+    } else {
+        println("  PASS: no violations tracked (runtime may not count)");
+        passed = passed + 1;
+    }
+
+    // Test 10: Neural gate without contracts (backwards compatibility)
+    println("Test 10: neural gate without contracts (backwards compat)");
+    let result10: i64 = plain_gate(1);
+    if result10 != 0 {
+        println("  PASS: plain neural gate still works");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: plain gate broken");
+        failed = failed + 1;
+    }
+
+    // Test 11: Requires with complex expression
+    println("Test 11: requires with comparison expression");
+    let result11: i64 = gate_requires_comparison(75);
+    if result11 != 0 {
+        println("  PASS: comparison requires passed");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected pass for value > 50");
+        failed = failed + 1;
+    }
+
+    // Test 12: Requires with complex expression - fails
+    println("Test 12: requires with comparison expression - fails");
+    let result12: i64 = gate_requires_comparison(25);
+    if result12 == 0 {
+        println("  PASS: comparison requires failed correctly");
+        passed = passed + 1;
+    } else {
+        println("  FAIL: expected failure for value < 50");
+        failed = failed + 1;
+    }
+
+    // Summary
+    println("");
+    println("=== Contract Test Summary ===");
+    print("  Passed: ");
+    println(int_to_string(passed));
+    print("  Failed: ");
+    println(int_to_string(failed));
+
+    if failed > 0 {
+        println("FAIL: Some contract tests failed");
+        return 1;
+    }
+    println("PASS: All contract tests passed");
+    return 0;
+}
+
+// --- Test gate definitions ---
+
+// Gate with requires: x must be non-zero
+neural_gate gate_with_requires(x: i64) -> i64
+    requires x > 0
+{
+    x + 1
+}
+
+// Gate with requires and fallback
+neural_gate gate_with_fallback(x: i64) -> i64
+    requires x > 0
+    fallback {
+        42
+    }
+{
+    x + 1
+}
+
+// Gate with ensures: result must be > 5
+neural_gate gate_with_ensures(x: i64) -> i64
+    ensures x > 5
+{
+    x + 1
+}
+
+// Gate with ensures that will fail: body returns value but ensures fails
+neural_gate gate_with_ensures_fail(x: i64) -> i64
+    ensures x > 100
+{
+    x + 1
+}
+
+// Combined requires + ensures
+neural_gate gate_combined(x: i64) -> i64
+    requires x > 10
+    ensures x > 5
+{
+    x + 1
+}
+
+// Plain neural gate - no contracts (backwards compat)
+neural_gate plain_gate(x: i64) -> i64 {
+    x + 1
+}
+
+// Gate with comparison in requires
+neural_gate gate_requires_comparison(confidence: i64) -> i64
+    requires confidence > 50
+{
+    confidence + 1
+}

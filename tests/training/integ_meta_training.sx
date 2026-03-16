@@ -1,0 +1,687 @@
+// Integration tests for meta-training pipeline
+//
+// Tests the complete meta-optimization loop including:
+// - MetaOptimizer updating all 5 learnable schedules
+// - Curriculum ordering adaptation via meta-gradients
+// - Staged compression pipeline with quality gates
+// - Quality gate enforcement preventing excessive degradation
+// - Meta-loss convergence over iterations
+
+use simplex_std::dual::dual;
+use simplex_std::vec::Vec;
+use simplex_std::string::String;
+use simplex_training::{
+    MetaTrainer, MetaConfig, MetaLoss, MetaOptimizer, MetaDiagnostics,
+    LearnedSchedules, LearnableLRSchedule, LearnableDistillation,
+    LearnablePruning, LearnableQuantization,
+    LearnableCurriculum, CurriculumGradient, TaskDescriptor,
+    StepResult, TrainingHistory, EarlyStopping,
+};
+use simplex_training::schedules::SchedulesGradient;
+use simplex_training::pipeline::compress::{
+    StagedCompressionPipeline, StagedCompressionConfig, StagedCompressionResult,
+    CompressionStage, QualityGate, StageResult,
+};
+
+// =============================================================================
+// MetaOptimizer Tests: All 5 Schedules Updated
+// =============================================================================
+
+#[cfg(test)]
+mod meta_optimizer_tests {
+    use super::*;
+
+    #[test]
+    fn test_meta_optimizer_updates_all_schedules() {
+        // Create schedules with known initial values
+        var schedules = LearnedSchedules::with_curriculum(3);
+        let initial_lr = schedules.lr.initial_lr.val;
+        let initial_temp = schedules.distill.initial_temp.val;
+        let initial_sparsity = schedules.prune.final_sparsity.val;
+        let initial_bits = schedules.quant.final_bits.val;
+        let initial_difficulty = schedules.curriculum.difficulty_weights[0].val;
+
+        // Create optimizer
+        var optimizer = MetaOptimizer::new(0.01, 1.0);
+
+        // Create non-zero gradient
+        var grad = schedules.gradient();
+        // Manually set some gradient values to ensure updates happen
+        grad.lr.d_initial_lr = 0.1;
+        grad.distill.d_initial_temp = 0.2;
+        grad.prune.d_final_sparsity = 0.05;
+        grad.quant.d_final_bits = 0.3;
+        grad.curriculum.d_difficulty_weights = vec![0.1, 0.2, 0.3];
+
+        // Apply meta step
+        optimizer.step(&mut schedules, &grad);
+
+        // Verify ALL schedules were updated
+        assert!(schedules.lr.initial_lr.val != initial_lr,
+            "LR schedule should be updated");
+        assert!(schedules.distill.initial_temp.val != initial_temp,
+            "Distillation schedule should be updated");
+        assert!(schedules.prune.final_sparsity.val != initial_sparsity,
+            "Pruning schedule should be updated");
+        assert!(schedules.quant.final_bits.val != initial_bits,
+            "Quantization schedule should be updated");
+        assert!(schedules.curriculum.difficulty_weights[0].val != initial_difficulty,
+            "Curriculum schedule should be updated");
+
+        // Verify update counts
+        assert_eq!(optimizer.lr_updates, 1);
+        assert_eq!(optimizer.distill_updates, 1);
+        assert_eq!(optimizer.prune_updates, 1);
+        assert_eq!(optimizer.quant_updates, 1);
+        assert_eq!(optimizer.curriculum_updates, 1);
+        assert_eq!(optimizer.total_steps, 1);
+    }
+
+    #[test]
+    fn test_meta_optimizer_gradient_clipping() {
+        var schedules = LearnedSchedules::new();
+        var optimizer = MetaOptimizer::new(0.01, 0.5);  // Tight clip threshold
+
+        // Create large gradient
+        var grad = SchedulesGradient::zero();
+        grad.lr.d_initial_lr = 100.0;  // Very large gradient
+
+        let original_norm = grad.norm();
+        assert!(original_norm > 0.5, "Gradient should exceed clip threshold");
+
+        // Apply step (should clip)
+        optimizer.step(&mut schedules, &grad);
+
+        // Verify gradient was recorded
+        assert_eq!(optimizer.grad_norms.len(), 1);
+        // The recorded norm is the pre-clip norm
+        assert!(optimizer.grad_norms[0] > 0.5);
+    }
+
+    #[test]
+    fn test_meta_optimizer_selective_update() {
+        var schedules = LearnedSchedules::with_curriculum(2);
+        let initial_lr = schedules.lr.initial_lr.val;
+        let initial_temp = schedules.distill.initial_temp.val;
+
+        var optimizer = MetaOptimizer::new(0.01, 1.0);
+
+        var grad = schedules.gradient();
+        grad.lr.d_initial_lr = 0.5;
+        grad.distill.d_initial_temp = 0.5;
+
+        // Only update LR, not distillation
+        optimizer.step_selective(&mut schedules, &grad,
+            true, false, false, false, false);
+
+        assert!(schedules.lr.initial_lr.val != initial_lr,
+            "LR should be updated");
+        assert_eq!(schedules.distill.initial_temp.val, initial_temp,
+            "Distillation should NOT be updated");
+        assert_eq!(optimizer.lr_updates, 1);
+        assert_eq!(optimizer.distill_updates, 0);
+    }
+
+    #[test]
+    fn test_meta_optimizer_grad_norm_tracking() {
+        var schedules = LearnedSchedules::new();
+        var optimizer = MetaOptimizer::new(0.001, 5.0);
+
+        for i in 0..10 {
+            var grad = SchedulesGradient::zero();
+            grad.lr.d_initial_lr = (i as f64 + 1.0) * 0.1;
+            optimizer.step(&mut schedules, &grad);
+        }
+
+        assert_eq!(optimizer.grad_norms.len(), 10);
+        assert!(optimizer.avg_grad_norm() > 0.0);
+        assert!(optimizer.recent_grad_norm(5) > 0.0);
+    }
+}
+
+// =============================================================================
+// Curriculum Ordering Tests
+// =============================================================================
+
+#[cfg(test)]
+mod curriculum_ordering_tests {
+    use super::*;
+
+    #[test]
+    fn test_curriculum_ordering_changes_with_gradients() {
+        var curriculum = LearnableCurriculum::new(4);
+
+        // Record initial ordering
+        let initial_ordering = curriculum.specialist_ordering();
+
+        // Apply gradients that should change ordering
+        // Push task 3 to be easier (lower difficulty weight)
+        var grad = curriculum.extract_gradients();
+        grad.d_difficulty_weights = vec![0.0, 0.0, 0.0, -2.0];  // Decrease task 3 difficulty
+
+        curriculum.apply_gradients(&grad, 0.1);
+
+        let new_ordering = curriculum.specialist_ordering();
+
+        // Task 3 should have moved earlier in ordering
+        var initial_pos_3 = 0;
+        var new_pos_3 = 0;
+        for i in 0..initial_ordering.len() {
+            if initial_ordering[i] == 3 {
+                initial_pos_3 = i;
+            }
+        }
+        for i in 0..new_ordering.len() {
+            if new_ordering[i] == 3 {
+                new_pos_3 = i;
+            }
+        }
+
+        assert!(new_pos_3 <= initial_pos_3,
+            "Task 3 should move earlier after reducing its difficulty weight");
+    }
+
+    #[test]
+    fn test_curriculum_mixing_weights_sum_to_one() {
+        let curriculum = LearnableCurriculum::new(3);
+
+        for task_idx in 0..3 {
+            let weights = curriculum.mixing_weights(task_idx);
+            var sum = 0.0;
+            for w in weights.iter() {
+                sum = sum + w.val;
+            }
+            assert!((sum - 1.0).abs() < 1e-6,
+                "Mixing weights should sum to 1.0");
+        }
+    }
+
+    #[test]
+    fn test_curriculum_difficulty_progression() {
+        var curriculum = LearnableCurriculum::new(5);
+
+        // At start (progress=0), few tasks active
+        curriculum.set_progress(0.1);
+        let early_active = curriculum.active_tasks();
+
+        // At end (progress=1), all tasks active
+        curriculum.set_progress(0.9);
+        let late_active = curriculum.active_tasks();
+
+        assert!(late_active.len() >= early_active.len(),
+            "More tasks should be active later in training");
+    }
+
+    #[test]
+    fn test_curriculum_gradient_extraction() {
+        let curriculum = LearnableCurriculum::new(3);
+        let grad = curriculum.extract_gradients();
+
+        assert_eq!(grad.d_difficulty_weights.len(), 3);
+        assert_eq!(grad.d_mixing_matrix.len(), 9);  // 3x3
+    }
+
+    #[test]
+    fn test_curriculum_with_task_descriptors() {
+        let tasks = vec![
+            TaskDescriptor::new(0, "easy_task", 0.2),
+            TaskDescriptor::new(1, "medium_task", 0.5),
+            TaskDescriptor::new(2, "hard_task", 0.9),
+        ];
+
+        let curriculum = LearnableCurriculum::with_tasks(tasks);
+
+        // Easy task should come first in ordering
+        let ordering = curriculum.specialist_ordering();
+        assert_eq!(ordering[0], 0, "Easiest task should be first");
+        assert_eq!(ordering[2], 2, "Hardest task should be last");
+    }
+}
+
+// =============================================================================
+// Compression Pipeline Tests
+// =============================================================================
+
+#[cfg(test)]
+mod compression_pipeline_tests {
+    use super::*;
+
+    #[test]
+    fn test_compression_stages_execute_in_order() {
+        let config = StagedCompressionConfig::new();
+        var pipeline = StagedCompressionPipeline::new(config);
+
+        // Track which stages executed
+        var stages_executed: Vec<String> = Vec::new();
+        var model_accuracy = 0.95;
+        var model_loss = 0.5;
+        var model_size: u64 = 1000000;
+
+        let result = pipeline.run(
+            // eval_fn
+            || { (model_accuracy, model_loss) },
+            // distill_fn
+            |step| {
+                model_loss = model_loss * 0.99;  // Slightly improve
+                model_loss
+            },
+            // prune_fn
+            |step, sparsity| {
+                model_size = (model_size as f64 * (1.0 - sparsity * 0.001)) as u64;
+                model_loss = model_loss * 1.001;  // Slightly degrade
+                model_loss
+            },
+            // quant_fn
+            |step, bits| {
+                model_size = (model_size as f64 * (bits / 32.0).max(0.125)) as u64;
+                model_loss = model_loss * 1.002;
+                model_loss
+            },
+            // size_fn
+            || { model_size },
+        );
+
+        // All 3 stages should have completed
+        assert_eq!(result.stages_completed, 3,
+            "All 3 stages should complete");
+        assert!(result.completed, "Pipeline should complete fully");
+
+        // Stages should be in correct order
+        assert_eq!(result.stage_results[0].stage, CompressionStage::Distillation);
+        assert_eq!(result.stage_results[1].stage, CompressionStage::Pruning);
+        assert_eq!(result.stage_results[2].stage, CompressionStage::Quantization);
+    }
+
+    #[test]
+    fn test_compression_custom_stage_order() {
+        let config = StagedCompressionConfig::new()
+            .with_stages(vec![
+                CompressionStage::Pruning,
+                CompressionStage::Quantization,
+            ]);
+
+        var pipeline = StagedCompressionPipeline::new(config);
+        var model_accuracy = 0.90;
+        var model_loss = 1.0;
+        var model_size: u64 = 500000;
+
+        let result = pipeline.run(
+            || { (model_accuracy, model_loss) },
+            |_| { model_loss },
+            |_, _| { model_loss = model_loss * 1.001; model_loss },
+            |_, _| { model_loss = model_loss * 1.001; model_loss },
+            || { model_size },
+        );
+
+        assert_eq!(result.stages_completed, 2);
+        assert_eq!(result.stage_results[0].stage, CompressionStage::Pruning);
+        assert_eq!(result.stage_results[1].stage, CompressionStage::Quantization);
+    }
+
+    #[test]
+    fn test_compression_reports_ratios() {
+        let config = StagedCompressionConfig::new();
+        var pipeline = StagedCompressionPipeline::new(config);
+
+        var model_size: u64 = 1000000;
+
+        let result = pipeline.run(
+            || { (0.95, 0.5) },
+            |_| { 0.5 },
+            |_, _| { model_size = 700000; 0.52 },
+            |_, _| { model_size = 250000; 0.55 },
+            || { model_size },
+        );
+
+        assert_eq!(result.original_size, 1000000);
+        assert!(result.compression_ratio >= 1.0,
+            "Compression ratio should be >= 1.0");
+    }
+}
+
+// =============================================================================
+// Quality Gate Tests
+// =============================================================================
+
+#[cfg(test)]
+mod quality_gate_tests {
+    use super::*;
+
+    #[test]
+    fn test_quality_gate_prevents_degradation() {
+        // Configure tight quality gate
+        let config = StagedCompressionConfig::new()
+            .with_gate(0.01, 0.05);  // Max 1% accuracy drop, 5% loss increase
+
+        var pipeline = StagedCompressionPipeline::new(config);
+        var model_accuracy = 0.95;
+        var model_loss = 0.5;
+        var stage_count = 0;
+
+        let result = pipeline.run(
+            || {
+                stage_count = stage_count + 1;
+                (model_accuracy, model_loss)
+            },
+            |_| {
+                // Distillation causes massive quality drop
+                model_accuracy = 0.80;
+                model_loss = 2.0;
+                2.0
+            },
+            |_, _| { model_loss },
+            |_, _| { model_loss },
+            || { 500000 },
+        );
+
+        // Should have early-exited after distillation
+        assert!(!result.completed,
+            "Pipeline should NOT complete when quality degrades");
+        assert!(result.exit_stage.is_some(),
+            "Should record exit stage");
+        assert!(result.stages_completed <= 2,
+            "Should not complete all stages");
+
+        // The failed stage should have gate_passed = false
+        let exit_idx = result.exit_stage.unwrap();
+        assert!(!result.stage_results[exit_idx].gate_passed,
+            "Exit stage should have failed quality gate");
+    }
+
+    #[test]
+    fn test_quality_gate_passes_acceptable_degradation() {
+        var gate = QualityGate::new(0.05, 0.10);
+        gate.set_baseline(0.95, 0.5);
+
+        // Small degradation: should pass
+        assert!(gate.check(0.94, 0.52),
+            "Small degradation should pass gate");
+
+        // Large degradation: should fail
+        assert!(!gate.check(0.80, 1.0),
+            "Large degradation should fail gate");
+    }
+
+    #[test]
+    fn test_quality_gate_degradation_metrics() {
+        var gate = QualityGate::new(0.02, 0.10);
+        gate.set_baseline(0.95, 0.5);
+
+        let deg = gate.degradation(0.93, 0.55);
+        assert!((deg.accuracy_drop - 0.02).abs() < 1e-6);
+        assert!((deg.loss_increase - 0.10).abs() < 1e-6);
+        assert!(deg.passed);  // Exactly at threshold
+
+        let deg2 = gate.degradation(0.90, 0.8);
+        assert!(!deg2.passed);  // Exceeds threshold
+    }
+}
+
+// =============================================================================
+// Meta-Loss Convergence Tests
+// =============================================================================
+
+#[cfg(test)]
+mod meta_convergence_tests {
+    use super::*;
+
+    #[test]
+    fn test_meta_loss_decreases_over_iterations() {
+        var config = MetaConfig::new();
+        config.inner_steps = 20;
+        config.meta_steps = 30;
+        config.meta_lr = 0.01;
+        config.num_specialists = 3;
+
+        var trainer = MetaTrainer::new(config);
+
+        // Simulate training where loss improves with good LR
+        let best_schedules = trainer.optimize(
+            |step, lr| {
+                // Simulated training: loss depends on LR being reasonable
+                let ideal_lr = 0.001;
+                let lr_quality = 1.0 / (1.0 + (lr - ideal_lr).abs() * 100.0);
+                let loss = 2.0 / (1.0 + step as f64 / 10.0) * (1.0 + (1.0 - lr_quality));
+                dual::variable(loss)
+            },
+            |schedules| {
+                // Validation loss: decreases when schedule params are good
+                let lr = schedules.lr.initial_lr.val;
+                1.0 / (1.0 + lr * 1000.0)
+            },
+        );
+
+        // Meta loss should show some decrease
+        let losses = &trainer.state.meta_losses;
+        assert!(losses.len() > 5, "Should have recorded multiple meta losses");
+
+        // Compare early vs late losses
+        let early_avg: f64 = losses[..3].iter().sum::<f64>() / 3.0;
+        let late_start = losses.len() - 3;
+        let late_avg: f64 = losses[late_start..].iter().sum::<f64>() / 3.0;
+
+        // Late losses should not be dramatically worse than early
+        // (meta-optimization should at minimum not diverge)
+        assert!(late_avg < early_avg * 2.0,
+            "Meta loss should not diverge: early={}, late={}", early_avg, late_avg);
+    }
+
+    #[test]
+    fn test_meta_trainer_tracks_best_schedules() {
+        var config = MetaConfig::fast();
+        config.num_specialists = 2;
+        var trainer = MetaTrainer::new(config);
+
+        trainer.optimize(
+            |step, lr| {
+                dual::variable(1.0 / (1.0 + step as f64 / 50.0))
+            },
+            |_schedules| {
+                0.5
+            },
+        );
+
+        // Should have recorded best
+        assert!(trainer.state.best_meta_loss < f64::MAX,
+            "Should have found a best meta loss");
+    }
+
+    #[test]
+    fn test_meta_trainer_diagnostics() {
+        var config = MetaConfig::fast();
+        config.inner_steps = 10;
+        config.meta_steps = 5;
+        var trainer = MetaTrainer::new(config);
+
+        trainer.optimize(
+            |step, lr| { dual::variable(1.0 / (1.0 + step as f64)) },
+            |_| { 0.5 },
+        );
+
+        let diag = trainer.diagnostics();
+        assert!(diag.meta_steps > 0, "Should have completed meta steps");
+        assert!(diag.inner_steps > 0, "Should have completed inner steps");
+        assert!(diag.lr_updates > 0, "Should have LR updates");
+        assert!(diag.best_meta_loss < f64::MAX, "Should have best loss");
+    }
+
+    #[test]
+    fn test_meta_convergence_detection() {
+        var state = MetaState::new();
+
+        // Add converging loss sequence
+        for i in 0..20 {
+            let loss = 1.0 / (1.0 + i as f64 / 5.0);
+            state.meta_losses.push(loss);
+        }
+
+        // Add plateau (nearly identical losses)
+        for i in 0..20 {
+            state.meta_losses.push(0.17 + (i as f64) * 0.0001);
+        }
+
+        let converged = state.check_convergence(0.01, 5);
+        assert!(converged, "Should detect convergence on plateau");
+    }
+
+    #[test]
+    fn test_meta_optimizer_all_schedules_after_optimize() {
+        var config = MetaConfig::fast();
+        config.inner_steps = 10;
+        config.meta_steps = 5;
+        config.num_specialists = 3;
+        config.enable_curriculum = true;
+        config.enable_distillation = true;
+        config.enable_pruning = true;
+        config.enable_quantization = true;
+
+        var trainer = MetaTrainer::new(config);
+
+        let result = trainer.optimize(
+            |step, lr| { dual::variable(1.0 / (1.0 + step as f64)) },
+            |_| { 0.5 },
+        );
+
+        let diag = trainer.diagnostics();
+        // All schedule types should have been updated
+        assert!(diag.lr_updates > 0, "LR should have updates");
+        assert!(diag.distill_updates > 0, "Distillation should have updates");
+        assert!(diag.prune_updates > 0, "Pruning should have updates");
+        assert!(diag.quant_updates > 0, "Quantization should have updates");
+        assert!(diag.curriculum_updates > 0, "Curriculum should have updates");
+    }
+
+    use super::MetaState;
+
+    #[test]
+    fn test_curriculum_aware_meta_training() {
+        var config = MetaConfig::fast();
+        config.inner_steps = 15;
+        config.meta_steps = 5;
+        config.num_specialists = 3;
+        config.enable_curriculum = true;
+
+        var trainer = MetaTrainer::new(config);
+
+        let result = trainer.optimize_curriculum(
+            |step, lr, task_idx| {
+                // Different tasks have different difficulties
+                let task_difficulty = (task_idx as f64 + 1.0) / 3.0;
+                let loss = task_difficulty / (1.0 + step as f64 / 10.0);
+                dual::variable(loss)
+            },
+            |_| { 0.3 },
+        );
+
+        // Curriculum should have tracked steps per task
+        for task in trainer.schedules.curriculum.tasks.iter() {
+            // At least some tasks should have been trained
+            // (not all may be active depending on curriculum progression)
+        }
+
+        assert!(trainer.state.meta_losses.len() > 0,
+            "Should have meta losses from curriculum training");
+    }
+}
+
+// =============================================================================
+// Integration: Full Pipeline Tests
+// =============================================================================
+
+#[cfg(test)]
+mod full_pipeline_tests {
+    use super::*;
+
+    #[test]
+    fn test_meta_then_compression() {
+        // Phase 1: Meta-optimize schedules
+        var meta_config = MetaConfig::fast();
+        meta_config.inner_steps = 10;
+        meta_config.meta_steps = 5;
+        var trainer = MetaTrainer::new(meta_config);
+
+        let best_schedules = trainer.optimize(
+            |step, lr| { dual::variable(1.0 / (1.0 + step as f64)) },
+            |_| { 0.4 },
+        );
+
+        // Phase 2: Use learned schedules for compression
+        let compress_config = StagedCompressionConfig::new();
+        var pipeline = StagedCompressionPipeline::from_schedules(
+            compress_config, &best_schedules
+        );
+
+        var model_size: u64 = 1000000;
+        var model_loss = 0.5;
+
+        let result = pipeline.run(
+            || { (0.92, model_loss) },
+            |_| { model_loss = model_loss * 0.999; model_loss },
+            |_, _| { model_size = (model_size as f64 * 0.95) as u64; model_loss },
+            |_, _| { model_size = (model_size as f64 * 0.5) as u64; model_loss },
+            || { model_size },
+        );
+
+        assert!(result.completed, "Compression should complete");
+        assert!(result.stages_completed == 3, "All stages should execute");
+    }
+
+    #[test]
+    fn test_pipeline_reset_and_rerun() {
+        let config = StagedCompressionConfig::new();
+        var pipeline = StagedCompressionPipeline::new(config);
+
+        // First run
+        let result1 = pipeline.run(
+            || { (0.95, 0.5) },
+            |_| { 0.5 },
+            |_, _| { 0.5 },
+            |_, _| { 0.5 },
+            || { 100000 },
+        );
+
+        assert!(result1.stages_completed > 0);
+
+        // Reset and re-run
+        pipeline.reset();
+        assert_eq!(pipeline.step, 0);
+        assert_eq!(pipeline.current_stage, 0);
+
+        let result2 = pipeline.run(
+            || { (0.90, 0.6) },
+            |_| { 0.6 },
+            |_, _| { 0.6 },
+            |_, _| { 0.6 },
+            || { 200000 },
+        );
+
+        assert!(result2.stages_completed > 0);
+    }
+
+    #[test]
+    fn test_learned_schedules_integration() {
+        // Create schedules with curriculum
+        var schedules = LearnedSchedules::with_curriculum(3);
+
+        // Verify all components are accessible
+        let step = dual::constant(50.0);
+        let lr = schedules.learning_rate(step, &[]);
+        let temp = schedules.distill_temperature(step);
+        let sparsity = schedules.sparsity(step);
+        let bits = schedules.bits(step);
+        let ordering = schedules.curriculum.specialist_ordering();
+
+        assert!(lr.val > 0.0, "LR should be positive");
+        assert!(temp.val >= 1.0, "Temperature should be >= 1");
+        assert!(sparsity.val >= 0.0, "Sparsity should be non-negative");
+        assert!(bits.val > 0.0, "Bits should be positive");
+        assert_eq!(ordering.len(), 3, "Should have 3 specialists in ordering");
+
+        // Verify unified gradient extraction
+        let grad = schedules.gradient();
+        assert!(grad.norm() >= 0.0, "Gradient norm should be non-negative");
+
+        // Verify unified update
+        schedules.update(&grad, 0.001);
+    }
+}

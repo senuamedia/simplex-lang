@@ -1,0 +1,530 @@
+// Multi-Dimensional Dual Numbers and Higher-Order Differentiation Tests
+// Tests for simplex-std multidual, dual2, and diff modules
+// v0.13.0: Validates Phases 2-4 of TASK-005 (dual number extensions)
+//
+// Test coverage:
+//   1. MultiDual construction and gradient extraction
+//   2. MultiDual arithmetic (add, sub, mul, div)
+//   3. Gradient of f(x,y) = x²y + sin(y) matches known answer
+//   4. Gradient of multi-variable polynomial
+//   5. Jacobian dimensions and values
+//   6. Dual2 construction and accessors
+//   7. Second derivative of sin(x) = -sin(x)
+//   8. Hessian of x³ = (x³, 3x², 6x)
+//   9. Second-order product rule
+//  10. Directional derivative
+//  11. Gradient descent step using computed gradient
+//  12. MultiDual chain rule with exp/ln
+//  13. Dual2 division second derivatives
+//  14. Newton minimization with Dual2
+
+use simplex_std::dual::dual;
+use simplex_std::multidual::MultiDual;
+use simplex_std::dual2::Dual2;
+use simplex_std::diff;
+
+// ============================================
+// Tolerance helper
+// ============================================
+
+fn approx_eq(a: f64, b: f64, tol: f64) -> bool {
+    (a - b).abs() < tol
+}
+
+// ============================================
+// Test 1: MultiDual Construction
+// ============================================
+
+fn test_multidual_construction() -> i64 {
+    let x = MultiDual::variable(3.0, 0, 3);
+    let y = MultiDual::variable(5.0, 1, 3);
+    let c = MultiDual::constant(7.0, 3);
+
+    // x should have derivative [1, 0, 0]
+    let ok_x = x.val == 3.0
+        && x.partial(0) == 1.0
+        && x.partial(1) == 0.0
+        && x.partial(2) == 0.0;
+
+    // y should have derivative [0, 1, 0]
+    let ok_y = y.val == 5.0
+        && y.partial(0) == 0.0
+        && y.partial(1) == 1.0;
+
+    // c should have all-zero derivatives
+    let ok_c = c.val == 7.0 && c.is_constant();
+
+    if ok_x && ok_y && ok_c { 1 } else { 0 }
+}
+
+// ============================================
+// Test 2: MultiDual Arithmetic
+// ============================================
+
+fn test_multidual_arithmetic() -> i64 {
+    let x = MultiDual::variable(2.0, 0, 2);
+    let y = MultiDual::variable(3.0, 1, 2);
+
+    // Addition: x + y = 5.0, der = [1, 1]
+    let sum = x.add(y.clone());
+    let ok_add = approx_eq(sum.val, 5.0, 1e-10)
+        && approx_eq(sum.partial(0), 1.0, 1e-10)
+        && approx_eq(sum.partial(1), 1.0, 1e-10);
+
+    // Subtraction: x - y = -1.0, der = [1, -1]
+    let diff = x.sub(y.clone());
+    let ok_sub = approx_eq(diff.val, -1.0, 1e-10)
+        && approx_eq(diff.partial(0), 1.0, 1e-10)
+        && approx_eq(diff.partial(1), -1.0, 1e-10);
+
+    // Multiplication: x * y = 6.0
+    // der[0] = x.val * y.der[0] + x.der[0] * y.val = 2*0 + 1*3 = 3
+    // der[1] = x.val * y.der[1] + x.der[1] * y.val = 2*1 + 0*3 = 2
+    let prod = x.mul(y.clone());
+    let ok_mul = approx_eq(prod.val, 6.0, 1e-10)
+        && approx_eq(prod.partial(0), 3.0, 1e-10)
+        && approx_eq(prod.partial(1), 2.0, 1e-10);
+
+    // Division: x / y = 2/3
+    // der[0] = (1*3 - 2*0) / 9 = 3/9 = 1/3
+    // der[1] = (0*3 - 2*1) / 9 = -2/9
+    let quot = x.div(y);
+    let ok_div = approx_eq(quot.val, 2.0 / 3.0, 1e-10)
+        && approx_eq(quot.partial(0), 1.0 / 3.0, 1e-10)
+        && approx_eq(quot.partial(1), -2.0 / 9.0, 1e-10);
+
+    if ok_add && ok_sub && ok_mul && ok_div { 1 } else { 0 }
+}
+
+// ============================================
+// Test 3: Gradient of f(x,y) = x²y + sin(y)
+// Known: ∇f = [2xy, x² + cos(y)]
+// At (2, π/4): ∇f = [2*2*π/4, 4 + cos(π/4)]
+//            = [π, 4 + √2/2]
+// ============================================
+
+fn test_gradient_known_answer() -> i64 {
+    let pi_4 = 0.7853981633974483;
+    let x = MultiDual::variable(2.0, 0, 2);
+    let y = MultiDual::variable(pi_4, 1, 2);
+
+    // f(x,y) = x²y + sin(y)
+    let x_sq = x.mul(x.clone());
+    let term1 = x_sq.mul(y.clone());
+    let term2 = y.sin();
+    let f = term1.add(term2);
+
+    let grad = f.gradient();
+    let expected_dx = 2.0 * 2.0 * pi_4;      // 2xy
+    let expected_dy = 4.0 + pi_4.cos();        // x² + cos(y)
+
+    let ok = approx_eq(grad[0], expected_dx, 1e-10)
+        && approx_eq(grad[1], expected_dy, 1e-10);
+
+    if ok { 1 } else { 0 }
+}
+
+// ============================================
+// Test 4: Gradient of polynomial g(x,y,z) = 3x²z + y³ - xz²
+// ∂g/∂x = 6xz - z²
+// ∂g/∂y = 3y²
+// ∂g/∂z = 3x² - 2xz
+// At (1, 2, 3): [6*1*3 - 9, 3*4, 3*1 - 2*1*3] = [9, 12, -3]
+// ============================================
+
+fn test_gradient_polynomial() -> i64 {
+    let x = MultiDual::variable(1.0, 0, 3);
+    let y = MultiDual::variable(2.0, 1, 3);
+    let z = MultiDual::variable(3.0, 2, 3);
+    let three = MultiDual::constant(3.0, 3);
+
+    // 3x²z
+    let t1 = three.mul(x.clone()).mul(x.clone()).mul(z.clone());
+    // y³
+    let t2 = y.mul(y.clone()).mul(y.clone());
+    // xz²
+    let t3 = x.mul(z.clone()).mul(z.clone());
+    // g = 3x²z + y³ - xz²
+    let g = t1.add(t2).sub(t3);
+
+    let grad = g.gradient();
+    let ok = approx_eq(grad[0], 9.0, 1e-10)
+        && approx_eq(grad[1], 12.0, 1e-10)
+        && approx_eq(grad[2], -3.0, 1e-10);
+
+    if ok { 1 } else { 0 }
+}
+
+// ============================================
+// Test 5: Jacobian dimensions and values
+// f(x,y) = (x²+y, x*y)
+// J = [[2x, 1], [y, x]]
+// At (3, 2): J = [[6, 1], [2, 3]]
+// ============================================
+
+fn test_jacobian() -> i64 {
+    fn f_vec(v: &[MultiDual]) -> Vec<MultiDual> {
+        var result = Vec::new();
+        // f1 = x² + y
+        let f1 = v[0].clone().mul(v[0].clone()).add(v[1].clone());
+        result.push(f1);
+        // f2 = x * y
+        let f2 = v[0].clone().mul(v[1].clone());
+        result.push(f2);
+        result
+    }
+
+    let jac = diff::jacobian(f_vec, &[3.0, 2.0]);
+
+    // Check dimensions: 2 outputs, 2 inputs
+    let ok_dims = jac.len() == 2 && jac[0].len() == 2 && jac[1].len() == 2;
+
+    // Check values
+    let ok_vals = approx_eq(jac[0][0], 6.0, 1e-10)   // ∂f1/∂x = 2x = 6
+        && approx_eq(jac[0][1], 1.0, 1e-10)           // ∂f1/∂y = 1
+        && approx_eq(jac[1][0], 2.0, 1e-10)           // ∂f2/∂x = y = 2
+        && approx_eq(jac[1][1], 3.0, 1e-10);          // ∂f2/∂y = x = 3
+
+    if ok_dims && ok_vals { 1 } else { 0 }
+}
+
+// ============================================
+// Test 6: Dual2 Construction and Accessors
+// ============================================
+
+fn test_dual2_construction() -> i64 {
+    let x = Dual2::variable(5.0);
+    let c = Dual2::constant(3.0);
+    let z = Dual2::zero();
+
+    let ok_x = x.value() == 5.0
+        && x.first_derivative() == 1.0
+        && x.second_derivative() == 0.0;
+
+    let ok_c = c.value() == 3.0 && c.is_constant();
+
+    let ok_z = z.value() == 0.0 && z.is_constant();
+
+    if ok_x && ok_c && ok_z { 1 } else { 0 }
+}
+
+// ============================================
+// Test 7: Second derivative of sin(x) = -sin(x)
+// At x = π/3:
+//   sin(π/3) = √3/2 ≈ 0.8660
+//   cos(π/3) = 0.5
+//   -sin(π/3) = -√3/2 ≈ -0.8660
+// ============================================
+
+fn test_sin_second_derivative() -> i64 {
+    let pi_3 = 1.0471975511965976;
+    let x = Dual2::variable(pi_3);
+    let f = x.sin();
+
+    let ok_val = approx_eq(f.val, pi_3.sin(), 1e-10);
+    let ok_d1 = approx_eq(f.d1, pi_3.cos(), 1e-10);
+    let ok_d2 = approx_eq(f.d2, -pi_3.sin(), 1e-10);
+
+    if ok_val && ok_d1 && ok_d2 { 1 } else { 0 }
+}
+
+// ============================================
+// Test 8: Hessian of x³ = (x³, 3x², 6x)
+// At x = 2: (8, 12, 12)
+// ============================================
+
+fn test_hessian_cubic() -> i64 {
+    fn cubic(x: Dual2) -> Dual2 { x.mul(x).mul(x) }
+
+    let (val, d1, d2) = diff::hessian(cubic, 2.0);
+
+    let ok = approx_eq(val, 8.0, 1e-10)
+        && approx_eq(d1, 12.0, 1e-10)
+        && approx_eq(d2, 12.0, 1e-10);
+
+    if ok { 1 } else { 0 }
+}
+
+// ============================================
+// Test 9: Second-order product rule
+// f(x) = x² * exp(x) at x = 1
+// f(1) = e
+// f'(x) = 2x·exp(x) + x²·exp(x) = exp(x)(2x + x²)
+// f'(1) = e(2 + 1) = 3e
+// f''(x) = exp(x)(2 + 4x + x²)
+// f''(1) = e(2 + 4 + 1) = 7e
+// ============================================
+
+fn test_dual2_product_rule() -> i64 {
+    let x = Dual2::variable(1.0);
+    let x_sq = x.mul(x);
+    let ex = x.exp();
+    let f = x_sq.mul(ex);
+
+    let e = 1.0_f64.exp();
+    let ok = approx_eq(f.val, e, 1e-10)
+        && approx_eq(f.d1, 3.0 * e, 1e-10)
+        && approx_eq(f.d2, 7.0 * e, 1e-10);
+
+    if ok { 1 } else { 0 }
+}
+
+// ============================================
+// Test 10: Directional derivative
+// f(x,y) = x² + y² at (1, 1)
+// ∇f = [2, 2]
+// Direction v = (1/√2, 1/√2)
+// Directional derivative = ∇f·v = 2/√2 + 2/√2 = 2√2
+// ============================================
+
+fn test_directional_derivative() -> i64 {
+    fn sphere(v: &[MultiDual]) -> MultiDual {
+        v[0].clone().mul(v[0].clone()).add(v[1].clone().mul(v[1].clone()))
+    }
+
+    let inv_sqrt2 = 1.0 / 2.0_f64.sqrt();
+    let dd = diff::directional_derivative(sphere, &[1.0, 1.0], &[inv_sqrt2, inv_sqrt2]);
+
+    let expected = 2.0 * 2.0_f64.sqrt();
+    let ok = approx_eq(dd, expected, 1e-10);
+
+    if ok { 1 } else { 0 }
+}
+
+// ============================================
+// Test 11: Gradient descent step
+// f(x,y) = (x-3)² + (y-1)²
+// ∇f = [2(x-3), 2(y-1)]
+// At (0, 0) with lr=0.1: step = -0.1*[-6, -2] = [0.6, 0.2]
+// ============================================
+
+fn test_gradient_descent_step() -> i64 {
+    fn bowl(v: &[MultiDual]) -> MultiDual {
+        let three = MultiDual::constant(3.0, 2);
+        let one = MultiDual::constant(1.0, 2);
+        let dx = v[0].clone().sub(three);
+        let dy = v[1].clone().sub(one);
+        dx.clone().mul(dx).add(dy.clone().mul(dy))
+    }
+
+    let (new_x, grad_norm) = diff::gradient_step(bowl, &[0.0, 0.0], 0.1);
+
+    let ok_x = approx_eq(new_x[0], 0.6, 1e-10);
+    let ok_y = approx_eq(new_x[1], 0.2, 1e-10);
+    // grad = [-6, -2], norm = sqrt(36+4) = sqrt(40) = 2*sqrt(10)
+    let expected_norm = 40.0_f64.sqrt();
+    let ok_norm = approx_eq(grad_norm, expected_norm, 1e-10);
+
+    if ok_x && ok_y && ok_norm { 1 } else { 0 }
+}
+
+// ============================================
+// Test 12: MultiDual chain rule with exp/ln
+// f(x,y) = exp(x * ln(y)) = y^x
+// At (2, 3): f = 9
+// ∂f/∂x = y^x · ln(y) = 9·ln(3)
+// ∂f/∂y = x · y^(x-1) = 2 · 3 = 6
+// ============================================
+
+fn test_multidual_chain_rule() -> i64 {
+    let x = MultiDual::variable(2.0, 0, 2);
+    let y = MultiDual::variable(3.0, 1, 2);
+
+    // f = exp(x * ln(y))
+    let ln_y = y.ln();
+    let x_ln_y = x.mul(ln_y);
+    let f = x_ln_y.exp();
+
+    let grad = f.gradient();
+    let expected_val = 9.0;              // 3^2
+    let expected_dx = 9.0 * 3.0_f64.ln(); // 9·ln(3)
+    let expected_dy = 6.0;               // 2·3^1
+
+    let ok = approx_eq(f.val, expected_val, 1e-10)
+        && approx_eq(grad[0], expected_dx, 1e-10)
+        && approx_eq(grad[1], expected_dy, 1e-10);
+
+    if ok { 1 } else { 0 }
+}
+
+// ============================================
+// Test 13: Dual2 division second derivative
+// f(x) = 1/x at x = 2
+// f(2) = 0.5
+// f'(x) = -1/x², f'(2) = -0.25
+// f''(x) = 2/x³, f''(2) = 0.25
+// ============================================
+
+fn test_dual2_division() -> i64 {
+    let x = Dual2::variable(2.0);
+    let one = Dual2::constant(1.0);
+    let f = one.div(x);
+
+    let ok = approx_eq(f.val, 0.5, 1e-10)
+        && approx_eq(f.d1, -0.25, 1e-10)
+        && approx_eq(f.d2, 0.25, 1e-10);
+
+    if ok { 1 } else { 0 }
+}
+
+// ============================================
+// Test 14: Newton minimization with Dual2
+// Minimize f(x) = (x-3)² starting from x=0
+// f'(x) = 2(x-3), f''(x) = 2
+// Newton step: x_{n+1} = x - f'/f'' = x - (x-3) = 3
+// Should converge in one step.
+// ============================================
+
+fn test_newton_minimize() -> i64 {
+    fn quadratic(x: Dual2) -> Dual2 {
+        let three = Dual2::constant(3.0);
+        let dx = x.sub(three);
+        dx.mul(dx)
+    }
+
+    let (x_min, f_min) = diff::newton_minimize(quadratic, 0.0, 100, 1e-12);
+
+    let ok = approx_eq(x_min, 3.0, 1e-10) && approx_eq(f_min, 0.0, 1e-10);
+
+    if ok { 1 } else { 0 }
+}
+
+// ============================================
+// Test Runner
+// ============================================
+
+fn main() -> i64 {
+    var passed = 0;
+    var failed = 0;
+    var total = 14;
+
+    // Test 1
+    if test_multidual_construction() == 1 {
+        println("PASS: test_multidual_construction");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_multidual_construction");
+        failed = failed + 1;
+    }
+
+    // Test 2
+    if test_multidual_arithmetic() == 1 {
+        println("PASS: test_multidual_arithmetic");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_multidual_arithmetic");
+        failed = failed + 1;
+    }
+
+    // Test 3
+    if test_gradient_known_answer() == 1 {
+        println("PASS: test_gradient_known_answer");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_gradient_known_answer");
+        failed = failed + 1;
+    }
+
+    // Test 4
+    if test_gradient_polynomial() == 1 {
+        println("PASS: test_gradient_polynomial");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_gradient_polynomial");
+        failed = failed + 1;
+    }
+
+    // Test 5
+    if test_jacobian() == 1 {
+        println("PASS: test_jacobian");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_jacobian");
+        failed = failed + 1;
+    }
+
+    // Test 6
+    if test_dual2_construction() == 1 {
+        println("PASS: test_dual2_construction");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_dual2_construction");
+        failed = failed + 1;
+    }
+
+    // Test 7
+    if test_sin_second_derivative() == 1 {
+        println("PASS: test_sin_second_derivative");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_sin_second_derivative");
+        failed = failed + 1;
+    }
+
+    // Test 8
+    if test_hessian_cubic() == 1 {
+        println("PASS: test_hessian_cubic");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_hessian_cubic");
+        failed = failed + 1;
+    }
+
+    // Test 9
+    if test_dual2_product_rule() == 1 {
+        println("PASS: test_dual2_product_rule");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_dual2_product_rule");
+        failed = failed + 1;
+    }
+
+    // Test 10
+    if test_directional_derivative() == 1 {
+        println("PASS: test_directional_derivative");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_directional_derivative");
+        failed = failed + 1;
+    }
+
+    // Test 11
+    if test_gradient_descent_step() == 1 {
+        println("PASS: test_gradient_descent_step");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_gradient_descent_step");
+        failed = failed + 1;
+    }
+
+    // Test 12
+    if test_multidual_chain_rule() == 1 {
+        println("PASS: test_multidual_chain_rule");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_multidual_chain_rule");
+        failed = failed + 1;
+    }
+
+    // Test 13
+    if test_dual2_division() == 1 {
+        println("PASS: test_dual2_division");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_dual2_division");
+        failed = failed + 1;
+    }
+
+    // Test 14
+    if test_newton_minimize() == 1 {
+        println("PASS: test_newton_minimize");
+        passed = passed + 1;
+    } else {
+        println("FAIL: test_newton_minimize");
+        failed = failed + 1;
+    }
+
+    println(format!("\nResults: {}/{} passed", passed, total));
+
+    if failed > 0 { 1 } else { 0 }
+}
