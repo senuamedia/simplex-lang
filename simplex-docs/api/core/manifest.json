@@ -19,7 +19,7 @@
     {
       "name": "parser",
       "file": "parser.html",
-      "description": "Recursive descent parser. Converts token stream into an AST using the tag-based AST representation defined in lib/ast_defs.sx.",
+      "description": "Recursive descent parser. Converts token stream into an AST using the tag-based AST representation defined in simplex-core/src/ast_defs.sx.",
       "items": []
     },
     {

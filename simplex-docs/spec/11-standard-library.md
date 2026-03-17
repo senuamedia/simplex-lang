@@ -1,6 +1,6 @@
 # Simplex Standard Library Reference
 
-**Version 0.13.0**
+**Version 0.14.0**
 
 The Simplex standard library provides core functionality for I/O, collections, networking, and more. All modules are written in pure Simplex.
 
@@ -60,6 +60,11 @@ The Simplex standard library is organized around the **actor model**. Concurrenc
 | `simplex_learning` | Real-time learning library |
 | `simplex_inference` | High-performance inference via llama.cpp |
 | `simplex_training` | Self-optimizing training pipelines |
+| `simplex_quantum` | Quantum computing core: types, circuits, gates, measurement |
+| `simplex_quantum::backend` | Backend abstraction: Braket, IBM, Azure, local simulator |
+| `simplex_quantum::variational` | Variational algorithms: VQE, QAOA, parameter-shift gradients |
+| `simplex_quantum::dispatch` | Cost-aware quantum task routing with budget tracking |
+| `simplex_quantum::optimize` | Quantum-enhanced optimization: MaxCut, VQE, Grover, hybrid annealing |
 
 **Note:** `std::sync::mpsc` and `std::sync::oneshot` are submodules of `std::sync`. Benchmarking is provided via the `sxc bench` toolchain command rather than a library module.
 

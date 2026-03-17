@@ -379,7 +379,7 @@ impl ClientConfig {
         ClientConfig {
             timeout_ms: 30000,      // 30 second default timeout
             max_redirects: 10,       // Follow up to 10 redirects
-            user_agent: "Simplex-HttpClient/0.13.0",
+            user_agent: "Simplex-HttpClient/0.14.0",
             verify_tls: true,
         }
     }
@@ -414,7 +414,7 @@ impl HttpClient {
     /// Create a new HTTP client with default settings
     pub fn new() -> Self {
         let mut headers = Headers::new();
-        headers.set("User-Agent", "Simplex-HttpClient/0.13.0");
+        headers.set("User-Agent", "Simplex-HttpClient/0.14.0");
         headers.set("Accept", "*/*");
 
         HttpClient {

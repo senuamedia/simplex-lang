@@ -1,0 +1,225 @@
+// Quantum Gates - Unit Tests
+// Tests gate matrix math: Hadamard, Pauli, rotations, unitarity.
+// Rewritten for sxc compiler compatibility.
+
+const PI: f64 = 3.14159265358979323846;
+const EPSILON: f64 = 0.00001;
+const INV_SQRT2: f64 = 0.70710678118654752;
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+// Complex number
+struct Complex {
+    re: f64,
+    im: f64
+}
+
+impl Complex {
+    fn new(re: f64, im: f64) -> Complex { Complex { re: re, im: im } }
+    fn zero() -> Complex { Complex { re: 0.0, im: 0.0 } }
+    fn one() -> Complex { Complex { re: 1.0, im: 0.0 } }
+}
+
+fn cmul(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re }
+}
+
+fn cadd(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re + b.re, im: a.im + b.im }
+}
+
+fn cconj(a: Complex) -> Complex {
+    Complex { re: a.re, im: 0.0 - a.im }
+}
+
+fn ceq(a: Complex, b: Complex, eps: f64) -> i64 {
+    if my_abs(a.re - b.re) < eps {
+        if my_abs(a.im - b.im) < eps { return 1; }
+    }
+    0
+}
+
+fn mag_sq(c: Complex) -> f64 {
+    c.re * c.re + c.im * c.im
+}
+
+// 2x2 gate stored as 4 complex entries: m00, m01, m10, m11
+struct Gate2 {
+    m00: Complex,
+    m01: Complex,
+    m10: Complex,
+    m11: Complex,
+    name: i64
+}
+
+fn gate_hadamard() -> Gate2 {
+    let h: Complex = Complex::new(INV_SQRT2(), 0.0);
+    let mh: Complex = Complex::new(0.0 - INV_SQRT2(), 0.0);
+    Gate2 { m00: h, m01: h, m10: h, m11: mh, name: string_from("H") }
+}
+
+fn gate_x() -> Gate2 {
+    Gate2 { m00: Complex::zero(), m01: Complex::one(), m10: Complex::one(), m11: Complex::zero(), name: string_from("X") }
+}
+
+fn gate_y() -> Gate2 {
+    Gate2 { m00: Complex::zero(), m01: Complex::new(0.0, -1.0), m10: Complex::new(0.0, 1.0), m11: Complex::zero(), name: string_from("Y") }
+}
+
+fn gate_z() -> Gate2 {
+    Gate2 { m00: Complex::one(), m01: Complex::zero(), m10: Complex::zero(), m11: Complex::new(-1.0, 0.0), name: string_from("Z") }
+}
+
+fn gate_rx(theta: f64) -> Gate2 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    Gate2 { m00: Complex::new(c, 0.0), m01: Complex::new(0.0, 0.0 - s), m10: Complex::new(0.0, 0.0 - s), m11: Complex::new(c, 0.0), name: string_from("Rx") }
+}
+
+fn gate_ry(theta: f64) -> Gate2 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    Gate2 { m00: Complex::new(c, 0.0), m01: Complex::new(0.0 - s, 0.0), m10: Complex::new(s, 0.0), m11: Complex::new(c, 0.0), name: string_from("Ry") }
+}
+
+fn gate_rz(theta: f64) -> Gate2 {
+    let z: Complex = Complex::zero();
+    let neg: Complex = Complex::new(cos(0.0 - theta / 2.0), sin(0.0 - theta / 2.0));
+    let pos: Complex = Complex::new(cos(theta / 2.0), sin(theta / 2.0));
+    Gate2 { m00: neg, m01: z, m10: z, m11: pos, name: string_from("Rz") }
+}
+
+// Check if gate is unitary: U * U^dagger = I
+fn is_unitary(g: Gate2) -> i64 {
+    // (U * U^dag)[i][j] = sum_k U[i][k] * conj(U[j][k])
+    // Check all 4 entries of the product
+    var i: i64 = 0;
+    while i < 2 {
+        var j: i64 = 0;
+        while j < 2 {
+            var sum_re: f64 = 0.0;
+            var sum_im: f64 = 0.0;
+            var k: i64 = 0;
+            while k < 2 {
+                // Get U[i][k]
+                var a: Complex = Complex::zero();
+                if i == 0 { if k == 0 { a = g.m00; } else { a = g.m01; } }
+                else { if k == 0 { a = g.m10; } else { a = g.m11; } }
+                // Get U[j][k]
+                var b: Complex = Complex::zero();
+                if j == 0 { if k == 0 { b = g.m00; } else { b = g.m01; } }
+                else { if k == 0 { b = g.m10; } else { b = g.m11; } }
+                let bc: Complex = cconj(b);
+                let prod: Complex = cmul(a, bc);
+                sum_re = sum_re + prod.re;
+                sum_im = sum_im + prod.im;
+                k = k + 1;
+            }
+            var exp_re: f64 = 0.0;
+            if i == j { exp_re = 1.0; }
+            if my_abs(sum_re - exp_re) > EPSILON() { return 0; }
+            if my_abs(sum_im) > EPSILON() { return 0; }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    1
+}
+
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+fn test_gate_values() -> i64 {
+    println(string_from("--- Gate Matrix Values ---"));
+    var f: i64 = 0;
+    let h: Gate2 = gate_hadamard();
+    let hv: Complex = Complex::new(INV_SQRT2(), 0.0);
+    f = f + check(string_from("H[0][0]"), ceq(h.m00, hv, EPSILON()));
+    f = f + check(string_from("H[0][1]"), ceq(h.m01, hv, EPSILON()));
+    f = f + check(string_from("H[1][0]"), ceq(h.m10, hv, EPSILON()));
+    let mhv: Complex = Complex::new(0.0 - INV_SQRT2(), 0.0);
+    f = f + check(string_from("H[1][1]"), ceq(h.m11, mhv, EPSILON()));
+    let x: Gate2 = gate_x();
+    f = f + check(string_from("X[0][0]=0"), ceq(x.m00, Complex::zero(), EPSILON()));
+    f = f + check(string_from("X[0][1]=1"), ceq(x.m01, Complex::one(), EPSILON()));
+    f = f + check(string_from("X[1][0]=1"), ceq(x.m10, Complex::one(), EPSILON()));
+    f = f + check(string_from("X[1][1]=0"), ceq(x.m11, Complex::zero(), EPSILON()));
+    let z: Gate2 = gate_z();
+    f = f + check(string_from("Z[0][0]=1"), ceq(z.m00, Complex::one(), EPSILON()));
+    f = f + check(string_from("Z[1][1]=-1"), ceq(z.m11, Complex::new(-1.0, 0.0), EPSILON()));
+    f
+}
+
+fn test_unitarity() -> i64 {
+    println(string_from("--- Gate Unitarity ---"));
+    var f: i64 = 0;
+    f = f + check(string_from("H unitary"), is_unitary(gate_hadamard()));
+    f = f + check(string_from("X unitary"), is_unitary(gate_x()));
+    f = f + check(string_from("Y unitary"), is_unitary(gate_y()));
+    f = f + check(string_from("Z unitary"), is_unitary(gate_z()));
+    f = f + check(string_from("Rx(pi/4) unitary"), is_unitary(gate_rx(PI() / 4.0)));
+    f = f + check(string_from("Ry(pi/3) unitary"), is_unitary(gate_ry(PI() / 3.0)));
+    f = f + check(string_from("Rz(pi/6) unitary"), is_unitary(gate_rz(PI() / 6.0)));
+    f
+}
+
+fn test_rotation_identity() -> i64 {
+    println(string_from("--- Rotation at theta=0 ---"));
+    var f: i64 = 0;
+    let rx0: Gate2 = gate_rx(0.0);
+    f = f + check(string_from("Rx(0)[0][0]=1"), ceq(rx0.m00, Complex::one(), EPSILON()));
+    f = f + check(string_from("Rx(0)[0][1]=0"), ceq(rx0.m01, Complex::zero(), EPSILON()));
+    f = f + check(string_from("Rx(0)[1][1]=1"), ceq(rx0.m11, Complex::one(), EPSILON()));
+    let ry0: Gate2 = gate_ry(0.0);
+    f = f + check(string_from("Ry(0)[0][0]=1"), ceq(ry0.m00, Complex::one(), EPSILON()));
+    f = f + check(string_from("Ry(0)[1][1]=1"), ceq(ry0.m11, Complex::one(), EPSILON()));
+    let rz0: Gate2 = gate_rz(0.0);
+    f = f + check(string_from("Rz(0)[0][0]=1"), ceq(rz0.m00, Complex::one(), EPSILON()));
+    f = f + check(string_from("Rz(0)[1][1]=1"), ceq(rz0.m11, Complex::one(), EPSILON()));
+    f
+}
+
+fn test_h_squared() -> i64 {
+    println(string_from("--- H^2 = I ---"));
+    var f: i64 = 0;
+    let h: Gate2 = gate_hadamard();
+    // Compute H * H
+    let r00: Complex = cadd(cmul(h.m00, h.m00), cmul(h.m01, h.m10));
+    let r01: Complex = cadd(cmul(h.m00, h.m01), cmul(h.m01, h.m11));
+    let r10: Complex = cadd(cmul(h.m10, h.m00), cmul(h.m11, h.m10));
+    let r11: Complex = cadd(cmul(h.m10, h.m01), cmul(h.m11, h.m11));
+    f = f + check(string_from("HH[0][0]=1"), ceq(r00, Complex::one(), EPSILON()));
+    f = f + check(string_from("HH[0][1]=0"), ceq(r01, Complex::zero(), EPSILON()));
+    f = f + check(string_from("HH[1][0]=0"), ceq(r10, Complex::zero(), EPSILON()));
+    f = f + check(string_from("HH[1][1]=1"), ceq(r11, Complex::one(), EPSILON()));
+    f
+}
+
+fn main() -> i64 {
+    println(string_from("=== Quantum Gates Unit Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_gate_values();
+    fails = fails + test_unitarity();
+    fails = fails + test_rotation_identity();
+    fails = fails + test_h_squared();
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

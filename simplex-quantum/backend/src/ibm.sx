@@ -1,0 +1,248 @@
+// Simplex Quantum Backend -- IBM Quantum Stub (sxc-compatible)
+//
+// Protocol stub for IBM Quantum. Formats circuits as IBM Qiskit Runtime
+// JSON-like strings. Does not make actual HTTP calls.
+//
+// Supported devices (stubs):
+// - Eagle r3 (ibm_brisbane): 127-qubit heavy-hex
+// - Heron r2 (ibm_torino): 133-qubit heavy-hex
+//
+// Gate codes match simulator.sx: 0=H, 1=X, 2=Y, 3=Z, 4=CNOT, 5=Rx, 6=Ry, 7=Rz
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const IBM_MAX_QUBITS: i64 = 133;
+
+// Gate codes (same as simulator.sx)
+const GATE_H: i64 = 0;
+const GATE_X: i64 = 1;
+const GATE_Y: i64 = 2;
+const GATE_Z: i64 = 3;
+const GATE_CNOT: i64 = 4;
+const GATE_RX: i64 = 5;
+const GATE_RY: i64 = 6;
+const GATE_RZ: i64 = 7;
+
+const SCALE: f64 = 1000000.0;
+
+// IBM backend state
+struct IBMState {
+    job_count: i64,
+    job_ids: i64,
+    job_payloads: i64,
+    job_shots: i64,
+    api_token: i64,
+    backend_name: i64
+}
+
+fn ibm_new(api_token: i64) -> IBMState {
+    IBMState {
+        job_count: 0,
+        job_ids: vec_new(),
+        job_payloads: vec_new(),
+        job_shots: vec_new(),
+        api_token: api_token,
+        backend_name: string_from("ibm_brisbane")
+    }
+}
+
+fn ibm_name() -> i64 {
+    string_from("ibm-quantum")
+}
+
+fn ibm_max_qubits() -> i64 {
+    IBM_MAX_QUBITS()
+}
+
+// Map gate code to IBM gate name string
+fn ibm_gate_name(code: i64) -> i64 {
+    if code == GATE_H() { return string_from("h"); }
+    if code == GATE_X() { return string_from("x"); }
+    if code == GATE_Y() { return string_from("y"); }
+    if code == GATE_Z() { return string_from("z"); }
+    if code == GATE_CNOT() { return string_from("cx"); }
+    if code == GATE_RX() { return string_from("rx"); }
+    if code == GATE_RY() { return string_from("ry"); }
+    if code == GATE_RZ() { return string_from("rz"); }
+    string_from("unknown")
+}
+
+// Convert a circuit to IBM-style JSON string
+// Format: {"instructions":[{"name":"h","qubits":[0]}, ...], "num_qubits":N}
+fn circuit_to_ibm_json(circuit: i64, n_qubits: i64) -> i64 {
+    var json: i64 = string_from("{\"num_qubits\":");
+    json = string_concat(json, i64_to_string(n_qubits));
+    json = string_concat(json, string_from(",\"instructions\":["));
+
+    let num_gates: i64 = vec_len(circuit);
+    var gi: i64 = 0;
+    while gi < num_gates {
+        if gi > 0 {
+            json = string_concat(json, string_from(","));
+        }
+        let gate: i64 = vec_get(circuit, gi);
+        let code: i64 = vec_get(gate, 0);
+        let target: i64 = vec_get(gate, 1);
+        let control: i64 = vec_get(gate, 2);
+        let gname: i64 = ibm_gate_name(code);
+
+        json = string_concat(json, string_from("{\"name\":\""));
+        json = string_concat(json, gname);
+        json = string_concat(json, string_from("\",\"qubits\":["));
+
+        if code == GATE_CNOT() {
+            // Two-qubit gate: control, target
+            json = string_concat(json, i64_to_string(control));
+            json = string_concat(json, string_from(","));
+            json = string_concat(json, i64_to_string(target));
+        } else {
+            json = string_concat(json, i64_to_string(target));
+        }
+        json = string_concat(json, string_from("]"));
+
+        // Add params for rotation gates
+        if code == GATE_RX() {
+            let param_int: i64 = vec_get(gate, 3);
+            json = string_concat(json, string_from(",\"params\":["));
+            json = string_concat(json, i64_to_string(param_int));
+            json = string_concat(json, string_from("]"));
+        }
+        if code == GATE_RY() {
+            let param_int: i64 = vec_get(gate, 3);
+            json = string_concat(json, string_from(",\"params\":["));
+            json = string_concat(json, i64_to_string(param_int));
+            json = string_concat(json, string_from("]"));
+        }
+        if code == GATE_RZ() {
+            let param_int: i64 = vec_get(gate, 3);
+            json = string_concat(json, string_from(",\"params\":["));
+            json = string_concat(json, i64_to_string(param_int));
+            json = string_concat(json, string_from("]"));
+        }
+
+        json = string_concat(json, string_from("}"));
+        gi = gi + 1;
+    }
+
+    // Add measurement instructions
+    var q: i64 = 0;
+    while q < n_qubits {
+        json = string_concat(json, string_from(",{\"name\":\"measure\",\"qubits\":["));
+        json = string_concat(json, i64_to_string(q));
+        json = string_concat(json, string_from("],\"clbits\":["));
+        json = string_concat(json, i64_to_string(q));
+        json = string_concat(json, string_from("]}"));
+        q = q + 1;
+    }
+
+    json = string_concat(json, string_from("]}"));
+    json
+}
+
+// Submit a circuit to IBM (stub -- stores JSON payload locally)
+fn ibm_submit(state: IBMState, circuit: i64, n_qubits: i64, shots: i64) -> i64 {
+    let payload: i64 = circuit_to_ibm_json(circuit, n_qubits);
+    let job_id: i64 = string_concat(string_from("ibm-job-"), i64_to_string(state.job_count));
+    vec_push(state.job_ids, job_id);
+    vec_push(state.job_payloads, payload);
+    vec_push(state.job_shots, shots);
+    job_id
+}
+
+// Poll status (stub -- always queued)
+fn ibm_poll(state: IBMState, job_id: i64) -> i64 {
+    0
+}
+
+// Get stored payload for inspection
+fn ibm_get_payload(state: IBMState, index: i64) -> i64 {
+    if index < vec_len(state.job_payloads) {
+        return vec_get(state.job_payloads, index);
+    }
+    string_from("")
+}
+
+// Cost estimate: IBM open plan is free (with queue)
+fn ibm_cost_estimate(shots: i64) -> i64 {
+    0
+}
+
+// Helper: make a gate vec
+fn make_gate(code: i64, target: i64, control: i64, param: f64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, code);
+    vec_push(g, target);
+    vec_push(g, control);
+    let param_int: i64 = (param * SCALE()) as i64;
+    vec_push(g, param_int);
+    g
+}
+
+// ============================================================================
+// Self-test
+// ============================================================================
+fn main() -> i64 {
+    println(string_from("=== IBM Quantum Backend Stub Tests ==="));
+    var fails: i64 = 0;
+
+    let name: i64 = ibm_name();
+    println(string_concat(string_from("  Backend: "), name));
+
+    let mq: i64 = ibm_max_qubits();
+    if mq == 133 {
+        println(string_from("  PASS: max_qubits=133"));
+    } else {
+        println(string_from("  FAIL: max_qubits=133"));
+        fails = fails + 1;
+    }
+
+    // Build Bell circuit
+    let circuit: i64 = vec_new();
+    vec_push(circuit, make_gate(GATE_H(), 0, 0, 0.0));
+    vec_push(circuit, make_gate(GATE_CNOT(), 1, 0, 0.0));
+
+    // Test JSON generation
+    let json: i64 = circuit_to_ibm_json(circuit, 2);
+    println(string_from("  Generated JSON:"));
+    println(json);
+
+    // Test submit
+    let state: IBMState = ibm_new(string_from("test-token"));
+    let job_id: i64 = ibm_submit(state, circuit, 2, 1024);
+    println(string_concat(string_from("  Job ID: "), job_id));
+
+    // Test poll
+    let status: i64 = ibm_poll(state, job_id);
+    if status == 0 {
+        println(string_from("  PASS: poll returns queued"));
+    } else {
+        println(string_from("  FAIL: poll returns queued"));
+        fails = fails + 1;
+    }
+
+    // Test payload retrieval
+    let stored: i64 = ibm_get_payload(state, 0);
+    if stored != 0 {
+        println(string_from("  PASS: stored payload retrievable"));
+    } else {
+        println(string_from("  FAIL: stored payload retrievable"));
+        fails = fails + 1;
+    }
+
+    // Test cost (free)
+    let cost: i64 = ibm_cost_estimate(1000);
+    if cost == 0 {
+        println(string_from("  PASS: cost=0 (free open plan)"));
+    } else {
+        println(string_from("  FAIL: cost=0"));
+        fails = fails + 1;
+    }
+
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

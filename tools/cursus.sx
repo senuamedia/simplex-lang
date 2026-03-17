@@ -5,8 +5,8 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-// Version constant (synced with lib/version.sx — use lib::version when module compilation supports it)
-fn VERSION() -> i64 { string_from("0.13.0") }
+// Version constant (synced with simplex-core/src/version.sx — use simplex_core::version when module compilation supports it)
+fn VERSION() -> i64 { string_from("0.14.0") }
 
 fn show_help() -> i64 {
     println("cursus - Simplex Bytecode VM");
@@ -141,7 +141,7 @@ fn cvm_trace(vm: i64) -> i64 { load_i64(vm, 11) }
 fn cvm_set_trace(vm: i64, t: i64) -> i64 { store_i64(vm, 11, t); 0 }
 
 // Stack operations
-// Bounds checking added per lib/safety.sx CVM_STACK_SIZE constant (1024 slots)
+// Bounds checking added per simplex-core/src/safety.sx CVM_STACK_SIZE constant (1024 slots)
 fn cvm_push(vm: i64, value: i64) -> i64 {
     let stack: i64 = cvm_stack(vm);
     let sp: i64 = cvm_sp(vm);

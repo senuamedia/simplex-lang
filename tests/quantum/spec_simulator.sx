@@ -1,0 +1,265 @@
+// Local Quantum Simulator - Specification Tests
+// Tests statevector simulation: H, X, Z, CNOT, Bell, GHZ, rotations.
+// Uses malloc/store_ptr/load_ptr for f64 storage.
+// Rewritten for sxc compiler compatibility.
+
+const EPSILON: f64 = 0.0001;
+const PI: f64 = 3.14159265358979323846;
+const INV_SQRT2: f64 = 0.70710678118654752;
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+struct Complex {
+    re: f64,
+    im: f64
+}
+
+impl Complex {
+    fn new(re: f64, im: f64) -> Complex { Complex { re: re, im: im } }
+    fn zero() -> Complex { Complex { re: 0.0, im: 0.0 } }
+    fn one() -> Complex { Complex { re: 1.0, im: 0.0 } }
+}
+
+fn cmul(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re }
+}
+
+fn cadd(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re + b.re, im: a.im + b.im }
+}
+
+fn mag_sq(c: Complex) -> f64 {
+    c.re * c.re + c.im * c.im
+}
+
+// StateVec using malloc for f64 array (re0, im0, re1, im1, ...)
+struct StateVec {
+    n_qubits: i64,
+    dim: i64,
+    data: i64
+}
+
+fn sv_new(n_qubits: i64) -> StateVec {
+    let dim: i64 = 1 << n_qubits;
+    let data: i64 = malloc(dim * 16);
+    var i: i64 = 0;
+    while i < dim * 2 {
+        store_ptr(data, i, 0);
+        i = i + 1;
+    }
+    // |0...0> = 1 + 0i: store re=1.0 as bits
+    // Since we need f64 storage, use a workaround:
+    // Store 1000000 for 1.0, 0 for 0.0, scale by 1e-6
+    // Actually, let's store integer-scaled values: value * 1000000
+    store_ptr(data, 0, 1000000);
+    StateVec { n_qubits: n_qubits, dim: dim, data: data }
+}
+
+// Get amplitude as Complex (values stored as integer * 1e6)
+fn sv_get(sv: StateVec, k: i64) -> Complex {
+    let re_raw: i64 = load_ptr(sv.data, k * 2);
+    let im_raw: i64 = load_ptr(sv.data, k * 2 + 1);
+    Complex { re: (re_raw as f64) / 1000000.0, im: (im_raw as f64) / 1000000.0 }
+}
+
+fn sv_set(sv: StateVec, k: i64, c: Complex) -> i64 {
+    let re_int: i64 = (c.re * 1000000.0) as i64;
+    let im_int: i64 = (c.im * 1000000.0) as i64;
+    store_ptr(sv.data, k * 2, re_int);
+    store_ptr(sv.data, k * 2 + 1, im_int);
+    0
+}
+
+fn sv_prob(sv: StateVec, k: i64) -> f64 {
+    let c: Complex = sv_get(sv, k);
+    mag_sq(c)
+}
+
+fn sv_is_normalized(sv: StateVec) -> i64 {
+    var total: f64 = 0.0;
+    var k: i64 = 0;
+    while k < sv.dim {
+        total = total + sv_prob(sv, k);
+        k = k + 1;
+    }
+    approx_eq(total, 1.0, 0.001)
+}
+
+// Apply single-qubit gate
+fn sv_apply_1q(sv: StateVec, target: i64, m00: Complex, m01: Complex, m10: Complex, m11: Complex) -> i64 {
+    let step: i64 = 1 << target;
+    var i: i64 = 0;
+    while i < sv.dim {
+        if (i & step) == 0 {
+            let j: i64 = i | step;
+            let a0: Complex = sv_get(sv, i);
+            let a1: Complex = sv_get(sv, j);
+            let new0: Complex = cadd(cmul(m00, a0), cmul(m01, a1));
+            let new1: Complex = cadd(cmul(m10, a0), cmul(m11, a1));
+            sv_set(sv, i, new0);
+            sv_set(sv, j, new1);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn sv_apply_h(sv: StateVec, target: i64) -> i64 {
+    let h: Complex = Complex::new(INV_SQRT2(), 0.0);
+    let mh: Complex = Complex::new(0.0 - INV_SQRT2(), 0.0);
+    sv_apply_1q(sv, target, h, h, h, mh)
+}
+
+fn sv_apply_x(sv: StateVec, target: i64) -> i64 {
+    sv_apply_1q(sv, target, Complex::zero(), Complex::one(), Complex::one(), Complex::zero())
+}
+
+fn sv_apply_z(sv: StateVec, target: i64) -> i64 {
+    sv_apply_1q(sv, target, Complex::one(), Complex::zero(), Complex::zero(), Complex::new(-1.0, 0.0))
+}
+
+fn sv_apply_ry(sv: StateVec, target: i64, theta: f64) -> i64 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    sv_apply_1q(sv, target, Complex::new(c, 0.0), Complex::new(0.0 - s, 0.0), Complex::new(s, 0.0), Complex::new(c, 0.0))
+}
+
+fn sv_apply_cnot(sv: StateVec, control: i64, target: i64) -> i64 {
+    let ctrl_mask: i64 = 1 << control;
+    let tgt_mask: i64 = 1 << target;
+    var i: i64 = 0;
+    while i < sv.dim {
+        if (i & ctrl_mask) != 0 {
+            if (i & tgt_mask) == 0 {
+                let j: i64 = i | tgt_mask;
+                let ai: Complex = sv_get(sv, i);
+                let aj: Complex = sv_get(sv, j);
+                sv_set(sv, i, aj);
+                sv_set(sv, j, ai);
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+fn test_initial_state() -> i64 {
+    println(string_from("--- Initial State ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    f = f + check(string_from("1q prob[0]=1"), approx_eq(sv_prob(sv, 0), 1.0, 0.001));
+    f = f + check(string_from("1q prob[1]=0"), approx_eq(sv_prob(sv, 1), 0.0, 0.001));
+    f = f + check(string_from("1q normalized"), sv_is_normalized(sv));
+    let sv3: StateVec = sv_new(3);
+    f = f + check(string_from("3q prob[0]=1"), approx_eq(sv_prob(sv3, 0), 1.0, 0.001));
+    f = f + check(string_from("3q normalized"), sv_is_normalized(sv3));
+    f
+}
+
+fn test_h_gate() -> i64 {
+    println(string_from("--- H Gate ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    sv_apply_h(sv, 0);
+    f = f + check(string_from("H prob[0]=0.5"), approx_eq(sv_prob(sv, 0), 0.5, 0.01));
+    f = f + check(string_from("H prob[1]=0.5"), approx_eq(sv_prob(sv, 1), 0.5, 0.01));
+    f = f + check(string_from("H normalized"), sv_is_normalized(sv));
+    f
+}
+
+fn test_x_gate() -> i64 {
+    println(string_from("--- X Gate ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    sv_apply_x(sv, 0);
+    f = f + check(string_from("X prob[0]=0"), approx_eq(sv_prob(sv, 0), 0.0, 0.001));
+    f = f + check(string_from("X prob[1]=1"), approx_eq(sv_prob(sv, 1), 1.0, 0.001));
+    sv_apply_x(sv, 0);
+    f = f + check(string_from("XX prob[0]=1"), approx_eq(sv_prob(sv, 0), 1.0, 0.001));
+    f
+}
+
+fn test_bell_state() -> i64 {
+    println(string_from("--- Bell State ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(2);
+    sv_apply_h(sv, 0);
+    sv_apply_cnot(sv, 0, 1);
+    f = f + check(string_from("Bell prob[00]=0.5"), approx_eq(sv_prob(sv, 0), 0.5, 0.01));
+    f = f + check(string_from("Bell prob[01]=0"), approx_eq(sv_prob(sv, 1), 0.0, 0.01));
+    f = f + check(string_from("Bell prob[10]=0"), approx_eq(sv_prob(sv, 2), 0.0, 0.01));
+    f = f + check(string_from("Bell prob[11]=0.5"), approx_eq(sv_prob(sv, 3), 0.5, 0.01));
+    f = f + check(string_from("Bell normalized"), sv_is_normalized(sv));
+    f
+}
+
+fn test_ghz_state() -> i64 {
+    println(string_from("--- GHZ State ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(3);
+    sv_apply_h(sv, 0);
+    sv_apply_cnot(sv, 0, 1);
+    sv_apply_cnot(sv, 1, 2);
+    f = f + check(string_from("GHZ prob[000]=0.5"), approx_eq(sv_prob(sv, 0), 0.5, 0.01));
+    f = f + check(string_from("GHZ prob[111]=0.5"), approx_eq(sv_prob(sv, 7), 0.5, 0.01));
+    // Check middle states are zero
+    var mid_ok: i64 = 1;
+    var k: i64 = 1;
+    while k < 7 {
+        if sv_prob(sv, k) > 0.01 { mid_ok = 0; }
+        k = k + 1;
+    }
+    f = f + check(string_from("GHZ only 000 and 111"), mid_ok);
+    f = f + check(string_from("GHZ normalized"), sv_is_normalized(sv));
+    f
+}
+
+fn test_ry_rotation() -> i64 {
+    println(string_from("--- Ry Rotation ---"));
+    var f: i64 = 0;
+    // Ry(pi)|0> = |1>
+    let sv: StateVec = sv_new(1);
+    sv_apply_ry(sv, 0, PI());
+    f = f + check(string_from("Ry(pi) prob[0]~0"), approx_eq(sv_prob(sv, 0), 0.0, 0.01));
+    f = f + check(string_from("Ry(pi) prob[1]~1"), approx_eq(sv_prob(sv, 1), 1.0, 0.01));
+    // Ry(pi/2)|0> -> equal superposition
+    let sv2: StateVec = sv_new(1);
+    sv_apply_ry(sv2, 0, PI() / 2.0);
+    f = f + check(string_from("Ry(pi/2) prob[0]=0.5"), approx_eq(sv_prob(sv2, 0), 0.5, 0.01));
+    f = f + check(string_from("Ry(pi/2) prob[1]=0.5"), approx_eq(sv_prob(sv2, 1), 0.5, 0.01));
+    f
+}
+
+fn main() -> i64 {
+    println(string_from("=== Quantum Simulator Spec Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_initial_state();
+    fails = fails + test_h_gate();
+    fails = fails + test_x_gate();
+    fails = fails + test_bell_state();
+    fails = fails + test_ghz_state();
+    fails = fails + test_ry_rotation();
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

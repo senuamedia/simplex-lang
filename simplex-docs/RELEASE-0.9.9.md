@@ -132,9 +132,9 @@ All tools updated to version 0.9.9:
 | File | Changes |
 |------|---------|
 | `runtime/standalone_runtime.c` | 175 void→int64_t fixes |
-| `edge-hive/src/main.sx` | Device ID collision fix |
+| `simplex-edge-hive/src/main.sx` | Device ID collision fix |
 | `simplex-docs/api/assets/search.js` | Path detection fix |
-| `lib/version.sx` | Version 0.9.9 |
+| `simplex-core/src/version.sx` | Version 0.9.9 |
 | `sxc` | Version 0.9.9 |
 | `tasks/TASK-018-runtime-void-return-bugs.md` | Bug documentation |
 

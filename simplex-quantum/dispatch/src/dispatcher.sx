@@ -1,0 +1,92 @@
+// simplex-quantum-dispatch::dispatcher - Cost-Aware Dispatch Decision Engine
+// Routes quantum workloads to the optimal backend based on analysis and budget.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// Dispatch decision constants
+fn DISPATCH_CLASSICAL() -> i64 { 0 }
+fn DISPATCH_QUANTUM() -> i64 { 1 }
+fn DISPATCH_HYBRID() -> i64 { 2 }
+
+// Policy constants
+fn POLICY_ALWAYS_CLASSICAL() -> i64 { 0 }
+fn POLICY_ALWAYS_QUANTUM() -> i64 { 1 }
+fn POLICY_COST_OPTIMIZED() -> i64 { 2 }
+fn POLICY_QUALITY_OPTIMIZED() -> i64 { 3 }
+
+// DispatchResult layout (vec):
+//   [0] decision  [1] device_id  [2] estimated_cost (f64 bits)
+//   [3] shots  [4] reasoning (string handle)
+
+fn result_new(decision: i64, device_id: i64, cost_bits: i64, shots: i64, reasoning: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, decision);
+    vec_push(v, device_id);
+    vec_push(v, cost_bits);
+    vec_push(v, shots);
+    vec_push(v, reasoning);
+    v
+}
+
+fn dispatch_result_decision(r: i64) -> i64 { vec_get(r, 0) }
+fn dispatch_result_device_id(r: i64) -> i64 { vec_get(r, 1) }
+fn dispatch_result_cost_bits(r: i64) -> i64 { vec_get(r, 2) }
+fn dispatch_result_shots(r: i64) -> i64 { vec_get(r, 3) }
+fn dispatch_result_reasoning(r: i64) -> i64 { vec_get(r, 4) }
+
+// Dispatcher layout (vec):
+//   [0] policy  [1] cost_model  [2] default_shots  [3] min_advantage (f64 bits)
+
+fn dispatcher_new(policy: i64, cost_model: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, policy);
+    vec_push(v, cost_model);
+    vec_push(v, 1024);
+    vec_push(v, f64_to_bits(2.0));
+    v
+}
+
+fn dispatcher_set_shots(d: i64, shots: i64) -> i64 {
+    vec_set(d, 2, shots);
+    d
+}
+
+fn dispatcher_set_min_advantage(d: i64, threshold_bits: i64) -> i64 {
+    vec_set(d, 3, threshold_bits);
+    d
+}
+
+// Make a dispatch decision.
+// d = dispatcher handle, problem = analysis handle, budget = budget handle
+fn dispatcher_decide(d: i64, problem: i64, budget: i64) -> i64 {
+    let policy: i64 = vec_get(d, 0);
+    let cm: i64 = vec_get(d, 1);
+    let default_shots: i64 = vec_get(d, 2);
+    let min_adv: f64 = bits_to_f64(vec_get(d, 3));
+    let adv: f64 = bits_to_f64(analysis_quantum_advantage_bits(problem));
+    let req_qubits: i64 = analysis_required_qubits(problem);
+    if policy == POLICY_ALWAYS_CLASSICAL() {
+        return result_new(DISPATCH_CLASSICAL(), -1, f64_to_bits(0.0), 0, string_from("Policy: ALWAYS_CLASSICAL"));
+    }
+    if policy == POLICY_ALWAYS_QUANTUM() {
+        let dev: i64 = find_cheapest_device(cm, req_qubits, default_shots);
+        let cost_bits: i64 = estimate_circuit_cost(cm, default_shots, dev);
+        return result_new(DISPATCH_QUANTUM(), dev, cost_bits, default_shots, string_from("Policy: ALWAYS_QUANTUM"));
+    }
+    if adv < min_adv {
+        return result_new(DISPATCH_CLASSICAL(), -1, f64_to_bits(0.0), 0, string_from("Advantage below threshold"));
+    }
+    let best_dev: i64 = find_cheapest_device(cm, req_qubits, default_shots);
+    if best_dev < 0 {
+        return result_new(DISPATCH_CLASSICAL(), -1, f64_to_bits(0.0), 0, string_from("No device supports required qubits"));
+    }
+    let est_cost_bits: i64 = estimate_circuit_cost(cm, default_shots, best_dev);
+    let est_cost: f64 = bits_to_f64(est_cost_bits);
+    let remaining: f64 = bits_to_f64(budget_remaining(budget));
+    if est_cost > remaining {
+        return result_new(DISPATCH_CLASSICAL(), -1, f64_to_bits(0.0), 0, string_from("Budget insufficient"));
+    }
+    result_new(DISPATCH_QUANTUM(), best_dev, est_cost_bits, default_shots, string_from("Quantum dispatch"))
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

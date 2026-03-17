@@ -1,0 +1,592 @@
+// Simplex Quantum Backend -- Local Statevector Simulator
+//
+// A working statevector simulator for sxc. Uses the same pattern as
+// tests/quantum/spec_simulator.sx: malloc'd buffer with integer-scaled
+// f64 values stored via store_ptr/load_ptr.
+//
+// Supports: H, X, Y, Z, Rx, Ry, Rz single-qubit gates; CNOT two-qubit gate.
+// Computes exact probabilities and samples measurement outcomes.
+//
+// State is stored as a flat buffer: [re0, im0, re1, im1, ...]
+// All amplitudes are scaled by 1000000 and stored as i64.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const PI: f64 = 3.14159265358979323846;
+const INV_SQRT2: f64 = 0.70710678118654752;
+const SCALE: f64 = 1000000.0;
+const EPSILON: f64 = 0.0001;
+const MAX_QUBITS: i64 = 16;
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+// -- Complex number as a struct --
+struct Complex {
+    re: f64,
+    im: f64
+}
+
+impl Complex {
+    fn new(re: f64, im: f64) -> Complex { Complex { re: re, im: im } }
+    fn zero() -> Complex { Complex { re: 0.0, im: 0.0 } }
+    fn one() -> Complex { Complex { re: 1.0, im: 0.0 } }
+}
+
+fn cmul(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re }
+}
+
+fn cadd(a: Complex, b: Complex) -> Complex {
+    Complex { re: a.re + b.re, im: a.im + b.im }
+}
+
+fn mag_sq(c: Complex) -> f64 {
+    c.re * c.re + c.im * c.im
+}
+
+// -- StateVec: malloc-based buffer for complex amplitudes --
+struct StateVec {
+    n_qubits: i64,
+    dim: i64,
+    data: i64
+}
+
+// Create a new statevector initialized to |0...0>
+fn sv_new(n_qubits: i64) -> StateVec {
+    let dim: i64 = 1 << n_qubits;
+    let data: i64 = malloc(dim * 16);
+    var i: i64 = 0;
+    while i < dim * 2 {
+        store_ptr(data, i, 0);
+        i = i + 1;
+    }
+    // |0...0> = amplitude 1.0 at index 0
+    store_ptr(data, 0, 1000000);
+    StateVec { n_qubits: n_qubits, dim: dim, data: data }
+}
+
+// Get amplitude at index k
+fn sv_get(sv: StateVec, k: i64) -> Complex {
+    let re_raw: i64 = load_ptr(sv.data, k * 2);
+    let im_raw: i64 = load_ptr(sv.data, k * 2 + 1);
+    Complex { re: (re_raw as f64) / SCALE(), im: (im_raw as f64) / SCALE() }
+}
+
+// Set amplitude at index k
+fn sv_set(sv: StateVec, k: i64, c: Complex) -> i64 {
+    let re_int: i64 = (c.re * SCALE()) as i64;
+    let im_int: i64 = (c.im * SCALE()) as i64;
+    store_ptr(sv.data, k * 2, re_int);
+    store_ptr(sv.data, k * 2 + 1, im_int);
+    0
+}
+
+// Get probability of basis state k
+fn sv_prob(sv: StateVec, k: i64) -> f64 {
+    let c: Complex = sv_get(sv, k);
+    mag_sq(c)
+}
+
+// Check if statevector is normalized (sum of probabilities ~ 1.0)
+fn sv_is_normalized(sv: StateVec) -> i64 {
+    var total: f64 = 0.0;
+    var k: i64 = 0;
+    while k < sv.dim {
+        total = total + sv_prob(sv, k);
+        k = k + 1;
+    }
+    approx_eq(total, 1.0, 0.01)
+}
+
+// ============================================================================
+// Single-qubit gate: applies 2x2 matrix [[m00,m01],[m10,m11]] to target qubit
+// ============================================================================
+fn sv_apply_1q(sv: StateVec, target: i64, m00: Complex, m01: Complex, m10: Complex, m11: Complex) -> i64 {
+    let step: i64 = 1 << target;
+    var i: i64 = 0;
+    while i < sv.dim {
+        if (i & step) == 0 {
+            let j: i64 = i | step;
+            let a0: Complex = sv_get(sv, i);
+            let a1: Complex = sv_get(sv, j);
+            let new0: Complex = cadd(cmul(m00, a0), cmul(m01, a1));
+            let new1: Complex = cadd(cmul(m10, a0), cmul(m11, a1));
+            sv_set(sv, i, new0);
+            sv_set(sv, j, new1);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// ============================================================================
+// Standard gates
+// ============================================================================
+
+// Hadamard: H = (1/sqrt2) * [[1,1],[1,-1]]
+fn sv_apply_h(sv: StateVec, target: i64) -> i64 {
+    let h: Complex = Complex::new(INV_SQRT2(), 0.0);
+    let mh: Complex = Complex::new(0.0 - INV_SQRT2(), 0.0);
+    sv_apply_1q(sv, target, h, h, h, mh)
+}
+
+// Pauli-X (NOT): X = [[0,1],[1,0]]
+fn sv_apply_x(sv: StateVec, target: i64) -> i64 {
+    sv_apply_1q(sv, target, Complex::zero(), Complex::one(), Complex::one(), Complex::zero())
+}
+
+// Pauli-Y: Y = [[0,-i],[i,0]]
+fn sv_apply_y(sv: StateVec, target: i64) -> i64 {
+    sv_apply_1q(sv, target,
+        Complex::zero(), Complex::new(0.0, -1.0),
+        Complex::new(0.0, 1.0), Complex::zero())
+}
+
+// Pauli-Z: Z = [[1,0],[0,-1]]
+fn sv_apply_z(sv: StateVec, target: i64) -> i64 {
+    sv_apply_1q(sv, target, Complex::one(), Complex::zero(), Complex::zero(), Complex::new(-1.0, 0.0))
+}
+
+// Rx(theta) = [[cos(t/2), -i*sin(t/2)], [-i*sin(t/2), cos(t/2)]]
+fn sv_apply_rx(sv: StateVec, target: i64, theta: f64) -> i64 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    sv_apply_1q(sv, target,
+        Complex::new(c, 0.0), Complex::new(0.0, 0.0 - s),
+        Complex::new(0.0, 0.0 - s), Complex::new(c, 0.0))
+}
+
+// Ry(theta) = [[cos(t/2), -sin(t/2)], [sin(t/2), cos(t/2)]]
+fn sv_apply_ry(sv: StateVec, target: i64, theta: f64) -> i64 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    sv_apply_1q(sv, target,
+        Complex::new(c, 0.0), Complex::new(0.0 - s, 0.0),
+        Complex::new(s, 0.0), Complex::new(c, 0.0))
+}
+
+// Rz(theta) = [[e^(-it/2), 0], [0, e^(it/2)]]
+fn sv_apply_rz(sv: StateVec, target: i64, theta: f64) -> i64 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    sv_apply_1q(sv, target,
+        Complex::new(c, 0.0 - s), Complex::zero(),
+        Complex::zero(), Complex::new(c, s))
+}
+
+// ============================================================================
+// CNOT (controlled-X): flips target when control is |1>
+// ============================================================================
+fn sv_apply_cnot(sv: StateVec, control: i64, target: i64) -> i64 {
+    let ctrl_mask: i64 = 1 << control;
+    let tgt_mask: i64 = 1 << target;
+    var i: i64 = 0;
+    while i < sv.dim {
+        if (i & ctrl_mask) != 0 {
+            if (i & tgt_mask) == 0 {
+                let j: i64 = i | tgt_mask;
+                let ai: Complex = sv_get(sv, i);
+                let aj: Complex = sv_get(sv, j);
+                sv_set(sv, i, aj);
+                sv_set(sv, j, ai);
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// ============================================================================
+// Measurement: get all probabilities as a vec of i64 (scaled by 1e6)
+// ============================================================================
+fn sv_probabilities(sv: StateVec) -> i64 {
+    let probs: i64 = vec_new();
+    var k: i64 = 0;
+    while k < sv.dim {
+        let p: f64 = sv_prob(sv, k);
+        let p_int: i64 = (p * SCALE()) as i64;
+        vec_push(probs, p_int);
+        k = k + 1;
+    }
+    probs
+}
+
+// ============================================================================
+// Sampling: pseudo-random measurement from probability distribution
+// ============================================================================
+
+// Simple LCG random number generator state (global)
+// Returns a pseudo-random i64 in [0, 2^31)
+fn lcg_next(seed: i64) -> i64 {
+    let next: i64 = seed * 1103515245 + 12345;
+    // ensure positive
+    if next < 0 { return 0 - next; }
+    next
+}
+
+// Sample one outcome from probability distribution (vec of scaled i64 probs)
+// Returns the basis state index
+fn sample_once(probs: i64, seed: i64) -> i64 {
+    let len: i64 = vec_len(probs);
+    // compute total
+    var total: i64 = 0;
+    var k: i64 = 0;
+    while k < len {
+        total = total + vec_get(probs, k);
+        k = k + 1;
+    }
+    if total == 0 { return 0; }
+    // random threshold
+    let r: i64 = seed % total;
+    var cumulative: i64 = 0;
+    var idx: i64 = 0;
+    while idx < len {
+        cumulative = cumulative + vec_get(probs, idx);
+        if r < cumulative {
+            return idx;
+        }
+        idx = idx + 1;
+    }
+    len - 1
+}
+
+// Convert basis state index to a bitstring (i64 string handle)
+// For n_qubits=3, index=5 (binary 101) -> "101"
+fn index_to_bitstring(index: i64, n_qubits: i64) -> i64 {
+    var result: i64 = string_from("");
+    var bit: i64 = n_qubits - 1;
+    while bit >= 0 {
+        let val: i64 = (index >> bit) & 1;
+        if val == 1 {
+            result = string_concat(result, string_from("1"));
+        } else {
+            result = string_concat(result, string_from("0"));
+        }
+        bit = bit - 1;
+    }
+    result
+}
+
+// Sample 'shots' measurements from the statevector.
+// Returns a MeasResult-like pair: (outcomes_vec, counts_vec) packed in a vec.
+// result_vec[0] = outcomes vec, result_vec[1] = counts vec
+fn sv_sample(sv: StateVec, shots: i64, seed: i64) -> i64 {
+    let probs: i64 = sv_probabilities(sv);
+    let outcomes: i64 = vec_new();
+    let counts: i64 = vec_new();
+    var rng: i64 = seed;
+    var shot: i64 = 0;
+    while shot < shots {
+        rng = lcg_next(rng);
+        let idx: i64 = sample_once(probs, rng);
+        let bs: i64 = index_to_bitstring(idx, sv.n_qubits);
+        // find or add
+        let olen: i64 = vec_len(outcomes);
+        var found: i64 = 0;
+        var oi: i64 = 0;
+        while oi < olen {
+            // compare bitstrings -- use string identity check
+            // since we create new strings each time, compare char by char
+            // Actually for sxc, just store index instead of string for lookup
+            if vec_get(outcomes, oi) == idx {
+                vec_set(counts, oi, vec_get(counts, oi) + 1);
+                found = 1;
+            }
+            oi = oi + 1;
+        }
+        if found == 0 {
+            vec_push(outcomes, idx);
+            vec_push(counts, 1);
+        }
+        shot = shot + 1;
+    }
+    // Pack result: [outcomes_vec_of_indices, counts_vec, n_qubits]
+    let result: i64 = vec_new();
+    vec_push(result, outcomes);
+    vec_push(result, counts);
+    vec_push(result, sv.n_qubits);
+    result
+}
+
+// ============================================================================
+// Convenience: simulate a gate sequence on fresh |0...0> state
+// ============================================================================
+
+// Apply a gate given as: [gate_code, target, control_or_0, param_scaled]
+// Gate codes: 0=H, 1=X, 2=Y, 3=Z, 4=CNOT, 5=Rx, 6=Ry, 7=Rz
+const GATE_H: i64 = 0;
+const GATE_X: i64 = 1;
+const GATE_Y: i64 = 2;
+const GATE_Z: i64 = 3;
+const GATE_CNOT: i64 = 4;
+const GATE_RX: i64 = 5;
+const GATE_RY: i64 = 6;
+const GATE_RZ: i64 = 7;
+
+fn sv_apply_gate(sv: StateVec, gate_code: i64, target: i64, control: i64, param: f64) -> i64 {
+    if gate_code == GATE_H() { return sv_apply_h(sv, target); }
+    if gate_code == GATE_X() { return sv_apply_x(sv, target); }
+    if gate_code == GATE_Y() { return sv_apply_y(sv, target); }
+    if gate_code == GATE_Z() { return sv_apply_z(sv, target); }
+    if gate_code == GATE_CNOT() { return sv_apply_cnot(sv, control, target); }
+    if gate_code == GATE_RX() { return sv_apply_rx(sv, target, param); }
+    if gate_code == GATE_RY() { return sv_apply_ry(sv, target, param); }
+    if gate_code == GATE_RZ() { return sv_apply_rz(sv, target, param); }
+    0
+}
+
+// Execute a circuit (vec of gate vecs) on a fresh statevector
+// Each gate is a vec: [gate_code, target, control, param_scaled_i64]
+// param is stored as i64 = (f64_param * 1000000) as i64
+fn sim_execute(n_qubits: i64, circuit: i64, shots: i64) -> i64 {
+    let sv: StateVec = sv_new(n_qubits);
+    let num_gates: i64 = vec_len(circuit);
+    var gi: i64 = 0;
+    while gi < num_gates {
+        let gate: i64 = vec_get(circuit, gi);
+        let code: i64 = vec_get(gate, 0);
+        let target: i64 = vec_get(gate, 1);
+        let control: i64 = vec_get(gate, 2);
+        let param_int: i64 = vec_get(gate, 3);
+        let param: f64 = (param_int as f64) / SCALE();
+        sv_apply_gate(sv, code, target, control, param);
+        gi = gi + 1;
+    }
+    if shots > 0 {
+        return sv_sample(sv, shots, 42);
+    }
+    // Return probabilities as a vec
+    sv_probabilities(sv)
+}
+
+// ============================================================================
+// Helper: build a gate vec for circuit construction
+// ============================================================================
+fn make_gate(code: i64, target: i64, control: i64, param: f64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, code);
+    vec_push(g, target);
+    vec_push(g, control);
+    let param_int: i64 = (param * SCALE()) as i64;
+    vec_push(g, param_int);
+    g
+}
+
+// ============================================================================
+// Self-test
+// ============================================================================
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+fn test_initial_state() -> i64 {
+    println(string_from("--- Initial State ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    f = f + check(string_from("1q prob[0]=1"), approx_eq(sv_prob(sv, 0), 1.0, 0.01));
+    f = f + check(string_from("1q prob[1]=0"), approx_eq(sv_prob(sv, 1), 0.0, 0.01));
+    f = f + check(string_from("1q normalized"), sv_is_normalized(sv));
+    let sv3: StateVec = sv_new(3);
+    f = f + check(string_from("3q prob[0]=1"), approx_eq(sv_prob(sv3, 0), 1.0, 0.01));
+    f = f + check(string_from("3q normalized"), sv_is_normalized(sv3));
+    f
+}
+
+fn test_h_gate() -> i64 {
+    println(string_from("--- H Gate ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    sv_apply_h(sv, 0);
+    f = f + check(string_from("H prob[0]=0.5"), approx_eq(sv_prob(sv, 0), 0.5, 0.02));
+    f = f + check(string_from("H prob[1]=0.5"), approx_eq(sv_prob(sv, 1), 0.5, 0.02));
+    f = f + check(string_from("H normalized"), sv_is_normalized(sv));
+    f
+}
+
+fn test_x_gate() -> i64 {
+    println(string_from("--- X Gate ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    sv_apply_x(sv, 0);
+    f = f + check(string_from("X prob[0]=0"), approx_eq(sv_prob(sv, 0), 0.0, 0.01));
+    f = f + check(string_from("X prob[1]=1"), approx_eq(sv_prob(sv, 1), 1.0, 0.01));
+    sv_apply_x(sv, 0);
+    f = f + check(string_from("XX prob[0]=1"), approx_eq(sv_prob(sv, 0), 1.0, 0.01));
+    f
+}
+
+fn test_y_gate() -> i64 {
+    println(string_from("--- Y Gate ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    sv_apply_y(sv, 0);
+    // Y|0> = i|1>, so prob[0]=0, prob[1]=1
+    f = f + check(string_from("Y prob[0]=0"), approx_eq(sv_prob(sv, 0), 0.0, 0.01));
+    f = f + check(string_from("Y prob[1]=1"), approx_eq(sv_prob(sv, 1), 1.0, 0.01));
+    f
+}
+
+fn test_z_gate() -> i64 {
+    println(string_from("--- Z Gate ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    // Z|0> = |0>, probabilities unchanged
+    sv_apply_z(sv, 0);
+    f = f + check(string_from("Z prob[0]=1"), approx_eq(sv_prob(sv, 0), 1.0, 0.01));
+    f = f + check(string_from("Z prob[1]=0"), approx_eq(sv_prob(sv, 1), 0.0, 0.01));
+    f
+}
+
+fn test_bell_state() -> i64 {
+    println(string_from("--- Bell State ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(2);
+    sv_apply_h(sv, 0);
+    sv_apply_cnot(sv, 0, 1);
+    f = f + check(string_from("Bell prob[00]=0.5"), approx_eq(sv_prob(sv, 0), 0.5, 0.02));
+    f = f + check(string_from("Bell prob[01]=0"), approx_eq(sv_prob(sv, 1), 0.0, 0.02));
+    f = f + check(string_from("Bell prob[10]=0"), approx_eq(sv_prob(sv, 2), 0.0, 0.02));
+    f = f + check(string_from("Bell prob[11]=0.5"), approx_eq(sv_prob(sv, 3), 0.5, 0.02));
+    f = f + check(string_from("Bell normalized"), sv_is_normalized(sv));
+    f
+}
+
+fn test_ghz_state() -> i64 {
+    println(string_from("--- GHZ State ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(3);
+    sv_apply_h(sv, 0);
+    sv_apply_cnot(sv, 0, 1);
+    sv_apply_cnot(sv, 1, 2);
+    f = f + check(string_from("GHZ prob[000]=0.5"), approx_eq(sv_prob(sv, 0), 0.5, 0.02));
+    f = f + check(string_from("GHZ prob[111]=0.5"), approx_eq(sv_prob(sv, 7), 0.5, 0.02));
+    var mid_ok: i64 = 1;
+    var k: i64 = 1;
+    while k < 7 {
+        if sv_prob(sv, k) > 0.02 { mid_ok = 0; }
+        k = k + 1;
+    }
+    f = f + check(string_from("GHZ only 000 and 111"), mid_ok);
+    f = f + check(string_from("GHZ normalized"), sv_is_normalized(sv));
+    f
+}
+
+fn test_ry_rotation() -> i64 {
+    println(string_from("--- Ry Rotation ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    sv_apply_ry(sv, 0, PI());
+    f = f + check(string_from("Ry(pi) prob[0]~0"), approx_eq(sv_prob(sv, 0), 0.0, 0.02));
+    f = f + check(string_from("Ry(pi) prob[1]~1"), approx_eq(sv_prob(sv, 1), 1.0, 0.02));
+    let sv2: StateVec = sv_new(1);
+    sv_apply_ry(sv2, 0, PI() / 2.0);
+    f = f + check(string_from("Ry(pi/2) prob[0]=0.5"), approx_eq(sv_prob(sv2, 0), 0.5, 0.02));
+    f = f + check(string_from("Ry(pi/2) prob[1]=0.5"), approx_eq(sv_prob(sv2, 1), 0.5, 0.02));
+    f
+}
+
+fn test_rx_rotation() -> i64 {
+    println(string_from("--- Rx Rotation ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    sv_apply_rx(sv, 0, PI());
+    // Rx(pi)|0> = -i|1>, prob[1]=1
+    f = f + check(string_from("Rx(pi) prob[0]~0"), approx_eq(sv_prob(sv, 0), 0.0, 0.02));
+    f = f + check(string_from("Rx(pi) prob[1]~1"), approx_eq(sv_prob(sv, 1), 1.0, 0.02));
+    f
+}
+
+fn test_rz_rotation() -> i64 {
+    println(string_from("--- Rz Rotation ---"));
+    var f: i64 = 0;
+    let sv: StateVec = sv_new(1);
+    sv_apply_rz(sv, 0, PI());
+    // Rz on |0> just adds phase, probs unchanged
+    f = f + check(string_from("Rz(pi) prob[0]=1"), approx_eq(sv_prob(sv, 0), 1.0, 0.02));
+    f = f + check(string_from("Rz(pi) prob[1]=0"), approx_eq(sv_prob(sv, 1), 0.0, 0.02));
+    f
+}
+
+fn test_sampling() -> i64 {
+    println(string_from("--- Sampling ---"));
+    var f: i64 = 0;
+    // Create Bell state and sample
+    let sv: StateVec = sv_new(2);
+    sv_apply_h(sv, 0);
+    sv_apply_cnot(sv, 0, 1);
+    let result: i64 = sv_sample(sv, 100, 12345);
+    let outcome_indices: i64 = vec_get(result, 0);
+    let outcome_counts: i64 = vec_get(result, 1);
+    let n_outcomes: i64 = vec_len(outcome_indices);
+    // Should only see indices 0 (="00") and 3 (="11")
+    var total: i64 = 0;
+    var all_valid: i64 = 1;
+    var oi: i64 = 0;
+    while oi < n_outcomes {
+        let idx: i64 = vec_get(outcome_indices, oi);
+        let cnt: i64 = vec_get(outcome_counts, oi);
+        total = total + cnt;
+        if idx != 0 {
+            if idx != 3 {
+                all_valid = 0;
+            }
+        }
+        oi = oi + 1;
+    }
+    f = f + check(string_from("100 shots total"), approx_eq(total as f64, 100.0, 0.5));
+    f = f + check(string_from("only 00 and 11 outcomes"), all_valid);
+    f
+}
+
+fn test_circuit_api() -> i64 {
+    println(string_from("--- Circuit API ---"));
+    var f: i64 = 0;
+    // Build a Bell circuit using the circuit API
+    let circuit: i64 = vec_new();
+    vec_push(circuit, make_gate(GATE_H(), 0, 0, 0.0));
+    vec_push(circuit, make_gate(GATE_CNOT(), 1, 0, 0.0));
+    let probs: i64 = sim_execute(2, circuit, 0);
+    // probs[0] should be ~500000 (0.5 * 1e6), probs[3] should be ~500000
+    let p0: i64 = vec_get(probs, 0);
+    let p3: i64 = vec_get(probs, 3);
+    f = f + check(string_from("circuit prob[00]~0.5"), approx_eq((p0 as f64) / SCALE(), 0.5, 0.02));
+    f = f + check(string_from("circuit prob[11]~0.5"), approx_eq((p3 as f64) / SCALE(), 0.5, 0.02));
+    f
+}
+
+fn main() -> i64 {
+    println(string_from("=== Quantum Simulator Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_initial_state();
+    fails = fails + test_h_gate();
+    fails = fails + test_x_gate();
+    fails = fails + test_y_gate();
+    fails = fails + test_z_gate();
+    fails = fails + test_bell_state();
+    fails = fails + test_ghz_state();
+    fails = fails + test_ry_rotation();
+    fails = fails + test_rx_rotation();
+    fails = fails + test_rz_rotation();
+    fails = fails + test_sampling();
+    fails = fails + test_circuit_api();
+    if fails > 0 {
+        println(string_concat(string_from("FAILURES: "), string_from("see above")));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

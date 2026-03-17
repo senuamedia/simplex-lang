@@ -158,7 +158,7 @@ All tools updated to version 0.9.7:
 - `simplex-uuid/src/lib.sx` - FFI wrappers
 - `tools/sxpm.sx` - Version constant
 - `tools/sxlsp.sx` - Tokenizer/parser stubs
-- `lib/version.sx` - Version 0.9.7
+- `simplex-core/src/version.sx` - Version 0.9.7
 
 ---
 

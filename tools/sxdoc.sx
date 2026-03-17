@@ -5,14 +5,14 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-// TODO(TASK-020): Replace with `use lib::version;` and call SXDOC_VERSION() once
+// TODO(TASK-020): Replace with `use simplex_core::version;` and call SXDOC_VERSION() once
 // cross-file imports work for standalone-compiled tools. The canonical source of
-// truth is lib/version.sx SXDOC_VERSION().
-// Version constant (inlined for standalone compilation — see lib/version.sx)
-fn VERSION() -> i64 { string_from("0.13.0") }
+// truth is simplex-core/src/version.sx SXDOC_VERSION().
+// Version constant (inlined for standalone compilation — see simplex-core/src/version.sx)
+fn VERSION() -> i64 { string_from("0.14.0") }
 
 // Inline platform detection
-// Synced with lib/platform.sx — use lib::platform when module compilation supports it
+// Synced with simplex-core/src/platform.sx — use simplex_core::platform when module compilation supports it
 fn platform_get_os_name() -> i64 {
     let windir: i64 = env_get(string_from("WINDIR"));
     if windir != 0 {

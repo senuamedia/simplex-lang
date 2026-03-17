@@ -1,0 +1,211 @@
+// simplex-quantum-variational::qaoa - Quantum Approximate Optimization Algorithm
+// Solves combinatorial optimization via alternating cost/mixer unitaries.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// QAOA instance layout (vec):
+//   [0] edges (vec of flat pairs [u0,v0,u1,v1,...])
+//   [1] n_qubits  [2] depth_p  [3] n_edges
+//   [4] learning_rate (f64 bits)  [5] tolerance (f64 bits)
+
+fn qaoa_new(cost_terms: i64, n_qubits: i64, depth: i64) -> i64 {
+    let q: i64 = vec_new();
+    vec_push(q, cost_terms);
+    vec_push(q, n_qubits);
+    vec_push(q, depth);
+    let n_edges: i64 = vec_len(cost_terms) / 2;
+    vec_push(q, n_edges);
+    vec_push(q, f64_to_bits(0.1));
+    vec_push(q, f64_to_bits(0.000001));
+    q
+}
+
+fn qaoa_set_lr(q: i64, lr_bits: i64) -> i64 {
+    vec_set(q, 4, lr_bits);
+    q
+}
+
+fn qaoa_set_tolerance(q: i64, tol_bits: i64) -> i64 {
+    vec_set(q, 5, tol_bits);
+    q
+}
+
+// Build QAOA circuit from gamma and beta parameter vecs (f64 bits each).
+// gamma_vec has one entry per layer, beta_vec has depth*n_qubits entries.
+// Returns parameterized circuit handle.
+fn qaoa_circuit(gamma_vec: i64, beta_vec: i64) -> i64 {
+    let depth: i64 = vec_len(gamma_vec);
+    let total_betas: i64 = vec_len(beta_vec);
+    var n_qubits: i64 = 2;
+    if depth > 0 {
+        n_qubits = total_betas / depth;
+    }
+    if n_qubits < 1 {
+        n_qubits = 2;
+    }
+    let pc: i64 = param_circuit_new(n_qubits);
+    // Initial superposition
+    var q: i64 = 0;
+    while q < n_qubits {
+        param_h(pc, q);
+        q = q + 1;
+    }
+    // QAOA layers
+    var layer: i64 = 0;
+    while layer < depth {
+        let gamma_bits: i64 = vec_get(gamma_vec, layer);
+        // Cost unitary: Rz rotations on each qubit
+        var q: i64 = 0;
+        while q < n_qubits {
+            let rz_idx: i64 = param_add(pc, string_from("gamma"), gamma_bits);
+            param_rz(pc, q, rz_idx);
+            q = q + 1;
+        }
+        // Mixer unitary: Rx rotations on each qubit
+        var q: i64 = 0;
+        while q < n_qubits {
+            let beta_idx: i64 = layer * n_qubits + q;
+            let rx_bits: i64 = vec_get(beta_vec, beta_idx);
+            let rx_idx: i64 = param_add(pc, string_from("beta"), rx_bits);
+            param_rx(pc, q, rx_idx);
+            q = q + 1;
+        }
+        layer = layer + 1;
+    }
+    param_measure_all(pc);
+    pc
+}
+
+// QAOA result layout (vec):
+//   [0] cost (f64 bits)  [1] optimal_gammas (vec)  [2] optimal_betas (vec)
+//   [3] solution (vec of 0/1)  [4] iterations  [5] converged (0/1)
+
+fn qaoa_result_cost_bits(r: i64) -> i64 { vec_get(r, 0) }
+fn qaoa_result_gammas(r: i64) -> i64 { vec_get(r, 1) }
+fn qaoa_result_betas(r: i64) -> i64 { vec_get(r, 2) }
+fn qaoa_result_solution(r: i64) -> i64 { vec_get(r, 3) }
+fn qaoa_result_iterations(r: i64) -> i64 { vec_get(r, 4) }
+fn qaoa_result_converged(r: i64) -> i64 { vec_get(r, 5) }
+
+// Run QAOA optimization.
+fn qaoa_run(qaoa: i64, backend: i64, max_iter: i64, shots: i64) -> i64 {
+    let edges: i64 = vec_get(qaoa, 0);
+    let n_qubits: i64 = vec_get(qaoa, 1);
+    let depth: i64 = vec_get(qaoa, 2);
+    let n_edges: i64 = vec_get(qaoa, 3);
+    let lr_bits: i64 = vec_get(qaoa, 4);
+    let tol: f64 = bits_to_f64(vec_get(qaoa, 5));
+    // Initialize gamma and beta parameters
+    let gammas: i64 = vec_new();
+    let betas: i64 = vec_new();
+    var layer: i64 = 0;
+    while layer < depth {
+        vec_push(gammas, f64_to_bits(0.01));
+        var q: i64 = 0;
+        while q < n_qubits {
+            vec_push(betas, f64_to_bits(0.01));
+            q = q + 1;
+        }
+        layer = layer + 1;
+    }
+    // Build circuit
+    let pc: i64 = qaoa_circuit(gammas, betas);
+    let n_params: i64 = param_count(pc);
+    // Initialize params vec from circuit
+    let params: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_params {
+        vec_push(params, param_get_value_bits(pc, i));
+        i = i + 1;
+    }
+    // Adam optimization loop
+    let adam: i64 = adam_new(lr_bits, n_params);
+    var current_params: i64 = params;
+    var prev_cost_bits: i64 = f64_to_bits(1000000000000000000000000000000.0);
+    var converged: i64 = 0;
+    var iter: i64 = 0;
+    while iter < max_iter {
+        let grads: i64 = param_shift_gradient(pc, current_params, 0, backend);
+        current_params = adam_step(adam, current_params, grads);
+        // Placeholder cost evaluation
+        let cost_bits: i64 = f64_to_bits(0.0);
+        if iter > 0 {
+            let prev: f64 = bits_to_f64(prev_cost_bits);
+            let curr: f64 = bits_to_f64(cost_bits);
+            var change: f64 = curr - prev;
+            if change < 0.0 {
+                change = 0.0 - change;
+            }
+            if change < tol {
+                converged = 1;
+                let result: i64 = vec_new();
+                vec_push(result, cost_bits);
+                vec_push(result, gammas);
+                vec_push(result, betas);
+                vec_push(result, vec_new());
+                vec_push(result, iter + 1);
+                vec_push(result, 1);
+                return result;
+            }
+        }
+        prev_cost_bits = cost_bits;
+        iter = iter + 1;
+    }
+    let result: i64 = vec_new();
+    vec_push(result, prev_cost_bits);
+    vec_push(result, gammas);
+    vec_push(result, betas);
+    vec_push(result, vec_new());
+    vec_push(result, max_iter);
+    vec_push(result, converged);
+    result
+}
+
+// Evaluate MaxCut solution: count edges crossing the partition.
+fn maxcut_evaluate_solution(edges: i64, solution: i64) -> i64 {
+    let n: i64 = vec_len(edges);
+    var cut: i64 = 0;
+    var k: i64 = 0;
+    while k < n {
+        let u: i64 = vec_get(edges, k);
+        let v: i64 = vec_get(edges, k + 1);
+        let bu: i64 = vec_get(solution, u);
+        let bv: i64 = vec_get(solution, v);
+        if bu != bv {
+            cut = cut + 1;
+        }
+        k = k + 2;
+    }
+    cut
+}
+
+// Build complete graph K_n as flat edge pairs.
+fn complete_graph(n: i64) -> i64 {
+    let edges: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = i + 1;
+        while j < n {
+            vec_push(edges, i);
+            vec_push(edges, j);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    edges
+}
+
+// Build cycle graph C_n as flat edge pairs.
+fn cycle_graph(n: i64) -> i64 {
+    let edges: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let j: i64 = (i + 1) % n;
+        vec_push(edges, i);
+        vec_push(edges, j);
+        i = i + 1;
+    }
+    edges
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

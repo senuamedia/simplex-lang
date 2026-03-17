@@ -1,0 +1,291 @@
+// simplex-quantum::types - Core Quantum Types
+//
+// Foundational data structures for quantum computing: qubits, quantum states,
+// measurement results, and circuit statistics.
+//
+// All complex amplitudes are stored as (re, im) pairs in flat vecs using
+// f64_to_bits/bits_to_f64 for f64 storage in i64 vecs.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const QUANTUM_EPSILON: f64 = 0.000000000001;
+
+// -- Qubit --
+// Represented as a vec: [index, label_handle]
+
+fn qubit_new(index: i64, label: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, index);
+    vec_push(v, label);
+    v
+}
+
+fn qubit_auto(index: i64) -> i64 {
+    let label: i64 = string_concat(string_from("q"), int_to_string(index));
+    qubit_new(index, label)
+}
+
+fn qubit_index(q: i64) -> i64 {
+    vec_get(q, 0)
+}
+
+fn qubit_label(q: i64) -> i64 {
+    vec_get(q, 1)
+}
+
+// -- QuantumState --
+// Stored as a vec header: [n_qubits, dim, amplitudes_vec_handle]
+// The amplitudes vec stores pairs: re0_bits, im0_bits, re1_bits, im1_bits, ...
+
+fn qstate_new(n_qubits: i64) -> i64 {
+    let dim: i64 = 1 << n_qubits;
+    let amps: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim * 2 {
+        vec_push(amps, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    let v: i64 = vec_new();
+    vec_push(v, n_qubits);
+    vec_push(v, dim);
+    vec_push(v, amps);
+    v
+}
+
+fn qstate_zero(n_qubits: i64) -> i64 {
+    let st: i64 = qstate_new(n_qubits);
+    let amps: i64 = vec_get(st, 2);
+    vec_set(amps, 0, f64_to_bits(1.0));
+    st
+}
+
+fn qstate_basis(n_qubits: i64, basis_index: i64) -> i64 {
+    let st: i64 = qstate_new(n_qubits);
+    let amps: i64 = vec_get(st, 2);
+    vec_set(amps, basis_index * 2, f64_to_bits(1.0));
+    st
+}
+
+fn qstate_n_qubits(st: i64) -> i64 {
+    vec_get(st, 0)
+}
+
+fn qstate_dim(st: i64) -> i64 {
+    vec_get(st, 1)
+}
+
+fn qstate_amps(st: i64) -> i64 {
+    vec_get(st, 2)
+}
+
+fn qstate_get_re(st: i64, k: i64) -> f64 {
+    let amps: i64 = qstate_amps(st);
+    bits_to_f64(vec_get(amps, k * 2))
+}
+
+fn qstate_get_im(st: i64, k: i64) -> f64 {
+    let amps: i64 = qstate_amps(st);
+    bits_to_f64(vec_get(amps, k * 2 + 1))
+}
+
+fn qstate_set(st: i64, k: i64, re: f64, im: f64) -> i64 {
+    let amps: i64 = qstate_amps(st);
+    vec_set(amps, k * 2, f64_to_bits(re));
+    vec_set(amps, k * 2 + 1, f64_to_bits(im));
+    0
+}
+
+fn qstate_prob(st: i64, k: i64) -> f64 {
+    let re: f64 = qstate_get_re(st, k);
+    let im: f64 = qstate_get_im(st, k);
+    re * re + im * im
+}
+
+fn qstate_is_normalized(st: i64) -> i64 {
+    let dim: i64 = qstate_dim(st);
+    var total: f64 = 0.0;
+    var k: i64 = 0;
+    while k < dim {
+        total = total + qstate_prob(st, k);
+        k = k + 1;
+    }
+    let diff: f64 = total - 1.0;
+    var abs_diff: f64 = diff;
+    if abs_diff < 0.0 { abs_diff = 0.0 - abs_diff; }
+    if abs_diff < 0.001 { return 1; }
+    0
+}
+
+fn qstate_normalize(st: i64) -> i64 {
+    let dim: i64 = qstate_dim(st);
+    var total: f64 = 0.0;
+    var k: i64 = 0;
+    while k < dim {
+        total = total + qstate_prob(st, k);
+        k = k + 1;
+    }
+    if total < QUANTUM_EPSILON() { return 0; }
+    let norm: f64 = sqrt(total);
+    k = 0;
+    while k < dim {
+        let re: f64 = qstate_get_re(st, k);
+        let im: f64 = qstate_get_im(st, k);
+        qstate_set(st, k, re / norm, im / norm);
+        k = k + 1;
+    }
+    0
+}
+
+fn qstate_probabilities(st: i64) -> i64 {
+    let dim: i64 = qstate_dim(st);
+    let probs: i64 = vec_new();
+    var k: i64 = 0;
+    while k < dim {
+        vec_push(probs, f64_to_bits(qstate_prob(st, k)));
+        k = k + 1;
+    }
+    probs
+}
+
+// -- MeasurementResult --
+// Stored as vec: [shot_count, n_qubits, outcomes_vec, probabilities_vec]
+
+fn mresult_new(n_qubits: i64, shot_count: i64) -> i64 {
+    let dim: i64 = 1 << n_qubits;
+    let outcomes: i64 = vec_new();
+    let probs: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(outcomes, 0);
+        vec_push(probs, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    let v: i64 = vec_new();
+    vec_push(v, shot_count);
+    vec_push(v, n_qubits);
+    vec_push(v, outcomes);
+    vec_push(v, probs);
+    v
+}
+
+fn mresult_shot_count(mr: i64) -> i64 {
+    vec_get(mr, 0)
+}
+
+fn mresult_n_qubits(mr: i64) -> i64 {
+    vec_get(mr, 1)
+}
+
+fn mresult_outcomes(mr: i64) -> i64 {
+    vec_get(mr, 2)
+}
+
+fn mresult_probs(mr: i64) -> i64 {
+    vec_get(mr, 3)
+}
+
+fn mresult_record(mr: i64, basis_index: i64) -> i64 {
+    let oc: i64 = mresult_outcomes(mr);
+    let current: i64 = vec_get(oc, basis_index);
+    vec_set(oc, basis_index, current + 1);
+    0
+}
+
+fn mresult_compute_probs(mr: i64) -> i64 {
+    let dim: i64 = 1 << mresult_n_qubits(mr);
+    let sc: i64 = mresult_shot_count(mr);
+    let oc: i64 = mresult_outcomes(mr);
+    let pr: i64 = mresult_probs(mr);
+    var i: i64 = 0;
+    while i < dim {
+        let count: i64 = vec_get(oc, i);
+        let prob: f64 = (count as f64) / (sc as f64);
+        vec_set(pr, i, f64_to_bits(prob));
+        i = i + 1;
+    }
+    0
+}
+
+fn mresult_get_count(mr: i64, basis_index: i64) -> i64 {
+    vec_get(mresult_outcomes(mr), basis_index)
+}
+
+fn mresult_get_prob(mr: i64, basis_index: i64) -> f64 {
+    bits_to_f64(vec_get(mresult_probs(mr), basis_index))
+}
+
+fn mresult_most_probable(mr: i64) -> i64 {
+    let dim: i64 = 1 << mresult_n_qubits(mr);
+    let oc: i64 = mresult_outcomes(mr);
+    var best_index: i64 = 0;
+    var best_count: i64 = 0;
+    var i: i64 = 0;
+    while i < dim {
+        let count: i64 = vec_get(oc, i);
+        if count > best_count {
+            best_count = count;
+            best_index = i;
+        }
+        i = i + 1;
+    }
+    best_index
+}
+
+// -- CircuitStats --
+// Stored as vec: [gate_count, depth, qubit_count, estimated_time_us]
+
+fn cstats_new(gate_count: i64, depth: i64, qubit_count: i64, est_time_us: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, gate_count);
+    vec_push(v, depth);
+    vec_push(v, qubit_count);
+    vec_push(v, est_time_us);
+    v
+}
+
+fn cstats_empty(qubit_count: i64) -> i64 {
+    cstats_new(0, 0, qubit_count, 0)
+}
+
+fn cstats_gate_count(cs: i64) -> i64 { vec_get(cs, 0); }
+fn cstats_depth(cs: i64) -> i64 { vec_get(cs, 1); }
+fn cstats_qubit_count(cs: i64) -> i64 { vec_get(cs, 2); }
+fn cstats_est_time_us(cs: i64) -> i64 { vec_get(cs, 3); }
+
+fn cstats_format(cs: i64) -> i64 {
+    string_concat(
+        string_concat(
+            string_from("CircuitStats { gates: "),
+            int_to_string(cstats_gate_count(cs))
+        ),
+        string_concat(
+            string_concat(
+                string_from(", depth: "),
+                int_to_string(cstats_depth(cs))
+            ),
+            string_concat(
+                string_concat(
+                    string_from(", qubits: "),
+                    int_to_string(cstats_qubit_count(cs))
+                ),
+                string_concat(
+                    string_from(", est_us: "),
+                    string_concat(int_to_string(cstats_est_time_us(cs)), string_from(" }"))
+                )
+            )
+        )
+    )
+}
+
+fn main() -> i64 {
+    // Self-test
+    let q: i64 = qubit_auto(0);
+    println(string_concat(string_from("qubit: "), qubit_label(q)));
+    let st: i64 = qstate_zero(2);
+    println(string_concat(string_from("dim: "), int_to_string(qstate_dim(st))));
+    let cs: i64 = cstats_new(10, 5, 3, 200);
+    println(cstats_format(cs));
+    println(string_from("types.sx OK"));
+    0
+}

@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.13.0**
+**Version 0.14.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -253,20 +253,23 @@ simplex-lang/
 │   ├── cursus.sx           # Bytecode VM
 │   ├── sxdoc.sx            # Documentation generator
 │   └── sxlsp.sx            # Language server protocol
-├── edge-hive/              # Edge computing framework
+├── simplex-edge-hive/      # Edge computing framework
 │   ├── src/                # Local AI inference, federation, security
 │   └── tests/              # Edge hive test suite
-├── nexus/                  # High-frequency hive communication
+├── simplex-nexus/          # High-frequency hive communication
 │   ├── src/                # 28 modules for bit-packed sync
 │   └── tests/              # Protocol tests
+├── simplex-quantum/        # Quantum computing framework
+│   ├── src/                # Core types, gates, circuits, measurement
+│   └── backend/            # Multi-provider backend abstraction
+├── simplex-training/       # Self-optimizing training pipelines
+│   ├── src/schedules/      # Learnable schedules (LR, distillation)
+│   ├── src/research/       # Epistemic data refinement
+│   └── src/trainer/        # MetaTrainer for meta-optimization
 ├── lib/
 │   ├── version.sx          # Centralized version management
 │   ├── platform.sx         # Cross-platform utilities
-│   ├── safety.sx           # Runtime safety primitives
-│   └── simplex-training/   # Self-optimizing training pipelines
-│       ├── src/schedules/  # Learnable schedules (LR, distillation)
-│       ├── src/research/   # Epistemic data refinement
-│       └── src/trainer/    # MetaTrainer for meta-optimization
+│   └── safety.sx           # Runtime safety primitives
 ├── tests/                  # 154 tests, 100% pass rate
 │   ├── language/           # Core language features (42)
 │   ├── types/              # Type system tests (12)
@@ -294,13 +297,13 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.13.0 | Simplex Compiler with Neural IR, Dual Numbers, and Module System |
-| **sxpm** | 0.13.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.13.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.13.0 | Documentation Generator |
-| **sxlsp** | 0.13.0 | Language Server Protocol |
-| **sxfmt** | 0.13.0 | Code Formatter |
-| **sxlint** | 0.13.0 | Static Linter |
+| **sxc** | 0.14.0 | Simplex Compiler with Neural IR, Dual Numbers, Module System, and Quantum Bridge |
+| **sxpm** | 0.14.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.14.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.14.0 | Documentation Generator |
+| **sxlsp** | 0.14.0 | Language Server Protocol |
+| **sxfmt** | 0.14.0 | Code Formatter |
+| **sxlint** | 0.14.0 | Static Linter |
 
 ## Release History
 
@@ -366,14 +369,14 @@ See [RELEASE-0.9.7.md](simplex-docs/RELEASE-0.9.7.md) for details.
 ### v0.9.5 (2026-01-16) - Consolidated Foundations
 
 **Centralized Version Management:**
-- Single source of truth for all versions in `lib/version.sx`
+- Single source of truth for all versions in `simplex-core/src/version.sx`
 - Version comparison utilities and feature flags
 - All 11+ version locations now import from central module
 
 **Toolchain Audit Complete (TASK-011):**
 - Comprehensive audit of ~21,400 lines of pure Simplex code
-- New shared `lib/platform.sx` for cross-platform operations
-- Enhanced `lib/safety.sx` with runtime safety primitives
+- New shared `simplex-core/src/platform.sx` for cross-platform operations
+- Enhanced `simplex-core/src/safety.sx` with runtime safety primitives
 
 **Nexus Protocol Design (TASK-012):**
 - High-frequency hive communication protocol design complete
@@ -386,7 +389,7 @@ See [RELEASE-0.9.5.md](simplex-docs/RELEASE-0.9.5.md) for details.
 
 **Version Consolidation Prep:**
 - Identified all version string locations across toolchain
-- Prepared `lib/version.sx` module structure
+- Prepared `simplex-core/src/version.sx` module structure
 - Updated internal tooling for version management
 
 **Parser and Codegen Fixes:**

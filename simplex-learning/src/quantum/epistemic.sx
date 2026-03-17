@@ -1,0 +1,308 @@
+// TASK-021 Phase 6: Quantum Epistemic Beliefs
+//
+// Treats quantum measurement distributions as evidence sources within
+// the grounded belief framework. Quantum shot statistics map naturally
+// to epistemic conf_level: with N shots and probability p, the standard
+// error is sqrt(p(1-p)/N).
+//
+// Exports:
+//   quantum_belief_new         - create belief from measurement
+//   quantum_conf_level         - conf_level from shot statistics
+//   measurement_sufficient     - check if shots are enough
+//   shots_needed               - estimate additional shots required
+//   quantum_falsification_check - compare quantum vs classical probs
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+// Minimum shots before we consider a measurement belief valid
+const MIN_VALID_SHOTS: i64 = 10;
+
+// Default target conf_level for "sufficient" measurements
+const DEFAULT_TARGET_CONF: f64 = 0.95;
+
+// Tolerance for floating-point comparisons
+const EPSILON: f64 = 0.0000000001;
+
+// =============================================================================
+// QuantumBelief -- stored as a vec of fields
+// =============================================================================
+//
+// Layout:
+//   [0] n_shots         i64
+//   [1] n_probs         i64 (length of probabilities sub-vec)
+//   [2] probs_vec       i64 (handle to vec of f64-as-bits)
+//   [3] conf_level      f64 (as i64 bits)
+//   [4] std_error       f64 (as i64 bits)
+//   [5] description     i64 (string handle)
+
+fn QB_N_SHOTS() -> i64     { 0 }
+fn QB_N_PROBS() -> i64     { 1 }
+fn QB_PROBS_VEC() -> i64   { 2 }
+fn QB_CONF_LEVEL() -> i64  { 3 }
+fn QB_STD_ERROR() -> i64   { 4 }
+fn QB_DESCRIPTION() -> i64 { 5 }
+fn QB_FIELDS() -> i64      { 6 }
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+// =============================================================================
+// Constructor
+// =============================================================================
+
+// Create a new quantum belief from measurement results.
+//
+// Arguments:
+//   n_shots          - number of measurement shots taken
+//   probabilities_vec - handle to vec of f64-as-bits probability values
+//   description      - string handle describing this measurement
+//
+// Returns: handle (i64) to the QuantumBelief vec
+fn quantum_belief_new(n_shots: i64, probabilities_vec: i64, description: i64) -> i64 {
+    let n_probs: i64 = vec_len(probabilities_vec);
+
+    // Find the dominant probability for conf_level estimation
+    var p_max: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n_probs {
+        let p: f64 = bits_to_f64(vec_get(probabilities_vec, i));
+        if p > p_max { p_max = p; }
+        i = i + 1;
+    }
+
+    // Standard error of the dominant probability: sqrt(p(1-p)/n)
+    var std_error: f64 = 1.0;
+    if n_shots > 0 {
+        let variance: f64 = p_max * (1.0 - p_max) / (n_shots as f64);
+        if variance > 0.0 {
+            std_error = sqrt(variance);
+        } else {
+            std_error = 0.0;
+        }
+    }
+
+    // Compute conf_level from shot statistics
+    let conf: f64 = compute_conf_level(p_max, n_shots);
+
+    let v = vec_new();
+    vec_push(v, n_shots);                        // [0] n_shots
+    vec_push(v, n_probs);                        // [1] n_probs
+    vec_push(v, probabilities_vec);              // [2] probs_vec handle
+    vec_push(v, f64_to_bits(conf));              // [3] conf_level
+    vec_push(v, f64_to_bits(std_error));         // [4] std_error
+    vec_push(v, description);                    // [5] description
+    v
+}
+
+// =============================================================================
+// Confidence Computation
+// =============================================================================
+
+// Internal: compute conf_level from raw statistics.
+//
+// Conf_level is based on the relative standard error of the dominant
+// probability. More shots -> smaller relative error -> higher conf_level.
+//
+// Formula: conf = 1 - 2 * stderr / max(p, epsilon)
+//          clamped to [0, 1]
+fn compute_conf_level(p_dominant: f64, n_shots: i64) -> f64 {
+    if n_shots < MIN_VALID_SHOTS() { return 0.0; }
+
+    var p: f64 = p_dominant;
+    if p < EPSILON() { p = EPSILON(); }
+
+    let variance: f64 = p * (1.0 - p) / (n_shots as f64);
+    var stderr: f64 = 0.0;
+    if variance > 0.0 {
+        stderr = sqrt(variance);
+    }
+
+    let relative_error: f64 = stderr / p;
+
+    // conf = 1 - 2*relative_error, clamped to [0, 1]
+    var conf: f64 = 1.0 - 2.0 * relative_error;
+    if conf < 0.0 { conf = 0.0; }
+    if conf > 1.0 { conf = 1.0; }
+    conf
+}
+
+// Get the conf_level of a quantum belief.
+//
+// Arguments:
+//   belief - handle to QuantumBelief vec
+//
+// Returns: conf_level in [0, 1]
+fn quantum_conf_level(belief: i64) -> f64 {
+    bits_to_f64(vec_get(belief, QB_CONF_LEVEL()))
+}
+
+// =============================================================================
+// Measurement Sufficiency
+// =============================================================================
+
+// Check whether enough shots have been taken to reach a target conf_level.
+//
+// Arguments:
+//   belief      - handle to QuantumBelief vec
+//   target_conf - desired conf_level (e.g. 0.95)
+//
+// Returns: 1 if sufficient, 0 otherwise
+fn measurement_sufficient(belief: i64, target_conf: f64) -> i64 {
+    let conf: f64 = bits_to_f64(vec_get(belief, QB_CONF_LEVEL()));
+    if conf >= target_conf { return 1; }
+    0
+}
+
+// Estimate the number of additional shots needed to reach a target
+// conf_level.
+//
+// Uses the scaling: conf ~ 1 - C/sqrt(n) for some constant C.
+// If conf_current = 1 - C/sqrt(n_current), then
+//   C = (1 - conf_current) * sqrt(n_current)
+//   n_target = (C / (1 - conf_target))^2
+//
+// Arguments:
+//   current_shots - shots already taken
+//   current_conf  - current conf_level
+//   target_conf   - desired conf_level
+//
+// Returns: estimated additional shots needed (0 if already sufficient)
+fn shots_needed(current_shots: i64, current_conf: f64, target_conf: f64) -> i64 {
+    if current_conf >= target_conf { return 0; }
+    if target_conf >= 1.0 { return 999999999; }
+
+    var c_factor: f64 = 2.0;
+    if current_shots > 0 {
+        c_factor = (1.0 - current_conf) * sqrt(current_shots as f64);
+    }
+
+    let target_deficit: f64 = 1.0 - target_conf;
+    if target_deficit < EPSILON() { return 999999999; }
+
+    let ratio: f64 = c_factor / target_deficit;
+    let n_target: f64 = ratio * ratio;
+
+    var additional: i64 = (n_target + 1.0) as i64 - current_shots;
+    if additional < 0 { additional = 0; }
+
+    // Minimum of MIN_VALID_SHOTS if we have none
+    if current_shots == 0 {
+        if additional < MIN_VALID_SHOTS() {
+            additional = MIN_VALID_SHOTS();
+        }
+    }
+
+    additional
+}
+
+// =============================================================================
+// Falsification
+// =============================================================================
+
+// Check whether a quantum result contradicts a classical prediction,
+// using the total variation distance.
+//
+// TVD = (1/2) * sum |p_i - q_i|
+// If TVD > threshold, the classical belief is falsified.
+//
+// Arguments:
+//   quantum_probs   - vec of f64-as-bits from quantum circuit
+//   classical_probs - vec of f64-as-bits from classical model
+//   threshold       - maximum acceptable TVD
+//
+// Returns: 1 if falsified (TVD > threshold), 0 otherwise
+fn quantum_falsification_check(quantum_probs: i64, classical_probs: i64, threshold: f64) -> i64 {
+    let q_len: i64 = vec_len(quantum_probs);
+    let c_len: i64 = vec_len(classical_probs);
+
+    // Mismatched dimensions is automatic falsification
+    if q_len != c_len { return 1; }
+
+    var tvd: f64 = 0.0;
+    var i: i64 = 0;
+    while i < q_len {
+        let p_q: f64 = bits_to_f64(vec_get(quantum_probs, i));
+        let p_c: f64 = bits_to_f64(vec_get(classical_probs, i));
+        tvd = tvd + my_abs(p_q - p_c);
+        i = i + 1;
+    }
+    tvd = tvd / 2.0;
+
+    if tvd > threshold { return 1; }
+    0
+}
+
+// =============================================================================
+// Accessors
+// =============================================================================
+
+fn quantum_belief_shots(belief: i64) -> i64 {
+    vec_get(belief, QB_N_SHOTS())
+}
+
+fn quantum_belief_std_error(belief: i64) -> f64 {
+    bits_to_f64(vec_get(belief, QB_STD_ERROR()))
+}
+
+fn quantum_belief_probs(belief: i64) -> i64 {
+    vec_get(belief, QB_PROBS_VEC())
+}
+
+// =============================================================================
+// Main (smoke test)
+// =============================================================================
+
+fn main() -> i64 {
+    // Create a belief with 1000 shots, probs [0.7, 0.3]
+    let probs = vec_new();
+    vec_push(probs, f64_to_bits(0.7));
+    vec_push(probs, f64_to_bits(0.3));
+
+    let qb = quantum_belief_new(1000, probs, string_from("test measurement"));
+    let conf: f64 = quantum_conf_level(qb);
+
+    // With 1000 shots and p=0.7, conf should be positive
+    if conf <= 0.0 { return 1; }
+
+    // measurement_sufficient at 0.5 should be true
+    if measurement_sufficient(qb, 0.5) != 1 { return 2; }
+
+    // shots_needed when already sufficient should be 0
+    if shots_needed(1000, 0.96, 0.95) != 0 { return 3; }
+
+    // shots_needed when not sufficient should be > 0
+    let needed: i64 = shots_needed(100, 0.5, 0.95);
+    if needed <= 0 { return 4; }
+
+    // Falsification: identical distributions
+    let q = vec_new();
+    vec_push(q, f64_to_bits(0.5));
+    vec_push(q, f64_to_bits(0.5));
+    let c = vec_new();
+    vec_push(c, f64_to_bits(0.5));
+    vec_push(c, f64_to_bits(0.5));
+    if quantum_falsification_check(q, c, 0.1) != 0 { return 5; }
+
+    // Falsification: very different distributions
+    let q2 = vec_new();
+    vec_push(q2, f64_to_bits(0.9));
+    vec_push(q2, f64_to_bits(0.1));
+    let c2 = vec_new();
+    vec_push(c2, f64_to_bits(0.1));
+    vec_push(c2, f64_to_bits(0.9));
+    if quantum_falsification_check(q2, c2, 0.1) != 1 { return 6; }
+
+    println(string_from("epistemic: all checks passed"));
+    0
+}

@@ -1,0 +1,323 @@
+// unit_compiler_optimizations.sx
+// Tests for v0.14.0: Compiler codegen performance optimizations
+// Verifies that optimization passes don't break correctness:
+//   - Function inlining hints (small functions, recursive functions)
+//   - Constant folding (compile-time arithmetic)
+//   - Dead code elimination (code after return)
+//   - Loop optimizations (for-loop correctness with nsw hints)
+// Expected: 0
+
+// --- Test 1: Small function inlining ---
+// These small functions (<=5 statements) get alwaysinline attribute.
+// Verify they still produce correct results when inlined.
+
+fn add_two(x: i64) -> i64 {
+    x + 2
+}
+
+fn multiply(a: i64, b: i64) -> i64 {
+    a * b
+}
+
+fn identity(x: i64) -> i64 {
+    x
+}
+
+fn test_small_function_inlining() -> i64 {
+    let r1: i64 = add_two(5);
+    if r1 != 7 {
+        println("FAIL: add_two(5) != 7");
+        return 1;
+    }
+
+    let r2: i64 = multiply(6, 7);
+    if r2 != 42 {
+        println("FAIL: multiply(6, 7) != 42");
+        return 1;
+    }
+
+    let r3: i64 = identity(99);
+    if r3 != 99 {
+        println("FAIL: identity(99) != 99");
+        return 1;
+    }
+
+    // Test chained inlined calls
+    let r4: i64 = add_two(multiply(3, 4));
+    if r4 != 14 {
+        println("FAIL: add_two(multiply(3, 4)) != 14");
+        return 1;
+    }
+
+    0
+}
+
+// --- Test 2: Recursive function (gets noinline) ---
+fn factorial(n: i64) -> i64 {
+    if n <= 1 {
+        return 1;
+    }
+    n * factorial(n - 1)
+}
+
+fn fibonacci(n: i64) -> i64 {
+    if n <= 0 {
+        return 0;
+    }
+    if n == 1 {
+        return 1;
+    }
+    fibonacci(n - 1) + fibonacci(n - 2)
+}
+
+fn test_recursive_functions() -> i64 {
+    let f5: i64 = factorial(5);
+    if f5 != 120 {
+        println("FAIL: factorial(5) != 120");
+        return 1;
+    }
+
+    let fib7: i64 = fibonacci(7);
+    if fib7 != 13 {
+        println("FAIL: fibonacci(7) != 13");
+        return 1;
+    }
+
+    0
+}
+
+// --- Test 3: Constant folding ---
+// These expressions use only literal constants and should be folded
+// at compile time to a single value (no LLVM IR operations emitted).
+
+fn test_constant_folding() -> i64 {
+    // Arithmetic
+    let sum: i64 = 3 + 4;
+    if sum != 7 {
+        println("FAIL: 3 + 4 != 7");
+        return 1;
+    }
+
+    let diff: i64 = 10 - 3;
+    if diff != 7 {
+        println("FAIL: 10 - 3 != 7");
+        return 1;
+    }
+
+    let prod: i64 = 6 * 7;
+    if prod != 42 {
+        println("FAIL: 6 * 7 != 42");
+        return 1;
+    }
+
+    let quot: i64 = 20 / 4;
+    if quot != 5 {
+        println("FAIL: 20 / 4 != 5");
+        return 1;
+    }
+
+    let rem: i64 = 17 % 5;
+    if rem != 2 {
+        println("FAIL: 17 % 5 != 2");
+        return 1;
+    }
+
+    // Comparisons
+    let eq: i64 = 5 == 5;
+    if eq != 1 {
+        println("FAIL: 5 == 5 != 1");
+        return 1;
+    }
+
+    let ne: i64 = 5 != 3;
+    if ne != 1 {
+        println("FAIL: 5 != 3 != 1");
+        return 1;
+    }
+
+    let lt: i64 = 3 < 5;
+    if lt != 1 {
+        println("FAIL: 3 < 5 != 1");
+        return 1;
+    }
+
+    let gt: i64 = 5 > 3;
+    if gt != 1 {
+        println("FAIL: 5 > 3 != 1");
+        return 1;
+    }
+
+    // Verify non-equal comparison
+    let eq2: i64 = 5 == 3;
+    if eq2 != 0 {
+        println("FAIL: 5 == 3 != 0");
+        return 1;
+    }
+
+    0
+}
+
+// --- Test 4: Early returns ---
+// Functions with early return should work correctly.
+// Dead code after return should be eliminated.
+
+fn early_return_pos(x: i64) -> i64 {
+    if x > 0 {
+        return 1;
+    }
+    if x < 0 {
+        return -1;
+    }
+    0
+}
+
+fn early_return_chain(x: i64) -> i64 {
+    if x == 1 { return 10; }
+    if x == 2 { return 20; }
+    if x == 3 { return 30; }
+    0
+}
+
+fn test_early_returns() -> i64 {
+    if early_return_pos(5) != 1 {
+        println("FAIL: early_return_pos(5) != 1");
+        return 1;
+    }
+    if early_return_pos(-3) != -1 {
+        println("FAIL: early_return_pos(-3) != -1");
+        return 1;
+    }
+    if early_return_pos(0) != 0 {
+        println("FAIL: early_return_pos(0) != 0");
+        return 1;
+    }
+
+    if early_return_chain(1) != 10 {
+        println("FAIL: early_return_chain(1) != 10");
+        return 1;
+    }
+    if early_return_chain(2) != 20 {
+        println("FAIL: early_return_chain(2) != 20");
+        return 1;
+    }
+    if early_return_chain(3) != 30 {
+        println("FAIL: early_return_chain(3) != 30");
+        return 1;
+    }
+    if early_return_chain(99) != 0 {
+        println("FAIL: early_return_chain(99) != 0");
+        return 1;
+    }
+
+    0
+}
+
+// --- Test 5: For-loop correctness ---
+// Verify for-loops still work correctly with nsw optimization hints.
+
+fn test_loop_correctness() -> i64 {
+    // Simple sum
+    let sum: i64 = 0;
+    for i in 0..10 {
+        sum = sum + i;
+    }
+    if sum != 45 {
+        println("FAIL: sum 0..10 != 45");
+        return 1;
+    }
+
+    // Nested loops
+    let count: i64 = 0;
+    for i in 0..5 {
+        for j in 0..3 {
+            count = count + 1;
+        }
+    }
+    if count != 15 {
+        println("FAIL: nested loop count != 15");
+        return 1;
+    }
+
+    // Loop with computed bounds
+    let limit: i64 = 4;
+    let product: i64 = 1;
+    for i in 1..limit {
+        product = product * i;
+    }
+    // 1 * 2 * 3 = 6
+    if product != 6 {
+        println("FAIL: product 1..4 != 6");
+        return 1;
+    }
+
+    0
+}
+
+// --- Test 6: While-loop correctness ---
+fn test_while_loop() -> i64 {
+    let x: i64 = 0;
+    let count: i64 = 0;
+    while x < 100 {
+        x = x + 10;
+        count = count + 1;
+    }
+    if count != 10 {
+        println("FAIL: while loop count != 10");
+        return 1;
+    }
+    if x != 100 {
+        println("FAIL: while loop x != 100");
+        return 1;
+    }
+
+    0
+}
+
+// --- Combined test runner ---
+fn main() -> i64 {
+    let failures: i64 = 0;
+
+    let r1: i64 = test_small_function_inlining();
+    if r1 != 0 {
+        println("FAIL: small function inlining test");
+        failures = failures + 1;
+    }
+
+    let r2: i64 = test_recursive_functions();
+    if r2 != 0 {
+        println("FAIL: recursive functions test");
+        failures = failures + 1;
+    }
+
+    let r3: i64 = test_constant_folding();
+    if r3 != 0 {
+        println("FAIL: constant folding test");
+        failures = failures + 1;
+    }
+
+    let r4: i64 = test_early_returns();
+    if r4 != 0 {
+        println("FAIL: early returns test");
+        failures = failures + 1;
+    }
+
+    let r5: i64 = test_loop_correctness();
+    if r5 != 0 {
+        println("FAIL: loop correctness test");
+        failures = failures + 1;
+    }
+
+    let r6: i64 = test_while_loop();
+    if r6 != 0 {
+        println("FAIL: while loop test");
+        failures = failures + 1;
+    }
+
+    if failures == 0 {
+        println("PASS: all compiler optimization tests passed (6/6)");
+        return 0;
+    }
+
+    println("FAIL: compiler optimization tests");
+    failures
+}

@@ -123,7 +123,6 @@
 
 ; Attributes should not affect indentation
 (attribute) @indent.auto
-(outer_attribute) @indent.auto
 
 ; =============================================================================
 ; Dedent Triggers

@@ -646,9 +646,12 @@ fn cg_lookup_assoc_type(cg: i64, impl_type: i64, assoc_name: i64) -> i64 {
     0
 }
 
-// Resolve a type: handles Self, Self::Name, and type aliases
+// Resolve a type: handles Self, Self::Name, generic params containing Self::, and type aliases
 fn cg_resolve_type(cg: i64, type_name: i64) -> i64 {
-    // Check for Self::Name pattern
+    if type_name == 0 {
+        return 0;
+    }
+    // Check for Self::Name pattern (e.g., Self::Item)
     if string_starts_with(type_name, string_from("Self::")) {
         let assoc_name: i64 = string_slice(type_name, 6, string_len(type_name));
         let impl_type: i64 = cg_current_impl_type(cg);
@@ -666,6 +669,55 @@ fn cg_resolve_type(cg: i64, type_name: i64) -> i64 {
         let impl_type: i64 = cg_current_impl_type(cg);
         if impl_type != 0 {
             return impl_type;
+        }
+    }
+    // Check for &Self (immutable reference to Self)
+    if string_eq(type_name, string_from("&Self")) {
+        let impl_type: i64 = cg_current_impl_type(cg);
+        if impl_type != 0 {
+            return impl_type;
+        }
+    }
+    // Check for &mut Self (mutable reference to Self)
+    if string_eq(type_name, string_from("&mut Self")) {
+        let impl_type: i64 = cg_current_impl_type(cg);
+        if impl_type != 0 {
+            return impl_type;
+        }
+    }
+    // Check for Self:: inside generic type parameters (e.g., Option<Self::Item>)
+    let self_pos: i64 = string_find(type_name, string_from("Self::"), 0);
+    if self_pos >= 0 {
+        let impl_type: i64 = cg_current_impl_type(cg);
+        if impl_type != 0 {
+            // Find the end of the associated type name (next '>' or ',' or end of string)
+            let after_self: i64 = self_pos + 6;
+            let end_pos: i64 = string_len(type_name);
+            let gt_pos: i64 = string_find(type_name, string_from(">"), after_self);
+            let comma_pos: i64 = string_find(type_name, string_from(","), after_self);
+            if gt_pos >= 0 {
+                if comma_pos >= 0 {
+                    if comma_pos < gt_pos {
+                        end_pos = comma_pos;
+                    } else {
+                        end_pos = gt_pos;
+                    }
+                } else {
+                    end_pos = gt_pos;
+                }
+            } else {
+                if comma_pos >= 0 {
+                    end_pos = comma_pos;
+                }
+            }
+            let assoc_name: i64 = string_slice(type_name, after_self, end_pos);
+            let resolved: i64 = cg_lookup_assoc_type(cg, impl_type, assoc_name);
+            if resolved != 0 {
+                // Replace Self::AssocName with the concrete type
+                let prefix: i64 = string_slice(type_name, 0, self_pos);
+                let suffix: i64 = string_slice(type_name, end_pos, string_len(type_name));
+                return string_concat(prefix, string_concat(resolved, suffix));
+            }
         }
     }
     // Check for type alias
@@ -1142,6 +1194,184 @@ fn cg_is_closure_var(cg: i64, name: i64) -> i64 {
             return 1;
         }
         i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Optimization Helpers
+// Phase: v0.14.0 Performance Optimizations
+// =============================================================================
+
+// Count the number of statements in a function body block
+// Used for inlining heuristics: small functions (<=5 stmts) get alwaysinline
+fn count_block_stmts(body: i64) -> i64 {
+    if body == 0 {
+        return 0;
+    }
+    let stmts: i64 = load_ptr(body, 1);
+    if stmts == 0 {
+        return 0;
+    }
+    vec_len(stmts)
+}
+
+// Check if a function body contains a call to itself (simple recursion detection)
+// Only checks direct calls to the given function name in the body statements
+fn fn_body_calls_self(body: i64, fn_name: i64) -> i64 {
+    if body == 0 {
+        return 0;
+    }
+    let stmts: i64 = load_ptr(body, 1);
+    if stmts == 0 {
+        return 0;
+    }
+    let n: i64 = vec_len(stmts);
+    let i: i64 = 0;
+    while i < n {
+        let stmt: i64 = vec_get(stmts, i);
+        if stmt != 0 {
+            if expr_calls_name(stmt, fn_name) != 0 {
+                return 1;
+            }
+        }
+        i = i + 1;
+    }
+    // Also check the result expression
+    let result: i64 = load_ptr(body, 2);
+    if result != 0 {
+        if expr_calls_name(result, fn_name) != 0 {
+            return 1;
+        }
+    }
+    0
+}
+
+// Check if an expression or statement subtree contains a call to the given function name
+fn expr_calls_name(node: i64, fn_name: i64) -> i64 {
+    if node == 0 {
+        return 0;
+    }
+    let tag: i64 = load_i64(node, 0);
+
+    // Check return statements (tag=2 for STMT_RETURN)
+    if tag == STMT_RETURN() {
+        let expr: i64 = load_ptr(node, 1);
+        return expr_calls_name(expr, fn_name);
+    }
+
+    // Check expression statements (tag=1 for STMT_EXPR)
+    if tag == STMT_EXPR() {
+        let expr: i64 = load_ptr(node, 1);
+        return expr_calls_name(expr, fn_name);
+    }
+
+    // Check let statements (tag=0 for STMT_LET) - check init expression
+    if tag == STMT_LET() {
+        let init: i64 = load_ptr(node, 3);
+        return expr_calls_name(init, fn_name);
+    }
+
+    // Call expression - check if it calls fn_name
+    if tag == EXPR_CALL() {
+        let call_fn: i64 = load_ptr(node, 1);
+        if call_fn != 0 {
+            let call_tag: i64 = load_i64(call_fn, 0);
+            if call_tag == EXPR_IDENT() {
+                let call_name: i64 = load_ptr(call_fn, 1);
+                if string_eq(call_name, fn_name) {
+                    return 1;
+                }
+            }
+        }
+        // Also check arguments
+        let args: i64 = load_ptr(node, 2);
+        if args != 0 {
+            let na: i64 = vec_len(args);
+            let j: i64 = 0;
+            while j < na {
+                if expr_calls_name(vec_get(args, j), fn_name) != 0 {
+                    return 1;
+                }
+                j = j + 1;
+            }
+        }
+        return 0;
+    }
+
+    // Binary expression - check both sides
+    if tag == EXPR_BINARY() {
+        let left: i64 = load_ptr(node, 2);
+        let right: i64 = load_ptr(node, 3);
+        if expr_calls_name(left, fn_name) != 0 {
+            return 1;
+        }
+        return expr_calls_name(right, fn_name);
+    }
+
+    // If expression - check condition and branches
+    if tag == EXPR_IF() {
+        let cond: i64 = load_ptr(node, 1);
+        let then_b: i64 = load_ptr(node, 2);
+        let else_b: i64 = load_ptr(node, 3);
+        if expr_calls_name(cond, fn_name) != 0 { return 1; }
+        if block_calls_name(then_b, fn_name) != 0 { return 1; }
+        if block_calls_name(else_b, fn_name) != 0 { return 1; }
+        return 0;
+    }
+
+    0
+}
+
+// Check if a block contains a call to the given function name
+fn block_calls_name(block: i64, fn_name: i64) -> i64 {
+    if block == 0 {
+        return 0;
+    }
+    let stmts: i64 = load_ptr(block, 1);
+    if stmts == 0 {
+        return 0;
+    }
+    let n: i64 = vec_len(stmts);
+    let i: i64 = 0;
+    while i < n {
+        if expr_calls_name(vec_get(stmts, i), fn_name) != 0 {
+            return 1;
+        }
+        i = i + 1;
+    }
+    let result: i64 = load_ptr(block, 2);
+    if result != 0 {
+        return expr_calls_name(result, fn_name);
+    }
+    0
+}
+
+// Check if both operands of a binary expression are integer constants
+// Returns 1 if both are EXPR_INT
+fn both_operands_const_int(left: i64, right: i64) -> i64 {
+    if left == 0 { return 0; }
+    if right == 0 { return 0; }
+    let lt: i64 = load_i64(left, 0);
+    let rt: i64 = load_i64(right, 0);
+    if lt == EXPR_INT() {
+        if rt == EXPR_INT() {
+            return 1;
+        }
+    }
+    0
+}
+
+// Check if both operands are boolean constants
+fn both_operands_const_bool(left: i64, right: i64) -> i64 {
+    if left == 0 { return 0; }
+    if right == 0 { return 0; }
+    let lt: i64 = load_i64(left, 0);
+    let rt: i64 = load_i64(right, 0);
+    if lt == EXPR_BOOL() {
+        if rt == EXPR_BOOL() {
+            return 1;
+        }
     }
     0
 }
@@ -2441,7 +2671,10 @@ fn struct_has_f64_fields(cg: i64, struct_name: i64) -> bool {
     return false;
 }
 
-// Look up struct field index (returns byte offset = index * 8)
+// Look up struct field index by struct name and field name.
+// Returns the field index (0-based), or -1 if not found.
+// NOTE: Previously returned 0 on failure, which was ambiguous with index-0 fields.
+// This was the root cause of the "struct field lookup workaround" for self-hosting.
 fn lookup_struct_field(cg: i64, struct_name: i64, field_name: i64) -> i64 {
     let structs: i64 = cg_structs(cg);
     let n: i64 = vec_len(structs);
@@ -2458,10 +2691,43 @@ fn lookup_struct_field(cg: i64, struct_name: i64, field_name: i64) -> i64 {
                 let field: i64 = vec_get(fields, j);
                 let fname: i64 = load_ptr(field, 0);
                 if string_eq(fname, field_name) {
-                    return j;  // Return field index
+                    return j;  // Return field index (0-based)
                 }
                 j = j + 1;
             }
+            // Struct found but field not in it
+            return 0 - 1;
+        }
+        i = i + 1;
+    }
+    0 - 1  // Struct not found
+}
+
+// Look up the type of a struct field by struct name and field name.
+// Returns the type string, or 0 if not found.
+// Essential for resolving nested field access (e.g., a.b.c requires knowing
+// the type of a.b to look up field c).
+fn lookup_struct_field_type(cg: i64, struct_name: i64, field_name: i64) -> i64 {
+    let structs: i64 = cg_structs(cg);
+    let n: i64 = vec_len(structs);
+    let i: i64 = 0;
+
+    while i < n {
+        let entry: i64 = vec_get(structs, i);
+        let name: i64 = load_ptr(entry, 0);
+        if string_eq(name, struct_name) {
+            let fields: i64 = load_ptr(entry, 1);
+            let m: i64 = vec_len(fields);
+            let j: i64 = 0;
+            while j < m {
+                let field: i64 = vec_get(fields, j);
+                let fname: i64 = load_ptr(field, 0);
+                if string_eq(fname, field_name) {
+                    return load_ptr(field, 1);  // Return field type
+                }
+                j = j + 1;
+            }
+            return 0;
         }
         i = i + 1;
     }
@@ -2522,6 +2788,38 @@ fn lookup_field_in_all_structs(cg: i64, field_name: i64) -> i64 {
             j = j + 1;
         }
         i = i + 1;
+    }
+    0 - 1  // Not found in any struct
+}
+
+// Resolve the type of a field access expression (EXPR_FIELD node).
+// Given an expression like `a.b`, determines that a is of type Foo and
+// field b has type Bar, returning "Bar". This enables nested field access
+// like `a.b.c` where we need to know b's type to find field c.
+fn resolve_field_expr_type(cg: i64, field_expr: i64) -> i64 {
+    let obj: i64 = load_ptr(field_expr, 1);
+    let fname: i64 = load_ptr(field_expr, 2);
+    let obj_tag: i64 = load_i64(obj, 0);
+
+    // Base case: object is an identifier - look up its type directly
+    let obj_type: i64 = 0;
+    if obj_tag == EXPR_IDENT() {
+        let obj_name: i64 = load_ptr(obj, 1);
+        obj_type = lookup_var_type(cg, obj_name);
+        if obj_type == 0 {
+            if string_eq(obj_name, string_from("self")) {
+                obj_type = cg_current_impl_type(cg);
+            }
+        }
+    }
+    // Recursive case: object is itself a field access (a.b.c.d...)
+    if obj_tag == EXPR_FIELD() {
+        obj_type = resolve_field_expr_type(cg, obj);
+    }
+
+    // Now look up the field's type in the struct definition
+    if obj_type != 0 {
+        return lookup_struct_field_type(cg, obj_type, fname);
     }
     0
 }
@@ -3781,6 +4079,55 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         let left: i64 = load_ptr(expr, 2);
         let right: i64 = load_ptr(expr, 3);
 
+        // ===== Constant Folding Optimization (v0.14.0) =====
+        // When both operands are known integer constants, compute the result
+        // at compile time instead of emitting LLVM IR instructions.
+        if both_operands_const_int(left, right) != 0 {
+            let lv: i64 = load_i64(left, 1);
+            let rv: i64 = load_i64(right, 1);
+            let folded: i64 = 0;
+            let can_fold: i64 = 1;
+            if op == OP_ADD() { folded = lv + rv; }
+            else { if op == OP_SUB() { folded = lv - rv; }
+            else { if op == OP_MUL() { folded = lv * rv; }
+            else { if op == OP_DIV() {
+                if rv != 0 { folded = lv / rv; }
+                else { can_fold = 0; }
+            }
+            else { if op == OP_MOD() {
+                if rv != 0 { folded = lv % rv; }
+                else { can_fold = 0; }
+            }
+            else { if op == OP_EQ() { if lv == rv { folded = 1; } else { folded = 0; } }
+            else { if op == OP_NE() { if lv != rv { folded = 1; } else { folded = 0; } }
+            else { if op == OP_LT() { if lv < rv { folded = 1; } else { folded = 0; } }
+            else { if op == OP_GT() { if lv > rv { folded = 1; } else { folded = 0; } }
+            else { if op == OP_LE() { if lv <= rv { folded = 1; } else { folded = 0; } }
+            else { if op == OP_GE() { if lv >= rv { folded = 1; } else { folded = 0; } }
+            else { can_fold = 0; }
+            } } } } } } } } } }
+            if can_fold != 0 {
+                return int_to_string(folded);
+            }
+        }
+
+        // Constant folding for boolean operands (&&, ||)
+        if both_operands_const_bool(left, right) != 0 {
+            let lb: i64 = load_i64(left, 1);
+            let rb: i64 = load_i64(right, 1);
+            if op == OP_AND() {
+                if lb != 0 {
+                    if rb != 0 { return string_from("1"); }
+                }
+                return string_from("0");
+            }
+            if op == OP_OR() {
+                if lb != 0 { return string_from("1"); }
+                if rb != 0 { return string_from("1"); }
+                return string_from("0");
+            }
+        }
+
         // Short-circuit evaluation for && and ||
         // Use simple approach: evaluate both and use logical and/or
         // This is simpler than proper phi-based short-circuit
@@ -4249,8 +4596,9 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             // Generate field value
             let field_val: i64 = gen_expr(cg, field_expr);
 
-            // Look up field offset
+            // Look up field offset (-1 means not found; clamp to 0 as safety fallback)
             let field_idx: i64 = lookup_struct_field(cg, effective_name, field_name);
+            if field_idx < 0 { field_idx = 0; }
             let offset: i64 = field_idx * 8;
 
             // Store field using getelementptr + store
@@ -4310,40 +4658,56 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
                     }
                 }
             }
+            // Nested field access: if object is itself a field access (a.b.c),
+            // resolve the intermediate type so we can look up the outer field.
+            if obj_tag == EXPR_FIELD() {
+                if struct_type == 0 {
+                    struct_type = resolve_field_expr_type(cg, object);
+                }
+            }
             if struct_type != 0 {
                 field_idx = lookup_struct_field(cg, struct_type, field_name);
-                // Fallback: if field_idx is 0 but field name is not the first field,
-                // try searching all structs (workaround for self-hosted string comparison issue)
-                let is_self_access: bool = false;
-                if obj_tag == EXPR_IDENT() {
-                    let check_name: i64 = load_ptr(object, 1);
-                    if string_eq(check_name, string_from("self")) {
-                        is_self_access = true;
-                    }
-                }
-                if is_self_access {
-                    // Use stored impl fields for direct lookup (avoids string comparison bug)
-                    let impl_fields: i64 = cg_current_impl_fields(cg);
-                    if impl_fields != 0 {
-                        let fi: i64 = 0;
-                        while fi < vec_len(impl_fields) {
-                            let fld: i64 = vec_get(impl_fields, fi);
-                            let fn2: i64 = load_ptr(fld, 0);
-                            if string_eq(fn2, field_name) {
-                                field_idx = fi;
-                            }
-                            fi = fi + 1;
+                // lookup_struct_field now returns -1 on failure (not 0),
+                // so index-0 fields are correctly distinguished from "not found".
+                if field_idx < 0 {
+                    // Field not found in resolved struct; try self access via cached impl fields.
+                    let is_self_access: bool = false;
+                    if obj_tag == EXPR_IDENT() {
+                        let check_name: i64 = load_ptr(object, 1);
+                        if string_eq(check_name, string_from("self")) {
+                            is_self_access = true;
                         }
                     }
-                    if field_idx == 0 {
+                    if is_self_access {
+                        let impl_fields: i64 = cg_current_impl_fields(cg);
+                        if impl_fields != 0 {
+                            let fi: i64 = 0;
+                            while fi < vec_len(impl_fields) {
+                                let fld: i64 = vec_get(impl_fields, fi);
+                                let fn2: i64 = load_ptr(fld, 0);
+                                if string_eq(fn2, field_name) {
+                                    field_idx = fi;
+                                }
+                                fi = fi + 1;
+                            }
+                        }
+                    }
+                    // Final fallback: search all structs
+                    if field_idx < 0 {
                         let fallback_idx: i64 = lookup_field_in_all_structs(cg, field_name);
-                        if fallback_idx > 0 {
+                        if fallback_idx >= 0 {
                             field_idx = fallback_idx;
+                        } else {
+                            field_idx = 0;
                         }
                     }
                 }
             } else {
-                field_idx = lookup_field_in_all_structs(cg, field_name);
+                // No type info; search all structs as last resort
+                let any_idx: i64 = lookup_field_in_all_structs(cg, field_name);
+                if any_idx >= 0 {
+                    field_idx = any_idx;
+                }
             }
         }
         let offset: i64 = field_idx * 8;
@@ -4841,6 +5205,15 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         }
 
         // Static dispatch - build mangled function name: TypeName_methodName
+        // Strip reference prefixes: &mut Type -> Type, &Type -> Type
+        if type_name != 0 {
+            if string_starts_with(type_name, string_from("&mut ")) {
+                type_name = string_slice(type_name, 5, string_len(type_name));
+            }
+            if string_starts_with(type_name, string_from("&")) {
+                type_name = string_slice(type_name, 1, string_len(type_name));
+            }
+        }
         let callee_name: i64 = method_name;
         if type_name != 0 {
             callee_name = str_mangle(type_name, method_name);
@@ -5925,10 +6298,14 @@ fn gen_for(cg: i64, expr: i64) -> i64 {
     emit(cg, " = load i64, ptr %local.");
     emit_line(cg, unique_name);
 
+    // ===== Loop Optimization Hints (v0.14.0) =====
+    // Use 'add nsw' (no signed wrap) for the loop increment.
+    // This tells LLVM the increment won't overflow, enabling better
+    // loop analysis, vectorization, and strength reduction.
     let inc_t: i64 = cg_next_temp(cg);
     emit(cg, "  %t");
     emit(cg, int_to_string(inc_t));
-    emit(cg, " = add i64 %t");
+    emit(cg, " = add nsw i64 %t");
     emit(cg, int_to_string(load_t));
     emit_line(cg, ", 1");
 
@@ -6961,13 +7338,22 @@ fn gen_block(cg: i64, block: i64) -> i64 {
     let n: i64 = vec_len(stmts);
     let i: i64 = 0;
     while i < n {
+        // Dead code elimination: skip statements after a return/terminator
+        if cg_is_terminated(cg) {
+            // Block is already terminated (e.g., by a return statement).
+            // Skip remaining statements - they are unreachable dead code.
+            break;
+        }
         let stmt: i64 = vec_get(stmts, i);
         gen_stmt(cg, stmt);
         i = i + 1;
     }
 
-    if result != 0 {
-        return gen_expr(cg, result);
+    // Only generate tail expression if block is not already terminated
+    if cg_is_terminated(cg) == false {
+        if result != 0 {
+            return gen_expr(cg, result);
+        }
     }
 
     string_from("0")
@@ -7003,8 +7389,10 @@ fn gen_stmt(cg: i64, stmt: i64) -> i64 {
         // (variable shadowing). We must evaluate the init FIRST, then register.
 
         // Record type if present (for method call resolution)
+        // Resolve associated types like Self::Item to concrete types
         if ty != 0 {
-            add_var_type(cg, name, ty);
+            let resolved_ty: i64 = cg_resolve_type(cg, ty);
+            add_var_type(cg, name, resolved_ty);
         }
 
         // Initialize if there's an init expression
@@ -7487,6 +7875,13 @@ fn gen_fn(cg: i64, fn_def: i64) -> i64 {
     }
     emit(cg, ")");
 
+    // ===== Memory Optimization Hints (v0.14.0) =====
+    // Add nounwind since Simplex doesn't use C++ exceptions.
+    // Note: inlining hints (alwaysinline/noinline) removed - LLVM -O2 handles
+    // inlining decisions better than compile-time heuristics, and the AST
+    // walking code for recursion detection caused segfaults on complex bodies.
+    emit(cg, " nounwind");
+
     // Add !dbg metadata reference if debug info is enabled
     if cg_debug_enabled(cg) != 0 {
         let sp_id: i64 = cg_lookup_subprogram(cg, name);
@@ -7546,7 +7941,9 @@ fn gen_fn(cg: i64, fn_def: i64) -> i64 {
         // Track param type for f64 detection and method dispatch
         let pty: i64 = load_ptr(param, 1);
         if pty != 0 {
-            add_var_type(cg, pname, pty);
+            // Resolve Self, &Self, &mut Self, and associated types (Self::Item)
+            let resolved_pty: i64 = cg_resolve_type(cg, pty);
+            add_var_type(cg, pname, resolved_pty);
         }
         i = i + 1;
     }
@@ -7715,7 +8112,11 @@ fn gen_fn_instantiation(cg: i64, fn_def: i64, mangled_name: i64, type_args: i64)
         emit(cg, pname);
         i = i + 1;
     }
-    emit_line(cg, ") {");
+    emit(cg, ")");
+
+    emit(cg, " nounwind");
+
+    emit_line(cg, " {");
     emit_line(cg, "entry:");
 
     // Pre-allocate local variables
@@ -10585,7 +10986,7 @@ fn gen_debug_info_footer(cg: i64) -> i64 {
 
     // !0 = DICompileUnit
     emit(cg, "!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !4, producer: \"sxc ");
-    emit(cg, "0.13.0");
+    emit(cg, "0.14.0");
     emit_line(cg, "\", isOptimized: false, runtimeVersion: 0, emissionKind: FullDebug, enums: !5)");
 
     // !1 = Module flag for DWARF Version
@@ -10595,7 +10996,7 @@ fn gen_debug_info_footer(cg: i64) -> i64 {
     emit_line(cg, "!2 = !{i32 2, !\"Debug Info Version\", i32 3}");
 
     // !3 = llvm.ident
-    emit_line(cg, "!3 = !{!\"Simplex Compiler 0.13.0\"}");
+    emit_line(cg, "!3 = !{!\"Simplex Compiler 0.14.0\"}");
 
     // !4 = DIFile
     emit(cg, "!4 = !DIFile(filename: \"");

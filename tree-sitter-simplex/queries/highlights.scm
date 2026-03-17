@@ -7,7 +7,7 @@
 
 (line_comment) @comment
 (block_comment) @comment
-(doc_comment) @comment.documentation
+; doc_comment is handled by line_comment since /// is a subset of //
 
 ; =============================================================================
 ; Keywords
@@ -31,7 +31,6 @@
   "break"
   "continue"
   "return"
-  "yield"
 ] @keyword.control
 
 ; Declaration keywords
@@ -56,7 +55,6 @@
 [
   "mod"
   "use"
-  "pub"
   "extern"
   "as"
   "in"
@@ -83,11 +81,14 @@
   "where"
   "dyn"
   "move"
-  "ref"
-  "unsafe"
-  "Self"
   "self"
 ] @keyword
+
+; Self type
+(self_type) @type.builtin
+
+; Visibility
+(visibility) @keyword
 
 ; =============================================================================
 ; Operators
@@ -152,7 +153,6 @@
   ".."
   "..="
   "?"
-  "@"
 ] @operator
 
 ; =============================================================================
@@ -255,17 +255,15 @@
 
 ; Variable bindings
 (let_statement
-  pattern: (identifier_pattern
-    (identifier) @variable))
+  pattern: (pattern
+    (identifier_pattern
+      (identifier) @variable)))
 
 ; For loop pattern
 (for_expression
-  pattern: (identifier_pattern
-    (identifier) @variable))
-
-; Match arm patterns
-(identifier_pattern
-  (identifier) @variable)
+  pattern: (pattern
+    (identifier_pattern
+      (identifier) @variable)))
 
 ; Field names in struct definitions
 (struct_field
@@ -344,7 +342,7 @@
 
 (use_declaration
   (use_tree
-    (path) @module))
+    (use_path) @module))
 
 ; =============================================================================
 ; Attributes
@@ -354,9 +352,6 @@
   (attribute_content
     (identifier) @attribute))
 
-(outer_attribute
-  (attribute_content
-    (identifier) @attribute))
 
 ; =============================================================================
 ; Type Aliases and Constants

@@ -1,0 +1,126 @@
+// Simplex Quantum Backend -- Trait Definitions (sxc-compatible)
+//
+// Since sxc does not support traits, enums with methods, pub, or self_handle: i64,
+// the "QuantumBackend" interface is documented here as a naming convention.
+//
+// Every backend module (simulator, braket, ibm, azure) implements these
+// functions with a prefix:
+//
+//   <backend>_new(...)         -> returns a handle (i64)
+//   <backend>_name(h)          -> i64 (string handle)
+//   <backend>_max_qubits(h)    -> i64
+//   <backend>_submit(h, circuit, shots) -> i64 (job id)
+//   <backend>_poll(h, job_id)  -> i64 (status code)
+//   <backend>_result(h, job_id) -> i64 (result handle)
+//
+// Status codes:
+//   0 = Queued
+//   1 = Running
+//   2 = Completed
+//   3 = Failed
+//   4 = Cancelled
+//
+// A MeasurementResult is a pair of parallel vecs:
+//   outcomes: vec of bitstring (i64 string handles)
+//   counts:   vec of i64 counts
+//
+// A JobHandle is just an i64 job ID string.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// -- Status code constants --
+const STATUS_QUEUED: i64 = 0;
+const STATUS_RUNNING: i64 = 1;
+const STATUS_COMPLETED: i64 = 2;
+const STATUS_FAILED: i64 = 3;
+const STATUS_CANCELLED: i64 = 4;
+
+// -- MeasurementResult as a struct --
+// outcomes (vec of string handles) and counts (vec of i64) stored as i64 handles
+struct MeasResult {
+    outcomes: i64,
+    counts: i64,
+    total_shots: i64
+}
+
+impl MeasResult {
+    fn new() -> MeasResult {
+        MeasResult { outcomes: vec_new(), counts: vec_new(), total_shots: 0 }
+    }
+}
+
+// Add or increment a measurement outcome in a MeasResult
+fn mresult_add(mr: MeasResult, bitstring: i64, count: i64) -> i64 {
+    let len: i64 = vec_len(mr.outcomes);
+    var i: i64 = 0;
+    while i < len {
+        let existing: i64 = vec_get(mr.outcomes, i);
+        if existing == bitstring {
+            let old_count: i64 = vec_get(mr.counts, i);
+            vec_set(mr.counts, i, old_count + count);
+            // cannot mutate mr.total_shots through struct, so caller tracks
+            return 1;
+        }
+        i = i + 1;
+    }
+    vec_push(mr.outcomes, bitstring);
+    vec_push(mr.counts, count);
+    0
+}
+
+// Get count for a specific bitstring in a MeasResult
+fn mresult_get_count(mr: MeasResult, bitstring: i64) -> i64 {
+    let len: i64 = vec_len(mr.outcomes);
+    var i: i64 = 0;
+    while i < len {
+        let existing: i64 = vec_get(mr.outcomes, i);
+        if existing == bitstring {
+            return vec_get(mr.counts, i);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Return the number of distinct outcomes
+fn mresult_num_outcomes(mr: MeasResult) -> i64 {
+    vec_len(mr.outcomes)
+}
+
+// Status code to string
+fn status_to_string(code: i64) -> i64 {
+    if code == 0 { return string_from("queued"); }
+    if code == 1 { return string_from("running"); }
+    if code == 2 { return string_from("completed"); }
+    if code == 3 { return string_from("failed"); }
+    if code == 4 { return string_from("cancelled"); }
+    string_from("unknown")
+}
+
+fn main() -> i64 {
+    println(string_from("=== Quantum Backend Trait Definitions ==="));
+    let mr: MeasResult = MeasResult::new();
+    let bs: i64 = string_from("00");
+    mresult_add(mr, bs, 5);
+    let c: i64 = mresult_get_count(mr, bs);
+    if c == 5 {
+        println(string_from("  PASS: MeasResult add/get"));
+    } else {
+        println(string_from("  FAIL: MeasResult add/get"));
+        return 1;
+    }
+    let n: i64 = mresult_num_outcomes(mr);
+    if n == 1 {
+        println(string_from("  PASS: MeasResult num_outcomes"));
+    } else {
+        println(string_from("  FAIL: MeasResult num_outcomes"));
+        return 1;
+    }
+    let s0: i64 = status_to_string(STATUS_QUEUED());
+    let s2: i64 = status_to_string(STATUS_COMPLETED());
+    println(string_concat(string_from("  Status 0 = "), s0));
+    println(string_concat(string_from("  Status 2 = "), s2));
+    println(string_from("ALL PASSED"));
+    0
+}

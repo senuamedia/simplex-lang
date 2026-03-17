@@ -1,0 +1,175 @@
+// Ecosystem Integration - Specification Tests
+// Tests dual numbers, quantum belief, measurement sufficiency, gradient bridge.
+// Rewritten for sxc compiler compatibility.
+
+const EPSILON: f64 = 0.01;
+const PI: f64 = 3.14159265358979323846;
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+// Dual number for automatic differentiation
+struct Dual {
+    value: f64,
+    deriv: f64
+}
+
+fn dual_new(v: f64, d: f64) -> Dual {
+    Dual { value: v, deriv: d }
+}
+
+fn dual_var(v: f64) -> Dual {
+    Dual { value: v, deriv: 1.0 }
+}
+
+fn dual_add(a: Dual, b: Dual) -> Dual {
+    Dual { value: a.value + b.value, deriv: a.deriv + b.deriv }
+}
+
+fn dual_mul(a: Dual, b: Dual) -> Dual {
+    Dual { value: a.value * b.value, deriv: a.value * b.deriv + a.deriv * b.value }
+}
+
+fn dual_scale(a: Dual, s: f64) -> Dual {
+    Dual { value: a.value * s, deriv: a.deriv * s }
+}
+
+fn dual_sin(a: Dual) -> Dual {
+    Dual { value: sin(a.value), deriv: a.deriv * cos(a.value) }
+}
+
+// Quantum belief
+struct QuantumBelief {
+    conf_level: f64,
+    entropy: f64,
+    shot_count: i64
+}
+
+fn belief_is_high_conf(b: QuantumBelief) -> i64 {
+    if b.conf_level > 0.9 { return 1; }
+    0
+}
+
+fn belief_is_low_entropy(b: QuantumBelief) -> i64 {
+    if b.entropy < 0.5 { return 1; }
+    0
+}
+
+fn belief_quality(b: QuantumBelief) -> f64 {
+    b.conf_level * (1.0 / (1.0 + b.entropy))
+}
+
+fn belief_is_significant(b: QuantumBelief) -> i64 {
+    if b.shot_count >= 100 {
+        if b.conf_level > 0.5 { return 1; }
+    }
+    0
+}
+
+// Measurement sufficiency
+fn min_shots(target_precision: f64) -> i64 {
+    let n: f64 = 1.0 / (4.0 * target_precision * target_precision);
+    (n + 0.5) as i64
+}
+
+fn achieved_precision(shots: i64) -> f64 {
+    1.0 / (2.0 * sqrt(shots as f64))
+}
+
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+fn test_dual_arithmetic() -> i64 {
+    println(string_from("--- Dual Arithmetic ---"));
+    var f: i64 = 0;
+    let d1: Dual = dual_new(0.5, 0.1);
+    let d2: Dual = dual_new(0.3, -0.2);
+    let sum: Dual = dual_add(d1, d2);
+    f = f + check(string_from("sum value=0.8"), approx_eq(sum.value, 0.8, EPSILON()));
+    f = f + check(string_from("sum deriv=-0.1"), approx_eq(sum.deriv, -0.1, EPSILON()));
+    let prod: Dual = dual_mul(d1, d2);
+    f = f + check(string_from("prod value=0.15"), approx_eq(prod.value, 0.15, EPSILON()));
+    f = f + check(string_from("prod deriv=-0.07"), approx_eq(prod.deriv, -0.07, EPSILON()));
+    let scaled: Dual = dual_scale(d1, 2.0);
+    f = f + check(string_from("scaled value=1.0"), approx_eq(scaled.value, 1.0, EPSILON()));
+    f = f + check(string_from("scaled deriv=0.2"), approx_eq(scaled.deriv, 0.2, EPSILON()));
+    let x: Dual = dual_var(PI() / 4.0);
+    let sinx: Dual = dual_sin(x);
+    f = f + check(string_from("sin value"), approx_eq(sinx.value, sin(PI() / 4.0), EPSILON()));
+    f = f + check(string_from("sin deriv=cos"), approx_eq(sinx.deriv, cos(PI() / 4.0), EPSILON()));
+    f
+}
+
+fn test_quantum_belief() -> i64 {
+    println(string_from("--- Quantum Belief ---"));
+    var f: i64 = 0;
+    let b1: QuantumBelief = QuantumBelief { conf_level: 0.95, entropy: 0.2, shot_count: 10000 };
+    f = f + check(string_from("high conf_level"), belief_is_high_conf(b1));
+    f = f + check(string_from("low entropy"), belief_is_low_entropy(b1));
+    f = f + check(string_from("significant"), belief_is_significant(b1));
+    let q1: f64 = belief_quality(b1);
+    f = f + check(string_from("high quality>0.7"), if q1 > 0.7 { 1 } else { 0 });
+    let b2: QuantumBelief = QuantumBelief { conf_level: 0.3, entropy: 1.5, shot_count: 50 };
+    f = f + check(string_from("not high conf"), if belief_is_high_conf(b2) == 0 { 1 } else { 0 });
+    f = f + check(string_from("not low entropy"), if belief_is_low_entropy(b2) == 0 { 1 } else { 0 });
+    f = f + check(string_from("not significant"), if belief_is_significant(b2) == 0 { 1 } else { 0 });
+    let q2: f64 = belief_quality(b2);
+    f = f + check(string_from("low < high quality"), if q2 < q1 { 1 } else { 0 });
+    f
+}
+
+fn test_measurement_sufficiency() -> i64 {
+    println(string_from("--- Measurement Sufficiency ---"));
+    var f: i64 = 0;
+    f = f + check(string_from("1% needs 2500"), if min_shots(0.01) == 2500 { 1 } else { 0 });
+    f = f + check(string_from("5% needs 100"), if min_shots(0.05) == 100 { 1 } else { 0 });
+    f = f + check(string_from("10% needs 25"), if min_shots(0.1) == 25 { 1 } else { 0 });
+    let p100: f64 = achieved_precision(100);
+    f = f + check(string_from("100 shots ~5%"), approx_eq(p100, 0.05, 0.01));
+    let p10000: f64 = achieved_precision(10000);
+    f = f + check(string_from("10000 shots ~0.5%"), approx_eq(p10000, 0.005, 0.001));
+    f = f + check(string_from("more shots better"), if p10000 < p100 { 1 } else { 0 });
+    f
+}
+
+fn test_gradient_bridge() -> i64 {
+    println(string_from("--- Gradient Bridge ---"));
+    var f: i64 = 0;
+    let blend_all_q: f64 = 1.0 * 0.5 + 0.0 * 1.0;
+    f = f + check(string_from("all quantum grad=0.5"), approx_eq(blend_all_q, 0.5, EPSILON()));
+    let blend_all_c: f64 = 0.0 * 0.5 + 1.0 * 1.0;
+    f = f + check(string_from("all classical grad=1.0"), approx_eq(blend_all_c, 1.0, EPSILON()));
+    let blend_50: f64 = 0.5 * 1.0 + 0.5 * 3.0;
+    f = f + check(string_from("50/50 blend=2.0"), approx_eq(blend_50, 2.0, EPSILON()));
+    let blend_80: f64 = 0.8 * 1.0 + 0.2 * -1.0;
+    f = f + check(string_from("80/20 blend=0.6"), approx_eq(blend_80, 0.6, EPSILON()));
+    f
+}
+
+fn main() -> i64 {
+    println(string_from("=== Ecosystem Integration Spec Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_dual_arithmetic();
+    fails = fails + test_quantum_belief();
+    fails = fails + test_measurement_sufficiency();
+    fails = fails + test_gradient_bridge();
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

@@ -275,7 +275,7 @@ No other breaking changes. All existing v0.12.0 code compiles without modificati
 
 4. **Update version imports:**
    ```simplex
-   use lib::version;
+   use simplex_core::version;
    // Now returns "0.13.0"
    ```
 
@@ -325,7 +325,7 @@ The mathematical foundations laid in v0.13.0 (complex numbers, matrices, eigende
 | `simplex-std/diff.sx` | New: differentiation API (gradient, Jacobian, Hessian) |
 | `simplex-learning/src/lib.sx` | MultiDual, Dual2, training pipeline completion |
 | `runtime/standalone_runtime.c` | SLM native bindings (405 lines added) |
-| `lib/version.sx` | Version 0.13.0 |
+| `simplex-core/src/version.sx` | Version 0.13.0 |
 | All tools | Version bump to 0.13.0 |
 
 ---

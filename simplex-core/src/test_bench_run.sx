@@ -1,0 +1,209 @@
+// Test program for bench.sx library
+// This tests the core benchmarking functionality
+
+// Include the bench library functions
+// (In production, would use: use bench;)
+
+// ========================================
+// Bencher - Core Benchmarking Type
+// ========================================
+
+// Create a new Bencher instance
+fn bencher_new(name: i64) -> i64 {
+    let b: i64 = malloc(64);  // 8 fields * 8 bytes
+    store_i64(b, 0, 0);       // iterations
+    store_i64(b, 1, 0);       // total_time_ns
+    store_i64(b, 2, 9223372036854775807);  // min_time_ns (i64 max)
+    store_i64(b, 3, 0);       // max_time_ns
+    store_i64(b, 4, vec_new());  // samples
+    store_i64(b, 5, name);    // name
+    store_i64(b, 6, 0);       // bytes_per_op
+    store_i64(b, 7, 0);       // warmup_done (false)
+    b
+}
+
+// Get bencher name
+fn bencher_name(b: i64) -> i64 {
+    load_i64(b, 5)
+}
+
+// Timing functions
+fn get_time_ns() -> i64 {
+    intrinsic_get_time_us() * 1000
+}
+
+// Record a single benchmark timing
+fn bench_record(b: i64, elapsed_ns: i64) -> i64 {
+    let iterations: i64 = load_i64(b, 0);
+    store_i64(b, 0, iterations + 1);
+
+    let total: i64 = load_i64(b, 1);
+    store_i64(b, 1, total + elapsed_ns);
+
+    let min_time: i64 = load_i64(b, 2);
+    if elapsed_ns < min_time {
+        store_i64(b, 2, elapsed_ns);
+    }
+
+    let max_time: i64 = load_i64(b, 3);
+    if elapsed_ns > max_time {
+        store_i64(b, 3, elapsed_ns);
+    }
+
+    let samples: i64 = load_i64(b, 4);
+    vec_push(samples, elapsed_ns);
+
+    elapsed_ns
+}
+
+// Start timing
+fn bench_start() -> i64 {
+    get_time_ns()
+}
+
+// End timing and record
+fn bench_end(b: i64, start_ns: i64) -> i64 {
+    let end_ns: i64 = get_time_ns();
+    let elapsed: i64 = end_ns - start_ns;
+    bench_record(b, elapsed);
+    elapsed
+}
+
+// Calculate mean time per iteration in nanoseconds
+fn bench_mean_ns(b: i64) -> i64 {
+    let iterations: i64 = load_i64(b, 0);
+    if iterations == 0 {
+        return 0;
+    }
+    let total: i64 = load_i64(b, 1);
+    total / iterations
+}
+
+// Get iteration count
+fn bench_iterations(b: i64) -> i64 {
+    load_i64(b, 0)
+}
+
+// ========================================
+// Test: Simple arithmetic benchmark
+// ========================================
+
+fn test_arithmetic_bench() -> i64 {
+    print("Testing arithmetic benchmark...\n");
+
+    let b: i64 = bencher_new(string_from("arithmetic"));
+
+    // Run 100 iterations
+    var i: i64 = 0;
+    while i < 100 {
+        let start: i64 = bench_start();
+
+        // Work to benchmark: sum of 1000 numbers
+        var sum: i64 = 0;
+        var j: i64 = 0;
+        while j < 1000 {
+            sum = sum + j;
+            j = j + 1;
+        }
+
+        bench_end(b, start);
+        i = i + 1;
+    }
+
+    let mean: i64 = bench_mean_ns(b);
+    let iters: i64 = bench_iterations(b);
+
+    print("  Iterations: ");
+    print(int_to_string(iters));
+    print("\n  Mean time: ");
+    print(int_to_string(mean));
+    print(" ns\n");
+
+    if iters == 100 {
+        print("  PASS: Correct iteration count\n");
+        return 1;
+    } else {
+        print("  FAIL: Expected 100 iterations\n");
+        return 0;
+    }
+}
+
+// ========================================
+// Test: Vector operations benchmark
+// ========================================
+
+fn test_vector_bench() -> i64 {
+    print("\nTesting vector benchmark...\n");
+
+    let b: i64 = bencher_new(string_from("vector_push"));
+
+    // Run 50 iterations
+    var i: i64 = 0;
+    while i < 50 {
+        let start: i64 = bench_start();
+
+        // Work to benchmark: push 100 elements
+        let v: i64 = vec_new();
+        var j: i64 = 0;
+        while j < 100 {
+            vec_push(v, j);
+            j = j + 1;
+        }
+
+        bench_end(b, start);
+        i = i + 1;
+    }
+
+    let mean: i64 = bench_mean_ns(b);
+    let iters: i64 = bench_iterations(b);
+
+    print("  Iterations: ");
+    print(int_to_string(iters));
+    print("\n  Mean time: ");
+    print(int_to_string(mean));
+    print(" ns\n");
+
+    if iters == 50 && mean > 0 {
+        print("  PASS: Correct iteration count and positive timing\n");
+        return 1;
+    } else {
+        print("  FAIL: Unexpected results\n");
+        return 0;
+    }
+}
+
+// ========================================
+// Main
+// ========================================
+
+fn main() -> i64 {
+    print("=== Simplex Bench Library Tests ===\n\n");
+
+    var passed: i64 = 0;
+    var total: i64 = 0;
+
+    total = total + 1;
+    if test_arithmetic_bench() == 1 {
+        passed = passed + 1;
+    }
+
+    total = total + 1;
+    if test_vector_bench() == 1 {
+        passed = passed + 1;
+    }
+
+    print("\n=== Results ===\n");
+    print("Passed: ");
+    print(int_to_string(passed));
+    print(" / ");
+    print(int_to_string(total));
+    print("\n");
+
+    if passed == total {
+        print("All tests passed!\n");
+        0
+    } else {
+        print("Some tests failed.\n");
+        1
+    }
+}

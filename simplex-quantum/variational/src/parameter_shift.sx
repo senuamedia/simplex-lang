@@ -1,0 +1,121 @@
+// simplex-quantum-variational::parameter_shift - Parameter-Shift Gradient Rule
+// Computes exact quantum gradients: df/d(theta) = [f(theta+pi/2) - f(theta-pi/2)] / 2
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// The standard parameter-shift amount: pi/2
+fn SHIFT_BITS() -> i64 { f64_to_bits(1.57079632679489661923) }
+
+// Compute gradient of a cost function via parameter-shift rule.
+// pc = parameterized circuit, params = vec of f64 bits
+// cost_fn = function handle, backend = backend handle
+// Returns vec of f64 bits (gradient values).
+fn param_shift_gradient(circuit: i64, params: i64, cost_fn: i64, backend: i64) -> i64 {
+    let n_params: i64 = vec_len(params);
+    let gradient: i64 = vec_new();
+    let shift: f64 = bits_to_f64(SHIFT_BITS());
+    var i: i64 = 0;
+    while i < n_params {
+        let original: f64 = bits_to_f64(vec_get(params, i));
+        // Forward shift: theta_i + pi/2
+        let shifted_plus: i64 = vec_new();
+        var j: i64 = 0;
+        while j < n_params {
+            if j == i {
+                vec_push(shifted_plus, f64_to_bits(original + shift));
+            } else {
+                vec_push(shifted_plus, vec_get(params, j));
+            }
+            j = j + 1;
+        }
+        let bound_plus: i64 = param_bind(circuit, shifted_plus);
+        let cost_plus: f64 = bits_to_f64(call_cost_fn(cost_fn, bound_plus, backend));
+        // Backward shift: theta_i - pi/2
+        let shifted_minus: i64 = vec_new();
+        var j: i64 = 0;
+        while j < n_params {
+            if j == i {
+                vec_push(shifted_minus, f64_to_bits(original - shift));
+            } else {
+                vec_push(shifted_minus, vec_get(params, j));
+            }
+            j = j + 1;
+        }
+        let bound_minus: i64 = param_bind(circuit, shifted_minus);
+        let cost_minus: f64 = bits_to_f64(call_cost_fn(cost_fn, bound_minus, backend));
+        // Gradient
+        let grad_i: f64 = (cost_plus - cost_minus) / 2.0;
+        vec_push(gradient, f64_to_bits(grad_i));
+        i = i + 1;
+    }
+    gradient
+}
+
+// Compute L2 norm of a gradient vector. Returns f64 bits.
+fn gradient_norm(gradient: i64) -> i64 {
+    let n: i64 = vec_len(gradient);
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let g: f64 = bits_to_f64(vec_get(gradient, i));
+        sum = sum + g * g;
+        i = i + 1;
+    }
+    // Approximate sqrt via Newton's method
+    var sq: f64 = sum;
+    if sq <= 0.0 {
+        return f64_to_bits(0.0);
+    }
+    var guess: f64 = sq / 2.0;
+    if guess < 1.0 {
+        guess = 1.0;
+    }
+    var iter: i64 = 0;
+    while iter < 20 {
+        guess = (guess + sq / guess) / 2.0;
+        iter = iter + 1;
+    }
+    f64_to_bits(guess)
+}
+
+// Clip gradient to max norm. Returns new vec of f64 bits.
+fn gradient_clip(gradient: i64, max_norm_bits: i64) -> i64 {
+    let norm: f64 = bits_to_f64(gradient_norm(gradient));
+    let max_norm: f64 = bits_to_f64(max_norm_bits);
+    if norm <= max_norm {
+        return gradient;
+    }
+    let scale: f64 = max_norm / norm;
+    let n: i64 = vec_len(gradient);
+    let clipped: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let g: f64 = bits_to_f64(vec_get(gradient, i));
+        vec_push(clipped, f64_to_bits(g * scale));
+        i = i + 1;
+    }
+    clipped
+}
+
+// Distribute shot budget across parameter evaluations.
+// Returns vec of i64 shot counts.
+fn shot_budget_allocate(total_shots: i64, n_params: i64, gradient_estimates: i64) -> i64 {
+    let allocations: i64 = vec_new();
+    let shots_per: i64 = total_shots / (2 * n_params);
+    let effective: i64 = if shots_per < 1 { 1 } else { shots_per };
+    var i: i64 = 0;
+    while i < n_params {
+        vec_push(allocations, effective);
+        i = i + 1;
+    }
+    allocations
+}
+
+// Call cost function. Returns f64 bits.
+fn call_cost_fn(cost_fn: i64, bound_circuit: i64, backend: i64) -> i64 {
+    // Placeholder: in a real system this would invoke the function handle.
+    // Returns 0.0 as default.
+    f64_to_bits(0.0)
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

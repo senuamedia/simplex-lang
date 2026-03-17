@@ -5,6 +5,41 @@ All notable changes to Simplex will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-03-17
+
+### Highlights
+
+**Quantum Bridge** - The first programming language to integrate hybrid classical-quantum computation as a first-class library alongside AI-native actors, neural gates, and self-learning optimization. Built on v0.13.0 mathematical foundations. 171+ tests passing (100%).
+
+### Added
+
+- Quantum core framework (`simplex-quantum`) -- Qubit, Circuit, Gate library (Hadamard, Pauli-X/Y/Z, CNOT, Phase, T-gate, Toffoli, SWAP), Born rule measurement
+- Backend abstraction layer (`simplex-quantum/backend`) -- LocalSimulator, Amazon Braket, IBM Quantum, Azure Quantum, BackendRegistry
+- Variational quantum algorithms (`simplex-quantum/variational`) -- ParamCircuit, VQE, QAOA, parameter-shift gradient estimation
+- Cost-aware quantum dispatch (`simplex-quantum/dispatch`) -- ProblemAnalyzer, CostModel, Budget tracking, policy-driven routing
+- Quantum-enhanced optimization (`simplex-quantum/optimize`) -- MaxCut via QAOA, molecular VQE, Grover search, hybrid classical-quantum annealing
+- Ecosystem integration -- quantum neural gates, epistemic quantum beliefs, gradient bridge to dual number autodiff
+- Associated types in traits (`type Output` declarations)
+- `&mut self` syntax for mutable method receivers
+- 9 new quantum test files
+- 5 new Modulus packages for quantum sub-modules
+
+### Changed
+
+- All tools bumped to v0.14.0
+- Compiler codegen improved for struct field access, reduced IR size
+- Self-hosted compiler struct field lookup fix (~85% completion)
+
+### Fixed
+
+- Nothing carried over -- all v0.13.0 issues resolved
+
+### Removed
+
+- Nothing
+
+---
+
 ## [0.13.0] - 2026-03-16
 
 ### Highlights
@@ -21,7 +56,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - HTTP client module (`simplex-std::http_client`) — GET/POST/PUT/DELETE with TLS, JSON convenience
 - JSON parser module (`simplex-std::json`) — full parse/stringify with nested traversal and builders
 - Contract logic: `requires`, `ensures`, `invariant`, `fallback` keywords for neural gates
-- Staged compression pipeline (`lib/simplex-training/src/pipeline/compress.sx`)
+- Staged compression pipeline (`simplex-training/src/pipeline/compress.sx`)
 - Meta-optimizer for all 5 learnable training schedules
 - Curriculum learning with meta-gradient integration
 - SLM native C bindings (GGUF validation, tokenizer, cosine similarity)
@@ -34,7 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - All tools bumped to v0.13.0
 - `temp_attention.sx` renamed to `temperature_attention.sx`
-- Toolchain functions synced with shared modules (`lib/platform.sx`, `lib/version.sx`)
+- Toolchain functions synced with shared modules (`simplex-core/src/platform.sx`, `simplex-core/src/version.sx`)
 - Cursus VM stack push now has bounds checking
 - CONTRIBUTING.md expanded with project structure and test instructions
 - Spec docs updated for v0.12.0 accuracy (6 files corrected)
@@ -104,9 +139,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **AI/Cognitive stubs** - Anima memory, hive mnemonic, specialist inference, model management, SLM configuration
 
 #### Standard Library
-- **lib/strings.sx** - StringBuilder library for O(n) string building
-- **lib/safety.sx** - Safe memory management utilities with bounds checking
-- **lib/llm.sx** - GGUF format specification and LLM integration primitives
+- **simplex-core/src/strings.sx** - StringBuilder library for O(n) string building
+- **simplex-core/src/safety.sx** - Safe memory management utilities with bounds checking
+- **simplex-core/src/llm.sx** - GGUF format specification and LLM integration primitives
 
 #### Test Suite - 154/154 Passing (100%)
 - **Language** (42 tests) - Core syntax, control flow, modules, traits, closures, generics, turbofish, pattern matching
@@ -132,7 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Build system no longer requires SQLite3 (`-lsqlite3` removed from linker flags)
 - Compiler codegen rewritten with f64 type inference, neural gate support, and self-hosting fixes
 - Test runner compiles module dependencies before main test for correct `use` declaration extraction
-- Edge-hive and nexus components updated for runtime compatibility
+- simplex-edge-hive and simplex-nexus components updated for runtime compatibility
 - Simplex-learning module updated for new runtime APIs
 
 ### Removed
@@ -264,9 +299,9 @@ fn main() -> i64 { add(10, multiply(3, 4)) }
   - Architecture auto-detection (x86_64, arm64)
 
 #### Standard Library
-- **lib/platform.sx** - Platform detection utilities
-- **lib/version.sx** - Version information
-- **lib/llm.sx** - LLM integration primitives (preview)
+- **simplex-core/src/platform.sx** - Platform detection utilities
+- **simplex-core/src/version.sx** - Version information
+- **simplex-core/src/llm.sx** - LLM integration primitives (preview)
 
 #### IDE Support
 - **tree-sitter-simplex** - Tree-sitter grammar for syntax highlighting

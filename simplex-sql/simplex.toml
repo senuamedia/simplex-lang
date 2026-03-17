@@ -1,6 +1,6 @@
 [package]
 name = "simplex-sql"
-version = "0.12.0"
+version = "0.9.0"
 description = "SQLite database driver for Simplex"
 license = "MIT"
 

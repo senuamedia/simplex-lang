@@ -1,0 +1,18 @@
+# Simplex Quantum-Enhanced Optimization
+# Phase 5: QAOA combinatorial optimization, VQE molecular simulation,
+# Grover structured search, and hybrid classical-quantum annealing.
+#
+# Provides production-ready quantum optimization primitives that integrate
+# with the existing self-learning annealing and training schedules.
+
+[package]
+name = "simplex-quantum-optimize"
+version = "0.14.0"
+description = "Quantum-enhanced optimization -- QAOA, VQE, Grover search, hybrid annealing"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
+
+[dependencies]
+simplex-std = { path = "../../simplex-std" }
+simplex-quantum = { path = ".." }
+simplex-quantum-backend = { path = "../backend" }

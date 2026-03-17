@@ -100,19 +100,15 @@ fn test() {
         (match_arm
           pattern: (pattern
             (enum_pattern
-              (path
-                (path_segment
-                  (identifier)))
+              (type_identifier)
               (pattern
                 (identifier_pattern
                   (identifier)))))
           body: (identifier))
         (match_arm
           pattern: (pattern
-            (enum_pattern
-              (path
-                (path_segment
-                  (identifier)))))
+            (identifier_pattern
+              (identifier)))
           body: (integer_literal))))))
 
 ================================================================================
@@ -272,9 +268,7 @@ fn test() -> Result<i64, String> {
     (parameters)
     return_type: (type
       (generic_type
-        (path
-          (path_segment
-            (identifier)))
+        (type_identifier)
         (type_arguments
           (type
             (primitive_type))
@@ -315,9 +309,7 @@ fn test() {
             (identifier)))
         value: (spawn_expression
           (struct_expression
-            name: (path
-              (path_segment
-                (identifier)))))))))
+            name: (type_identifier)))))))
 
 ================================================================================
 Send expression

@@ -1,0 +1,318 @@
+// simplex-quantum::gates - Standard Quantum Gate Library
+//
+// Gate opcodes and matrix data for quantum simulation.
+// Gates are stored as flat vecs of f64 (via f64_to_bits) for their
+// unitary matrix entries, plus metadata.
+//
+// Single-qubit gates: H, X, Y, Z, S, T, Rx, Ry, Rz
+// Two-qubit gates: CNOT, CZ, SWAP, CRz
+//
+// Matrix convention: row-major, stored as (re, im) pairs.
+// Single-qubit: 4 complex entries = 8 f64 values.
+// Two-qubit: 16 complex entries = 32 f64 values.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const INV_SQRT2: f64 = 0.70710678118654752;
+const PI: f64 = 3.14159265358979323846;
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+// Gate representation as vec:
+// [opcode, n_qubits, is_parameterized, theta_bits, name_handle,
+//  target0, target1,   -- target1 = -1 for single-qubit
+//  matrix entries...]  -- 8 f64 for 1q, 32 f64 for 2q (as bits)
+//
+// Offsets:
+const G_OPCODE: i64 = 0;
+const G_NQUBITS: i64 = 1;
+const G_IS_PARAM: i64 = 2;
+const G_THETA: i64 = 3;
+const G_NAME: i64 = 4;
+const G_TARGET0: i64 = 5;
+const G_TARGET1: i64 = 6;
+const G_MATRIX: i64 = 7;
+
+fn gate_opcode(g: i64) -> i64 { vec_get(g, G_OPCODE()); }
+fn gate_n_qubits(g: i64) -> i64 { vec_get(g, G_NQUBITS()); }
+fn gate_is_param(g: i64) -> i64 { vec_get(g, G_IS_PARAM()); }
+fn gate_theta_bits(g: i64) -> i64 { vec_get(g, G_THETA()); }
+fn gate_theta(g: i64) -> f64 { bits_to_f64(vec_get(g, G_THETA())); }
+fn gate_name(g: i64) -> i64 { vec_get(g, G_NAME()); }
+fn gate_target0(g: i64) -> i64 { vec_get(g, G_TARGET0()); }
+fn gate_target1(g: i64) -> i64 { vec_get(g, G_TARGET1()); }
+
+// Get matrix entry (row, col) as (re, im) for a single-qubit gate
+// Index into matrix: offset G_MATRIX + (row * 2 + col) * 2 for re, +1 for im
+fn gate_matrix_re(g: i64, row: i64, col: i64) -> f64 {
+    let size: i64 = 2;
+    if gate_n_qubits(g) == 2 { let size: i64 = 4; }
+    let idx: i64 = G_MATRIX() + (row * size + col) * 2;
+    bits_to_f64(vec_get(g, idx))
+}
+
+fn gate_matrix_im(g: i64, row: i64, col: i64) -> f64 {
+    let size: i64 = 2;
+    if gate_n_qubits(g) == 2 { let size: i64 = 4; }
+    let idx: i64 = G_MATRIX() + (row * size + col) * 2 + 1;
+    bits_to_f64(vec_get(g, idx))
+}
+
+// For 2q gates, the matrix size is 4
+fn gate_matrix_re_2q(g: i64, row: i64, col: i64) -> f64 {
+    let idx: i64 = G_MATRIX() + (row * 4 + col) * 2;
+    bits_to_f64(vec_get(g, idx))
+}
+
+fn gate_matrix_im_2q(g: i64, row: i64, col: i64) -> f64 {
+    let idx: i64 = G_MATRIX() + (row * 4 + col) * 2 + 1;
+    bits_to_f64(vec_get(g, idx))
+}
+
+// Helper: push a complex entry (re, im) onto a gate vec
+fn push_complex(g: i64, re: f64, im: f64) -> i64 {
+    vec_push(g, f64_to_bits(re));
+    vec_push(g, f64_to_bits(im));
+    0
+}
+
+// Helper: build single-qubit gate header
+fn make_1q_header(opcode: i64, name: i64, target: i64, is_param: i64, theta: f64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, opcode);
+    vec_push(g, 1);
+    vec_push(g, is_param);
+    vec_push(g, f64_to_bits(theta));
+    vec_push(g, name);
+    vec_push(g, target);
+    vec_push(g, 0 - 1);
+    g
+}
+
+// Helper: build two-qubit gate header
+fn make_2q_header(opcode: i64, name: i64, control: i64, target: i64, is_param: i64, theta: f64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, opcode);
+    vec_push(g, 2);
+    vec_push(g, is_param);
+    vec_push(g, f64_to_bits(theta));
+    vec_push(g, name);
+    vec_push(g, control);
+    vec_push(g, target);
+    g
+}
+
+// ---- Single-Qubit Gate Constructors ----
+
+// H gate: (1/sqrt2) * [[1, 1], [1, -1]]
+fn gate_hadamard(target: i64) -> i64 {
+    let g: i64 = make_1q_header(OP_H(), string_from("H"), target, 0, 0.0);
+    let h: f64 = INV_SQRT2();
+    push_complex(g, h, 0.0);
+    push_complex(g, h, 0.0);
+    push_complex(g, h, 0.0);
+    push_complex(g, 0.0 - h, 0.0);
+    g
+}
+
+// X gate: [[0, 1], [1, 0]]
+fn gate_pauli_x(target: i64) -> i64 {
+    let g: i64 = make_1q_header(OP_X(), string_from("X"), target, 0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, 1.0, 0.0);
+    push_complex(g, 1.0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    g
+}
+
+// Y gate: [[0, -i], [i, 0]]
+fn gate_pauli_y(target: i64) -> i64 {
+    let g: i64 = make_1q_header(OP_Y(), string_from("Y"), target, 0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, 0.0, 0.0 - 1.0);
+    push_complex(g, 0.0, 1.0);
+    push_complex(g, 0.0, 0.0);
+    g
+}
+
+// Z gate: [[1, 0], [0, -1]]
+fn gate_pauli_z(target: i64) -> i64 {
+    let g: i64 = make_1q_header(OP_Z(), string_from("Z"), target, 0, 0.0);
+    push_complex(g, 1.0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, 0.0 - 1.0, 0.0);
+    g
+}
+
+// S gate: [[1, 0], [0, i]]
+fn gate_s(target: i64) -> i64 {
+    let g: i64 = make_1q_header(OP_S(), string_from("S"), target, 0, 0.0);
+    push_complex(g, 1.0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, 0.0, 1.0);
+    g
+}
+
+// T gate: [[1, 0], [0, e^(i*pi/4)]]
+fn gate_t(target: i64) -> i64 {
+    let g: i64 = make_1q_header(OP_T(), string_from("T"), target, 0, 0.0);
+    let angle: f64 = PI() / 4.0;
+    push_complex(g, 1.0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, cos(angle), sin(angle));
+    g
+}
+
+// Rx gate: [[cos(t/2), -i*sin(t/2)], [-i*sin(t/2), cos(t/2)]]
+fn gate_rx(target: i64, theta: f64) -> i64 {
+    let g: i64 = make_1q_header(OP_RX(), string_from("Rx"), target, 1, theta);
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    push_complex(g, c, 0.0);
+    push_complex(g, 0.0, 0.0 - s);
+    push_complex(g, 0.0, 0.0 - s);
+    push_complex(g, c, 0.0);
+    g
+}
+
+// Ry gate: [[cos(t/2), -sin(t/2)], [sin(t/2), cos(t/2)]]
+fn gate_ry(target: i64, theta: f64) -> i64 {
+    let g: i64 = make_1q_header(OP_RY(), string_from("Ry"), target, 1, theta);
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    push_complex(g, c, 0.0);
+    push_complex(g, 0.0 - s, 0.0);
+    push_complex(g, s, 0.0);
+    push_complex(g, c, 0.0);
+    g
+}
+
+// Rz gate: [[e^(-i*t/2), 0], [0, e^(i*t/2)]]
+fn gate_rz(target: i64, theta: f64) -> i64 {
+    let g: i64 = make_1q_header(OP_RZ(), string_from("Rz"), target, 1, theta);
+    let half: f64 = theta / 2.0;
+    push_complex(g, cos(0.0 - half), sin(0.0 - half));
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, 0.0, 0.0);
+    push_complex(g, cos(half), sin(half));
+    g
+}
+
+// ---- Two-Qubit Gate Constructors ----
+
+// Helper: push a 4x4 identity matrix onto a gate vec
+fn push_mat4_identity(g: i64) -> i64 {
+    var r: i64 = 0;
+    while r < 4 {
+        var c: i64 = 0;
+        while c < 4 {
+            if r == c {
+                push_complex(g, 1.0, 0.0);
+            } else {
+                push_complex(g, 0.0, 0.0);
+            }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+    0
+}
+
+// Helper: set entry (r, c) of a 4x4 matrix inside a gate vec
+fn gate_mat4_set(g: i64, r: i64, c: i64, re: f64, im: f64) -> i64 {
+    let idx: i64 = G_MATRIX() + (r * 4 + c) * 2;
+    vec_set(g, idx, f64_to_bits(re));
+    vec_set(g, idx + 1, f64_to_bits(im));
+    0
+}
+
+// CNOT: [[1,0,0,0],[0,1,0,0],[0,0,0,1],[0,0,1,0]]
+fn gate_cnot(control: i64, target: i64) -> i64 {
+    let g: i64 = make_2q_header(OP_CNOT(), string_from("CNOT"), control, target, 0, 0.0);
+    push_mat4_identity(g);
+    gate_mat4_set(g, 2, 2, 0.0, 0.0);
+    gate_mat4_set(g, 2, 3, 1.0, 0.0);
+    gate_mat4_set(g, 3, 2, 1.0, 0.0);
+    gate_mat4_set(g, 3, 3, 0.0, 0.0);
+    g
+}
+
+// CZ: [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,-1]]
+fn gate_cz(control: i64, target: i64) -> i64 {
+    let g: i64 = make_2q_header(OP_CZ(), string_from("CZ"), control, target, 0, 0.0);
+    push_mat4_identity(g);
+    gate_mat4_set(g, 3, 3, 0.0 - 1.0, 0.0);
+    g
+}
+
+// SWAP: [[1,0,0,0],[0,0,1,0],[0,1,0,0],[0,0,0,1]]
+fn gate_swap(q1: i64, q2: i64) -> i64 {
+    let g: i64 = make_2q_header(OP_SWAP(), string_from("SWAP"), q1, q2, 0, 0.0);
+    push_mat4_identity(g);
+    gate_mat4_set(g, 1, 1, 0.0, 0.0);
+    gate_mat4_set(g, 1, 2, 1.0, 0.0);
+    gate_mat4_set(g, 2, 1, 1.0, 0.0);
+    gate_mat4_set(g, 2, 2, 0.0, 0.0);
+    g
+}
+
+// CRz: diag(1, 1, e^(-i*t/2), e^(i*t/2))
+fn gate_crz(control: i64, target: i64, theta: f64) -> i64 {
+    let g: i64 = make_2q_header(OP_CRZ(), string_from("CRz"), control, target, 1, theta);
+    push_mat4_identity(g);
+    let half: f64 = theta / 2.0;
+    gate_mat4_set(g, 2, 2, cos(0.0 - half), sin(0.0 - half));
+    gate_mat4_set(g, 3, 3, cos(half), sin(half));
+    g
+}
+
+// Gate format as human-readable string
+fn gate_format(g: i64) -> i64 {
+    let name: i64 = gate_name(g);
+    if gate_is_param(g) != 0 {
+        let theta_mrad: i64 = (gate_theta(g) * 1000.0) as i64;
+        return string_concat(
+            name,
+            string_concat(
+                string_from("("),
+                string_concat(int_to_string(theta_mrad), string_from("m)"))
+            )
+        );
+    }
+    name
+}
+
+fn main() -> i64 {
+    // Self-test: create gates and verify opcodes
+    let h: i64 = gate_hadamard(0);
+    println(string_concat(string_from("H opcode: "), int_to_string(gate_opcode(h))));
+    println(string_concat(string_from("H name: "), gate_name(h)));
+
+    let cx: i64 = gate_cnot(0, 1);
+    println(string_concat(string_from("CNOT opcode: "), int_to_string(gate_opcode(cx))));
+    println(string_concat(string_from("CNOT target0: "), int_to_string(gate_target0(cx))));
+    println(string_concat(string_from("CNOT target1: "), int_to_string(gate_target1(cx))));
+
+    let rx: i64 = gate_rx(0, PI() / 4.0);
+    println(string_concat(string_from("Rx format: "), gate_format(rx)));
+
+    println(string_from("gates.sx OK"));
+    0
+}

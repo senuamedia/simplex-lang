@@ -1,0 +1,27 @@
+# simplex-core - Simplex Core Infrastructure
+#
+# Foundational types and utilities used by the compiler, toolchain,
+# and runtime. Not intended for direct use by application code —
+# use simplex-std instead.
+#
+# Provides:
+# - AST type definitions for the compiler
+# - Platform detection and feature gating
+# - Version management
+# - Runtime safety checks
+# - String internals
+# - LLM integration primitives
+# - Benchmarking framework
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-core"
+version = "0.14.0"
+description = "Core infrastructure for the Simplex compiler, toolchain, and runtime"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
+
+# No dependencies — this is the lowest-level package
+[dependencies]

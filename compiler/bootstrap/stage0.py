@@ -139,6 +139,7 @@ class TokenKind:
     UNDERSCORE = 'UNDERSCORE'
     HASH = 'HASH'
     KW_AS = 'KW_AS'
+    KW_EXTERN = 'KW_EXTERN'
     # Contract keywords (TASK-001 Phase 2)
     KW_REQUIRES = 'KW_REQUIRES'
     KW_ENSURES = 'KW_ENSURES'
@@ -189,6 +190,7 @@ KEYWORDS = {
     'where': TokenKind.KW_WHERE,
     'mut': TokenKind.KW_MUT,
     'as': TokenKind.KW_AS,
+    'extern': TokenKind.KW_EXTERN,
     '_': TokenKind.UNDERSCORE,
     # Contract keywords (TASK-001 Phase 2)
     'requires': TokenKind.KW_REQUIRES,
@@ -684,6 +686,10 @@ class Parser:
             item = self.parse_mod_def()
         elif self.check(TokenKind.KW_USE):
             item = self.parse_use_def()
+        elif self.check(TokenKind.KW_CONST):
+            item = self.parse_const_def()
+        elif self.check(TokenKind.KW_EXTERN):
+            item = self.parse_extern_block()
         else:
             raise SyntaxError(f"Unexpected token {self.current().kind}")
 
@@ -1410,6 +1416,40 @@ class Parser:
             path.append(self.expect(TokenKind.IDENT).text)
         self.expect(TokenKind.SEMI)
         return {'type': 'UseDef', 'path': path}
+
+    def parse_const_def(self):
+        """Parse const NAME: TYPE = VALUE;"""
+        self.expect(TokenKind.KW_CONST)
+        name = self.expect(TokenKind.IDENT).text
+        self.expect(TokenKind.COLON)
+        ty = self.parse_type()
+        self.expect(TokenKind.EQ)
+        value = self.parse_expr()
+        self.expect(TokenKind.SEMI)
+        return {'type': 'ConstDef', 'name': name, 'ty': ty, 'value': value}
+
+    def parse_extern_block(self):
+        """Parse extern "C" { fn name(params) -> ret; ... }"""
+        self.expect(TokenKind.KW_EXTERN)
+        # Expect string literal "C"
+        if self.check(TokenKind.STRING):
+            self.advance()  # consume "C"
+        self.expect(TokenKind.LBRACE)
+        fns = []
+        while not self.check(TokenKind.RBRACE):
+            self.expect(TokenKind.KW_FN)
+            fn_name = self.expect(TokenKind.IDENT).text
+            self.expect(TokenKind.LPAREN)
+            params = self.parse_params()
+            self.expect(TokenKind.RPAREN)
+            return_type = 'void'
+            if self.check(TokenKind.ARROW):
+                self.advance()
+                return_type = self.parse_type()
+            self.expect(TokenKind.SEMI)
+            fns.append({'name': fn_name, 'params': params, 'return_type': return_type})
+        self.expect(TokenKind.RBRACE)
+        return {'type': 'ExternBlock', 'fns': fns}
 
     def parse_block(self):
         self.expect(TokenKind.LBRACE)
@@ -2409,6 +2449,10 @@ class CodeGen:
         self.const_params = {}  # const_param_name -> literal_value (for current instantiation)
         # Track function names for function pointer references
         self.functions = set()
+        # Top-level constants: name -> {'ty': type, 'value': expr_node}
+        self.constants = {}
+        # Track extern function declarations: name -> {'params': [...], 'return_type': str}
+        self.extern_fns = {}
         # Visibility enforcement (34.3.1)
         self.public_items = {}  # module_name -> set of public item names
         self.item_visibility = {}  # (module_name, item_name) -> bool (is_pub)
@@ -2701,6 +2745,8 @@ class CodeGen:
                 self.functions.add(item['name'])
             elif item['type'] == 'TraitDef':
                 self.traits[item['name']] = item
+            elif item['type'] == 'ConstDef':
+                self.constants[item['name']] = item
 
     def import_from_path(self, path):
         """Import items from a module path like ['std', 'io']."""
@@ -4521,6 +4567,9 @@ class CodeGen:
             elif item['type'] == 'ImplDef' and item.get('trait_name'):
                 # Register trait implementation for type
                 self.trait_impls[(item['trait_name'], item['type_name'])] = item
+            elif item['type'] == 'ConstDef':
+                # Register constant for inline substitution
+                self.constants[item['name']] = item
 
         # Generate vtables for trait implementations (dyn Trait support)
         self.vtables = {}  # (trait_name, type_name) -> vtable_global_name
@@ -4548,6 +4597,8 @@ class CodeGen:
                 self.generate_hive(item)
             elif item['type'] == 'MessageDef':
                 self.generate_message(item)
+            elif item['type'] == 'ExternBlock':
+                self.generate_extern_block(item)
 
         # Generate pending generic instantiations
         while self.pending_instantiations:
@@ -4565,6 +4616,8 @@ class CodeGen:
                             self.generate_fn(item)
                     elif item['type'] == 'ImplDef':
                         self.generate_impl(item)
+                    elif item['type'] == 'ExternBlock':
+                        self.generate_extern_block(item)
 
         # Add closure functions
         if self.pending_closures:
@@ -5236,6 +5289,62 @@ class CodeGen:
             del self.gen_yield_counter
         if hasattr(self, 'gen_state_labels'):
             del self.gen_state_labels
+
+    def generate_extern_block(self, item):
+        """Generate LLVM declare statements for extern "C" functions."""
+        self.emit('; Extern "C" declarations')
+        for fn in item['fns']:
+            fn_name = fn['name']
+            if fn_name in self.extern_fns:
+                continue  # Already declared
+            self.extern_fns[fn_name] = {
+                'params': fn['params'],
+                'return_type': fn['return_type'],
+            }
+            self.functions.add(fn_name)
+            ret_type = self.type_to_llvm(fn['return_type'])
+            param_types = ', '.join(self.type_to_llvm(p['ty']) for p in fn['params'])
+            self.emit(f'declare {ret_type} @"{fn_name}"({param_types})')
+        self.emit('')
+
+    def generate_extern_call(self, func_name, args):
+        """Generate a call to an extern "C" function with proper type conversions."""
+        ext = self.extern_fns[func_name]
+        ret_type_sx = ext['return_type']
+        ret_type = self.type_to_llvm(ret_type_sx)
+        params = ext['params']
+
+        # Convert arguments to the correct types
+        converted_args = []
+        for i, arg_val in enumerate(args):
+            if i < len(params):
+                param_type = self.type_to_llvm(params[i]['ty'])
+            else:
+                param_type = 'i64'  # fallback
+
+            if param_type == 'double':
+                # Convert i64 (bitcast of f64) to double
+                conv = self.new_temp()
+                self.emit(f'  {conv} = call double @f64_from_bits(i64 {arg_val})')
+                converted_args.append(f'double {conv}')
+            else:
+                converted_args.append(f'{param_type} {arg_val}')
+
+        args_str = ', '.join(converted_args)
+        result_temp = self.new_temp()
+
+        if ret_type == 'double':
+            # Call returns double, convert back to i64 (bitcast)
+            dbl_temp = self.new_temp()
+            self.emit(f'  {dbl_temp} = call double @"{func_name}"({args_str})')
+            self.emit(f'  {result_temp} = call i64 @f64_to_bits(double {dbl_temp})')
+        elif ret_type == 'void':
+            self.emit(f'  call void @"{func_name}"({args_str})')
+            return '0'
+        else:
+            self.emit(f'  {result_temp} = call {ret_type} @"{func_name}"({args_str})')
+
+        return result_temp
 
     def generate_fn(self, fn):
         # Track function name for function pointer references
@@ -6385,6 +6494,10 @@ class CodeGen:
             # Check if this is a const generic parameter
             if name in self.const_params:
                 return self.const_params[name]
+            # Check if this is a top-level constant
+            if name in self.constants:
+                const_def = self.constants[name]
+                return self.generate_expr(const_def['value'])
             # Check if this is an enum variant without arguments (like None, Err)
             for enum_name, variants in self.enums.items():
                 if name in variants:
@@ -8672,6 +8785,9 @@ class CodeGen:
                     self.emit(f'  {temp} = call i64 {fn_ptr}({args_str})')
                     return temp
                 else:
+                    # Check if this is an extern "C" function with typed signature
+                    if func_name in self.extern_fns:
+                        return self.generate_extern_call(func_name, args)
                     # User-defined function - assume all i64
                     args_str = ', '.join(f'i64 {a}' for a in args)
                     self.emit(f'  {temp} = call i64 @"{func_name}"({args_str})')

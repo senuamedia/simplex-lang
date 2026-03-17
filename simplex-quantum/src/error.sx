@@ -1,0 +1,126 @@
+// simplex-quantum::error - Quantum Error Types
+//
+// Structured error handling for the quantum computing subsystem.
+// Each error carries a numeric code and a human-readable message.
+//
+// Error Codes:
+//   1 = Invalid qubit
+//   2 = Gate error
+//   3 = Measurement error
+//   4 = Backend error
+//   5 = Budget exceeded
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// Error code constants -- access as ERR_INVALID_QUBIT() etc.
+const ERR_INVALID_QUBIT: i64 = 1;
+const ERR_GATE_ERROR: i64 = 2;
+const ERR_MEASUREMENT_ERROR: i64 = 3;
+const ERR_BACKEND_ERROR: i64 = 4;
+const ERR_BUDGET_EXCEEDED: i64 = 5;
+
+// QuantumError: code (i64) + message (string handle i64)
+struct QuantumError {
+    code: i64,
+    message: i64
+}
+
+impl QuantumError {
+    fn new(code: i64, message: i64) -> QuantumError {
+        QuantumError { code: code, message: message }
+    }
+}
+
+// Get error code from a QuantumError stored as a vec [code, message]
+// We use a vec-based representation to avoid passing structs with
+// potential issues. The vec holds [code, message_handle].
+
+fn qerr_new(code: i64, message: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, code);
+    vec_push(v, message);
+    v
+}
+
+fn qerr_code(err: i64) -> i64 {
+    vec_get(err, 0)
+}
+
+fn qerr_message(err: i64) -> i64 {
+    vec_get(err, 1)
+}
+
+fn qerr_is_code(err: i64, code: i64) -> i64 {
+    if qerr_code(err) == code { return 1; }
+    0
+}
+
+fn qerr_code_label(code: i64) -> i64 {
+    match code {
+        1 => string_from("INVALID_QUBIT"),
+        2 => string_from("GATE_ERROR"),
+        3 => string_from("MEASUREMENT_ERROR"),
+        4 => string_from("BACKEND_ERROR"),
+        5 => string_from("BUDGET_EXCEEDED"),
+        _ => string_from("UNKNOWN_ERROR")
+    }
+}
+
+fn qerr_format(err: i64) -> i64 {
+    let code: i64 = qerr_code(err);
+    let msg: i64 = qerr_message(err);
+    string_concat(
+        string_concat(string_from("["), qerr_code_label(code)),
+        string_concat(string_from("] "), msg)
+    )
+}
+
+// Convenience constructors
+
+fn invalid_qubit_error(qubit_index: i64, max_qubits: i64) -> i64 {
+    let msg: i64 = string_concat(
+        string_from("Qubit index "),
+        string_concat(
+            int_to_string(qubit_index),
+            string_concat(
+                string_from(" out of range (circuit has "),
+                string_concat(int_to_string(max_qubits), string_from(" qubits)"))
+            )
+        )
+    );
+    qerr_new(ERR_INVALID_QUBIT(), msg)
+}
+
+fn gate_error(message: i64) -> i64 {
+    qerr_new(ERR_GATE_ERROR(), message)
+}
+
+fn measurement_error(message: i64) -> i64 {
+    qerr_new(ERR_MEASUREMENT_ERROR(), message)
+}
+
+fn backend_error(message: i64) -> i64 {
+    qerr_new(ERR_BACKEND_ERROR(), message)
+}
+
+fn budget_exceeded_error(resource: i64, actual: i64, limit: i64) -> i64 {
+    let msg: i64 = string_concat(
+        string_concat(resource, string_from(" budget exceeded: ")),
+        string_concat(
+            int_to_string(actual),
+            string_concat(string_from(" > "), int_to_string(limit))
+        )
+    );
+    qerr_new(ERR_BUDGET_EXCEEDED(), msg)
+}
+
+fn main() -> i64 {
+    // Self-test
+    let e: i64 = invalid_qubit_error(5, 3);
+    println(qerr_format(e));
+    let e2: i64 = budget_exceeded_error(string_from("gate_count"), 100, 50);
+    println(qerr_format(e2));
+    println(string_from("error.sx OK"));
+    0
+}

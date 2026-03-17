@@ -5,8 +5,8 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex-lang
 
-// Version constant (synced with lib/version.sx — use lib::version when module compilation supports it)
-fn VERSION() -> i64 { string_from("0.13.0") }
+// Version constant (synced with simplex-core/src/version.sx — use simplex_core::version when module compilation supports it)
+fn VERSION() -> i64 { string_from("0.14.0") }
 
 // Cleanup function for long-running mode
 fn cleanup_resources(store: i64) -> i64 {

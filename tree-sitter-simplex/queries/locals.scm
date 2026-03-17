@@ -63,47 +63,21 @@
 
 ; Let bindings
 (let_statement
-  pattern: (identifier_pattern
-    (identifier) @local.definition.variable))
-
-; Let with tuple pattern
-(let_statement
-  pattern: (tuple_pattern
+  pattern: (pattern
     (identifier_pattern
       (identifier) @local.definition.variable)))
 
 ; For loop pattern bindings
 (for_expression
-  pattern: (identifier_pattern
-    (identifier) @local.definition.variable))
+  pattern: (pattern
+    (identifier_pattern
+      (identifier) @local.definition.variable)))
 
 ; Match arm pattern bindings
 (match_arm
-  pattern: (identifier_pattern
-    (identifier) @local.definition.variable))
-
-(match_arm
-  pattern: (enum_pattern
+  pattern: (pattern
     (identifier_pattern
       (identifier) @local.definition.variable)))
-
-(match_arm
-  pattern: (tuple_pattern
-    (identifier_pattern
-      (identifier) @local.definition.variable)))
-
-(match_arm
-  pattern: (struct_pattern
-    (field_pattern
-      name: (identifier) @local.definition.variable)))
-
-; While let pattern bindings
-(while_expression
-  (pattern) @local.definition.variable)
-
-; If let pattern bindings
-(if_expression
-  (pattern) @local.definition.variable)
 
 ; Struct definitions
 (struct_definition
@@ -194,6 +168,5 @@
 ; Use declarations bring names into scope
 (use_declaration
   (use_tree
-    (path
-      (path_segment
-        (identifier) @local.definition.import))))
+    (use_path
+      (identifier) @local.definition.import)))
