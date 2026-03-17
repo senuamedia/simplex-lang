@@ -10,13 +10,13 @@
 // ========================================
 
 // Canonical version — all tools must match this
-fn EXPECTED_VERSION() -> i64 { string_from("0.13.0") }
+fn EXPECTED_VERSION() -> i64 { string_from("0.14.0") }
 
 fn test_sxc_version() -> i64 {
     println("  Testing sxc version consistency...");
-    let version: i64 = string_from("0.13.0");
+    let version: i64 = string_from("0.14.0");
     if string_eq(version, EXPECTED_VERSION()) {
-        println("  PASS: sxc version matches 0.13.0");
+        println("  PASS: sxc version matches 0.14.0");
         return 0;
     }
     println("  FAIL: sxc version mismatch");
@@ -25,9 +25,9 @@ fn test_sxc_version() -> i64 {
 
 fn test_sxpm_version() -> i64 {
     println("  Testing sxpm version consistency...");
-    let version: i64 = string_from("0.13.0");
+    let version: i64 = string_from("0.14.0");
     if string_eq(version, EXPECTED_VERSION()) {
-        println("  PASS: sxpm version matches 0.13.0");
+        println("  PASS: sxpm version matches 0.14.0");
         return 0;
     }
     println("  FAIL: sxpm version mismatch");
@@ -36,9 +36,9 @@ fn test_sxpm_version() -> i64 {
 
 fn test_sxfmt_version() -> i64 {
     println("  Testing sxfmt version consistency...");
-    let version: i64 = string_from("0.13.0");
+    let version: i64 = string_from("0.14.0");
     if string_eq(version, EXPECTED_VERSION()) {
-        println("  PASS: sxfmt version matches 0.13.0");
+        println("  PASS: sxfmt version matches 0.14.0");
         return 0;
     }
     println("  FAIL: sxfmt version mismatch");
@@ -47,9 +47,9 @@ fn test_sxfmt_version() -> i64 {
 
 fn test_sxlint_version() -> i64 {
     println("  Testing sxlint version consistency...");
-    let version: i64 = string_from("0.13.0");
+    let version: i64 = string_from("0.14.0");
     if string_eq(version, EXPECTED_VERSION()) {
-        println("  PASS: sxlint version matches 0.13.0");
+        println("  PASS: sxlint version matches 0.14.0");
         return 0;
     }
     println("  FAIL: sxlint version mismatch");
@@ -58,9 +58,9 @@ fn test_sxlint_version() -> i64 {
 
 fn test_sxlsp_version() -> i64 {
     println("  Testing sxlsp version consistency...");
-    let version: i64 = string_from("0.13.0");
+    let version: i64 = string_from("0.14.0");
     if string_eq(version, EXPECTED_VERSION()) {
-        println("  PASS: sxlsp version matches 0.13.0");
+        println("  PASS: sxlsp version matches 0.14.0");
         return 0;
     }
     println("  FAIL: sxlsp version mismatch");
@@ -69,9 +69,9 @@ fn test_sxlsp_version() -> i64 {
 
 fn test_sxdoc_version() -> i64 {
     println("  Testing sxdoc version consistency...");
-    let version: i64 = string_from("0.13.0");
+    let version: i64 = string_from("0.14.0");
     if string_eq(version, EXPECTED_VERSION()) {
-        println("  PASS: sxdoc version matches 0.13.0");
+        println("  PASS: sxdoc version matches 0.14.0");
         return 0;
     }
     println("  FAIL: sxdoc version mismatch");
@@ -80,9 +80,9 @@ fn test_sxdoc_version() -> i64 {
 
 fn test_cursus_version() -> i64 {
     println("  Testing cursus version consistency...");
-    let version: i64 = string_from("0.13.0");
+    let version: i64 = string_from("0.14.0");
     if string_eq(version, EXPECTED_VERSION()) {
-        println("  PASS: cursus version matches 0.13.0");
+        println("  PASS: cursus version matches 0.14.0");
         return 0;
     }
     println("  FAIL: cursus version mismatch");
@@ -109,9 +109,9 @@ fn test_version_format() -> i64 {
 
 fn test_version_parse_numeric() -> i64 {
     println("  Testing version numeric parsing...");
-    // parse_version from lib/version.sx: major * 10000 + minor * 100 + patch
-    // 0.13.0 -> 0 * 10000 + 13 * 100 + 0 = 1300
-    let expected_numeric: i64 = 1300;
+    // parse_version from simplex-core/src/version.sx: major * 10000 + minor * 100 + patch
+    // 0.14.0 -> 0 * 10000 + 14 * 100 + 0 = 1400
+    let expected_numeric: i64 = 1400;
 
     let parts: i64 = string_split(EXPECTED_VERSION(), string_from("."));
     let major: i64 = string_to_int(vec_get(parts, 0));
@@ -120,7 +120,7 @@ fn test_version_parse_numeric() -> i64 {
     let numeric: i64 = major * 10000 + minor * 100 + patch;
 
     if numeric == expected_numeric {
-        println("  PASS: version parses to 1300");
+        println("  PASS: version parses to 1400");
         return 0;
     }
     println("  FAIL: version numeric parse mismatch");
@@ -194,7 +194,7 @@ fn test_cvm_stack_near_limit() -> i64 {
 fn test_os_detection_returns_known() -> i64 {
     println("  Testing OS detection returns known value...");
 
-    // Simulate unified get_os_name logic from lib/platform.sx
+    // Simulate unified get_os_name logic from simplex-core/src/platform.sx
     // On any real system, result should be one of: windows, linux, macos, unknown
     let windir: i64 = env_get(string_from("WINDIR"));
     let home: i64 = env_get(string_from("HOME"));

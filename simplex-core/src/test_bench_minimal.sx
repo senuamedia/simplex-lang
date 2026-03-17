@@ -1,0 +1,35 @@
+// Minimal bench test - without closure types
+
+pub fn bencher_new(name: i64) -> i64 {
+    let b: i64 = malloc(64);
+    store_i64(b, 0, 0);
+    store_i64(b, 1, 0);
+    store_i64(b, 2, 0);
+    store_i64(b, 3, 0);
+    store_i64(b, 4, vec_new());
+    store_i64(b, 5, name);
+    store_i64(b, 6, 0);
+    store_i64(b, 7, 0);
+    b
+}
+
+pub fn get_time_ns() -> i64 {
+    time_now()
+}
+
+// Test using i64 for function pointer instead of fn() -> i64
+pub fn bench_iter_simple(b: i64) -> i64 {
+    let start: i64 = get_time_ns();
+    // No closure call - just measure time
+    let end: i64 = get_time_ns();
+    end - start
+}
+
+pub fn bench_mean_ns(b: i64) -> i64 {
+    let iterations: i64 = load_i64(b, 0);
+    if iterations == 0 {
+        return 0;
+    }
+    let total: i64 = load_i64(b, 1);
+    total / iterations
+}

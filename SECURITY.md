@@ -4,9 +4,10 @@
 
 | Version  | Supported |
 |----------|-----------|
-| 0.12.x   | Yes       |
-| 0.11.x   | No        |
-| < 0.11   | No        |
+| 0.14.x   | Yes       |
+| 0.13.x   | Yes       |
+| 0.12.x   | No        |
+| < 0.12   | No        |
 
 ## Reporting a Vulnerability
 
@@ -32,8 +33,9 @@ The following components are in scope for security reports:
 - Simplex compiler (`sxc`)
 - Standalone runtime (`standalone_runtime.c`)
 - Standard library (`lib/`)
-- Nexus protocol (`nexus/`)
-- Edge Hive (`edge-hive/`)
+- Nexus protocol (`simplex-nexus/`)
+- Edge Hive (`simplex-edge-hive/`)
+- Quantum framework (`simplex-quantum/`)
 
 The following are out of scope:
 

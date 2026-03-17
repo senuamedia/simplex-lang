@@ -16,6 +16,7 @@
 //   - runtime:     Learning loop and checkpointing
 //   - belief:      TASK-014: Grounded beliefs with epistemic metadata
 //   - epistemic:   TASK-014: Epistemic annealing and self-correction
+//   - quantum:     TASK-021: Quantum-classical bridge, epistemic beliefs, neural gates
 
 pub mod tensor;
 pub mod dual;
@@ -28,6 +29,7 @@ pub mod distributed;
 pub mod runtime;
 pub mod belief;
 pub mod epistemic;
+pub mod quantum;
 
 // Re-export core types for convenience
 pub use tensor::{Tensor, DualTensor};
@@ -69,8 +71,26 @@ pub use epistemic::{
     UpdateContext, UpdateResult, UpdateError,
 };
 
+// TASK-021 Phase 6: Quantum learning integration
+pub use quantum::{
+    // Bridge: gradient flow across classical-quantum boundaries
+    quantum_to_dual, quantum_to_dual_standard, quantum_gradient_bridge,
+    measurement_to_tensor, measurement_to_dual_tensor,
+    quantum_loss, quantum_kl_divergence, quantum_fidelity_loss,
+    ParameterShiftResult, collect_parameter_shift_gradients,
+    // Epistemic: quantum measurements as grounded beliefs
+    QuantumBelief, QuantumBeliefRegistry,
+    quantum_belief_new, quantum_confidence, measurement_sufficient, shots_needed,
+    quantum_falsification_check, bell_inequality_test, quantum_evidence_to_belief,
+    // Neural gates: quantum-backed neural computation
+    QuantumNeuralGate, QuantumGateConfig, QuantumGateStats, DispatchMode,
+    quantum_gate_new, quantum_gate_forward, quantum_gate_gradient,
+    quantum_gate_training_mode, quantum_gate_inference_mode,
+    quantum_gate_step, quantum_gate_summary,
+};
+
 /// Library version
-pub const VERSION: &str = "0.13.0";
+pub const VERSION: &str = "0.14.0";
 
 /// Configuration for the @learning annotation
 pub struct LearningAnnotation {

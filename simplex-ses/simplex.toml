@@ -1,6 +1,6 @@
 [package]
 name = "simplex-ses"
-version = "0.12.0"
+version = "0.9.0"
 description = "AWS SES email client for Simplex"
 
 [dependencies]

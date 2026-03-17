@@ -154,7 +154,7 @@ None. This release is fully backwards compatible with 0.10.x.
 
 1. **Update version imports** (if using centralized version):
    ```simplex
-   use lib::version;
+   use simplex_core::version;
    // Now returns "0.11.0"
    ```
 
@@ -210,7 +210,7 @@ None. This release is fully backwards compatible with 0.10.x.
 | `compiler/bootstrap/main.sx` | Source directory tracking |
 | `runtime/standalone_runtime.c` | Added `print_i64` function |
 | `tests/run_tests.sh` | Multi-module test linking |
-| `lib/version.sx` | Version 0.11.0 |
+| `simplex-core/src/version.sx` | Version 0.11.0 |
 | All tools | Version bump to 0.11.0 |
 
 ---

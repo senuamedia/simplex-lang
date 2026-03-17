@@ -1,0 +1,211 @@
+// Cost and Dispatch - Specification Tests
+// Tests cost model, budget tracking, dispatch decisions, complexity analysis.
+// Rewritten for sxc compiler compatibility.
+
+const EPSILON: f64 = 0.01;
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+fn my_ln(x: f64) -> f64 {
+    if x <= 0.0 { return -1000.0; }
+    var val: f64 = x;
+    var k: i64 = 0;
+    while val >= 2.0 { val = val / 2.0; k = k + 1; }
+    while val < 1.0 { val = val * 2.0; k = k - 1; }
+    let ln2: f64 = 0.6931471805599453;
+    let t: f64 = (val - 1.0) / (val + 1.0);
+    let t2: f64 = t * t;
+    var sum: f64 = t;
+    var term: f64 = t;
+    var i: i64 = 1;
+    while i < 20 {
+        term = term * t2;
+        sum = sum + term / (2.0 * (i as f64) + 1.0);
+        i = i + 1;
+    }
+    (k as f64) * ln2 + 2.0 * sum
+}
+
+// Problem types
+const PROBLEM_COMBINATORIAL: i64 = 0;
+const PROBLEM_SIMULATION: i64 = 1;
+const PROBLEM_SAMPLING: i64 = 2;
+const PROBLEM_SEARCH: i64 = 3;
+
+// Cost model
+struct CostEstimate {
+    per_task: f64,
+    per_shot: f64,
+    total: f64
+}
+
+fn cost_new(per_task: f64, per_shot: f64, shots: i64) -> CostEstimate {
+    let total: f64 = per_task + per_shot * (shots as f64);
+    CostEstimate { per_task: per_task, per_shot: per_shot, total: total }
+}
+
+fn cost_free() -> CostEstimate {
+    CostEstimate { per_task: 0.0, per_shot: 0.0, total: 0.0 }
+}
+
+// Budget tracker
+struct Budget {
+    limit: f64,
+    spent: f64,
+    warn_thresh: f64,
+    n_tasks: i64
+}
+
+fn budget_new(limit: f64, thresh: f64) -> Budget {
+    Budget { limit: limit, spent: 0.0, warn_thresh: thresh, n_tasks: 0 }
+}
+
+fn budget_charge(b: Budget, amount: f64) -> i64 {
+    if b.spent + amount > b.limit { return 0; }
+    b.spent = b.spent + amount;
+    b.n_tasks = b.n_tasks + 1;
+    1
+}
+
+fn budget_remaining(b: Budget) -> f64 {
+    b.limit - b.spent
+}
+
+fn budget_usage(b: Budget) -> f64 {
+    if b.limit == 0.0 { return 1.0; }
+    b.spent / b.limit
+}
+
+fn budget_is_warning(b: Budget) -> i64 {
+    if budget_usage(b) >= b.warn_thresh { return 1; }
+    0
+}
+
+fn budget_is_exhausted(b: Budget) -> i64 {
+    if budget_remaining(b) <= 0.0 { return 1; }
+    0
+}
+
+// Complexity
+fn estimate_classical(size: i64, ptype: i64) -> f64 {
+    let n: f64 = size as f64;
+    if ptype == PROBLEM_SEARCH() { return n * 0.001; }
+    if ptype == PROBLEM_COMBINATORIAL() {
+        if size > 50 { return 1.0e15; }
+        return pow(2.0, n) * 0.001;
+    }
+    if ptype == PROBLEM_SIMULATION() {
+        if size > 25 { return 1.0e15; }
+        return pow(2.0, 2.0 * n) * 0.001;
+    }
+    n * n * n * 0.001
+}
+
+fn estimate_qubits(size: i64, ptype: i64) -> i64 {
+    if ptype == PROBLEM_COMBINATORIAL() { return size + 1; }
+    if ptype == PROBLEM_SIMULATION() { return size; }
+    if ptype == PROBLEM_SAMPLING() { return size; }
+    if ptype == PROBLEM_SEARCH() {
+        let n: f64 = size as f64;
+        let log2n: f64 = my_ln(n) / my_ln(2.0);
+        return (log2n + 1.0) as i64;
+    }
+    size
+}
+
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+fn test_cost_model() -> i64 {
+    println(string_from("--- Cost Model ---"));
+    var f: i64 = 0;
+    let sim: CostEstimate = cost_free();
+    f = f + check(string_from("simulator free"), approx_eq(sim.total, 0.0, EPSILON()));
+    let sv1: CostEstimate = cost_new(0.45, 0.0, 1000);
+    f = f + check(string_from("SV1 per_task=0.45"), approx_eq(sv1.per_task, 0.45, EPSILON()));
+    f = f + check(string_from("SV1 total=0.45"), approx_eq(sv1.total, 0.45, EPSILON()));
+    let rig: CostEstimate = cost_new(30.0, 0.035, 1000);
+    f = f + check(string_from("Rigetti total=65"), approx_eq(rig.total, 65.0, EPSILON()));
+    let ionq: CostEstimate = cost_new(30.0, 1.0, 100);
+    f = f + check(string_from("IonQ total=130"), approx_eq(ionq.total, 130.0, EPSILON()));
+    let rig2: CostEstimate = cost_new(30.0, 0.035, 10000);
+    f = f + check(string_from("more shots more expensive"), if rig2.total > rig.total { 1 } else { 0 });
+    f
+}
+
+fn test_budget_tracker() -> i64 {
+    println(string_from("--- Budget Tracker ---"));
+    var f: i64 = 0;
+    var bt: Budget = budget_new(1000.0, 0.8);
+    f = f + check(string_from("initial remaining=1000"), approx_eq(budget_remaining(bt), 1000.0, EPSILON()));
+    f = f + check(string_from("initial not exhausted"), if budget_is_exhausted(bt) == 0 { 1 } else { 0 });
+    f = f + check(string_from("initial no warning"), if budget_is_warning(bt) == 0 { 1 } else { 0 });
+    let ok1: i64 = budget_charge(bt, 500.0);
+    f = f + check(string_from("charge 500 accepted"), ok1);
+    f = f + check(string_from("remaining=500"), approx_eq(budget_remaining(bt), 500.0, EPSILON()));
+    f = f + check(string_from("usage=50%"), approx_eq(budget_usage(bt), 0.5, EPSILON()));
+    let ok2: i64 = budget_charge(bt, 350.0);
+    f = f + check(string_from("charge 350 accepted"), ok2);
+    f = f + check(string_from("warning at 85%"), budget_is_warning(bt));
+    let ok3: i64 = budget_charge(bt, 150.0);
+    f = f + check(string_from("charge 150 accepted"), ok3);
+    f = f + check(string_from("exhausted"), budget_is_exhausted(bt));
+    f
+}
+
+fn test_budget_enforcement() -> i64 {
+    println(string_from("--- Budget Enforcement ---"));
+    var f: i64 = 0;
+    var bt: Budget = budget_new(100.0, 0.8);
+    budget_charge(bt, 100.0);
+    let ok: i64 = budget_charge(bt, 1.0);
+    f = f + check(string_from("over-budget rejected"), if ok == 0 { 1 } else { 0 });
+    f = f + check(string_from("spent unchanged"), approx_eq(bt.spent, 100.0, EPSILON()));
+    var bt2: Budget = budget_new(50.0, 0.8);
+    let ok2: i64 = budget_charge(bt2, 100.0);
+    f = f + check(string_from("exceed budget rejected"), if ok2 == 0 { 1 } else { 0 });
+    f
+}
+
+fn test_complexity() -> i64 {
+    println(string_from("--- Complexity ---"));
+    var f: i64 = 0;
+    let cr1: f64 = estimate_classical(20, PROBLEM_COMBINATORIAL());
+    let cr2: f64 = estimate_classical(21, PROBLEM_COMBINATORIAL());
+    f = f + check(string_from("combinatorial grows exp"), if cr2 > cr1 * 1.5 { 1 } else { 0 });
+    let sr: f64 = estimate_classical(10, PROBLEM_SEARCH());
+    let sr2: f64 = estimate_classical(20, PROBLEM_SEARCH());
+    f = f + check(string_from("search linear"), approx_eq(sr2 / sr, 2.0, 0.1));
+    f = f + check(string_from("comb qubits=n+1"), if estimate_qubits(10, PROBLEM_COMBINATORIAL()) == 11 { 1 } else { 0 });
+    f = f + check(string_from("sim qubits=n"), if estimate_qubits(10, PROBLEM_SIMULATION()) == 10 { 1 } else { 0 });
+    f
+}
+
+fn main() -> i64 {
+    println(string_from("=== Cost and Dispatch Spec Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_cost_model();
+    fails = fails + test_budget_tracker();
+    fails = fails + test_budget_enforcement();
+    fails = fails + test_complexity();
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

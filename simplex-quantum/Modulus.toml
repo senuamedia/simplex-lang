@@ -1,0 +1,15 @@
+# Simplex Quantum Computing Library
+# Phase 1: Core quantum types, gates, circuit builder, and measurement
+#
+# Provides a pure-Simplex quantum computing framework with statevector
+# simulation, standard gate library, and measurement utilities.
+
+[package]
+name = "simplex-quantum"
+version = "0.14.0"
+description = "Quantum computing primitives for Simplex -- types, gates, circuits, measurement"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }

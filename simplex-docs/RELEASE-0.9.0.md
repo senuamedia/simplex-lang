@@ -493,7 +493,7 @@ All tests follow a consistent prefix convention:
 New library for self-optimizing training pipelines:
 
 ```
-lib/simplex-training/
+simplex-training/
 ├── Modulus.toml
 └── src/
     ├── mod.sx

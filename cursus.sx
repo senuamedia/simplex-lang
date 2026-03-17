@@ -6,9 +6,9 @@
 // https://github.com/senuamedia/simplex
 
 // Import shared modules (TASK-011 Phase 1 completion)
-use lib::version;
-use lib::safety;
-use lib::platform;
+use simplex_core::version;
+use simplex_core::safety;
+use simplex_core::platform;
 
 // Version - now uses centralized constant
 fn VERSION() -> i64 { CURSUS_VERSION() }

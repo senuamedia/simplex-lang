@@ -1,0 +1,34 @@
+// Simplex Quantum Backend -- Module Root (sxc-compatible)
+//
+// Quantum backend abstraction layer for executing circuits on:
+// - Local statevector simulator (simulator.sx) -- always available
+// - Amazon Braket stub (braket.sx) -- formats OpenQASM 3.0
+// - IBM Quantum stub (ibm.sx) -- formats Qiskit Runtime JSON
+// - Azure Quantum stub (azure.sx) -- formats IonQ JSON
+//
+// Architecture:
+//   trait.sx      -- MeasResult struct, status constants, naming conventions
+//   simulator.sx  -- Working statevector simulator (H,X,Y,Z,Rx,Ry,Rz,CNOT)
+//   braket.sx     -- Amazon Braket protocol stub
+//   ibm.sx        -- IBM Quantum protocol stub
+//   azure.sx      -- Azure Quantum protocol stub
+//   registry.sx   -- Backend name/handle registry
+//
+// All files compile with sxc. Each has a main() self-test.
+//
+// Gate code convention (shared across all backends):
+//   0=H, 1=X, 2=Y, 3=Z, 4=CNOT, 5=Rx, 6=Ry, 7=Rz
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+fn main() -> i64 {
+    println(string_from("quantum::backend module"));
+    println(string_from("  trait.sx      - MeasResult, status codes"));
+    println(string_from("  simulator.sx  - statevector simulator"));
+    println(string_from("  braket.sx     - Amazon Braket stub"));
+    println(string_from("  ibm.sx        - IBM Quantum stub"));
+    println(string_from("  azure.sx      - Azure Quantum stub"));
+    println(string_from("  registry.sx   - backend registry"));
+    0
+}

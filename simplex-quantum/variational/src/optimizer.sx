@@ -1,0 +1,221 @@
+// simplex-quantum-variational::optimizer - Classical Optimizer Loop
+// Gradient descent and Adam for variational quantum algorithms.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// Optimizer layout (vec):
+//   [0] param_circuit  [1] backend  [2] cost_fn
+//   [3] params (vec of f64 bits)  [4] learning_rate (f64 bits)
+//   [5] max_iterations  [6] tolerance (f64 bits)  [7] grad_clip (f64 bits)
+//   [8] iteration  [9] prev_cost (f64 bits)
+
+fn optimizer_new(lr_bits: i64) -> i64 {
+    let opt: i64 = vec_new();
+    vec_push(opt, 0);
+    vec_push(opt, 0);
+    vec_push(opt, 0);
+    vec_push(opt, vec_new());
+    vec_push(opt, lr_bits);
+    vec_push(opt, 100);
+    vec_push(opt, f64_to_bits(0.000001));
+    vec_push(opt, f64_to_bits(10.0));
+    vec_push(opt, 0);
+    vec_push(opt, f64_to_bits(1000000000000000000000000000000.0));
+    opt
+}
+
+fn optimizer_set_circuit(opt: i64, pc: i64) -> i64 {
+    vec_set(opt, 0, pc);
+    opt
+}
+
+fn optimizer_set_backend(opt: i64, backend: i64) -> i64 {
+    vec_set(opt, 1, backend);
+    opt
+}
+
+fn optimizer_set_cost_fn(opt: i64, cost_fn: i64) -> i64 {
+    vec_set(opt, 2, cost_fn);
+    opt
+}
+
+fn optimizer_set_params(opt: i64, params: i64) -> i64 {
+    vec_set(opt, 3, params);
+    opt
+}
+
+fn optimizer_set_lr(opt: i64, lr_bits: i64) -> i64 {
+    vec_set(opt, 4, lr_bits);
+    opt
+}
+
+fn optimizer_set_max_iter(opt: i64, n: i64) -> i64 {
+    vec_set(opt, 5, n);
+    opt
+}
+
+fn optimizer_set_tolerance(opt: i64, tol_bits: i64) -> i64 {
+    vec_set(opt, 6, tol_bits);
+    opt
+}
+
+fn optimizer_get_params(opt: i64) -> i64 { vec_get(opt, 3) }
+fn optimizer_get_iteration(opt: i64) -> i64 { vec_get(opt, 8) }
+
+// Perform a single gradient descent step.
+// Updates params in-place: theta_i -= lr * grad_i
+// grads = vec of f64 bits (from parameter_shift_gradient)
+// Returns updated params vec handle.
+fn optimizer_step(opt: i64, params: i64, grads: i64) -> i64 {
+    let lr: f64 = bits_to_f64(vec_get(opt, 4));
+    let clip_bits: i64 = vec_get(opt, 7);
+    let clipped: i64 = gradient_clip(grads, clip_bits);
+    let n: i64 = vec_len(params);
+    let updated: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let current: f64 = bits_to_f64(vec_get(params, i));
+        let grad_i: f64 = bits_to_f64(vec_get(clipped, i));
+        let new_val: f64 = current - lr * grad_i;
+        vec_push(updated, f64_to_bits(new_val));
+        i = i + 1;
+    }
+    let iter: i64 = vec_get(opt, 8);
+    vec_set(opt, 8, iter + 1);
+    updated
+}
+
+// Clip gradient to max norm (same as parameter_shift version).
+fn gradient_clip(gradient: i64, max_norm_bits: i64) -> i64 {
+    let norm: f64 = gradient_norm_f(gradient);
+    let max_norm: f64 = bits_to_f64(max_norm_bits);
+    if norm <= max_norm {
+        return gradient;
+    }
+    let scale: f64 = max_norm / norm;
+    let n: i64 = vec_len(gradient);
+    let clipped: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let g: f64 = bits_to_f64(vec_get(gradient, i));
+        vec_push(clipped, f64_to_bits(g * scale));
+        i = i + 1;
+    }
+    clipped
+}
+
+fn gradient_norm_f(gradient: i64) -> f64 {
+    let n: i64 = vec_len(gradient);
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let g: f64 = bits_to_f64(vec_get(gradient, i));
+        sum = sum + g * g;
+        i = i + 1;
+    }
+    if sum <= 0.0 {
+        return 0.0;
+    }
+    var guess: f64 = sum / 2.0;
+    if guess < 1.0 {
+        guess = 1.0;
+    }
+    var iter: i64 = 0;
+    while iter < 20 {
+        guess = (guess + sum / guess) / 2.0;
+        iter = iter + 1;
+    }
+    guess
+}
+
+// Adam optimizer layout (vec):
+//   [0] lr (f64 bits)  [1] beta1 (f64 bits)  [2] beta2 (f64 bits)
+//   [3] epsilon (f64 bits)  [4] m (vec of f64 bits)  [5] v (vec of f64 bits)
+//   [6] t (step count)
+
+fn adam_new(lr_bits: i64, n_params: i64) -> i64 {
+    let adam: i64 = vec_new();
+    vec_push(adam, lr_bits);
+    vec_push(adam, f64_to_bits(0.9));
+    vec_push(adam, f64_to_bits(0.999));
+    vec_push(adam, f64_to_bits(0.00000001));
+    let m: i64 = vec_new();
+    let v: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_params {
+        vec_push(m, f64_to_bits(0.0));
+        vec_push(v, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(adam, m);
+    vec_push(adam, v);
+    vec_push(adam, 0);
+    adam
+}
+
+// Adam step: update params using gradients with adaptive moments.
+// Returns new params vec.
+fn adam_step(adam: i64, params: i64, grads: i64) -> i64 {
+    let lr: f64 = bits_to_f64(vec_get(adam, 0));
+    let beta1: f64 = bits_to_f64(vec_get(adam, 1));
+    let beta2: f64 = bits_to_f64(vec_get(adam, 2));
+    let eps: f64 = bits_to_f64(vec_get(adam, 3));
+    let m: i64 = vec_get(adam, 4);
+    let v: i64 = vec_get(adam, 5);
+    let t: i64 = vec_get(adam, 6) + 1;
+    vec_set(adam, 6, t);
+    let n: i64 = vec_len(params);
+    // Compute bias correction factors
+    var b1t: f64 = 1.0;
+    var b2t: f64 = 1.0;
+    var k: i64 = 0;
+    while k < t {
+        b1t = b1t * beta1;
+        b2t = b2t * beta2;
+        k = k + 1;
+    }
+    let updated: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let g: f64 = bits_to_f64(vec_get(grads, i));
+        let m_prev: f64 = bits_to_f64(vec_get(m, i));
+        let v_prev: f64 = bits_to_f64(vec_get(v, i));
+        let m_new: f64 = beta1 * m_prev + (1.0 - beta1) * g;
+        let v_new: f64 = beta2 * v_prev + (1.0 - beta2) * g * g;
+        vec_set(m, i, f64_to_bits(m_new));
+        vec_set(v, i, f64_to_bits(v_new));
+        let m_hat: f64 = m_new / (1.0 - b1t);
+        let v_hat: f64 = v_new / (1.0 - b2t);
+        // sqrt(v_hat) via Newton's method
+        var sq: f64 = v_hat;
+        if sq < 0.0 {
+            sq = 0.0;
+        }
+        var guess: f64 = sq / 2.0 + 0.001;
+        var it: i64 = 0;
+        while it < 10 {
+            guess = (guess + sq / guess) / 2.0;
+            it = it + 1;
+        }
+        let theta: f64 = bits_to_f64(vec_get(params, i));
+        let theta_new: f64 = theta - lr * m_hat / (guess + eps);
+        vec_push(updated, f64_to_bits(theta_new));
+        i = i + 1;
+    }
+    updated
+}
+
+fn adam_reset(adam: i64, n_params: i64) -> i64 {
+    let m: i64 = vec_get(adam, 4);
+    let v: i64 = vec_get(adam, 5);
+    var i: i64 = 0;
+    while i < n_params {
+        vec_set(m, i, f64_to_bits(0.0));
+        vec_set(v, i, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_set(adam, 6, 0);
+    adam
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

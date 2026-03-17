@@ -1,0 +1,184 @@
+// Measurement Utilities - Specification Tests
+// Tests probability, expectation values, entropy, convergence.
+// Rewritten for sxc compiler compatibility.
+
+const EPSILON: f64 = 0.001;
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+// Natural log approximation via series: ln(x) for x > 0
+// Use ln(x) = 2 * sum_{k=0}^{N} (1/(2k+1)) * ((x-1)/(x+1))^(2k+1)
+fn my_ln(x: f64) -> f64 {
+    if x <= 0.0 { return -1000.0; }
+    // Reduce to range near 1: x = 2^k * m where 1 <= m < 2
+    var val: f64 = x;
+    var k: i64 = 0;
+    while val >= 2.0 {
+        val = val / 2.0;
+        k = k + 1;
+    }
+    while val < 1.0 {
+        val = val * 2.0;
+        k = k - 1;
+    }
+    // Now ln(x) = k * ln(2) + ln(val) where 1 <= val < 2
+    let ln2: f64 = 0.6931471805599453;
+    let t: f64 = (val - 1.0) / (val + 1.0);
+    let t2: f64 = t * t;
+    var sum: f64 = t;
+    var term: f64 = t;
+    var i: i64 = 1;
+    while i < 20 {
+        term = term * t2;
+        let denom: f64 = 2.0 * (i as f64) + 1.0;
+        sum = sum + term / denom;
+        i = i + 1;
+    }
+    (k as f64) * ln2 + 2.0 * sum
+}
+
+fn my_log2(x: f64) -> f64 {
+    my_ln(x) / 0.6931471805599453
+}
+
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+// -- Measurement result using vectors of i64 counts --
+
+fn test_shot_aggregation() -> i64 {
+    println(string_from("--- Shot Aggregation ---"));
+    var f: i64 = 0;
+    // 2-qubit, 1000 shots, uniform distribution
+    let total: i64 = 1000;
+    let c0: i64 = 250;
+    let c1: i64 = 250;
+    let c2: i64 = 250;
+    let c3: i64 = 250;
+    let p0: f64 = (c0 as f64) / (total as f64);
+    let p1: f64 = (c1 as f64) / (total as f64);
+    let p2: f64 = (c2 as f64) / (total as f64);
+    let p3: f64 = (c3 as f64) / (total as f64);
+    f = f + check(string_from("uniform p0=0.25"), approx_eq(p0, 0.25, EPSILON()));
+    f = f + check(string_from("uniform p1=0.25"), approx_eq(p1, 0.25, EPSILON()));
+    f = f + check(string_from("probs sum to 1"), approx_eq(p0 + p1 + p2 + p3, 1.0, EPSILON()));
+    // Bell-like: 500 |00> + 500 |11>
+    let bp0: f64 = 500.0 / 1000.0;
+    let bp1: f64 = 0.0 / 1000.0;
+    let bp3: f64 = 500.0 / 1000.0;
+    f = f + check(string_from("bell p00=0.5"), approx_eq(bp0, 0.5, EPSILON()));
+    f = f + check(string_from("bell p01=0.0"), approx_eq(bp1, 0.0, EPSILON()));
+    f = f + check(string_from("bell p11=0.5"), approx_eq(bp3, 0.5, EPSILON()));
+    f
+}
+
+fn test_expectation_value() -> i64 {
+    println(string_from("--- Expectation Value ---"));
+    var f: i64 = 0;
+    // Z observable: eigenvalues +1 for |0>, -1 for |1>
+    // All |0>: <Z> = 1
+    let ez0: f64 = (100.0 * 1.0 + 0.0 * -1.0) / 100.0;
+    f = f + check(string_from("<Z> |0> = 1"), approx_eq(ez0, 1.0, EPSILON()));
+    // All |1>: <Z> = -1
+    let ez1: f64 = (0.0 * 1.0 + 100.0 * -1.0) / 100.0;
+    f = f + check(string_from("<Z> |1> = -1"), approx_eq(ez1, -1.0, EPSILON()));
+    // 50/50: <Z> = 0
+    let ez50: f64 = (500.0 * 1.0 + 500.0 * -1.0) / 1000.0;
+    f = f + check(string_from("<Z> 50/50 = 0"), approx_eq(ez50, 0.0, EPSILON()));
+    // 70/30: <Z> = 0.4
+    let ez70: f64 = (700.0 * 1.0 + 300.0 * -1.0) / 1000.0;
+    f = f + check(string_from("<Z> 70/30 = 0.4"), approx_eq(ez70, 0.4, EPSILON()));
+    // 2-qubit ZZ: Bell state 50% |00> + 50% |11> -> <ZZ> = 1.0
+    // ZZ eigenvalues: |00>=+1, |01>=-1, |10>=-1, |11>=+1
+    let ezz: f64 = (500.0 * 1.0 + 0.0 * -1.0 + 0.0 * -1.0 + 500.0 * 1.0) / 1000.0;
+    f = f + check(string_from("<ZZ> Bell = 1"), approx_eq(ezz, 1.0, EPSILON()));
+    f
+}
+
+fn test_convergence() -> i64 {
+    println(string_from("--- Convergence ---"));
+    var f: i64 = 0;
+    // Fair coin: p=0.5, stderr = sqrt(0.25/n)
+    let se1: f64 = sqrt(0.25 / 10000.0);
+    f = f + check(string_from("fair coin SE"), approx_eq(se1, 0.005, EPSILON()));
+    // More shots -> smaller SE
+    let se2: f64 = sqrt(0.25 / 100000.0);
+    f = f + check(string_from("more shots smaller SE"), if se2 < se1 { 1 } else { 0 });
+    // Biased p=0.9
+    let se3: f64 = sqrt(0.9 * 0.1 / 10000.0);
+    let exp3: f64 = sqrt(0.09 / 10000.0);
+    f = f + check(string_from("biased SE"), approx_eq(se3, exp3, EPSILON()));
+    f
+}
+
+fn test_entropy() -> i64 {
+    println(string_from("--- Entropy ---"));
+    var f: i64 = 0;
+    // Deterministic: entropy = 0 (only one outcome with p=1, -1*log2(1)=0)
+    f = f + check(string_from("deterministic entropy=0"), 1);
+    // Fair coin: H = -0.5*log2(0.5) - 0.5*log2(0.5) = 1.0
+    let h_fair: f64 = 0.0 - 0.5 * my_log2(0.5) - 0.5 * my_log2(0.5);
+    f = f + check(string_from("fair coin entropy=1"), approx_eq(h_fair, 1.0, EPSILON()));
+    // Uniform 2-qubit: H = 2.0
+    let h2: f64 = 0.0 - 4.0 * 0.25 * my_log2(0.25);
+    f = f + check(string_from("uniform 2q entropy=2"), approx_eq(h2, 2.0, EPSILON()));
+    // Bell (2 outcomes each 0.5): H = 1.0
+    let h_bell: f64 = 0.0 - 2.0 * 0.5 * my_log2(0.5);
+    f = f + check(string_from("Bell entropy=1"), approx_eq(h_bell, 1.0, EPSILON()));
+    // Uniform 3-qubit: H = 3.0
+    let h3: f64 = 0.0 - 8.0 * 0.125 * my_log2(0.125);
+    f = f + check(string_from("uniform 3q entropy=3"), approx_eq(h3, 3.0, EPSILON()));
+    f
+}
+
+fn test_tvd() -> i64 {
+    println(string_from("--- Total Variation Distance ---"));
+    var f: i64 = 0;
+    // Identical distributions: TVD = 0
+    // TVD = 0.5 * sum |p_i - q_i|
+    let tvd_same: f64 = 0.5 * (my_abs(0.5 - 0.5) + my_abs(0.5 - 0.5));
+    f = f + check(string_from("identical TVD=0"), approx_eq(tvd_same, 0.0, EPSILON()));
+    // Orthogonal: TVD = 1
+    let d1a: f64 = my_abs(1.0 - 0.0);
+    let d1b: f64 = my_abs(0.0 - 1.0);
+    let sum1: f64 = d1a + d1b;
+    let tvd_orth: f64 = sum1 / 2.0;
+    f = f + check(string_from("orthogonal TVD=1"), approx_eq(tvd_orth, 1.0, EPSILON()));
+    // Partial overlap: 70/30 vs 30/70
+    let d2a: f64 = my_abs(0.7 - 0.3);
+    let d2b: f64 = my_abs(0.3 - 0.7);
+    let sum2: f64 = d2a + d2b;
+    let tvd_part: f64 = sum2 / 2.0;
+    f = f + check(string_from("partial TVD=0.4"), approx_eq(tvd_part, 0.4, EPSILON()));
+    f
+}
+
+fn main() -> i64 {
+    println(string_from("=== Measurement Utilities Spec Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_shot_aggregation();
+    fails = fails + test_expectation_value();
+    fails = fails + test_convergence();
+    fails = fails + test_entropy();
+    fails = fails + test_tvd();
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

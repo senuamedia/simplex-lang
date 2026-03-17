@@ -1,0 +1,179 @@
+// Edge Hive - Runtime Interface
+// Declares external functions provided by the Simplex runtime
+//
+// These functions are implemented in the C runtime (simplex-runtime)
+// and provide the low-level operations for memory, strings, I/O, and time.
+//
+// The edge-hive uses an i64-handle pattern for compatibility with
+// Simplex 0.14.0's type system. All complex types are represented as
+// i64 handles to runtime-managed objects.
+
+// =============================================================================
+// Vector Operations
+// Runtime-managed dynamic arrays using i64 handles
+// =============================================================================
+
+/// Create a new empty vector
+extern fn vec_new() -> i64;
+
+/// Get the number of elements in a vector
+extern fn vec_len(v: i64) -> i64;
+
+/// Push a value onto the end of a vector
+extern fn vec_push(v: i64, value: i64) -> i64;
+
+/// Pop a value from the end of a vector
+extern fn vec_pop(v: i64) -> i64;
+
+/// Get a value at the given index
+extern fn vec_get(v: i64, index: i64) -> i64;
+
+/// Set a value at the given index
+extern fn vec_set(v: i64, index: i64, value: i64) -> i64;
+
+// =============================================================================
+// String Operations
+// =============================================================================
+
+/// Create a string from a literal (compiler intrinsic)
+extern fn string_from(s: &str) -> i64;
+
+/// Concatenate two strings
+extern fn string_concat(a: i64, b: i64) -> i64;
+
+/// Hash a string (for map keys)
+extern fn string_hash(s: i64) -> i64;
+
+/// Get string length
+extern fn string_len(s: i64) -> i64;
+
+/// Compare two strings (returns -1, 0, or 1)
+extern fn string_cmp(a: i64, b: i64) -> i64;
+
+// =============================================================================
+// Integer to String Conversion
+// =============================================================================
+
+/// Convert an i64 to a string
+extern fn i64_to_string(n: i64) -> i64;
+
+// =============================================================================
+// I/O Operations
+// =============================================================================
+
+/// Print a string without newline
+extern fn print(s: i64) -> i64;
+
+/// Print a string with newline
+extern fn println(s: i64) -> i64;
+
+/// Print an integer
+extern fn print_i64(n: i64) -> i64;
+
+// =============================================================================
+// Time Operations
+// =============================================================================
+
+/// Get current timestamp (seconds since epoch)
+extern fn time_now() -> i64;
+
+/// Extract hour from timestamp (0-23)
+extern fn time_hour(timestamp: i64) -> i64;
+
+/// Extract minute from timestamp (0-59)
+extern fn time_minute(timestamp: i64) -> i64;
+
+/// Extract day of week from timestamp (0=Sunday, 6=Saturday)
+extern fn time_day_of_week(timestamp: i64) -> i64;
+
+// =============================================================================
+// Platform Detection
+// =============================================================================
+
+/// Get the current platform ID
+extern fn get_platform() -> i64;
+
+/// Get available RAM in MB
+extern fn get_available_ram_mb() -> i64;
+
+/// Get available storage in GB
+extern fn get_available_storage_gb() -> i64;
+
+/// Check if GPU is available
+extern fn has_gpu() -> i64;
+
+/// Get battery level (0-100, or -1 if not applicable)
+extern fn get_battery_level() -> i64;
+
+/// Get current network state
+extern fn get_network_state() -> i64;
+
+/// Check if sensor is available
+extern fn has_sensor(sensor_type: i64) -> i64;
+
+/// Get screen dimensions (packed: width | height << 16)
+extern fn get_screen_dimensions() -> i64;
+
+// =============================================================================
+// File I/O (for belief persistence)
+// =============================================================================
+
+/// Open a file for reading, returns handle or 0 on error
+extern fn file_open_read(path: i64) -> i64;
+
+/// Open a file for writing, returns handle or 0 on error
+extern fn file_open_write(path: i64) -> i64;
+
+/// Read entire file contents as a vector of bytes
+extern fn file_read_all(handle: i64) -> i64;
+
+/// Write bytes to file
+extern fn file_write_all(handle: i64, data: i64) -> i64;
+
+/// Close file handle
+extern fn file_close(handle: i64) -> i64;
+
+/// Check if file exists
+extern fn file_exists(path: i64) -> i64;
+
+// =============================================================================
+// Network I/O (for federation)
+// =============================================================================
+
+/// Connect to a WebSocket endpoint, returns handle or 0 on error
+extern fn ws_connect(endpoint: i64) -> i64;
+
+/// Send data on WebSocket
+extern fn ws_send(handle: i64, data: i64) -> i64;
+
+/// Receive data from WebSocket (non-blocking, returns 0 if no data)
+extern fn ws_recv(handle: i64) -> i64;
+
+/// Close WebSocket connection
+extern fn ws_close(handle: i64) -> i64;
+
+/// Check if WebSocket is connected
+extern fn ws_is_connected(handle: i64) -> i64;
+
+// =============================================================================
+// Crypto Operations (for secure belief storage)
+// =============================================================================
+
+/// Hash data with SHA-256, returns hash as i64 handle
+extern fn crypto_sha256(data: i64) -> i64;
+
+/// Generate random bytes
+extern fn crypto_random_bytes(count: i64) -> i64;
+
+// =============================================================================
+// Memory Operations
+// =============================================================================
+
+/// Allocate memory block, returns handle
+extern fn mem_alloc(size: i64) -> i64;
+
+/// Free memory block
+extern fn mem_free(handle: i64) -> i64;
+
+/// Copy memory between blocks
+extern fn mem_copy(dst: i64, src: i64, size: i64) -> i64;

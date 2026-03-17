@@ -1,6 +1,6 @@
 # Simplex Compiler Toolchain
 
-**Version 0.13.0**
+**Version 0.14.0**
 
 This document describes the Simplex compiler toolchain, which is **self-hosted** and compiles to native binaries via LLVM.
 
@@ -12,13 +12,13 @@ The Simplex toolchain consists of the following components:
 
 | Component | Binary | Version | Description |
 |-----------|--------|---------|-------------|
-| **sxc** | `sxc` | v0.13.0 | Simplex Compiler - compiles `.sx` source to native executables |
-| **sxpm** | `sxpm` | v0.13.0 | Package manager with dependency resolution |
-| **cursus** | `cursus` | v0.13.0 | Bytecode VM with garbage collection |
-| **sxdoc** | `sxdoc` | v0.13.0 | Documentation generator |
-| **sxlsp** | `sxlsp` | v0.13.0 | Language Server Protocol implementation |
-| **sxfmt** | `sxfmt` | v0.13.0 | Code formatter with configurable styles |
-| **sxlint** | `sxlint` | v0.13.0 | Static linter with extensible rules |
+| **sxc** | `sxc` | v0.14.0 | Simplex Compiler - compiles `.sx` source to native executables |
+| **sxpm** | `sxpm` | v0.14.0 | Package manager with dependency resolution |
+| **cursus** | `cursus` | v0.14.0 | Bytecode VM with garbage collection |
+| **sxdoc** | `sxdoc` | v0.14.0 | Documentation generator |
+| **sxlsp** | `sxlsp` | v0.14.0 | Language Server Protocol implementation |
+| **sxfmt** | `sxfmt` | v0.14.0 | Code formatter with configurable styles |
+| **sxlint** | `sxlint` | v0.14.0 | Static linter with extensible rules |
 
 All components are written in **Simplex** and compile to native binaries.
 
@@ -125,8 +125,9 @@ simplex-lang/
 ├── simplex-std/src/            # Standard library
 ├── simplex-learning/src/       # Real-time learning library
 ├── simplex-training/src/       # Training pipeline library
-├── edge-hive/src/              # Edge hive runtime
-└── nexus/src/                  # Secure connectivity
+├── simplex-quantum/src/        # Quantum computing framework
+├── simplex-edge-hive/src/      # Edge hive runtime
+└── simplex-nexus/src/          # Secure connectivity
 ```
 
 ---
@@ -511,6 +512,8 @@ tests/
 | 0.10.0 | 2026-01 | sxfmt, sxlint, benchmarking, coverage, error explanations, incremental compilation, source-level stack traces |
 | 0.11.0 | 2026-02 | Module system with `use` imports |
 | 0.12.0 | 2026-03 | Cross-module function imports, automatic LLVM declaration generation, expanded runtime (actors, supervisors, hive, resilience) |
+| 0.13.0 | 2026-03 | Completion & Foundations: 5 compiler bug fixes, complex numbers, matrix algebra, dual number extensions, HTTP client, JSON parser, training pipeline |
+| 0.14.0 | 2026-03 | Quantum Bridge: quantum computing primitives, backend abstraction, variational algorithms, cost-aware dispatch, quantum-enhanced optimization |
 
 ---
 

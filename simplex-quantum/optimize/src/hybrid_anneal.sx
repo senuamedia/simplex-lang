@@ -1,0 +1,203 @@
+// simplex-quantum-optimize::hybrid_anneal - Hybrid Classical-Quantum Annealing
+// Combines simulated annealing with quantum-enhanced optimization.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// HybridAnnealer layout (vec):
+//   [0] temperature (f64 bits)
+//   [1] initial_temp (f64 bits)
+//   [2] cooling_rate (f64 bits)
+//   [3] transition_point (f64 bits)
+//   [4] quantum_fraction (f64 bits)
+//   [5] qaoa_depth
+//   [6] step_count
+//   [7] best_cost (f64 bits)
+//   [8] accepted_count
+//   [9] cost_history (vec handle)
+
+fn annealer_new(temp_bits: i64, cooling_bits: i64) -> i64 {
+    let ha: i64 = vec_new();
+    vec_push(ha, temp_bits);
+    vec_push(ha, temp_bits);
+    vec_push(ha, cooling_bits);
+    vec_push(ha, f64_to_bits(5.0));
+    vec_push(ha, f64_to_bits(0.0));
+    vec_push(ha, 3);
+    vec_push(ha, 0);
+    vec_push(ha, f64_to_bits(1000000000000000000000000000000.0));
+    vec_push(ha, 0);
+    vec_push(ha, vec_new());
+    ha
+}
+
+fn annealer_temperature_bits(ha: i64) -> i64 { vec_get(ha, 0) }
+fn annealer_step_count(ha: i64) -> i64 { vec_get(ha, 6) }
+fn annealer_best_cost_bits(ha: i64) -> i64 { vec_get(ha, 7) }
+fn annealer_quantum_fraction_bits(ha: i64) -> i64 { vec_get(ha, 4) }
+
+// Cool the temperature by one step.
+fn annealer_cool(ha: i64) -> i64 {
+    let temp: f64 = bits_to_f64(vec_get(ha, 0));
+    let rate: f64 = bits_to_f64(vec_get(ha, 2));
+    var new_temp: f64 = temp * rate;
+    if new_temp < 0.00000001 {
+        new_temp = 0.00000001;
+    }
+    vec_set(ha, 0, f64_to_bits(new_temp));
+    ha
+}
+
+// Update quantum fraction based on temperature.
+// Sigmoid: q = 1 / (1 + exp(k * (T - T_transition)))
+fn annealer_update_qfrac(ha: i64) -> i64 {
+    let temp: f64 = bits_to_f64(vec_get(ha, 0));
+    let tp: f64 = bits_to_f64(vec_get(ha, 3));
+    let k: f64 = 2.0 / tp;
+    let exponent: f64 = k * (temp - tp);
+    var clamped: f64 = exponent;
+    if clamped > 20.0 {
+        clamped = 20.0;
+    }
+    if clamped < 0.0 - 20.0 {
+        clamped = 0.0 - 20.0;
+    }
+    let exp_val: f64 = exp_approx(clamped);
+    let qfrac: f64 = 1.0 / (1.0 + exp_val);
+    vec_set(ha, 4, f64_to_bits(qfrac));
+    ha
+}
+
+// Compute Metropolis acceptance probability. Returns f64 bits.
+fn annealer_acceptance_prob(ha: i64, delta_cost_bits: i64) -> i64 {
+    let delta: f64 = bits_to_f64(delta_cost_bits);
+    if delta <= 0.0 {
+        return f64_to_bits(1.0);
+    }
+    let temp: f64 = bits_to_f64(vec_get(ha, 0));
+    if temp < 0.00000001 {
+        return f64_to_bits(0.0);
+    }
+    let exponent: f64 = (0.0 - delta) / temp;
+    if exponent < 0.0 - 20.0 {
+        return f64_to_bits(0.0);
+    }
+    f64_to_bits(exp_approx(exponent))
+}
+
+// Perform one annealing step.
+// solution = vec of 0/1, cost_bits = current cost as f64 bits
+// Returns proposed solution (vec handle). Caller evaluates cost.
+fn annealer_step(ha: i64, solution: i64, cost_bits: i64) -> i64 {
+    annealer_update_qfrac(ha);
+    let n_bits: i64 = vec_len(solution);
+    let step: i64 = vec_get(ha, 6);
+    let flip_idx: i64 = step % n_bits;
+    let neighbor: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_bits {
+        let bit: i64 = vec_get(solution, i);
+        if i == flip_idx {
+            vec_push(neighbor, 1 - bit);
+        } else {
+            vec_push(neighbor, bit);
+        }
+        i = i + 1;
+    }
+    vec_set(ha, 6, step + 1);
+    // Record cost in history
+    let history: i64 = vec_get(ha, 9);
+    vec_push(history, cost_bits);
+    // Cool temperature
+    annealer_cool(ha);
+    neighbor
+}
+
+// Accept or reject a proposal. Returns 1 if accepted.
+fn annealer_accept(ha: i64, proposed_cost_bits: i64, current_cost_bits: i64) -> i64 {
+    let proposed: f64 = bits_to_f64(proposed_cost_bits);
+    let current: f64 = bits_to_f64(current_cost_bits);
+    let delta: f64 = proposed - current;
+    if delta <= 0.0 {
+        let acc: i64 = vec_get(ha, 8);
+        vec_set(ha, 8, acc + 1);
+        let best: f64 = bits_to_f64(vec_get(ha, 7));
+        if proposed < best {
+            vec_set(ha, 7, proposed_cost_bits);
+        }
+        return 1;
+    }
+    let prob: f64 = bits_to_f64(annealer_acceptance_prob(ha, f64_to_bits(delta)));
+    let step: i64 = vec_get(ha, 6);
+    let phi: f64 = 0.6180339887;
+    let step_f: f64 = step as f64;
+    let product: f64 = phi * step_f;
+    let floored: f64 = (product as i64) as f64;
+    let threshold: f64 = product - floored;
+    if threshold < prob {
+        let acc: i64 = vec_get(ha, 8);
+        vec_set(ha, 8, acc + 1);
+        return 1;
+    }
+    0
+}
+
+// Check convergence. Returns 1 if converged.
+fn annealer_is_converged(ha: i64, patience: i64) -> i64 {
+    let temp: f64 = bits_to_f64(vec_get(ha, 0));
+    if temp < 0.00000001 {
+        return 1;
+    }
+    let history: i64 = vec_get(ha, 9);
+    let hlen: i64 = vec_len(history);
+    if hlen < patience {
+        return 0;
+    }
+    let start: i64 = hlen - patience;
+    let first: f64 = bits_to_f64(vec_get(history, start));
+    var max_diff: f64 = 0.0;
+    var i: i64 = start + 1;
+    while i < hlen {
+        let c: f64 = bits_to_f64(vec_get(history, i));
+        var diff: f64 = c - first;
+        if diff < 0.0 {
+            diff = 0.0 - diff;
+        }
+        if diff > max_diff {
+            max_diff = diff;
+        }
+        i = i + 1;
+    }
+    if max_diff < 0.0000000001 { 1 } else { 0 }
+}
+
+// Approximate exp(x) using Taylor series and repeated squaring.
+fn exp_approx(x: f64) -> f64 {
+    if x > 0.0 - 1.0 {
+        if x < 1.0 {
+            let x2: f64 = x * x;
+            let x3: f64 = x2 * x;
+            let x4: f64 = x3 * x;
+            return 1.0 + x + x2 / 2.0 + x3 / 6.0 + x4 / 24.0;
+        }
+    }
+    if x >= 0.0 {
+        var result: f64 = 1.0;
+        var remaining: f64 = x;
+        let e: f64 = 2.71828182845904523536;
+        while remaining >= 1.0 {
+            result = result * e;
+            remaining = remaining - 1.0;
+        }
+        let f: f64 = remaining;
+        let f2: f64 = f * f;
+        result = result * (1.0 + f + f2 / 2.0 + f * f2 / 6.0);
+        return result;
+    }
+    let pos: f64 = exp_approx(0.0 - x);
+    if pos > 0.000000000000000000000000000001 {
+        return 1.0 / pos;
+    }
+    0.0
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

@@ -81,10 +81,10 @@ let val = *ptr;     // inttoptr + load
 
 ### StringBuilder Library
 
-New `lib/strings.sx` provides O(n) string building.
+New `simplex-core/src/strings.sx` provides O(n) string building.
 
 ```simplex
-use lib::strings;
+use simplex_core::strings;
 
 let sb = string_builder_new();
 string_builder_append(sb, "Hello, ");
@@ -94,7 +94,7 @@ let result = string_builder_to_string(sb);
 
 ### GGUF Format Specification
 
-`lib/llm.sx` provides GGUF format specification and LLM integration primitives for local model loading.
+`simplex-core/src/llm.sx` provides GGUF format specification and LLM integration primitives for local model loading.
 
 ### SLM Runtime Stubs
 
@@ -243,7 +243,7 @@ Single-file test mode added: `./run_tests.sh f path/to/test`
 
 1. **Update version imports** (if using centralized version):
    ```simplex
-   use lib::version;
+   use simplex_core::version;
    // Now returns "0.12.0"
    ```
 
@@ -270,7 +270,7 @@ Single-file test mode added: `./run_tests.sh f path/to/test`
 
 4. **Use StringBuilder for string operations**:
    ```simplex
-   use lib::strings;
+   use simplex_core::strings;
    let sb = string_builder_new();
    ```
 
@@ -310,13 +310,13 @@ Single-file test mode added: `./run_tests.sh f path/to/test`
 | `compiler/bootstrap/main.sx` | Self-hosting compiler updates |
 | `compiler/bootstrap/error.sx` | Error handling updates |
 | `runtime/standalone_runtime.c` | Expanded to 19,589 lines with 300+ functions |
-| `lib/strings.sx` | NEW - StringBuilder library |
-| `lib/safety.sx` | Safe memory management utilities |
-| `lib/llm.sx` | GGUF format specification |
+| `simplex-core/src/strings.sx` | NEW - StringBuilder library |
+| `simplex-core/src/safety.sx` | Safe memory management utilities |
+| `simplex-core/src/llm.sx` | GGUF format specification |
 | `runtime/slm.sx` | NEW - SLM runtime stubs |
 | `sxdoc-index.sx` | NEW - API documentation index |
 | `build.sh` | SQLite3 removed, build system improvements |
-| `lib/version.sx` | Version 0.12.0 |
+| `simplex-core/src/version.sx` | Version 0.12.0 |
 | All tools | Version bump to 0.12.0 |
 
 ---

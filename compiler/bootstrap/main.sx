@@ -12,7 +12,7 @@
 //   - codegen.sx: gen_program_with_module, gen_program_with_debug
 
 // Version
-fn VERSION() -> i64 { string_from("0.13.0") }
+fn VERSION() -> i64 { string_from("0.14.0") }
 
 // CLI argument parsing result
 // Layout: command(0), input_files(1), output_file(2), emit_type(3), verbose(4), force(5), show_deps(6), auto_deps(7), debug_info(8)

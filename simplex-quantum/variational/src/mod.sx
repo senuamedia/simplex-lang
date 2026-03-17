@@ -1,0 +1,101 @@
+// simplex-quantum-variational - Variational Quantum Algorithms
+//
+// Phase 3 of the Simplex Quantum Bridge: the hybrid classical-quantum
+// optimization layer. This module provides:
+//
+// - **Parameterized circuits**: Circuit templates with symbolic rotation angles
+// - **Parameter-shift gradients**: Exact quantum gradient estimation
+// - **Classical optimizers**: Gradient descent and Adam for parameter updates
+// - **VQE**: Variational Quantum Eigensolver for chemistry/physics
+// - **QAOA**: Quantum Approximate Optimization Algorithm for combinatorics
+//
+// # Architecture
+//
+// The variational loop works as follows:
+//
+//   1. Build a parameterized circuit (ansatz)
+//   2. Bind current parameter values to produce a concrete circuit
+//   3. Execute on a quantum backend (simulator or QPU)
+//   4. Compute gradients via the parameter-shift rule
+//   5. Update parameters using a classical optimizer (Adam)
+//   6. Repeat until convergence
+//
+// The parameter-shift rule provides exact analytic gradients for quantum
+// circuits --no finite differences needed. Combined with dual numbers from
+// simplex-std for classical parameter tracking, this gives a fully
+// differentiable hybrid optimization pipeline.
+//
+// # Example: VQE for H2
+//
+// ```simplex
+// use quantum::variational::vqe::{h2_hamiltonian, build_hea_ansatz, vqe_new, vqe_run};
+//
+// let hamiltonian = h2_hamiltonian();
+// let ansatz = build_hea_ansatz(2, 2);
+// let vqe = vqe_new(hamiltonian, ansatz, backend);
+// let result = vqe_run(vqe, 200, 1024);
+// // Ground-state energy should approach -1.137 Hartree
+// ```
+//
+// # Example: QAOA for MaxCut
+//
+// ```simplex
+// use quantum::variational::qaoa::{qaoa_new, qaoa_run, edge_new, maxcut_evaluate};
+//
+// let edges = vec_new();
+// vec_push(edges, edge_new(0, 1));
+// vec_push(edges, edge_new(1, 2));
+// vec_push(edges, edge_new(0, 2));
+//
+// let qaoa = qaoa_new(edges, 3, 2);
+// let result = qaoa_run(qaoa, backend, 100, 1024);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+mod param_circuit;
+mod parameter_shift;
+mod optimizer;
+mod vqe;
+mod qaoa;
+
+// =============================================================================
+// Re-exports: Parameterized Circuits
+// =============================================================================
+
+use param_circuit::{
+    ParameterizedCircuit, BoundCircuit, GateInstruction, param_circuit_new, param_add, param_bind, param_bind_current, param_count, param_get_names, param_get_value, param_set_value, param_h, param_x, param_y, param_z, param_cnot, param_cz, param_swap, param_s, param_t, param_rx, param_ry, param_rz, param_measure, param_measure_all, param_n_qubits, param_n_instructions, param_depth,
+};
+
+// =============================================================================
+// Re-exports: Parameter-Shift Gradient
+// =============================================================================
+
+use parameter_shift::{
+    parameter_shift_gradient, parameter_shift_gradient_with_shots, shot_budget_allocate, gradient_variance_estimate, gradient_converged, gradient_norm, gradient_clip,
+};
+
+// =============================================================================
+// Re-exports: Optimizers
+// =============================================================================
+
+use optimizer::{
+    VariationalOptimizer, AdamOptimizer, OptimizationResult, optimizer_new, optimizer_set_lr, optimizer_set_max_iter, optimizer_set_tolerance, optimizer_set_grad_clip, optimizer_step, optimizer_run, optimizer_get_params, optimizer_get_iteration, adam_optimizer_new, adam_set_lr, adam_set_betas, adam_set_max_iter, adam_set_tolerance, adam_set_grad_clip, adam_step, adam_run, adam_get_params, adam_get_iteration, adam_reset_state, opt_result_cost, opt_result_params, opt_result_iterations, opt_result_converged, opt_result_history,
+};
+
+// =============================================================================
+// Re-exports: VQE
+// =============================================================================
+
+use vqe::{
+    VQE, VQEResult, Hamiltonian, PauliString, vqe_new, vqe_set_lr, vqe_set_tolerance, vqe_run, vqe_run_with_params, vqe_result_energy, vqe_result_params, vqe_result_iterations, vqe_result_converged, vqe_result_history, hamiltonian_new, hamiltonian_add_term, hamiltonian_n_terms, hamiltonian_n_qubits, hamiltonian_coefficient, hamiltonian_term, pauli_string_new, pauli_string_set, pauli_string_get, pauli_string_is_identity, pauli_string_weight, build_hea_ansatz, build_hea_ansatz_with_superposition, estimate_expectation, estimate_energy, h2_hamiltonian,
+};
+
+// =============================================================================
+// Re-exports: QAOA
+// =============================================================================
+
+use qaoa::{
+    QAOA, QAOAResult, Edge, qaoa_new, qaoa_set_lr, qaoa_set_tolerance, qaoa_circuit, qaoa_run, qaoa_result_cost, qaoa_result_gammas, qaoa_result_betas, qaoa_result_solution, qaoa_result_iterations, qaoa_result_converged, edge_new, edge_new_weighted, maxcut_evaluate, maxcut_format_solution, complete_graph, cycle_graph, path_graph, graph_n_edges, graph_max_degree,
+};

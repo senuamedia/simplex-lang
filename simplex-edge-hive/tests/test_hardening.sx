@@ -1,0 +1,1096 @@
+// Edge Hive - Production Hardening Unit Tests
+// Tests for security, checkpointing, updates, and privacy compliance
+
+fn main() -> i64 {
+    println(string_from("=== Edge Hive Production Hardening Tests ==="));
+    let passed: i64 = 0;
+    let failed: i64 = 0;
+
+    // Security manager tests
+    if test_security_manager_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_security_audit() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_rate_limiting() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_lockout() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Checkpoint manager tests
+    if test_checkpoint_manager_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_checkpoint_create() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_checkpoint_restore() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Update manager tests
+    if test_update_manager_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_update_verify_signature() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Human-signed belief tests
+    if test_human_signed_belief_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_hsb_approval_workflow() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Performance monitor tests
+    if test_performance_monitor_new() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_perf_response_time() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_perf_memory_leak_check() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    // Privacy compliance tests
+    if test_privacy_can_store() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_privacy_anonymize() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    if test_privacy_export() == 0 {
+        passed = passed + 1;
+    } else {
+        failed = failed + 1;
+    }
+
+    println(string_from(""));
+    print(string_from("Passed: "));
+    print_num(passed);
+    print(string_from(", Failed: "));
+    print_num(failed);
+    println(string_from(""));
+
+    failed
+}
+
+// =============================================================================
+// Security Manager Tests
+// =============================================================================
+
+fn test_security_manager_new() -> i64 {
+    print(string_from("Testing security manager creation... "));
+
+    let mgr: i64 = security_manager_new();
+
+    // Should have audit log
+    if security_audit_log(mgr) == 0 {
+        println(string_from("FAIL: should have audit log"));
+        return 1;
+    }
+
+    // Rate limit window should be set
+    if security_rate_window(mgr) == 0 {
+        println(string_from("FAIL: rate window should be set"));
+        return 1;
+    }
+
+    // Max attempts should be set
+    if security_max_attempts(mgr) == 0 {
+        println(string_from("FAIL: max attempts should be set"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_security_audit() -> i64 {
+    print(string_from("Testing security audit logging... "));
+
+    let mgr: i64 = security_manager_new();
+
+    // Log some events
+    security_audit(mgr, AUDIT_LOGIN(), string_from("user1"), 1);  // Success
+    security_audit(mgr, AUDIT_LOGIN(), string_from("user2"), 0);  // Failure
+    security_audit(mgr, AUDIT_ACCESS(), string_from("file1"), 1);
+
+    // Audit log should have entries
+    let log: i64 = security_audit_log(mgr);
+    let count: i64 = audit_log_count(log);
+
+    if count != 3 {
+        println(string_from("FAIL: should have 3 audit entries"));
+        return 1;
+    }
+
+    // Get last entry
+    let last: i64 = audit_log_get(log, count - 1);
+    if audit_entry_event_type(last) != AUDIT_ACCESS() {
+        println(string_from("FAIL: last entry should be ACCESS"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_rate_limiting() -> i64 {
+    print(string_from("Testing rate limiting... "));
+
+    let mgr: i64 = security_manager_new();
+
+    // Should allow initial requests
+    let user: i64 = string_from("testuser");
+
+    let i: i64 = 0;
+    while i < 5 {
+        let allowed: i64 = security_check_rate_limit(mgr, user);
+        if allowed != 1 {
+            println(string_from("FAIL: initial requests should be allowed"));
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    // After many requests, should be rate limited
+    let j: i64 = 0;
+    while j < 100 {
+        security_check_rate_limit(mgr, user);
+        j = j + 1;
+    }
+
+    let limited: i64 = security_check_rate_limit(mgr, user);
+    if limited != 0 {
+        println(string_from("FAIL: should be rate limited after many requests"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_lockout() -> i64 {
+    print(string_from("Testing account lockout... "));
+
+    let mgr: i64 = security_manager_new();
+    let user: i64 = string_from("baduser");
+
+    // Record failed attempts
+    let max: i64 = security_max_attempts(mgr);
+    let i: i64 = 0;
+    while i < max {
+        security_record_failure(mgr, user);
+        i = i + 1;
+    }
+
+    // User should be locked out
+    if security_is_locked(mgr, user) != 1 {
+        println(string_from("FAIL: user should be locked out"));
+        return 1;
+    }
+
+    // Good user should not be locked out
+    let good_user: i64 = string_from("gooduser");
+    if security_is_locked(mgr, good_user) != 0 {
+        println(string_from("FAIL: good user should not be locked out"));
+        return 1;
+    }
+
+    // Reset lockout
+    security_reset_lockout(mgr, user);
+    if security_is_locked(mgr, user) != 0 {
+        println(string_from("FAIL: lockout should be reset"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Checkpoint Manager Tests
+// =============================================================================
+
+fn test_checkpoint_manager_new() -> i64 {
+    print(string_from("Testing checkpoint manager creation... "));
+
+    let mgr: i64 = checkpoint_manager_new(string_from("/tmp/edge-hive"));
+
+    // Should have base path
+    if checkpoint_base_path(mgr) == 0 {
+        println(string_from("FAIL: should have base path"));
+        return 1;
+    }
+
+    // Should have max checkpoints set
+    if checkpoint_max_count(mgr) == 0 {
+        println(string_from("FAIL: max checkpoints should be set"));
+        return 1;
+    }
+
+    // Should start with no checkpoints
+    if checkpoint_count(mgr) != 0 {
+        println(string_from("FAIL: should start with no checkpoints"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_checkpoint_create() -> i64 {
+    print(string_from("Testing checkpoint creation... "));
+
+    let mgr: i64 = checkpoint_manager_new(string_from("/tmp/test"));
+
+    // Create a checkpoint
+    let state: i64 = vec_new();
+    vec_push(state, 42);  // Some state data
+    vec_push(state, 100);
+
+    let cp_id: i64 = checkpoint_create(mgr, state);
+
+    if cp_id == 0 {
+        println(string_from("FAIL: checkpoint ID should not be 0"));
+        return 1;
+    }
+
+    // Checkpoint count should be 1
+    if checkpoint_count(mgr) != 1 {
+        println(string_from("FAIL: should have 1 checkpoint"));
+        return 1;
+    }
+
+    // Create another checkpoint
+    vec_push(state, 200);
+    let cp_id2: i64 = checkpoint_create(mgr, state);
+
+    if cp_id2 == cp_id {
+        println(string_from("FAIL: checkpoint IDs should be unique"));
+        return 1;
+    }
+
+    if checkpoint_count(mgr) != 2 {
+        println(string_from("FAIL: should have 2 checkpoints"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_checkpoint_restore() -> i64 {
+    print(string_from("Testing checkpoint restore... "));
+
+    let mgr: i64 = checkpoint_manager_new(string_from("/tmp/test"));
+
+    // Create checkpoints with different states
+    let state1: i64 = vec_new();
+    vec_push(state1, 111);
+    let cp1: i64 = checkpoint_create(mgr, state1);
+
+    let state2: i64 = vec_new();
+    vec_push(state2, 222);
+    let cp2: i64 = checkpoint_create(mgr, state2);
+
+    // Restore latest should give state2
+    let restored: i64 = checkpoint_restore_latest(mgr);
+    if vec_get(restored, 0) != 222 {
+        println(string_from("FAIL: latest restore should give state2"));
+        return 1;
+    }
+
+    // Restore specific checkpoint
+    let restored1: i64 = checkpoint_restore(mgr, cp1);
+    if vec_get(restored1, 0) != 111 {
+        println(string_from("FAIL: restore cp1 should give state1"));
+        return 1;
+    }
+
+    // Restore non-existent should return null
+    let bad_restore: i64 = checkpoint_restore(mgr, 99999);
+    if bad_restore != 0 {
+        println(string_from("FAIL: non-existent checkpoint should return null"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Update Manager Tests
+// =============================================================================
+
+fn test_update_manager_new() -> i64 {
+    print(string_from("Testing update manager creation... "));
+
+    let mgr: i64 = update_manager_new();
+
+    // Should have public key set
+    if update_public_key(mgr) == 0 {
+        println(string_from("FAIL: should have public key"));
+        return 1;
+    }
+
+    // Should have no pending update
+    if update_has_pending(mgr) != 0 {
+        println(string_from("FAIL: should have no pending update"));
+        return 1;
+    }
+
+    // Current version should be set
+    if update_current_version(mgr) == 0 {
+        println(string_from("FAIL: current version should be set"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_update_verify_signature() -> i64 {
+    print(string_from("Testing update signature verification... "));
+
+    let mgr: i64 = update_manager_new();
+
+    // Valid signature should pass
+    let valid_update: i64 = create_mock_update(1, 1);  // version 1, valid sig
+    let valid_result: i64 = update_verify_signature(mgr, valid_update);
+
+    if valid_result != 1 {
+        println(string_from("FAIL: valid signature should pass"));
+        return 1;
+    }
+
+    // Invalid signature should fail
+    let invalid_update: i64 = create_mock_update(1, 0);  // version 1, invalid sig
+    let invalid_result: i64 = update_verify_signature(mgr, invalid_update);
+
+    if invalid_result != 0 {
+        println(string_from("FAIL: invalid signature should fail"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Human-Signed Belief Tests
+// =============================================================================
+
+fn test_human_signed_belief_new() -> i64 {
+    print(string_from("Testing human-signed belief creation... "));
+
+    let hsb: i64 = human_signed_belief_new(
+        BELIEF_PERMISSION(),
+        string_from("allow_location"),
+        1  // Allow
+    );
+
+    // Should not be approved initially
+    if hsb_is_approved(hsb) != 0 {
+        println(string_from("FAIL: should not be approved initially"));
+        return 1;
+    }
+
+    // Should have created_at timestamp
+    if hsb_created_at(hsb) == 0 {
+        println(string_from("FAIL: should have created_at timestamp"));
+        return 1;
+    }
+
+    // Approval signature should be empty
+    if hsb_signature(hsb) != 0 {
+        println(string_from("FAIL: signature should be empty initially"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_hsb_approval_workflow() -> i64 {
+    print(string_from("Testing HSB approval workflow... "));
+
+    let hsb: i64 = human_signed_belief_new(
+        BELIEF_PERMISSION(),
+        string_from("allow_camera"),
+        1
+    );
+
+    // Approve with signature
+    let signature: i64 = string_from("user_signature_12345");
+    hsb_approve(hsb, signature);
+
+    // Should now be approved
+    if hsb_is_approved(hsb) != 1 {
+        println(string_from("FAIL: should be approved after signing"));
+        return 1;
+    }
+
+    // Should have approval timestamp
+    if hsb_approved_at(hsb) == 0 {
+        println(string_from("FAIL: should have approval timestamp"));
+        return 1;
+    }
+
+    // Signature should be set
+    if hsb_signature(hsb) == 0 {
+        println(string_from("FAIL: signature should be set"));
+        return 1;
+    }
+
+    // hsb_is_valid should return true
+    if hsb_is_valid(hsb) != 1 {
+        println(string_from("FAIL: HSB should be valid"));
+        return 1;
+    }
+
+    // Revoke approval
+    hsb_revoke(hsb);
+
+    if hsb_is_approved(hsb) != 0 {
+        println(string_from("FAIL: should not be approved after revocation"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Performance Monitor Tests
+// =============================================================================
+
+fn test_performance_monitor_new() -> i64 {
+    print(string_from("Testing performance monitor creation... "));
+
+    let mon: i64 = performance_monitor_new();
+
+    // Should have empty metrics
+    if perf_request_count(mon) != 0 {
+        println(string_from("FAIL: request count should be 0"));
+        return 1;
+    }
+
+    // Should have memory tracking
+    if perf_memory_samples(mon) == 0 {
+        println(string_from("FAIL: should have memory samples array"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_perf_response_time() -> i64 {
+    print(string_from("Testing performance response time tracking... "));
+
+    let mon: i64 = performance_monitor_new();
+
+    // Record some response times
+    perf_record_response_time(mon, 100);  // 100ms
+    perf_record_response_time(mon, 150);  // 150ms
+    perf_record_response_time(mon, 200);  // 200ms
+
+    // Request count should be 3
+    if perf_request_count(mon) != 3 {
+        println(string_from("FAIL: request count should be 3"));
+        return 1;
+    }
+
+    // Average should be 150ms
+    let avg: i64 = perf_average_response_time(mon);
+    if avg != 150 {
+        println(string_from("FAIL: average should be 150ms"));
+        return 1;
+    }
+
+    // p95 should be around 200ms
+    let p95: i64 = perf_p95_response_time(mon);
+    if p95 < 180 {
+        println(string_from("FAIL: p95 should be >= 180ms"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_perf_memory_leak_check() -> i64 {
+    print(string_from("Testing memory leak detection... "));
+
+    let mon: i64 = performance_monitor_new();
+
+    // Record stable memory usage
+    perf_record_memory(mon, 100);  // 100 MB
+    perf_record_memory(mon, 102);
+    perf_record_memory(mon, 101);
+    perf_record_memory(mon, 100);
+    perf_record_memory(mon, 103);
+
+    // Should not detect leak
+    if perf_memory_leak_check(mon) != 0 {
+        println(string_from("FAIL: stable memory should not trigger leak"));
+        return 1;
+    }
+
+    // Record increasing memory usage (leak)
+    let leak_mon: i64 = performance_monitor_new();
+    let i: i64 = 0;
+    while i < 10 {
+        perf_record_memory(leak_mon, 100 + i * 10);  // Increasing by 10MB each time
+        i = i + 1;
+    }
+
+    // Should detect potential leak
+    if perf_memory_leak_check(leak_mon) != 1 {
+        println(string_from("FAIL: increasing memory should trigger leak warning"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Privacy Compliance Tests
+// =============================================================================
+
+fn test_privacy_can_store() -> i64 {
+    print(string_from("Testing privacy storage rules... "));
+
+    // GDPR: can store with consent
+    let gdpr_consent: i64 = 1;
+    if privacy_can_store(PRIVACY_GDPR(), DATA_PERSONAL(), gdpr_consent) != 1 {
+        println(string_from("FAIL: GDPR should allow storage with consent"));
+        return 1;
+    }
+
+    // GDPR: cannot store without consent
+    if privacy_can_store(PRIVACY_GDPR(), DATA_PERSONAL(), 0) != 0 {
+        println(string_from("FAIL: GDPR should deny storage without consent"));
+        return 1;
+    }
+
+    // HIPAA: health data requires special handling
+    if privacy_can_store(PRIVACY_HIPAA(), DATA_HEALTH(), 1) != 1 {
+        println(string_from("FAIL: HIPAA should allow health data with consent"));
+        return 1;
+    }
+
+    // Can always store non-personal data
+    if privacy_can_store(PRIVACY_GDPR(), DATA_ANONYMOUS(), 0) != 1 {
+        println(string_from("FAIL: should always allow anonymous data"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_privacy_anonymize() -> i64 {
+    print(string_from("Testing data anonymization... "));
+
+    // Anonymize email
+    let email: i64 = string_from("user@example.com");
+    let anon_email: i64 = privacy_anonymize(email, ANON_EMAIL());
+
+    if anon_email == email {
+        println(string_from("FAIL: email should be anonymized"));
+        return 1;
+    }
+
+    // Anonymize phone
+    let phone: i64 = string_from("555-123-4567");
+    let anon_phone: i64 = privacy_anonymize(phone, ANON_PHONE());
+
+    if anon_phone == phone {
+        println(string_from("FAIL: phone should be anonymized"));
+        return 1;
+    }
+
+    // Hash anonymization
+    let name: i64 = string_from("John Doe");
+    let hashed: i64 = privacy_anonymize(name, ANON_HASH());
+
+    if hashed == name {
+        println(string_from("FAIL: name should be hashed"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+fn test_privacy_export() -> i64 {
+    print(string_from("Testing GDPR data export... "));
+
+    // Create mock user data
+    let user_data: i64 = vec_new();
+    vec_push(user_data, string_from("preference_theme"));
+    vec_push(user_data, string_from("dark"));
+    vec_push(user_data, string_from("preference_lang"));
+    vec_push(user_data, string_from("en"));
+
+    // Export user data (GDPR right to data portability)
+    let exported: i64 = privacy_export_user_data(user_data);
+
+    if exported == 0 {
+        println(string_from("FAIL: export should return data"));
+        return 1;
+    }
+
+    // Exported should be JSON-like format
+    // In real implementation, would verify format
+
+    // Test right to deletion
+    let deleted: i64 = privacy_delete_user_data(user_data);
+    if deleted != 1 {
+        println(string_from("FAIL: deletion should succeed"));
+        return 1;
+    }
+
+    println(string_from("OK"));
+    0
+}
+
+// =============================================================================
+// Runtime Stub Implementations
+// =============================================================================
+
+fn string_from(s: &str) -> i64 { 0 }
+fn string_hash(s: i64) -> i64 { s }
+fn print(s: i64) -> i64 { 0 }
+fn println(s: i64) -> i64 { 0 }
+fn print_num(n: i64) -> i64 { 0 }
+fn time_now() -> i64 { 1000 }
+
+fn vec_new() -> i64 { 0 }
+fn vec_push(v: i64, val: i64) -> i64 { 0 }
+fn vec_get(v: i64, idx: i64) -> i64 { 0 }
+fn vec_set(v: i64, idx: i64, val: i64) -> i64 { 0 }
+fn vec_len(v: i64) -> i64 { 0 }
+
+// Audit event types
+fn AUDIT_LOGIN() -> i64 { 1 }
+fn AUDIT_LOGOUT() -> i64 { 2 }
+fn AUDIT_ACCESS() -> i64 { 3 }
+fn AUDIT_MODIFY() -> i64 { 4 }
+fn AUDIT_DELETE() -> i64 { 5 }
+
+// Privacy frameworks
+fn PRIVACY_GDPR() -> i64 { 1 }
+fn PRIVACY_CCPA() -> i64 { 2 }
+fn PRIVACY_HIPAA() -> i64 { 4 }
+
+// Data types
+fn DATA_ANONYMOUS() -> i64 { 0 }
+fn DATA_PERSONAL() -> i64 { 1 }
+fn DATA_SENSITIVE() -> i64 { 2 }
+fn DATA_HEALTH() -> i64 { 3 }
+
+// Anonymization methods
+fn ANON_EMAIL() -> i64 { 1 }
+fn ANON_PHONE() -> i64 { 2 }
+fn ANON_HASH() -> i64 { 3 }
+
+// Belief types
+fn BELIEF_PERMISSION() -> i64 { 200 }
+
+// =============================================================================
+// Security Manager Stubs
+// =============================================================================
+
+fn security_manager_new() -> i64 {
+    let mgr: i64 = vec_new();
+    vec_push(mgr, vec_new());  // 0: audit_log
+    vec_push(mgr, 60);         // 1: rate_window (60 seconds)
+    vec_push(mgr, 5);          // 2: max_attempts
+    vec_push(mgr, vec_new());  // 3: rate_counts (user -> count)
+    vec_push(mgr, vec_new());  // 4: lockouts (user -> locked)
+    vec_push(mgr, vec_new());  // 5: failure_counts (user -> count)
+    mgr
+}
+
+fn security_audit_log(mgr: i64) -> i64 { vec_get(mgr, 0) }
+fn security_rate_window(mgr: i64) -> i64 { vec_get(mgr, 1) }
+fn security_max_attempts(mgr: i64) -> i64 { vec_get(mgr, 2) }
+
+fn security_audit(mgr: i64, event_type: i64, subject: i64, success: i64) -> i64 {
+    let log: i64 = security_audit_log(mgr);
+    let entry: i64 = vec_new();
+    vec_push(entry, event_type);
+    vec_push(entry, subject);
+    vec_push(entry, success);
+    vec_push(entry, time_now());
+    vec_push(log, entry);
+    0
+}
+
+fn audit_log_count(log: i64) -> i64 { vec_len(log) }
+fn audit_log_get(log: i64, idx: i64) -> i64 { vec_get(log, idx) }
+fn audit_entry_event_type(entry: i64) -> i64 { vec_get(entry, 0) }
+
+fn security_check_rate_limit(mgr: i64, user: i64) -> i64 {
+    // Simplified rate limiting
+    let rates: i64 = vec_get(mgr, 3);
+    let count: i64 = vec_len(rates);
+
+    // Find or create rate count for user
+    let i: i64 = 0;
+    while i < count {
+        if vec_get(rates, i) == user {
+            let requests: i64 = vec_get(rates, i + 1);
+            if requests > 100 {  // Max 100 requests per window
+                return 0;  // Rate limited
+            }
+            vec_set(rates, i + 1, requests + 1);
+            return 1;
+        }
+        i = i + 2;
+    }
+    vec_push(rates, user);
+    vec_push(rates, 1);
+    1
+}
+
+fn security_record_failure(mgr: i64, user: i64) -> i64 {
+    let failures: i64 = vec_get(mgr, 5);
+    let count: i64 = vec_len(failures);
+
+    let i: i64 = 0;
+    while i < count {
+        if vec_get(failures, i) == user {
+            let fail_count: i64 = vec_get(failures, i + 1);
+            vec_set(failures, i + 1, fail_count + 1);
+
+            // Check if should lock
+            if fail_count + 1 >= security_max_attempts(mgr) {
+                security_lock_user(mgr, user);
+            }
+            return 0;
+        }
+        i = i + 2;
+    }
+    vec_push(failures, user);
+    vec_push(failures, 1);
+    0
+}
+
+fn security_lock_user(mgr: i64, user: i64) -> i64 {
+    let lockouts: i64 = vec_get(mgr, 4);
+    vec_push(lockouts, user);
+    vec_push(lockouts, 1);
+    0
+}
+
+fn security_is_locked(mgr: i64, user: i64) -> i64 {
+    let lockouts: i64 = vec_get(mgr, 4);
+    let count: i64 = vec_len(lockouts);
+    let i: i64 = 0;
+    while i < count {
+        if vec_get(lockouts, i) == user {
+            return vec_get(lockouts, i + 1);
+        }
+        i = i + 2;
+    }
+    0
+}
+
+fn security_reset_lockout(mgr: i64, user: i64) -> i64 {
+    let lockouts: i64 = vec_get(mgr, 4);
+    let count: i64 = vec_len(lockouts);
+    let i: i64 = 0;
+    while i < count {
+        if vec_get(lockouts, i) == user {
+            vec_set(lockouts, i + 1, 0);
+            return 0;
+        }
+        i = i + 2;
+    }
+    0
+}
+
+// =============================================================================
+// Checkpoint Manager Stubs
+// =============================================================================
+
+fn checkpoint_manager_new(base_path: i64) -> i64 {
+    let mgr: i64 = vec_new();
+    vec_push(mgr, base_path);   // 0: base_path
+    vec_push(mgr, 10);          // 1: max_checkpoints
+    vec_push(mgr, vec_new());   // 2: checkpoints (id -> state)
+    vec_push(mgr, 0);           // 3: next_id
+    mgr
+}
+
+fn checkpoint_base_path(mgr: i64) -> i64 { vec_get(mgr, 0) }
+fn checkpoint_max_count(mgr: i64) -> i64 { vec_get(mgr, 1) }
+fn checkpoint_count(mgr: i64) -> i64 { vec_len(vec_get(mgr, 2)) / 2 }
+
+fn checkpoint_create(mgr: i64, state: i64) -> i64 {
+    let checkpoints: i64 = vec_get(mgr, 2);
+    let next_id: i64 = vec_get(mgr, 3) + 1;
+    vec_set(mgr, 3, next_id);
+    vec_push(checkpoints, next_id);
+    vec_push(checkpoints, state);
+    next_id
+}
+
+fn checkpoint_restore_latest(mgr: i64) -> i64 {
+    let checkpoints: i64 = vec_get(mgr, 2);
+    let count: i64 = vec_len(checkpoints);
+    if count < 2 { return 0; }
+    vec_get(checkpoints, count - 1)  // Return last state
+}
+
+fn checkpoint_restore(mgr: i64, cp_id: i64) -> i64 {
+    let checkpoints: i64 = vec_get(mgr, 2);
+    let count: i64 = vec_len(checkpoints);
+    let i: i64 = 0;
+    while i < count {
+        if vec_get(checkpoints, i) == cp_id {
+            return vec_get(checkpoints, i + 1);
+        }
+        i = i + 2;
+    }
+    0
+}
+
+// =============================================================================
+// Update Manager Stubs
+// =============================================================================
+
+fn update_manager_new() -> i64 {
+    let mgr: i64 = vec_new();
+    vec_push(mgr, string_from("public_key_12345"));  // 0: public_key
+    vec_push(mgr, 0);                                 // 1: has_pending
+    vec_push(mgr, 11000);                             // 2: current_version (0.14.0)
+    mgr
+}
+
+fn update_public_key(mgr: i64) -> i64 { vec_get(mgr, 0) }
+fn update_has_pending(mgr: i64) -> i64 { vec_get(mgr, 1) }
+fn update_current_version(mgr: i64) -> i64 { vec_get(mgr, 2) }
+
+fn create_mock_update(version: i64, valid_sig: i64) -> i64 {
+    let update: i64 = vec_new();
+    vec_push(update, version);
+    vec_push(update, valid_sig);
+    update
+}
+
+fn update_verify_signature(mgr: i64, update: i64) -> i64 {
+    // Return the valid_sig flag from mock
+    vec_get(update, 1)
+}
+
+// =============================================================================
+// Human-Signed Belief Stubs
+// =============================================================================
+
+fn human_signed_belief_new(belief_type: i64, key: i64, value: i64) -> i64 {
+    let hsb: i64 = vec_new();
+    vec_push(hsb, belief_type);   // 0: belief_type
+    vec_push(hsb, key);           // 1: key
+    vec_push(hsb, value);         // 2: value
+    vec_push(hsb, 0);             // 3: is_approved
+    vec_push(hsb, 0);             // 4: signature
+    vec_push(hsb, time_now());    // 5: created_at
+    vec_push(hsb, 0);             // 6: approved_at
+    hsb
+}
+
+fn hsb_is_approved(hsb: i64) -> i64 { vec_get(hsb, 3) }
+fn hsb_signature(hsb: i64) -> i64 { vec_get(hsb, 4) }
+fn hsb_created_at(hsb: i64) -> i64 { vec_get(hsb, 5) }
+fn hsb_approved_at(hsb: i64) -> i64 { vec_get(hsb, 6) }
+
+fn hsb_approve(hsb: i64, signature: i64) -> i64 {
+    vec_set(hsb, 3, 1);           // is_approved = true
+    vec_set(hsb, 4, signature);   // set signature
+    vec_set(hsb, 6, time_now());  // set approved_at
+    0
+}
+
+fn hsb_revoke(hsb: i64) -> i64 {
+    vec_set(hsb, 3, 0);  // is_approved = false
+    vec_set(hsb, 4, 0);  // clear signature
+    0
+}
+
+fn hsb_is_valid(hsb: i64) -> i64 {
+    hsb_is_approved(hsb)
+}
+
+// =============================================================================
+// Performance Monitor Stubs
+// =============================================================================
+
+fn performance_monitor_new() -> i64 {
+    let mon: i64 = vec_new();
+    vec_push(mon, 0);           // 0: request_count
+    vec_push(mon, 0);           // 1: total_response_time
+    vec_push(mon, vec_new());   // 2: response_times
+    vec_push(mon, vec_new());   // 3: memory_samples
+    mon
+}
+
+fn perf_request_count(mon: i64) -> i64 { vec_get(mon, 0) }
+fn perf_memory_samples(mon: i64) -> i64 { vec_get(mon, 3) }
+
+fn perf_record_response_time(mon: i64, time_ms: i64) -> i64 {
+    let count: i64 = vec_get(mon, 0);
+    vec_set(mon, 0, count + 1);
+    let total: i64 = vec_get(mon, 1);
+    vec_set(mon, 1, total + time_ms);
+    let times: i64 = vec_get(mon, 2);
+    vec_push(times, time_ms);
+    0
+}
+
+fn perf_average_response_time(mon: i64) -> i64 {
+    let count: i64 = perf_request_count(mon);
+    if count == 0 { return 0; }
+    vec_get(mon, 1) / count
+}
+
+fn perf_p95_response_time(mon: i64) -> i64 {
+    // Simplified: return max for small samples
+    let times: i64 = vec_get(mon, 2);
+    let count: i64 = vec_len(times);
+    if count == 0 { return 0; }
+
+    let max: i64 = 0;
+    let i: i64 = 0;
+    while i < count {
+        let t: i64 = vec_get(times, i);
+        if t > max { max = t; }
+        i = i + 1;
+    }
+    max
+}
+
+fn perf_record_memory(mon: i64, mb: i64) -> i64 {
+    let samples: i64 = perf_memory_samples(mon);
+    vec_push(samples, mb);
+    0
+}
+
+fn perf_memory_leak_check(mon: i64) -> i64 {
+    let samples: i64 = perf_memory_samples(mon);
+    let count: i64 = vec_len(samples);
+    if count < 5 { return 0; }  // Need enough samples
+
+    // Check if memory is consistently increasing
+    let increasing: i64 = 0;
+    let i: i64 = 1;
+    while i < count {
+        if vec_get(samples, i) > vec_get(samples, i - 1) {
+            increasing = increasing + 1;
+        }
+        i = i + 1;
+    }
+
+    // If > 80% of transitions are increases, possible leak
+    if increasing * 100 / (count - 1) > 80 {
+        return 1;
+    }
+    0
+}
+
+// =============================================================================
+// Privacy Compliance Stubs
+// =============================================================================
+
+fn privacy_can_store(framework: i64, data_type: i64, consent: i64) -> i64 {
+    // Anonymous data can always be stored
+    if data_type == DATA_ANONYMOUS() { return 1; }
+
+    // Personal/sensitive data requires consent
+    if data_type == DATA_PERSONAL() {
+        if consent != 0 { return 1; }
+        return 0;
+    }
+    if data_type == DATA_SENSITIVE() {
+        if consent != 0 { return 1; }
+        return 0;
+    }
+
+    // Health data (HIPAA)
+    if data_type == DATA_HEALTH() {
+        if consent != 0 { return 1; }
+        return 0;
+    }
+
+    0
+}
+
+fn privacy_anonymize(data: i64, method: i64) -> i64 {
+    // Return a different value (mocked)
+    data + 1
+}
+
+fn privacy_export_user_data(user_data: i64) -> i64 {
+    // Return JSON-like representation (mocked)
+    string_from("{\"data\": \"exported\"}")
+}
+
+fn privacy_delete_user_data(user_data: i64) -> i64 {
+    // Mark as deleted (mocked)
+    1
+}

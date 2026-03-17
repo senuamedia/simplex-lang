@@ -1,20 +1,22 @@
-# simplex-training - Self-Learning Training Runtime for AWS Inferentia
+# simplex-training - Self-Learning Training Pipeline
 #
 # High-performance training library with self-learning annealing.
-# Runs exclusively on AWS Inferentia instances for cost optimization.
+# Uses meta-gradients to automatically discover optimal training schedules.
 #
 # Key Features:
 # - Learnable schedules (LR, distillation, pruning, quantization)
 # - Meta-gradient optimization for schedule learning
-# - Curriculum learning for specialist ordering
-# - 10-20x cost reduction vs traditional GPU training
+# - Neural gates, LoRA adapters, model layers
+# - Compression pipeline (pruning, quantization, distillation)
+# - Research data refinement and validation
+# - GGUF export for deployment
 
 [package]
 name = "simplex-training"
-version = "0.13.0"
-description = "Self-learning training runtime for AWS Inferentia"
-authors = ["Simplex Team"]
-license = "MIT"
+version = "0.14.0"
+description = "Self-learning training pipeline for Simplex models"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
 
 [dependencies]
 # Core Simplex runtime (dual numbers, async)

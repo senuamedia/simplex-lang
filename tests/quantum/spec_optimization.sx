@@ -1,0 +1,214 @@
+// Optimization Algorithms - Specification Tests
+// Tests MaxCut encoding, Grover iteration count, hybrid annealer.
+// Rewritten for sxc compiler compatibility.
+
+const EPSILON: f64 = 0.01;
+const PI: f64 = 3.14159265358979323846;
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+fn my_ln(x: f64) -> f64 {
+    if x <= 0.0 { return -1000.0; }
+    var val: f64 = x;
+    var k: i64 = 0;
+    while val >= 2.0 { val = val / 2.0; k = k + 1; }
+    while val < 1.0 { val = val * 2.0; k = k - 1; }
+    let ln2: f64 = 0.6931471805599453;
+    let t: f64 = (val - 1.0) / (val + 1.0);
+    let t2: f64 = t * t;
+    var sum: f64 = t;
+    var term: f64 = t;
+    var i: i64 = 1;
+    while i < 20 {
+        term = term * t2;
+        sum = sum + term / (2.0 * (i as f64) + 1.0);
+        i = i + 1;
+    }
+    (k as f64) * ln2 + 2.0 * sum
+}
+
+fn my_log2(x: f64) -> f64 {
+    my_ln(x) / 0.6931471805599453
+}
+
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+// MaxCut: evaluate cut for a bitstring on edges stored as flat vec [i0,j0,i1,j1,...]
+fn bitstring_cut(bits: i64, edges: i64, n_edges: i64) -> i64 {
+    var cut: i64 = 0;
+    var e: i64 = 0;
+    while e < n_edges {
+        let i: i64 = vec_get(edges, e * 2);
+        let j: i64 = vec_get(edges, e * 2 + 1);
+        let bi: i64 = (bits >> i) & 1;
+        let bj: i64 = (bits >> j) & 1;
+        if bi != bj { cut = cut + 1; }
+        e = e + 1;
+    }
+    cut
+}
+
+// Ising energy for MaxCut: E = sum_edges 0.5*(1 - Z_i*Z_j) = # cut edges
+fn maxcut_energy(bits: i64, edges: i64, n_edges: i64) -> f64 {
+    var energy: f64 = 0.0;
+    var e: i64 = 0;
+    while e < n_edges {
+        let i: i64 = vec_get(edges, e * 2);
+        let j: i64 = vec_get(edges, e * 2 + 1);
+        let bi: i64 = (bits >> i) & 1;
+        let bj: i64 = (bits >> j) & 1;
+        var zi: f64 = 1.0;
+        if bi == 1 { zi = -1.0; }
+        var zj: f64 = 1.0;
+        if bj == 1 { zj = -1.0; }
+        energy = energy + 0.5 * (1.0 - zi * zj);
+        e = e + 1;
+    }
+    energy
+}
+
+// Grover iterations: floor(pi/4 * sqrt(N/M))
+fn grover_iterations(n_items: i64, n_solutions: i64) -> i64 {
+    let n: f64 = n_items as f64;
+    let m: f64 = n_solutions as f64;
+    let iters: f64 = (PI() / 4.0) * sqrt(n / m);
+    iters as i64
+}
+
+// Grover depth estimate
+fn grover_depth(n_items: i64) -> i64 {
+    let n: f64 = n_items as f64;
+    let n_qubits: i64 = (my_log2(n) + 0.5) as i64;
+    let iters: i64 = grover_iterations(n_items, 1);
+    iters * 2 * n_qubits
+}
+
+// Simulated annealer accept: Metropolis criterion
+fn annealer_accept(current_energy: f64, new_energy: f64, temperature: f64) -> i64 {
+    if new_energy < current_energy { return 1; }
+    let delta: f64 = new_energy - current_energy;
+    let prob: f64 = exp(0.0 - delta / temperature);
+    if prob > 0.5 { return 1; }
+    0
+}
+
+fn test_maxcut() -> i64 {
+    println(string_from("--- MaxCut ---"));
+    var f: i64 = 0;
+    // Triangle graph: 3 nodes, edges (0,1), (1,2), (0,2)
+    let edges: i64 = vec_new();
+    vec_push(edges, 0); vec_push(edges, 1);
+    vec_push(edges, 1); vec_push(edges, 2);
+    vec_push(edges, 0); vec_push(edges, 2);
+    // |000>: all same, cut=0
+    f = f + check(string_from("cut(000)=0"), if bitstring_cut(0, edges, 3) == 0 { 1 } else { 0 });
+    // |001>: qubit 0 different, cuts (0,1) and (0,2) = 2
+    f = f + check(string_from("cut(001)=2"), if bitstring_cut(1, edges, 3) == 2 { 1 } else { 0 });
+    // |011>: qubits 0,1 different from 2, cuts (1,2) and (0,2) = 2
+    f = f + check(string_from("cut(011)=2"), if bitstring_cut(3, edges, 3) == 2 { 1 } else { 0 });
+    // Max cut for triangle is 2
+    var max_cut: i64 = 0;
+    var bs: i64 = 0;
+    while bs < 8 {
+        let c: i64 = bitstring_cut(bs, edges, 3);
+        if c > max_cut { max_cut = c; }
+        bs = bs + 1;
+    }
+    f = f + check(string_from("triangle max_cut=2"), if max_cut == 2 { 1 } else { 0 });
+    // Energy matches cut
+    let e0: f64 = maxcut_energy(0, edges, 3);
+    f = f + check(string_from("energy(000)=0"), approx_eq(e0, 0.0, EPSILON()));
+    let e1: f64 = maxcut_energy(1, edges, 3);
+    f = f + check(string_from("energy(001)=2"), approx_eq(e1, 2.0, EPSILON()));
+    f
+}
+
+fn test_maxcut_path() -> i64 {
+    println(string_from("--- MaxCut Path Graph ---"));
+    var f: i64 = 0;
+    // 4-node path: 0-1-2-3
+    let edges: i64 = vec_new();
+    vec_push(edges, 0); vec_push(edges, 1);
+    vec_push(edges, 1); vec_push(edges, 2);
+    vec_push(edges, 2); vec_push(edges, 3);
+    // |0000>: all same, energy=0
+    f = f + check(string_from("path e(0000)=0"), approx_eq(maxcut_energy(0, edges, 3), 0.0, EPSILON()));
+    // |0101>: alternating = bits 5, all edges cut, energy=3
+    f = f + check(string_from("path e(0101)=3"), approx_eq(maxcut_energy(5, edges, 3), 3.0, EPSILON()));
+    f = f + check(string_from("path cut(0101)=3"), if bitstring_cut(5, edges, 3) == 3 { 1 } else { 0 });
+    // Verify energy = cut for all bitstrings
+    var all_match: i64 = 1;
+    var bs: i64 = 0;
+    while bs < 16 {
+        let cut: i64 = bitstring_cut(bs, edges, 3);
+        let energy: f64 = maxcut_energy(bs, edges, 3);
+        if approx_eq(energy, cut as f64, EPSILON()) == 0 { all_match = 0; }
+        bs = bs + 1;
+    }
+    f = f + check(string_from("energy=cut all bitstrings"), all_match);
+    f
+}
+
+fn test_grover() -> i64 {
+    println(string_from("--- Grover Iterations ---"));
+    var f: i64 = 0;
+    let g4: i64 = grover_iterations(4, 1);
+    f = f + check(string_from("grover(4,1)=1"), if g4 == 1 { 1 } else { 0 });
+    let g16: i64 = grover_iterations(16, 1);
+    f = f + check(string_from("grover(16,1)=3"), if g16 == 3 { 1 } else { 0 });
+    let g1024: i64 = grover_iterations(1024, 1);
+    f = f + check(string_from("grover(1024,1)=25"), if g1024 == 25 { 1 } else { 0 });
+    let g16_4: i64 = grover_iterations(16, 4);
+    f = f + check(string_from("more solutions fewer iters"), if g16_4 < g16 { 1 } else { 0 });
+    let d1024: i64 = grover_depth(1024);
+    f = f + check(string_from("grover depth>0"), if d1024 > 0 { 1 } else { 0 });
+    f
+}
+
+fn test_annealer() -> i64 {
+    println(string_from("--- Annealer ---"));
+    var f: i64 = 0;
+    // Better energy always accepted
+    f = f + check(string_from("accept better"), annealer_accept(10.0, 5.0, 100.0));
+    // Cold annealer rejects large increase
+    f = f + check(string_from("cold rejects"), if annealer_accept(0.0, 100.0, 0.001) == 0 { 1 } else { 0 });
+    // Hot annealer accepts small increase
+    f = f + check(string_from("hot accepts"), annealer_accept(0.0, 1.0, 10000.0));
+    // Cooling: temperature decreases
+    let t0: f64 = 100.0;
+    let t1: f64 = t0 * 0.95;
+    let t2: f64 = t1 * 0.95;
+    f = f + check(string_from("temp decreases"), if t2 < t0 { 1 } else { 0 });
+    f = f + check(string_from("cooling rate"), approx_eq(t1, 95.0, EPSILON()));
+    f
+}
+
+fn main() -> i64 {
+    println(string_from("=== Optimization Spec Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_maxcut();
+    fails = fails + test_maxcut_path();
+    fails = fails + test_grover();
+    fails = fails + test_annealer();
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

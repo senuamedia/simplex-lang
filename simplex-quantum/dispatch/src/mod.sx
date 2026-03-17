@@ -1,0 +1,45 @@
+// simplex-quantum-dispatch - Cost-Aware Quantum Task Dispatcher
+//
+// Phase 4 of the Simplex Quantum Bridge (v0.14.0).
+//
+// Routes quantum workloads to the optimal backend by analyzing problem
+// complexity, estimating costs across cloud providers, and enforcing
+// budget constraints.
+//
+// # Modules
+//
+// - `analyzer`   --Problem complexity analysis and quantum advantage estimation
+// - `cost_model` --QPU pricing for Amazon Braket, IBM Quantum, Azure Quantum
+// - `dispatcher` --Core dispatch decision engine with configurable policies
+// - `budget`     --Budget tracking with per-backend breakdown and warnings
+//
+// # Quick Start
+//
+// ```simplex
+// use simplex_quantum::dispatch::{analyzer, cost_model, dispatcher, budget};
+//
+// // 1. Build infrastructure
+// let cm = cost_model_new();
+// let bt = budget_new(100.0);
+// let d = dispatcher_new(POLICY_COST_OPTIMIZED(), cm);
+//
+// // 2. Analyze a problem
+// let analysis = analyze_problem(20, PROBLEM_SIMULATION(), 0);
+//
+// // 3. Get dispatch decision
+// let result = dispatcher_decide(d, analysis, bt);
+// println(dispatch_result_to_string(result));
+//
+// // 4. After execution, charge the budget
+// let actual_cost = dispatch_result_cost(result);
+// budget_charge(bt, actual_cost, PROVIDER_BRAKET());
+// println(budget_usage_report(bt));
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+mod analyzer;
+mod cost_model;
+mod dispatcher;
+mod budget;

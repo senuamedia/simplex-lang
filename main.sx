@@ -1,0 +1,1791 @@
+// Simplex Compiler - Main Entry Point (sxc)
+// Self-hosted compiler CLI with build, run, check, repl, and fmt commands
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex
+
+// Import shared modules (TASK-011 Phase 1 completion)
+use simplex_core::version;
+use simplex_core::safety;
+use simplex_core::platform;
+
+// Version - now uses centralized constant
+fn VERSION() -> i64 { SIMPLEX_VERSION() }
+
+// CLI argument parsing result
+// Layout: command(0), input_files(1), output_file(2), emit_type(3), verbose(4), force(5), show_deps(6), auto_deps(7)
+// Commands: 0=build, 1=run, 2=check, 3=help, 4=version, 5=repl, 6=fmt
+fn cli_new() -> i64 {
+    let cli: i64 = safe_malloc(64);  // TASK-011: Use safe_malloc
+    store_i64(cli, 0, 0);        // command: 0=build, 1=run, 2=check, 3=help, 4=version, 5=repl, 6=fmt
+    store_ptr(cli, 1, vec_new()); // input files
+    store_ptr(cli, 2, 0);        // output file (optional)
+    store_i64(cli, 3, 0);        // emit: 0=llvm-ir, 1=obj, 2=exe, 3=asm, 4=dylib
+    store_i64(cli, 4, 0);        // verbose
+    store_i64(cli, 5, 0);        // force (skip timestamp checks)
+    store_i64(cli, 6, 0);        // show_deps
+    store_i64(cli, 7, 0);        // auto_deps (auto-compile dependencies)
+    cli
+}
+
+fn cli_command(cli: i64) -> i64 { load_i64(cli, 0) }
+fn cli_set_command(cli: i64, cmd: i64) -> i64 { store_i64(cli, 0, cmd); 0 }
+fn cli_input_files(cli: i64) -> i64 { load_ptr(cli, 1) }
+fn cli_output_file(cli: i64) -> i64 { load_ptr(cli, 2) }
+fn cli_set_output(cli: i64, path: i64) -> i64 { store_ptr(cli, 2, path); 0 }
+fn cli_emit_type(cli: i64) -> i64 { load_i64(cli, 3) }
+fn cli_set_emit(cli: i64, emit: i64) -> i64 { store_i64(cli, 3, emit); 0 }
+fn cli_verbose(cli: i64) -> i64 { load_i64(cli, 4) }
+fn cli_set_verbose(cli: i64, v: i64) -> i64 { store_i64(cli, 4, v); 0 }
+fn cli_force(cli: i64) -> i64 { load_i64(cli, 5) }
+fn cli_set_force(cli: i64, f: i64) -> i64 { store_i64(cli, 5, f); 0 }
+fn cli_show_deps(cli: i64) -> i64 { load_i64(cli, 6) }
+fn cli_set_show_deps(cli: i64, d: i64) -> i64 { store_i64(cli, 6, d); 0 }
+fn cli_auto_deps(cli: i64) -> i64 { load_i64(cli, 7) }
+fn cli_set_auto_deps(cli: i64, a: i64) -> i64 { store_i64(cli, 7, a); 0 }
+
+fn show_help() -> i64 {
+    println("sxc - Simplex Compiler");
+    println("");
+    println("USAGE:");
+    println("    sxc [OPTIONS] <FILES...>");
+    println("    sxc build [OPTIONS] <FILES...>");
+    println("    sxc run <FILE>");
+    println("    sxc check <FILES...>");
+    println("    sxc repl                        Interactive REPL");
+    println("    sxc fmt <FILES...>              Format source files");
+    println("");
+    println("OPTIONS:");
+    println("    -o <file>       Output file name");
+    println("    --emit <type>   Output type: llvm-ir (default), asm, obj, exe, dylib");
+    println("    -v, --verbose   Verbose output");
+    println("    -f, --force     Force recompilation (ignore timestamps)");
+    println("    --deps          Show file dependencies");
+    println("    --auto-deps     Auto-compile module dependencies");
+    println("    -h, --help      Show this help");
+    println("    --version       Show version");
+    0
+}
+
+fn show_version() -> i64 {
+    println(string_concat(string_from("sxc "), VERSION()));
+    0
+}
+
+// Parse CLI arguments
+fn parse_args(args: i64) -> i64 {
+    let cli: i64 = cli_new();
+    let argc: i64 = vec_len(args);
+    let i: i64 = 1;  // Skip program name
+
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+
+        // Check for flags
+        if string_eq(arg, string_from("-h")) {
+            cli_set_command(cli, 3);
+            return cli;
+        }
+        if string_eq(arg, string_from("--help")) {
+            cli_set_command(cli, 3);
+            return cli;
+        }
+        if string_eq(arg, string_from("--version")) {
+            cli_set_command(cli, 4);
+            return cli;
+        }
+        if string_eq(arg, string_from("-v")) {
+            cli_set_verbose(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--verbose")) {
+            cli_set_verbose(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("-f")) {
+            cli_set_force(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--force")) {
+            cli_set_force(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--deps")) {
+            cli_set_show_deps(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--auto-deps")) {
+            cli_set_auto_deps(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("-o")) {
+            // Next arg is output file
+            if i + 1 < argc {
+                i = i + 1;
+                cli_set_output(cli, vec_get(args, i));
+            }
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("--emit")) {
+            // Next arg is emit type
+            // 0=llvm-ir, 1=obj, 2=exe, 3=asm
+            if i + 1 < argc {
+                i = i + 1;
+                let emit_arg: i64 = vec_get(args, i);
+                if string_eq(emit_arg, string_from("llvm-ir")) {
+                    cli_set_emit(cli, 0);
+                } else {
+                if string_eq(emit_arg, string_from("obj")) {
+                    cli_set_emit(cli, 1);
+                } else {
+                if string_eq(emit_arg, string_from("exe")) {
+                    cli_set_emit(cli, 2);
+                } else {
+                if string_eq(emit_arg, string_from("asm")) {
+                    cli_set_emit(cli, 3);
+                } else {
+                if string_eq(emit_arg, string_from("dylib")) {
+                    cli_set_emit(cli, 4);
+                } else {
+                    println(string_concat(string_from("Unknown emit type: "), emit_arg));
+                }
+                }
+                }
+                }
+                }
+            }
+            i = i + 1;
+        } else {
+        // Check for commands
+        if string_eq(arg, string_from("build")) {
+            cli_set_command(cli, 0);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("run")) {
+            cli_set_command(cli, 1);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("check")) {
+            cli_set_command(cli, 2);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("repl")) {
+            cli_set_command(cli, 5);
+            i = i + 1;
+        } else {
+        if string_eq(arg, string_from("fmt")) {
+            cli_set_command(cli, 6);
+            i = i + 1;
+        } else {
+            // Must be an input file
+            vec_push(cli_input_files(cli), arg);
+            i = i + 1;
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+        }
+    }
+
+    cli
+}
+
+// Check if recompilation is needed
+// Returns 1 if output is up to date, 0 if recompilation needed
+fn is_up_to_date(source_path: i64, output_path: i64) -> i64 {
+    // If output doesn't exist, need to compile
+    if file_exists(output_path) == 0 {
+        return 0;
+    }
+    // Compare modification times
+    let src_mtime: i64 = file_mtime(source_path);
+    let out_mtime: i64 = file_mtime(output_path);
+    // If source is newer than output, need to recompile
+    if src_mtime > out_mtime {
+        return 0;
+    }
+    1
+}
+
+// ========================================
+// Dependency Tracking (20.1.2)
+// ========================================
+
+// Check if vec contains a string
+fn vec_contains_string(v: i64, s: i64) -> i64 {
+    let n: i64 = vec_len(v);
+    let i: i64 = 0;
+    while i < n {
+        if string_eq(vec_get(v, i), s) {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Extract module dependencies from source file
+// Returns vec of dependency paths (e.g., ["utils.sx", "parser.sx"])
+fn extract_dependencies(source_path: i64) -> i64 {
+    let deps: i64 = vec_new();
+    let source: i64 = read_file(source_path);
+    if source == 0 {
+        return deps;
+    }
+
+    // Get directory of source file for relative paths
+    let dir: i64 = get_directory(source_path);
+
+    // Tokenize and look for mod/use statements
+    let tokens: i64 = tokenize(source);
+    let n: i64 = vec_len(tokens);
+    let i: i64 = 0;
+
+    while i < n {
+        let tok: i64 = vec_get(tokens, i);
+        let kind: i64 = token_kind(tok);
+        let text: i64 = token_text(tok);
+
+        // Check for 'mod' keyword
+        if string_eq(text, string_from("mod")) {
+            // Next token should be module name
+            if i + 1 < n {
+                let name_tok: i64 = vec_get(tokens, i + 1);
+                let mod_name: i64 = token_text(name_tok);
+                // Convert to file path: mod foo; -> foo.sx
+                // TASK-011: Use StringBuilder for efficiency
+                let sb: i64 = safe_sb_new();
+                sb_append(sb, dir);
+                sb_append(sb, mod_name);
+                sb_append(sb, string_from(".sx"));
+                let dep_path: i64 = sb_to_string(sb);
+                if file_exists(dep_path) == 1 {
+                    // Deduplicate
+                    if vec_contains_string(deps, dep_path) == 0 {
+                        vec_push(deps, dep_path);
+                    }
+                }
+                i = i + 2;
+            } else {
+                i = i + 1;
+            }
+        } else {
+        // Check for 'use' keyword
+        if string_eq(text, string_from("use")) {
+            // Next token should be path start
+            if i + 1 < n {
+                let path_tok: i64 = vec_get(tokens, i + 1);
+                let path_name: i64 = token_text(path_tok);
+                // Convert to file path: use foo::bar; -> foo.sx
+                // TASK-011: Use StringBuilder for efficiency
+                let sb: i64 = safe_sb_new();
+                sb_append(sb, dir);
+                sb_append(sb, path_name);
+                sb_append(sb, string_from(".sx"));
+                let dep_path: i64 = sb_to_string(sb);
+                if file_exists(dep_path) == 1 {
+                    // Deduplicate
+                    if vec_contains_string(deps, dep_path) == 0 {
+                        vec_push(deps, dep_path);
+                    }
+                }
+                i = i + 2;
+            } else {
+                i = i + 1;
+            }
+        } else {
+            i = i + 1;
+        }
+        }
+    }
+
+    deps
+}
+
+// Get directory part of a path - now uses shared platform module
+// TASK-011: Eliminated duplication from multiple files
+fn get_directory(path: i64) -> i64 {
+    platform::get_directory(path)
+}
+
+// Collect all transitive dependencies for a source file
+// Returns vec of paths in dependency order (dependencies before dependents)
+fn collect_all_dependencies(source_path: i64) -> i64 {
+    let result: i64 = vec_new();
+    let visited: i64 = vec_new();
+    collect_deps_recursive(source_path, result, visited);
+    result
+}
+
+fn collect_deps_recursive(path: i64, result: i64, visited: i64) -> i64 {
+    // Skip if already visited
+    if vec_contains_string(visited, path) == 1 {
+        return 0;
+    }
+    vec_push(visited, path);
+
+    // Get direct dependencies
+    let deps: i64 = extract_dependencies(path);
+    let n: i64 = vec_len(deps);
+    let i: i64 = 0;
+
+    // Process dependencies first (they come before the current file)
+    while i < n {
+        let dep: i64 = vec_get(deps, i);
+        collect_deps_recursive(dep, result, visited);
+        i = i + 1;
+    }
+
+    // Add current file after its dependencies (unless it's already in result)
+    if vec_contains_string(result, path) == 0 {
+        vec_push(result, path);
+    }
+    0
+}
+
+// Compile a file and all its dependencies automatically
+// Returns 0 on success, 1 on failure
+fn compile_with_dependencies(path: i64, output_path: i64, verbose: i64, emit_type: i64) -> i64 {
+    // Collect all dependencies in order
+    let all_files: i64 = collect_all_dependencies(path);
+    let n: i64 = vec_len(all_files);
+
+    if verbose == 1 {
+        if n > 1 {
+            // TASK-011: Use StringBuilder for efficiency
+            let sb: i64 = safe_sb_new();
+            sb_append(sb, string_from("Compiling "));
+            sb_append(sb, int_to_string(n));
+            sb_append(sb, string_from(" files with dependencies"));
+            println(sb_to_string(sb));
+        }
+    }
+
+    // Compile each dependency (producing .ll files)
+    let i: i64 = 0;
+    while i < n - 1 {  // Skip last one (that's the main file)
+        let dep_path: i64 = vec_get(all_files, i);
+        if verbose == 1 {
+            println(string_concat("  Compiling dependency: ", dep_path));
+        }
+        // Compile to LLVM IR (emit_type = 0)
+        let result: i64 = compile_file(dep_path, 0, 0, 0);
+        if result != 0 {
+            println(string_concat("Error: Failed to compile dependency: ", dep_path));
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    // Compile the main file with requested output type
+    compile_file(path, output_path, verbose, emit_type)
+}
+
+// Check if output is up to date considering all dependencies
+// Returns 1 if output is up to date, 0 if recompilation needed
+fn is_up_to_date_with_deps(source_path: i64, output_path: i64) -> i64 {
+    // If output doesn't exist, need to compile
+    if file_exists(output_path) == 0 {
+        return 0;
+    }
+
+    let out_mtime: i64 = file_mtime(output_path);
+
+    // Check source file
+    let src_mtime: i64 = file_mtime(source_path);
+    if src_mtime > out_mtime {
+        return 0;
+    }
+
+    // Check all dependencies
+    let deps: i64 = extract_dependencies(source_path);
+    let n: i64 = vec_len(deps);
+    let i: i64 = 0;
+    while i < n {
+        let dep_path: i64 = vec_get(deps, i);
+        let dep_mtime: i64 = file_mtime(dep_path);
+        if dep_mtime > out_mtime {
+            return 0;
+        }
+        // Recursively check dependencies of dependencies
+        if is_up_to_date_with_deps(dep_path, output_path) == 0 {
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    1
+}
+
+// Compile a single file
+// emit_type: 0=llvm-ir, 1=obj, 2=exe, 3=asm
+// force: 1 = always recompile, 0 = check timestamps
+fn compile_file(path: i64, output_path: i64, verbose: i64, emit_type: i64) -> i64 {
+    return compile_file_force(path, output_path, verbose, emit_type, 0);
+}
+
+fn compile_file_force(path: i64, output_path: i64, verbose: i64, emit_type: i64, force: i64) -> i64 {
+    // Determine expected output path
+    let expected_out: i64 = output_path;
+    if expected_out == 0 {
+        if emit_type == 0 {
+            expected_out = string_replace_ext(path, ".ll");
+        } else {
+        if emit_type == 1 {
+            expected_out = string_replace_ext(path, ".o");
+        } else {
+        if emit_type == 2 {
+            expected_out = string_replace_ext(path, "");
+        } else {
+        if emit_type == 3 {
+            expected_out = string_replace_ext(path, ".s");
+        } else {
+        if emit_type == 4 {
+            expected_out = string_replace_ext(path, ".dylib");
+        }
+        }
+        }
+        }
+        }
+    }
+
+    // Check if up to date (unless force flag is set)
+    // Uses dependency tracking to check all mod/use imports
+    if force == 0 {
+        if is_up_to_date_with_deps(path, expected_out) == 1 {
+            if verbose == 1 {
+                println(string_concat(string_from("Skipping (up to date): "), path));
+            }
+            return 0;
+        }
+    }
+
+    if verbose == 1 {
+        println(string_concat(string_from("Compiling: "), path));
+    }
+
+    // Read source file
+    let source: i64 = read_file(path);
+    if source == 0 {
+        println(string_concat(string_from("Error: Could not read file: "), path));
+        return 1;
+    }
+
+    // Tokenize
+    let tokens: i64 = tokenize(source);
+
+    // Parse
+    let parse_result: i64 = parse_program(tokens);
+    let items: i64 = parse_result_items(parse_result);
+    let parse_errors: i64 = parse_result_errors(parse_result);
+
+    // Check for parse errors
+    if parse_errors > 0 {
+        println(string_concat(string_from("Compilation failed with "),
+                string_concat(int_to_string(parse_errors), string_from(" parse error(s)."))));
+        return 1;
+    }
+
+    // Extract module name from path for unique string prefixes
+    let module_name: i64 = get_module_name(path);
+
+    // Generate code with module name
+    let output: i64 = gen_program_with_module(items, module_name);
+
+    // Determine output path based on emit type
+    let ll_path: i64 = string_replace_ext(path, ".ll");
+    let out_path: i64 = output_path;
+
+    // For asm/obj/exe, we need intermediate .ll file
+    if emit_type == 0 {
+        // llvm-ir: output directly to target
+        if out_path == 0 {
+            out_path = ll_path;
+        }
+        write_file(out_path, output);
+        if verbose == 1 {
+            println(string_concat(string_from("  -> "), out_path));
+        }
+        return 0;
+    }
+
+    // Write intermediate .ll file
+    write_file(ll_path, output);
+
+    // asm output (emit_type == 3)
+    if emit_type == 3 {
+        let asm_path: i64 = out_path;
+        if asm_path == 0 {
+            asm_path = string_replace_ext(path, ".s");
+        }
+        // Run: llc -o <asm_path> <ll_path>
+        let cmd: i64 = string_concat(string_from("/usr/local/opt/llvm/bin/llc -o "), asm_path);
+        cmd = string_concat(cmd, string_from(" "));
+        cmd = string_concat(cmd, ll_path);
+        let result: i64 = process_run(cmd);
+        if result != 0 {
+            println(string_from("Error: llc failed"));
+            return 1;
+        }
+        if verbose == 1 {
+            println(string_concat(string_from("  -> "), asm_path));
+        }
+        return 0;
+    }
+
+    // obj output (emit_type == 1)
+    if emit_type == 1 {
+        let obj_path: i64 = out_path;
+        if obj_path == 0 {
+            obj_path = string_replace_ext(path, ".o");
+        }
+        // Run: llc -filetype=obj -o <obj_path> <ll_path>
+        let cmd: i64 = string_concat(string_from("/usr/local/opt/llvm/bin/llc -filetype=obj -o "), obj_path);
+        cmd = string_concat(cmd, string_from(" "));
+        cmd = string_concat(cmd, ll_path);
+        let result: i64 = process_run(cmd);
+        if result != 0 {
+            println(string_from("Error: llc failed"));
+            return 1;
+        }
+        if verbose == 1 {
+            println(string_concat(string_from("  -> "), obj_path));
+        }
+        return 0;
+    }
+
+    // exe output (emit_type == 2)
+    if emit_type == 2 {
+        let exe_path: i64 = out_path;
+        if exe_path == 0 {
+            // Remove extension for executable
+            exe_path = string_replace_ext(path, "");
+        }
+        // First compile to object
+        let obj_path: i64 = string_replace_ext(path, ".o");
+        let cmd: i64 = string_concat(string_from("/usr/local/opt/llvm/bin/llc -filetype=obj -o "), obj_path);
+        cmd = string_concat(cmd, string_from(" "));
+        cmd = string_concat(cmd, ll_path);
+        let result: i64 = process_run(cmd);
+        if result != 0 {
+            println(string_from("Error: llc failed"));
+            return 1;
+        }
+        // Then link with clang
+        cmd = string_concat(string_from("clang -o "), exe_path);
+        cmd = string_concat(cmd, string_from(" "));
+        cmd = string_concat(cmd, obj_path);
+        cmd = string_concat(cmd, string_from(" standalone_runtime.o"));
+        result = process_run(cmd);
+        if result != 0 {
+            println(string_from("Error: linking failed"));
+            return 1;
+        }
+        if verbose == 1 {
+            println(string_concat(string_from("  -> "), exe_path));
+        }
+        return 0;
+    }
+
+    // dylib output (emit_type == 4)
+    if emit_type == 4 {
+        let dylib_path: i64 = out_path;
+        if dylib_path == 0 {
+            dylib_path = string_replace_ext(path, ".dylib");
+        }
+        // First compile to object with PIC (position-independent code)
+        let obj_path: i64 = string_replace_ext(path, ".o");
+        let cmd: i64 = string_concat(string_from("/usr/local/opt/llvm/bin/llc -filetype=obj -relocation-model=pic -o "), obj_path);
+        cmd = string_concat(cmd, string_from(" "));
+        cmd = string_concat(cmd, ll_path);
+        let result: i64 = process_run(cmd);
+        if result != 0 {
+            println(string_from("Error: llc failed"));
+            return 1;
+        }
+        // Create shared library with clang (no runtime - this is a library)
+        cmd = string_concat(string_from("clang -shared -o "), dylib_path);
+        cmd = string_concat(cmd, string_from(" "));
+        cmd = string_concat(cmd, obj_path);
+        result = process_run(cmd);
+        if result != 0 {
+            println(string_from("Error: linking shared library failed"));
+            return 1;
+        }
+        if verbose == 1 {
+            println(string_concat(string_from("  -> "), dylib_path));
+        }
+        return 0;
+    }
+
+    0
+}
+
+fn main() -> i64 {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+
+    if argc < 2 {
+        show_help();
+        return 1;
+    }
+
+    let cli: i64 = parse_args(args);
+    let cmd: i64 = cli_command(cli);
+
+    // Handle help
+    if cmd == 3 {
+        show_help();
+        return 0;
+    }
+
+    // Handle version
+    if cmd == 4 {
+        show_version();
+        return 0;
+    }
+
+    // Handle repl command (no files required)
+    if cmd == 5 {
+        return run_repl();
+    }
+
+    let files: i64 = cli_input_files(cli);
+    let file_count: i64 = vec_len(files);
+
+    if file_count == 0 {
+        println("Error: No input files specified");
+        return 1;
+    }
+
+    // Handle --deps flag: show dependencies for files
+    if cli_show_deps(cli) == 1 {
+        let i: i64 = 0;
+        while i < file_count {
+            let path: i64 = vec_get(files, i);
+            println(string_concat(path, string_from(":")));
+            let deps: i64 = extract_dependencies(path);
+            let n: i64 = vec_len(deps);
+            if n == 0 {
+                println(string_from("  (no dependencies)"));
+            } else {
+                let j: i64 = 0;
+                while j < n {
+                    let dep: i64 = vec_get(deps, j);
+                    println(string_concat(string_from("  "), dep));
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Handle build command (default)
+    if cmd == 0 {
+        let verbose: i64 = cli_verbose(cli);
+        let emit: i64 = cli_emit_type(cli);
+        let force: i64 = cli_force(cli);
+        let auto_deps: i64 = cli_auto_deps(cli);
+        let i: i64 = 0;
+        while i < file_count {
+            let path: i64 = vec_get(files, i);
+            // Only use custom output for single file
+            let out: i64 = 0;
+            if file_count == 1 {
+                out = cli_output_file(cli);
+            }
+            let result: i64 = 0;
+            if auto_deps == 1 {
+                // Auto-compile all module dependencies
+                result = compile_with_dependencies(path, out, verbose, emit);
+            } else {
+                result = compile_file_force(path, out, verbose, emit, force);
+            }
+            if result != 0 {
+                return result;
+            }
+            i = i + 1;
+        }
+        println("Compilation successful.");
+        return 0;
+    }
+
+    // Handle run command
+    if cmd == 1 {
+        if file_count != 1 {
+            println("Error: 'run' command requires exactly one file");
+            return 1;
+        }
+        let path: i64 = vec_get(files, 0);
+        // Compile to exe and run
+        let result: i64 = compile_file(path, 0, 0, 2);
+        if result != 0 {
+            return result;
+        }
+        // Run the compiled executable
+        let exe_path: i64 = string_replace_ext(path, "");
+        let run_result: i64 = process_run(exe_path);
+        return run_result;
+    }
+
+    // Handle check command
+    if cmd == 2 {
+        let i: i64 = 0;
+        while i < file_count {
+            let path: i64 = vec_get(files, i);
+            let source: i64 = read_file(path);
+            if source == 0 {
+                println(string_concat(string_from("Error: Could not read file: "), path));
+                return 1;
+            }
+            let tokens: i64 = tokenize(source);
+            let parse_result: i64 = parse_program(tokens);
+            let parse_errors: i64 = parse_result_errors(parse_result);
+            if parse_errors > 0 {
+                println(string_concat(path, string_from(": parse errors found")));
+                return 1;
+            }
+            println(string_concat(path, string_from(": OK")));
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Handle fmt command
+    if cmd == 6 {
+        if file_count == 0 {
+            println("Error: No files specified for formatting");
+            return 1;
+        }
+        let i: i64 = 0;
+        while i < file_count {
+            let path: i64 = vec_get(files, i);
+            let result: i64 = format_file(path, 1);  // write back
+            if result != 0 {
+                return result;
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    0
+}
+
+// Helper to replace file extension
+fn string_replace_ext(path: i64, new_ext: i64) -> i64 {
+    // Find last dot
+    let len: i64 = string_len(path);
+    let i: i64 = len - 1;
+    while i >= 0 {
+        let c: i64 = string_char_at(path, i);
+        if c == 46 {
+            // Found dot
+            let base: i64 = string_slice(path, 0, i);
+            return string_concat(base, new_ext);
+        }
+        i = i - 1;
+    }
+    // No dot found, just append
+    string_concat(path, new_ext)
+}
+
+// Extract module name from path (basename without extension)
+// e.g., "lexer.sx" -> "lexer", "foo/bar/parser.sx" -> "parser"
+fn get_module_name(path: i64) -> i64 {
+    let len: i64 = string_len(path);
+
+    // Find last slash to get basename
+    let start: i64 = 0;
+    let i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(path, i);
+        if c == 47 {
+            // ASCII for '/'
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+
+    // Find last dot to strip extension
+    let end: i64 = len;
+    i = len - 1;
+    while i >= start {
+        let c: i64 = string_char_at(path, i);
+        if c == 46 {
+            // ASCII for '.'
+            end = i;
+            i = 0;  // Break
+        }
+        i = i - 1;
+    }
+
+    string_slice(path, start, end)
+}
+
+// ========================================
+// REPL Implementation (20.1.4)
+// ========================================
+
+// REPL state for maintaining variables between evaluations
+// Layout: vars(0), var_count(1)
+fn repl_state_new() -> i64 {
+    let state: i64 = malloc(16);
+    store_ptr(state, 0, vec_new());  // variable bindings: (name, value) pairs
+    store_i64(state, 1, 0);          // var count
+    state
+}
+
+fn repl_state_vars(state: i64) -> i64 {
+    load_ptr(state, 0)
+}
+
+// Run the REPL
+fn run_repl() -> i64 {
+    println("Simplex REPL v0.3.0");
+    println("Type expressions to evaluate. Type 'exit' or Ctrl-D to quit.");
+    println("");
+
+    let state: i64 = repl_state_new();
+    let line_num: i64 = 1;
+
+    while true {
+        // Print prompt
+        print(string_concat(string_from("sx["),
+              string_concat(int_to_string(line_num), string_from("]> "))));
+
+        // Read line
+        let line: i64 = read_line();
+        if line == 0 {
+            // EOF
+            println("");
+            println("Goodbye!");
+            return 0;
+        }
+
+        // Check for exit command
+        let trimmed: i64 = string_trim(line);
+        if string_eq(trimmed, string_from("exit")) {
+            println("Goodbye!");
+            return 0;
+        }
+        if string_eq(trimmed, string_from("quit")) {
+            println("Goodbye!");
+            return 0;
+        }
+
+        // Skip empty lines
+        if string_len(trimmed) == 0 {
+            line_num = line_num + 1;
+        } else {
+
+        // Check for special commands
+        if string_eq(trimmed, string_from(":help")) {
+            println("REPL Commands:");
+            println("  :help     Show this help");
+            println("  :vars     Show defined variables");
+            println("  :clear    Clear all variables");
+            println("  exit      Exit the REPL");
+            line_num = line_num + 1;
+        } else {
+        if string_eq(trimmed, string_from(":vars")) {
+            let vars: i64 = repl_state_vars(state);
+            let n: i64 = vec_len(vars);
+            if n == 0 {
+                println("No variables defined.");
+            } else {
+                let i: i64 = 0;
+                while i < n {
+                    let pair: i64 = vec_get(vars, i);
+                    let name: i64 = load_ptr(pair, 0);
+                    let value: i64 = load_i64(pair, 1);
+                    // TASK-011: Use StringBuilder for efficiency
+                    let sb: i64 = safe_sb_new();
+                    sb_append(sb, name);
+                    sb_append(sb, string_from(" = "));
+                    sb_append(sb, int_to_string(value));
+                    println(sb_to_string(sb));
+                    i = i + 1;
+                }
+            }
+            line_num = line_num + 1;
+        } else {
+        if string_eq(trimmed, string_from(":clear")) {
+            store_ptr(state, 0, vec_new());
+            println("Variables cleared.");
+            line_num = line_num + 1;
+        } else {
+
+        // Try to evaluate as expression
+        let result: i64 = repl_eval_line(state, trimmed);
+        if result != 0 {
+            // result is a string containing either error or value
+            println(result);
+        }
+        line_num = line_num + 1;
+
+        }
+        }
+        }
+        }
+    }
+
+    0
+}
+
+// Evaluate a line of input in the REPL
+fn repl_eval_line(state: i64, line: i64) -> i64 {
+    // Wrap input in a function for evaluation
+    // Handle both expressions and let statements
+
+    // Check if it's a let statement
+    if string_starts_with(line, string_from("let ")) {
+        // Parse and store the variable
+        return repl_eval_let(state, line);
+    }
+
+    // Otherwise, evaluate as expression
+    return repl_eval_expr(state, line);
+}
+
+// Evaluate a let statement in the REPL
+fn repl_eval_let(state: i64, line: i64) -> i64 {
+    // Parse: let name = expr;
+    // For simplicity, just parse and show message
+    // Full evaluation would require JIT or interpretation
+
+    // Try to tokenize and parse
+    let source: i64 = string_concat(string_from("fn __repl() -> i64 { "),
+                      string_concat(line, string_from(" 0 }")));
+    let tokens: i64 = tokenize(source);
+    let parse_result: i64 = parse_program(tokens);
+    let errors: i64 = parse_result_errors(parse_result);
+
+    if errors > 0 {
+        return string_from("Parse error in let statement");
+    }
+
+    // Extract variable name from the line for display
+    // Format: "let name ..." or "let name: type ..."
+    let rest: i64 = string_slice(line, 4, string_len(line));
+    let name: i64 = string_from("");
+    let i: i64 = 0;
+    while i < string_len(rest) {
+        let c: i64 = string_char_at(rest, i);
+        if c == 32 {
+            // space
+            i = string_len(rest);  // break
+        } else {
+        if c == 58 {
+            // colon
+            i = string_len(rest);  // break
+        } else {
+        if c == 61 {
+            // equals
+            i = string_len(rest);  // break
+        } else {
+            name = string_concat(name, string_from_char(c));
+            i = i + 1;
+        }
+        }
+        }
+    }
+
+    // Store variable reference (actual value would need interpretation)
+    let vars: i64 = repl_state_vars(state);
+    let pair: i64 = malloc(16);
+    store_ptr(pair, 0, name);
+    store_i64(pair, 1, 0);  // placeholder value
+    vec_push(vars, pair);
+
+    return string_concat(string_from("Defined: "), name);
+}
+
+// Evaluate an expression in the REPL
+fn repl_eval_expr(state: i64, line: i64) -> i64 {
+    // Wrap in a function and try to parse
+    let source: i64 = string_concat(string_from("fn __repl() -> i64 { "),
+                      string_concat(line, string_from(" }")));
+    let tokens: i64 = tokenize(source);
+    let parse_result: i64 = parse_program(tokens);
+    let errors: i64 = parse_result_errors(parse_result);
+
+    if errors > 0 {
+        return string_from("Parse error");
+    }
+
+    // For now, just confirm the expression is valid
+    // Full evaluation would require interpretation or JIT
+    // Try to evaluate simple integer literals
+    if is_integer_literal(line) {
+        let val: i64 = string_to_int(line);
+        return string_concat(string_from("= "), int_to_string(val));
+    }
+
+    // Check for simple binary expressions
+    let result: i64 = try_eval_simple_expr(line);
+    if result != 0 {
+        return result;
+    }
+
+    return string_from("Expression parsed OK (evaluation requires compilation)");
+}
+
+// Check if string is just an integer literal
+fn is_integer_literal(s: i64) -> bool {
+    let len: i64 = string_len(s);
+    if len == 0 {
+        return false;
+    }
+    let i: i64 = 0;
+    // Allow leading minus
+    if string_char_at(s, 0) == 45 {
+        i = 1;
+    }
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c < 48 {
+            return false;
+        }
+        if c > 57 {
+            return false;
+        }
+        i = i + 1;
+    }
+    true
+}
+
+// Try to evaluate simple arithmetic expressions
+fn try_eval_simple_expr(expr: i64) -> i64 {
+    // Look for + - * / operators
+    let len: i64 = string_len(expr);
+    let i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(expr, i);
+        if c == 43 {
+            // +
+            let left: i64 = string_trim(string_slice(expr, 0, i));
+            let right: i64 = string_trim(string_slice(expr, i + 1, len));
+            if is_integer_literal(left) {
+                if is_integer_literal(right) {
+                    let result: i64 = string_to_int(left) + string_to_int(right);
+                    return string_concat(string_from("= "), int_to_string(result));
+                }
+            }
+        }
+        if c == 45 {
+            // - (skip if at start, that's negative number)
+            if i > 0 {
+                let left: i64 = string_trim(string_slice(expr, 0, i));
+                let right: i64 = string_trim(string_slice(expr, i + 1, len));
+                if is_integer_literal(left) {
+                    if is_integer_literal(right) {
+                        let result: i64 = string_to_int(left) - string_to_int(right);
+                        return string_concat(string_from("= "), int_to_string(result));
+                    }
+                }
+            }
+        }
+        if c == 42 {
+            // *
+            let left: i64 = string_trim(string_slice(expr, 0, i));
+            let right: i64 = string_trim(string_slice(expr, i + 1, len));
+            if is_integer_literal(left) {
+                if is_integer_literal(right) {
+                    let result: i64 = string_to_int(left) * string_to_int(right);
+                    return string_concat(string_from("= "), int_to_string(result));
+                }
+            }
+        }
+        if c == 47 {
+            // /
+            let left: i64 = string_trim(string_slice(expr, 0, i));
+            let right: i64 = string_trim(string_slice(expr, i + 1, len));
+            if is_integer_literal(left) {
+                if is_integer_literal(right) {
+                    let rval: i64 = string_to_int(right);
+                    if rval != 0 {
+                        let result: i64 = string_to_int(left) / rval;
+                        return string_concat(string_from("= "), int_to_string(result));
+                    } else {
+                        return string_from("Error: Division by zero");
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// ========================================
+// Code Formatter Implementation (20.1.5)
+// ========================================
+
+// Format a source file with consistent style
+fn format_file(path: i64, write_back: i64) -> i64 {
+    let source: i64 = read_file(path);
+    if source == 0 {
+        println(string_concat(string_from("Error: Could not read file: "), path));
+        return 1;
+    }
+
+    // Tokenize
+    let tokens: i64 = tokenize(source);
+
+    // Parse
+    let parse_result: i64 = parse_program(tokens);
+    let items: i64 = parse_result_items(parse_result);
+    let errors: i64 = parse_result_errors(parse_result);
+
+    if errors > 0 {
+        println(string_concat(string_from("Error: Parse errors in "), path));
+        return 1;
+    }
+
+    // Format the AST back to source
+    let formatted: i64 = format_items(items);
+
+    if write_back == 1 {
+        write_file(path, formatted);
+        println(string_concat(string_from("Formatted: "), path));
+    } else {
+        // Print to stdout
+        println(formatted);
+    }
+
+    0
+}
+
+// Format a list of items
+fn format_items(items: i64) -> i64 {
+    let sb: i64 = safe_sb_new();  // TASK-011: Use safe string builder
+    let n: i64 = vec_len(items);
+    let i: i64 = 0;
+
+    while i < n {
+        let item: i64 = vec_get(items, i);
+        let formatted_item: i64 = format_item(item);
+        sb_append(sb, formatted_item);
+        sb_append(sb, string_from("\n"));
+        i = i + 1;
+    }
+
+    sb_to_string(sb)
+}
+
+// Format a single item (fn, struct, enum, impl, trait)
+fn format_item(item: i64) -> i64 {
+    let tag: i64 = load_i64(item, 0);
+
+    if tag == 0 {
+        // Function
+        return format_fn(item);
+    }
+    if tag == 1 {
+        // Enum
+        return format_enum(item);
+    }
+    if tag == 2 {
+        // Struct
+        return format_struct(item);
+    }
+    if tag == 3 {
+        // Impl
+        return format_impl(item);
+    }
+    if tag == 4 {
+        // Trait
+        return format_trait(item);
+    }
+    if tag == 5 {
+        // Impl Trait for Type
+        return format_impl_trait(item);
+    }
+
+    string_from("")
+}
+
+// Format a function definition
+fn format_fn(fn_def: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let name: i64 = load_ptr(fn_def, 1);
+    let type_params: i64 = load_ptr(fn_def, 2);
+    let params: i64 = load_ptr(fn_def, 3);
+    let ret_ty: i64 = load_ptr(fn_def, 4);
+    let body: i64 = load_ptr(fn_def, 5);
+
+    sb_append(sb, string_from("fn "));
+    sb_append(sb, name);
+
+    // Type parameters
+    if type_params != 0 {
+        if vec_len(type_params) > 0 {
+            sb_append(sb, string_from("<"));
+            let i: i64 = 0;
+            while i < vec_len(type_params) {
+                if i > 0 {
+                    sb_append(sb, string_from(", "));
+                }
+                sb_append(sb, vec_get(type_params, i));
+                i = i + 1;
+            }
+            sb_append(sb, string_from(">"));
+        }
+    }
+
+    // Parameters
+    sb_append(sb, string_from("("));
+    let i: i64 = 0;
+    while i < vec_len(params) {
+        if i > 0 {
+            sb_append(sb, string_from(", "));
+        }
+        let param: i64 = vec_get(params, i);
+        let pname: i64 = load_ptr(param, 0);
+        let pty: i64 = load_ptr(param, 1);
+        sb_append(sb, pname);
+        sb_append(sb, string_from(": "));
+        sb_append(sb, pty);
+        i = i + 1;
+    }
+    sb_append(sb, string_from(")"));
+
+    // Return type
+    if ret_ty != 0 {
+        sb_append(sb, string_from(" -> "));
+        sb_append(sb, ret_ty);
+    }
+
+    sb_append(sb, string_from(" "));
+    sb_append(sb, format_block(body, 0));
+
+    sb_to_string(sb)
+}
+
+// Format a block expression
+fn format_block(block: i64, indent: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("{\n"));
+
+    let stmts: i64 = load_ptr(block, 1);
+    let result: i64 = load_ptr(block, 2);
+    let n: i64 = vec_len(stmts);
+    let i: i64 = 0;
+
+    while i < n {
+        let stmt: i64 = vec_get(stmts, i);
+        sb_append(sb, make_indent(indent + 1));
+        sb_append(sb, format_stmt(stmt, indent + 1));
+        sb_append(sb, string_from("\n"));
+        i = i + 1;
+    }
+
+    if result != 0 {
+        sb_append(sb, make_indent(indent + 1));
+        sb_append(sb, format_expr(result, indent + 1));
+        sb_append(sb, string_from("\n"));
+    }
+
+    sb_append(sb, make_indent(indent));
+    sb_append(sb, string_from("}"));
+
+    sb_to_string(sb)
+}
+
+// Create indentation string (4 spaces per level)
+fn make_indent(level: i64) -> i64 {
+    let sb: i64 = safe_sb_new();  // TASK-011: Use safe string builder
+    let i: i64 = 0;
+    while i < level {
+        sb_append(sb, string_from("    "));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+// Format a statement
+fn format_stmt(stmt: i64, indent: i64) -> i64 {
+    let tag: i64 = load_i64(stmt, 0);
+    
+    // Let statement
+    if tag == 0 {
+        let name: i64 = load_ptr(stmt, 1);
+        let ty: i64 = load_ptr(stmt, 2);
+        let init_expr: i64 = load_ptr(stmt, 3);
+        let sb: i64 = safe_sb_new();  // TASK-011: Use safe string builder
+        sb_append(sb, string_from("let "));
+        sb_append(sb, name);
+        if ty != 0 {
+            sb_append(sb, string_from(": "));
+            sb_append(sb, ty);
+        }
+        if init_expr != 0 {
+            sb_append(sb, string_from(" = "));
+            sb_append(sb, format_expr(init_expr, indent));
+        }
+        sb_append(sb, string_from(";"));
+        return sb_to_string(sb);
+    }
+
+    // Expression statement
+    if tag == 1 {
+        let expr: i64 = load_ptr(stmt, 1);
+        let formatted: i64 = format_expr(expr, indent);
+        return string_concat(formatted, string_from(";"));
+    }
+
+    // Return statement
+    if tag == 2 {
+        let expr: i64 = load_ptr(stmt, 1);
+        if expr == 0 {
+            return string_from("return;");
+        }
+        return string_concat(string_from("return "),
+               string_concat(format_expr(expr, indent), string_from(";")));
+    }
+
+    // Assign statement
+    if tag == 3 {
+        let name: i64 = load_ptr(stmt, 1);
+        let value: i64 = load_ptr(stmt, 2);
+        return string_concat(name,
+               string_concat(string_from(" = "),
+               string_concat(format_expr(value, indent), string_from(";"))));
+    }
+
+    // Break
+    if tag == 4 {
+        return string_from("break;");
+    }
+
+    // Continue
+    if tag == 5 {
+        return string_from("continue;");
+    }
+
+    string_from("")
+}
+
+// Format an expression
+fn format_expr(expr: i64, indent: i64) -> i64 {
+    if expr == 0 {
+        return string_from("");
+    }
+
+    let tag: i64 = load_i64(expr, 0);
+
+    // Int literal
+    if tag == 0 {
+        let value: i64 = load_i64(expr, 1);
+        return int_to_string(value);
+    }
+
+    // Bool literal
+    if tag == 1 {
+        let value: i64 = load_i64(expr, 1);
+        if value != 0 {
+            return string_from("true");
+        }
+        return string_from("false");
+    }
+
+    // String literal
+    if tag == 2 {
+        let value: i64 = load_ptr(expr, 1);
+        return string_concat(string_from("\""),
+               string_concat(value, string_from("\"")));
+    }
+
+    // Identifier
+    if tag == 3 {
+        return load_ptr(expr, 1);
+    }
+
+    // Path
+    if tag == 4 {
+        let segments: i64 = load_ptr(expr, 1);
+        let sb: i64 = sb_new();
+        let i: i64 = 0;
+        while i < vec_len(segments) {
+            if i > 0 {
+                sb_append(sb, string_from("::"));
+            }
+            sb_append(sb, vec_get(segments, i));
+            i = i + 1;
+        }
+        return sb_to_string(sb);
+    }
+
+    // Call
+    if tag == 5 {
+        let callee: i64 = load_ptr(expr, 1);
+        let args: i64 = load_ptr(expr, 2);
+        let sb: i64 = sb_new();
+        sb_append(sb, format_expr(callee, indent));
+        sb_append(sb, string_from("("));
+        let i: i64 = 0;
+        while i < vec_len(args) {
+            if i > 0 {
+                sb_append(sb, string_from(", "));
+            }
+            sb_append(sb, format_expr(vec_get(args, i), indent));
+            i = i + 1;
+        }
+        sb_append(sb, string_from(")"));
+        return sb_to_string(sb);
+    }
+
+    // Binary
+    if tag == 6 {
+        let op: i64 = load_i64(expr, 1);
+        let left: i64 = load_ptr(expr, 2);
+        let right: i64 = load_ptr(expr, 3);
+        return string_concat(format_expr(left, indent),
+               string_concat(string_from(" "),
+               string_concat(format_binop(op),
+               string_concat(string_from(" "), format_expr(right, indent)))));
+    }
+
+    // Unary
+    if tag == 7 {
+        let op: i64 = load_i64(expr, 1);
+        let operand: i64 = load_ptr(expr, 2);
+        if op == 100 {
+            return string_concat(string_from("-"), format_expr(operand, indent));
+        }
+        return string_concat(string_from("!"), format_expr(operand, indent));
+    }
+
+    // If
+    if tag == 8 {
+        let cond: i64 = load_ptr(expr, 1);
+        let then_block: i64 = load_ptr(expr, 2);
+        let else_block: i64 = load_ptr(expr, 3);
+        let sb: i64 = sb_new();
+        sb_append(sb, string_from("if "));
+        sb_append(sb, format_expr(cond, indent));
+        sb_append(sb, string_from(" "));
+        sb_append(sb, format_block(then_block, indent));
+        if else_block != 0 {
+            sb_append(sb, string_from(" else "));
+            let else_tag: i64 = load_i64(else_block, 0);
+            if else_tag == 8 {
+                // else if
+                sb_append(sb, format_expr(else_block, indent));
+            } else {
+                sb_append(sb, format_block(else_block, indent));
+            }
+        }
+        return sb_to_string(sb);
+    }
+
+    // While
+    if tag == 9 {
+        let cond: i64 = load_ptr(expr, 1);
+        let body: i64 = load_ptr(expr, 2);
+        return string_concat(string_from("while "),
+               string_concat(format_expr(cond, indent),
+               string_concat(string_from(" "), format_block(body, indent))));
+    }
+
+    // Block
+    if tag == 10 {
+        return format_block(expr, indent);
+    }
+
+    // Struct literal
+    if tag == 11 {
+        let name: i64 = load_ptr(expr, 1);
+        let fields: i64 = load_ptr(expr, 2);
+        let sb: i64 = sb_new();
+        sb_append(sb, name);
+        sb_append(sb, string_from(" { "));
+        let i: i64 = 0;
+        while i < vec_len(fields) {
+            if i > 0 {
+                sb_append(sb, string_from(", "));
+            }
+            let field: i64 = vec_get(fields, i);
+            let fname: i64 = load_ptr(field, 0);
+            let fval: i64 = load_ptr(field, 1);
+            sb_append(sb, fname);
+            sb_append(sb, string_from(": "));
+            sb_append(sb, format_expr(fval, indent));
+            i = i + 1;
+        }
+        sb_append(sb, string_from(" }"));
+        return sb_to_string(sb);
+    }
+
+    // Field access
+    if tag == 12 {
+        let obj: i64 = load_ptr(expr, 1);
+        let field: i64 = load_ptr(expr, 2);
+        return string_concat(format_expr(obj, indent),
+               string_concat(string_from("."), field));
+    }
+
+    // For loop
+    if tag == 13 {
+        let loop_var: i64 = load_ptr(expr, 1);
+        let start: i64 = load_ptr(expr, 2);
+        let end: i64 = load_ptr(expr, 3);
+        let body: i64 = load_ptr(expr, 4);
+        return string_concat(string_from("for "),
+               string_concat(loop_var,
+               string_concat(string_from(" in "),
+               string_concat(format_expr(start, indent),
+               string_concat(string_from(".."),
+               string_concat(format_expr(end, indent),
+               string_concat(string_from(" "), format_block(body, indent))))))));
+    }
+
+    // Match
+    if tag == 14 {
+        let scrutinee: i64 = load_ptr(expr, 1);
+        let arms: i64 = load_ptr(expr, 2);
+        let sb: i64 = sb_new();
+        sb_append(sb, string_from("match "));
+        sb_append(sb, format_expr(scrutinee, indent));
+        sb_append(sb, string_from(" {\n"));
+        let i: i64 = 0;
+        while i < vec_len(arms) {
+            let arm: i64 = vec_get(arms, i);
+            let pattern: i64 = load_ptr(arm, 0);
+            let result: i64 = load_ptr(arm, 1);
+            sb_append(sb, make_indent(indent + 1));
+            if pattern == 0 {
+                sb_append(sb, string_from("_"));
+            } else {
+                sb_append(sb, format_expr(pattern, indent + 1));
+            }
+            sb_append(sb, string_from(" => "));
+            sb_append(sb, format_expr(result, indent + 1));
+            sb_append(sb, string_from(",\n"));
+            i = i + 1;
+        }
+        sb_append(sb, make_indent(indent));
+        sb_append(sb, string_from("}"));
+        return sb_to_string(sb);
+    }
+
+    // Method call
+    if tag == 15 {
+        let obj: i64 = load_ptr(expr, 1);
+        let method: i64 = load_ptr(expr, 2);
+        let args: i64 = load_ptr(expr, 3);
+        let sb: i64 = sb_new();
+        sb_append(sb, format_expr(obj, indent));
+        sb_append(sb, string_from("."));
+        sb_append(sb, method);
+        sb_append(sb, string_from("("));
+        let i: i64 = 0;
+        while i < vec_len(args) {
+            if i > 0 {
+                sb_append(sb, string_from(", "));
+            }
+            sb_append(sb, format_expr(vec_get(args, i), indent));
+            i = i + 1;
+        }
+        sb_append(sb, string_from(")"));
+        return sb_to_string(sb);
+    }
+
+    // Try operator
+    if tag == 16 {
+        let inner: i64 = load_ptr(expr, 1);
+        return string_concat(format_expr(inner, indent), string_from("?"));
+    }
+
+    string_from("")
+}
+
+// Format binary operator
+fn format_binop(op: i64) -> i64 {
+    if op == 0 { return string_from("+"); }
+    if op == 1 { return string_from("-"); }
+    if op == 2 { return string_from("*"); }
+    if op == 3 { return string_from("/"); }
+    if op == 4 { return string_from("=="); }
+    if op == 5 { return string_from("!="); }
+    if op == 6 { return string_from("<"); }
+    if op == 7 { return string_from(">"); }
+    if op == 8 { return string_from("<="); }
+    if op == 9 { return string_from(">="); }
+    if op == 10 { return string_from("&&"); }
+    if op == 11 { return string_from("||"); }
+    if op == 12 { return string_from("%"); }
+    if op == 13 { return string_from("&"); }
+    if op == 14 { return string_from("|"); }
+    if op == 15 { return string_from("^"); }
+    if op == 16 { return string_from("<<"); }
+    if op == 17 { return string_from(">>"); }
+    string_from("??")
+}
+
+// Format enum definition
+fn format_enum(enum_def: i64) -> i64 {
+    let name: i64 = load_ptr(enum_def, 1);
+    let variants: i64 = load_ptr(enum_def, 2);
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("enum "));
+    sb_append(sb, name);
+    sb_append(sb, string_from(" {\n"));
+    let i: i64 = 0;
+    while i < vec_len(variants) {
+        sb_append(sb, string_from("    "));
+        sb_append(sb, vec_get(variants, i));
+        if i < vec_len(variants) - 1 {
+            sb_append(sb, string_from(","));
+        }
+        sb_append(sb, string_from("\n"));
+        i = i + 1;
+    }
+    sb_append(sb, string_from("}"));
+    sb_to_string(sb)
+}
+
+// Format struct definition
+fn format_struct(struct_def: i64) -> i64 {
+    let name: i64 = load_ptr(struct_def, 1);
+    let type_params: i64 = load_ptr(struct_def, 2);
+    let fields: i64 = load_ptr(struct_def, 3);
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("struct "));
+    sb_append(sb, name);
+    if type_params != 0 {
+        if vec_len(type_params) > 0 {
+            sb_append(sb, string_from("<"));
+            let i: i64 = 0;
+            while i < vec_len(type_params) {
+                if i > 0 {
+                    sb_append(sb, string_from(", "));
+                }
+                sb_append(sb, vec_get(type_params, i));
+                i = i + 1;
+            }
+            sb_append(sb, string_from(">"));
+        }
+    }
+    sb_append(sb, string_from(" {\n"));
+    let i: i64 = 0;
+    while i < vec_len(fields) {
+        let field: i64 = vec_get(fields, i);
+        let fname: i64 = load_ptr(field, 0);
+        let fty: i64 = load_ptr(field, 1);
+        sb_append(sb, string_from("    "));
+        sb_append(sb, fname);
+        sb_append(sb, string_from(": "));
+        sb_append(sb, fty);
+        if i < vec_len(fields) - 1 {
+            sb_append(sb, string_from(","));
+        }
+        sb_append(sb, string_from("\n"));
+        i = i + 1;
+    }
+    sb_append(sb, string_from("}"));
+    sb_to_string(sb)
+}
+
+// Format impl block
+fn format_impl(impl_def: i64) -> i64 {
+    let type_name: i64 = load_ptr(impl_def, 1);
+    let methods: i64 = load_ptr(impl_def, 2);
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("impl "));
+    sb_append(sb, type_name);
+    sb_append(sb, string_from(" {\n"));
+    let i: i64 = 0;
+    while i < vec_len(methods) {
+        let method: i64 = vec_get(methods, i);
+        sb_append(sb, string_from("    "));
+        let formatted: i64 = format_fn(method);
+        // Indent the method body
+        formatted = string_replace(formatted, string_from("\n"), string_from("\n    "));
+        sb_append(sb, formatted);
+        sb_append(sb, string_from("\n"));
+        i = i + 1;
+    }
+    sb_append(sb, string_from("}"));
+    sb_to_string(sb)
+}
+
+// Format trait definition
+fn format_trait(trait_def: i64) -> i64 {
+    let name: i64 = load_ptr(trait_def, 1);
+    let method_sigs: i64 = load_ptr(trait_def, 2);
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("trait "));
+    sb_append(sb, name);
+    sb_append(sb, string_from(" {\n"));
+    let i: i64 = 0;
+    while i < vec_len(method_sigs) {
+        let sig: i64 = vec_get(method_sigs, i);
+        let mname: i64 = load_ptr(sig, 0);
+        let params: i64 = load_ptr(sig, 1);
+        let ret_ty: i64 = load_ptr(sig, 2);
+        sb_append(sb, string_from("    fn "));
+        sb_append(sb, mname);
+        sb_append(sb, string_from("("));
+        if params != 0 {
+            let j: i64 = 0;
+            while j < vec_len(params) {
+                if j > 0 {
+                    sb_append(sb, string_from(", "));
+                }
+                let param: i64 = vec_get(params, j);
+                let pname: i64 = load_ptr(param, 0);
+                let pty: i64 = load_ptr(param, 1);
+                sb_append(sb, pname);
+                sb_append(sb, string_from(": "));
+                sb_append(sb, pty);
+                j = j + 1;
+            }
+        }
+        sb_append(sb, string_from(")"));
+        if ret_ty != 0 {
+            sb_append(sb, string_from(" -> "));
+            sb_append(sb, ret_ty);
+        }
+        sb_append(sb, string_from(";\n"));
+        i = i + 1;
+    }
+    sb_append(sb, string_from("}"));
+    sb_to_string(sb)
+}
+
+// Format impl Trait for Type
+fn format_impl_trait(impl_def: i64) -> i64 {
+    let trait_name: i64 = load_ptr(impl_def, 1);
+    let type_name: i64 = load_ptr(impl_def, 2);
+    let methods: i64 = load_ptr(impl_def, 3);
+    let sb: i64 = sb_new();
+    sb_append(sb, string_from("impl "));
+    sb_append(sb, trait_name);
+    sb_append(sb, string_from(" for "));
+    sb_append(sb, type_name);
+    sb_append(sb, string_from(" {\n"));
+    let i: i64 = 0;
+    while i < vec_len(methods) {
+        let method: i64 = vec_get(methods, i);
+        sb_append(sb, string_from("    "));
+        let formatted: i64 = format_fn(method);
+        formatted = string_replace(formatted, string_from("\n"), string_from("\n    "));
+        sb_append(sb, formatted);
+        sb_append(sb, string_from("\n"));
+        i = i + 1;
+    }
+    sb_append(sb, string_from("}"));
+    sb_to_string(sb)
+}

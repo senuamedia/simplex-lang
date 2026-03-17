@@ -1,0 +1,17 @@
+# Simplex Variational Quantum Algorithms
+# Phase 3: Parameterized circuits, gradient estimation, and hybrid optimization
+#
+# Provides the variational quantum eigensolver (VQE), QAOA, and the
+# classical-quantum optimization loop with parameter-shift gradients.
+
+[package]
+name = "simplex-quantum-variational"
+version = "0.14.0"
+description = "Variational quantum algorithms -- VQE, QAOA, parameter-shift gradients"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
+
+[dependencies]
+simplex-std = { path = "../../simplex-std" }
+simplex-quantum = { path = ".." }
+simplex-quantum-backend = { path = "../backend" }

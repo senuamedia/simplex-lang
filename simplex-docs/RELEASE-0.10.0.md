@@ -322,7 +322,7 @@ sxc clean                      # Clean build cache
 |----------------|---------|
 | `tools/sxfmt.sx` | Code formatter |
 | `tools/sxlint.sx` | Static linter |
-| `lib/bench.sx` | Benchmarking library |
+| `simplex-core/src/bench.sx` | Benchmarking library |
 | `lib/incremental.sh` | Incremental compilation |
 | `docs/errors/*.md` | 34 error documentation files |
 | `docs/errors/errors.json` | Error database |
@@ -364,7 +364,7 @@ None. This release is fully backwards compatible with 0.9.x.
 
 1. **Update version.sx imports** (if using centralized version):
    ```simplex
-   use lib::version;
+   use simplex_core::version;
    // Now returns "0.10.0"
    ```
 

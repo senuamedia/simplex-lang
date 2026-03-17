@@ -236,7 +236,7 @@ fn parse_flag_value(args: i64, flag: i64) -> i64 {
 
 fn main() -> i64 {
     println("=== sxdoc Manifest Generation Tests ===");
-    println("v0.13.0: API Documentation Tooling (TASK-017)");
+    println("v0.14.0: API Documentation Tooling (TASK-017)");
     println("");
 
     let failures: i64 = 0;
@@ -246,7 +246,7 @@ fn main() -> i64 {
     let args1: i64 = vec_new();
     vec_push(args1, string_from("sxdoc"));
     vec_push(args1, string_from("--manifest"));
-    vec_push(args1, string_from("lib/safety.sx"));
+    vec_push(args1, string_from("simplex-core/src/safety.sx"));
     failures = failures + assert_true(
         parse_has_flag(args1, string_from("--manifest")),
         "manifest flag is recognized in args"
@@ -255,7 +255,7 @@ fn main() -> i64 {
     let args1b: i64 = vec_new();
     vec_push(args1b, string_from("sxdoc"));
     vec_push(args1b, string_from("--html"));
-    vec_push(args1b, string_from("lib/safety.sx"));
+    vec_push(args1b, string_from("simplex-core/src/safety.sx"));
     failures = failures + assert_true(
         parse_has_flag(args1b, string_from("--manifest")) == 0,
         "manifest flag absent when not specified"
@@ -269,7 +269,7 @@ fn main() -> i64 {
     vec_push(args2, string_from("--manifest"));
     vec_push(args2, string_from("--category"));
     vec_push(args2, string_from("stdlib"));
-    vec_push(args2, string_from("lib/safety.sx"));
+    vec_push(args2, string_from("simplex-core/src/safety.sx"));
     failures = failures + assert_true(
         parse_has_flag(args2, string_from("--category")),
         "category flag is recognized in args"

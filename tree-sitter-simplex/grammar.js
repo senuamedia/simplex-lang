@@ -8,6 +8,25 @@
 /// - Async/await support
 /// - Pattern matching with match expressions
 
+// Numeric precedence constants (higher = binds tighter)
+const PREC = {
+  assign: -2,
+  range: -1,
+  or: 1,
+  and: 2,
+  compare: 3,
+  bitwise_or: 4,
+  bitwise_xor: 5,
+  bitwise_and: 6,
+  shift: 7,
+  additive: 8,
+  multiplicative: 9,
+  cast: 10,
+  unary: 11,
+  call: 12,
+  field: 13,
+};
+
 module.exports = grammar({
   name: 'simplex',
 
@@ -20,46 +39,23 @@ module.exports = grammar({
 
   // Handle conflicts in the grammar
   conflicts: $ => [
-    [$.type, $.path],
-    [$.pattern, $.identifier],
     [$._expression, $.struct_expression],
-    [$.generic_type, $.comparison_expression],
-    [$.call_expression, $.generic_function],
-    [$.tuple_type, $.tuple_expression],
-  ],
-
-  // External scanner for handling raw strings
-  externals: $ => [
-    $._raw_string_literal,
+    [$.tuple_type, $.unit_type],
+    [$._expression, $.path_segment],
+    [$._expression, $.closure_expression],
+    [$.struct_pattern, $.enum_pattern],
+    [$.path_segment, $._type_identifier],
+    [$.identifier_pattern, $._type_identifier],
+    [$._expression, $._type_identifier],
   ],
 
   // Inline rules for performance
   inline: $ => [
-    $._type_identifier,
     $._field_identifier,
   ],
 
   // Word token for keyword extraction
   word: $ => $.identifier,
-
-  // Operator precedence (lowest to highest)
-  precedences: $ => [
-    [
-      'assign',
-      'or',
-      'and',
-      'compare',
-      'bitwise_or',
-      'bitwise_xor',
-      'bitwise_and',
-      'shift',
-      'additive',
-      'multiplicative',
-      'unary',
-      'call',
-      'field',
-    ],
-  ],
 
   rules: {
     // =========================================================================
@@ -190,11 +186,11 @@ module.exports = grammar({
 
     trait_bounds: $ => sepBy1('+', $.type),
 
-    where_clause: $ => seq(
+    where_clause: $ => prec.left(seq(
       'where',
-      sepBy(',', $.where_predicate),
+      sepBy1(',', $.where_predicate),
       optional(','),
-    ),
+    )),
 
     where_predicate: $ => seq(
       $.type,
@@ -424,10 +420,17 @@ module.exports = grammar({
     ),
 
     use_tree: $ => choice(
-      seq(optional(seq($.path, '::')), '*'),
-      seq(optional(seq($.path, '::')), $.use_group),
-      seq($.path, optional(seq('as', $.identifier))),
+      seq($.use_path, optional(seq('as', $.identifier))),
+      seq($.use_path, '::', '*'),
+      seq($.use_path, '::', $.use_group),
+      '*',
     ),
+
+    // Use paths: one or more identifiers separated by ::
+    use_path: $ => prec.right(seq(
+      $.identifier,
+      repeat(seq('::', $.identifier)),
+    )),
 
     use_group: $ => seq(
       '{',
@@ -565,10 +568,7 @@ module.exports = grammar({
     hive_config: $ => seq(
       field('key', $.identifier),
       ':',
-      field('value', choice(
-        $._expression,
-        $.array_expression,
-      )),
+      field('value', $._expression),
       ',',
     ),
 
@@ -610,6 +610,7 @@ module.exports = grammar({
       $.function_type,
       $.generic_type,
       $.path,
+      $._type_identifier,
       $.unit_type,
       $.dyn_type,
       $.self_type,
@@ -670,10 +671,10 @@ module.exports = grammar({
       optional(seq('->', $.type)),
     ),
 
-    generic_type: $ => seq(
-      $.path,
+    generic_type: $ => prec(1, seq(
+      choice($.path, $._type_identifier),
       $.type_arguments,
-    ),
+    )),
 
     type_arguments: $ => seq(
       '<',
@@ -707,10 +708,7 @@ module.exports = grammar({
       $.rest_pattern,
     ),
 
-    identifier_pattern: $ => seq(
-      optional('mut'),
-      $.identifier,
-    ),
+    identifier_pattern: $ => $.identifier,
 
     wildcard_pattern: $ => '_',
 
@@ -745,13 +743,13 @@ module.exports = grammar({
       field('name', $.identifier),
     ),
 
-    enum_pattern: $ => seq(
-      $.path,
+    enum_pattern: $ => prec(1, seq(
+      choice($.path, $._type_identifier),
       optional(choice(
         seq('(', optional(sepBy(',', $.pattern)), optional(','), ')'),
         seq('{', optional(sepBy(',', $.field_pattern)), optional(','), '}'),
       )),
-    ),
+    )),
 
     or_pattern: $ => prec.left(seq(
       $.pattern,
@@ -759,11 +757,10 @@ module.exports = grammar({
       $.pattern,
     )),
 
-    ref_pattern: $ => seq(
-      '&',
-      optional('mut'),
-      $.pattern,
-    ),
+    ref_pattern: $ => prec(2, choice(
+      seq('&', 'mut', $.pattern),
+      seq('&', $.pattern),
+    )),
 
     range_pattern: $ => seq(
       $.literal_pattern,
@@ -867,54 +864,54 @@ module.exports = grammar({
       $.dereference_expression,
     ),
 
-    unary_expression: $ => prec('unary', choice(
+    unary_expression: $ => prec.right(PREC.unary, choice(
       seq('-', $._expression),
       seq('!', $._expression),
       seq('~', $._expression),
     )),
 
     binary_expression: $ => choice(
-      prec.left('multiplicative', seq($._expression, '*', $._expression)),
-      prec.left('multiplicative', seq($._expression, '/', $._expression)),
-      prec.left('multiplicative', seq($._expression, '%', $._expression)),
-      prec.left('additive', seq($._expression, '+', $._expression)),
-      prec.left('additive', seq($._expression, '-', $._expression)),
-      prec.left('shift', seq($._expression, '<<', $._expression)),
-      prec.left('shift', seq($._expression, '>>', $._expression)),
-      prec.left('bitwise_and', seq($._expression, '&', $._expression)),
-      prec.left('bitwise_xor', seq($._expression, '^', $._expression)),
-      prec.left('bitwise_or', seq($._expression, '|', $._expression)),
+      prec.left(PREC.multiplicative, seq($._expression, '*', $._expression)),
+      prec.left(PREC.multiplicative, seq($._expression, '/', $._expression)),
+      prec.left(PREC.multiplicative, seq($._expression, '%', $._expression)),
+      prec.left(PREC.additive, seq($._expression, '+', $._expression)),
+      prec.left(PREC.additive, seq($._expression, '-', $._expression)),
+      prec.left(PREC.shift, seq($._expression, '<<', $._expression)),
+      prec.left(PREC.shift, seq($._expression, '>>', $._expression)),
+      prec.left(PREC.bitwise_and, seq($._expression, '&', $._expression)),
+      prec.left(PREC.bitwise_xor, seq($._expression, '^', $._expression)),
+      prec.left(PREC.bitwise_or, seq($._expression, '|', $._expression)),
     ),
 
-    comparison_expression: $ => prec.left('compare', seq(
+    comparison_expression: $ => prec.left(PREC.compare, seq(
       $._expression,
       choice('==', '!=', '<', '>', '<=', '>='),
       $._expression,
     )),
 
     logical_expression: $ => choice(
-      prec.left('and', seq($._expression, '&&', $._expression)),
-      prec.left('or', seq($._expression, '||', $._expression)),
+      prec.left(PREC.and, seq($._expression, '&&', $._expression)),
+      prec.left(PREC.or, seq($._expression, '||', $._expression)),
     ),
 
-    assignment_expression: $ => prec.right('assign', seq(
+    assignment_expression: $ => prec.right(PREC.assign, seq(
       field('left', $._expression),
       '=',
       field('right', $._expression),
     )),
 
-    compound_assignment_expression: $ => prec.right('assign', seq(
+    compound_assignment_expression: $ => prec.right(PREC.assign, seq(
       field('left', $._expression),
       choice('+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>='),
       field('right', $._expression),
     )),
 
-    call_expression: $ => prec('call', seq(
+    call_expression: $ => prec(PREC.call, seq(
       field('function', $._expression),
       $.arguments,
     )),
 
-    generic_function: $ => prec('call', seq(
+    generic_function: $ => prec(PREC.call, seq(
       field('function', $.path),
       $.type_arguments,
       $.arguments,
@@ -927,7 +924,7 @@ module.exports = grammar({
       ')',
     ),
 
-    method_call_expression: $ => prec('call', seq(
+    method_call_expression: $ => prec(PREC.field + 1, seq(
       field('receiver', $._expression),
       '.',
       field('method', $.identifier),
@@ -935,13 +932,13 @@ module.exports = grammar({
       $.arguments,
     )),
 
-    field_expression: $ => prec('field', seq(
+    field_expression: $ => prec(PREC.field, seq(
       field('receiver', $._expression),
       '.',
       field('field', choice($.identifier, $.integer_literal)),
     )),
 
-    index_expression: $ => prec('call', seq(
+    index_expression: $ => prec(PREC.call, seq(
       field('value', $._expression),
       '[',
       field('index', $._expression),
@@ -965,7 +962,7 @@ module.exports = grammar({
     ),
 
     struct_expression: $ => seq(
-      field('name', $.path),
+      field('name', choice($.path, $._type_identifier)),
       '{',
       optional(sepBy(',', $.struct_expression_field)),
       optional(','),
@@ -986,9 +983,10 @@ module.exports = grammar({
 
     if_expression: $ => seq(
       'if',
-      optional('let'),
-      optional(seq($.pattern, '=')),
-      field('condition', $._expression),
+      choice(
+        seq('let', $.pattern, '=', field('condition', $._expression)),
+        field('condition', $._expression),
+      ),
       field('consequence', $.block),
       optional(seq(
         'else',
@@ -1005,12 +1003,12 @@ module.exports = grammar({
       '}',
     ),
 
-    match_arm: $ => seq(
+    match_arm: $ => prec(1, seq(
       field('pattern', $.pattern),
       optional(seq('if', field('guard', $._expression))),
       '=>',
-      field('body', choice($._expression, $.block)),
-    ),
+      field('body', choice($.block, $._expression)),
+    )),
 
     for_expression: $ => seq(
       'for',
@@ -1022,9 +1020,10 @@ module.exports = grammar({
 
     while_expression: $ => seq(
       'while',
-      optional('let'),
-      optional(seq($.pattern, '=')),
-      field('condition', $._expression),
+      choice(
+        seq('let', $.pattern, '=', field('condition', $._expression)),
+        field('condition', $._expression),
+      ),
       field('body', $.block),
     ),
 
@@ -1033,15 +1032,15 @@ module.exports = grammar({
       field('body', $.block),
     ),
 
-    closure_expression: $ => seq(
+    closure_expression: $ => prec.right(seq(
       optional('move'),
       $.closure_parameters,
       optional(seq('->', $.type)),
       choice(
-        $._expression,
         $.block,
+        $._expression,
       ),
-    ),
+    )),
 
     closure_parameters: $ => seq(
       '|',
@@ -1056,7 +1055,7 @@ module.exports = grammar({
       optional(seq(':', field('type', $.type))),
     ),
 
-    range_expression: $ => prec.left('compare', choice(
+    range_expression: $ => prec.left(PREC.range, choice(
       seq($._expression, '..', $._expression),
       seq($._expression, '..=', $._expression),
       seq($._expression, '..'),
@@ -1065,22 +1064,22 @@ module.exports = grammar({
       '..',
     )),
 
-    try_expression: $ => prec('unary', seq(
+    try_expression: $ => prec.left(PREC.unary, seq(
       $._expression,
       '?',
     )),
 
-    await_expression: $ => prec('field', seq(
+    await_expression: $ => prec(PREC.field, seq(
       $._expression,
       '.',
       'await',
     )),
 
     // Simplex-specific expressions
-    spawn_expression: $ => seq(
+    spawn_expression: $ => prec.right(seq(
       'spawn',
       $._expression,
-    ),
+    )),
 
     send_expression: $ => seq(
       'send',
@@ -1107,19 +1106,19 @@ module.exports = grammar({
       ')',
     ),
 
-    cast_expression: $ => prec('unary', seq(
+    cast_expression: $ => prec.left(PREC.cast, seq(
       $._expression,
       'as',
       $.type,
     )),
 
-    reference_expression: $ => prec('unary', seq(
+    reference_expression: $ => prec.right(PREC.unary, seq(
       '&',
       optional('mut'),
       $._expression,
     )),
 
-    dereference_expression: $ => prec('unary', seq(
+    dereference_expression: $ => prec.right(PREC.unary, seq(
       '*',
       $._expression,
     )),
@@ -1203,15 +1202,16 @@ module.exports = grammar({
     // Paths
     // =========================================================================
 
+    // Qualified paths require at least one :: separator
     path: $ => prec.left(seq(
       optional(choice('::', $.path_segment)),
       repeat1(seq('::', $.path_segment)),
     )),
 
-    path_segment: $ => seq(
+    path_segment: $ => prec.left(seq(
       $.identifier,
       optional($.type_arguments),
-    ),
+    )),
 
     // =========================================================================
     // Identifiers

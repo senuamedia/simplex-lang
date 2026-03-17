@@ -1,0 +1,25 @@
+// TASK-021 Phase 6: Quantum Learning Integration
+//
+// This module connects quantum computing to the learning infrastructure.
+//
+// Module Structure:
+//
+//   bridge       - Quantum-classical gradient bridge
+//                  quantum_to_dual, quantum_gradient_bridge, quantum_loss
+//
+//   epistemic    - Quantum measurements as epistemic beliefs
+//                  quantum_belief_new, quantum_conf_level,
+//                  measurement_sufficient, shots_needed,
+//                  quantum_falsification_check
+//
+//   neural_gate  - Quantum-aware neural gates
+//                  quantum_gate_new, quantum_gate_forward,
+//                  quantum_gate_set_training, quantum_gate_gradient
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+fn main() -> i64 {
+    println(string_from("quantum module index"));
+    0
+}

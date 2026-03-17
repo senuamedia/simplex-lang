@@ -1,0 +1,131 @@
+// Test: &mut self method receiver syntax
+// Verifies that methods taking &mut self can modify struct fields
+// and are dispatched correctly alongside immutable self methods
+
+struct Counter {
+    count: i64,
+    step: i64
+}
+
+impl Counter {
+    fn new(step: i64) -> Counter {
+        Counter { count: 0, step: step }
+    }
+
+    // Mutable method: modifies fields through &mut self
+    fn increment(&mut self) -> i64 {
+        self.count = self.count + self.step;
+        self.count
+    }
+
+    // Another mutable method
+    fn reset(&mut self) -> i64 {
+        self.count = 0;
+        0
+    }
+
+    // Immutable method: reads fields through self
+    fn get_count(self) -> i64 {
+        self.count
+    }
+
+    // Immutable method using &self syntax
+    fn get_step(&self) -> i64 {
+        self.step
+    }
+}
+
+fn test_basic_mut_self() -> i64 {
+    let c: Counter = Counter::new(1);
+
+    // Call mutable method
+    c.increment();
+    if c.get_count() != 1 {
+        print("FAIL: first increment");
+        return 1;
+    }
+
+    // Call mutable method again
+    c.increment();
+    if c.get_count() != 2 {
+        print("FAIL: second increment");
+        return 2;
+    }
+
+    0
+}
+
+fn test_sequential_mutations() -> i64 {
+    let c: Counter = Counter::new(5);
+
+    // Multiple mutations in sequence
+    c.increment();
+    c.increment();
+    c.increment();
+
+    if c.get_count() != 15 {
+        print("FAIL: sequential mutations");
+        return 1;
+    }
+
+    // Reset and verify
+    c.reset();
+    if c.get_count() != 0 {
+        print("FAIL: reset");
+        return 2;
+    }
+
+    // Increment after reset
+    c.increment();
+    if c.get_count() != 5 {
+        print("FAIL: increment after reset");
+        return 3;
+    }
+
+    0
+}
+
+fn test_mixed_receivers() -> i64 {
+    let c: Counter = Counter::new(3);
+
+    // Mix mutable and immutable calls
+    let step: i64 = c.get_step();
+    if step != 3 {
+        print("FAIL: get_step");
+        return 1;
+    }
+
+    c.increment();
+    let count: i64 = c.get_count();
+    if count != 3 {
+        print("FAIL: mixed receivers");
+        return 2;
+    }
+
+    0
+}
+
+fn main() -> i64 {
+    print("Testing &mut self method receivers");
+
+    let r1: i64 = test_basic_mut_self();
+    if r1 != 0 {
+        return r1;
+    }
+    print(" PASS: basic &mut self methods");
+
+    let r2: i64 = test_sequential_mutations();
+    if r2 != 0 {
+        return r2;
+    }
+    print(" PASS: sequential mutations");
+
+    let r3: i64 = test_mixed_receivers();
+    if r3 != 0 {
+        return r3;
+    }
+    print(" PASS: mixed self and &mut self receivers");
+
+    print("All tests passed!");
+    0
+}

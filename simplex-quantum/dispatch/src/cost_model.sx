@@ -1,0 +1,168 @@
+// simplex-quantum-dispatch::cost_model - QPU Pricing and Cost Estimation
+// Models cloud quantum computing provider pricing for dispatch decisions.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// Device constants
+fn DEVICE_RIGETTI() -> i64 { 0 }
+fn DEVICE_IONQ_ARIA() -> i64 { 1 }
+fn DEVICE_IONQ_FORTE() -> i64 { 2 }
+fn DEVICE_BRAKET_SV1() -> i64 { 3 }
+fn DEVICE_IBM_EAGLE() -> i64 { 4 }
+fn DEVICE_IBM_HERON() -> i64 { 5 }
+fn DEVICE_IBM_CONDOR() -> i64 { 6 }
+fn DEVICE_AZURE_IONQ() -> i64 { 7 }
+fn DEVICE_AZURE_QUANTINUUM() -> i64 { 8 }
+fn DEVICE_LOCAL_SIM() -> i64 { 9 }
+fn DEVICE_COUNT() -> i64 { 10 }
+
+// Provider constants
+fn PROVIDER_BRAKET() -> i64 { 0 }
+fn PROVIDER_IBM() -> i64 { 1 }
+fn PROVIDER_AZURE() -> i64 { 2 }
+fn PROVIDER_LOCAL() -> i64 { 3 }
+
+// Pricing record layout per device (vec of i64):
+//   [0] provider  [1] task_fee (f64 bits)  [2] per_shot (f64 bits)
+//   [3] per_minute (f64 bits)  [4] per_second (f64 bits)
+//   [5] max_qubits  [6] device_name (string handle)
+
+fn make_device_pricing(provider: i64, task_fee_bits: i64, per_shot_bits: i64, per_minute_bits: i64, per_second_bits: i64, max_qubits: i64, device_name: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, provider);
+    vec_push(v, task_fee_bits);
+    vec_push(v, per_shot_bits);
+    vec_push(v, per_minute_bits);
+    vec_push(v, per_second_bits);
+    vec_push(v, max_qubits);
+    vec_push(v, device_name);
+    v
+}
+
+// Create a cost model with current cloud QPU pricing. Returns handle.
+fn cost_model_new() -> i64 {
+    let model: i64 = vec_new();
+    let z: i64 = f64_to_bits(0.0);
+    let f30: i64 = f64_to_bits(0.30);
+    vec_push(model, make_device_pricing(0, f30, f64_to_bits(0.00090), z, z, 80, string_from("Braket/Rigetti")));
+    vec_push(model, make_device_pricing(0, f30, f64_to_bits(0.03000), z, z, 25, string_from("Braket/IonQ-Aria")));
+    vec_push(model, make_device_pricing(0, f30, f64_to_bits(0.03000), z, z, 32, string_from("Braket/IonQ-Forte")));
+    vec_push(model, make_device_pricing(0, z, z, f64_to_bits(0.075), z, 34, string_from("Braket/SV1")));
+    vec_push(model, make_device_pricing(1, z, z, z, f64_to_bits(1.60), 127, string_from("IBM/Eagle")));
+    vec_push(model, make_device_pricing(1, z, z, z, f64_to_bits(1.60), 133, string_from("IBM/Heron")));
+    vec_push(model, make_device_pricing(1, z, z, z, f64_to_bits(2.00), 1121, string_from("IBM/Condor")));
+    vec_push(model, make_device_pricing(2, z, f64_to_bits(0.03000), z, z, 25, string_from("Azure/IonQ")));
+    vec_push(model, make_device_pricing(2, z, f64_to_bits(0.05000), z, z, 56, string_from("Azure/Quantinuum")));
+    vec_push(model, make_device_pricing(3, z, z, z, z, 30, string_from("Local/Simulator")));
+    model
+}
+
+fn get_device_pricing(model: i64, device: i64) -> i64 {
+    if device < 0 {
+        return vec_get(model, DEVICE_LOCAL_SIM());
+    }
+    if device >= vec_len(model) {
+        return vec_get(model, DEVICE_LOCAL_SIM());
+    }
+    vec_get(model, device)
+}
+
+fn cost_model_device_name(model: i64, device: i64) -> i64 {
+    let p: i64 = get_device_pricing(model, device);
+    vec_get(p, 6)
+}
+
+fn cost_model_max_qubits(model: i64, device: i64) -> i64 {
+    let p: i64 = get_device_pricing(model, device);
+    vec_get(p, 5)
+}
+
+fn cost_model_provider(model: i64, device: i64) -> i64 {
+    let p: i64 = get_device_pricing(model, device);
+    vec_get(p, 0)
+}
+
+// Estimate cost of a single circuit execution. Returns f64 bits (USD).
+fn estimate_circuit_cost(model: i64, shots: i64, device: i64) -> i64 {
+    let p: i64 = get_device_pricing(model, device);
+    let provider: i64 = vec_get(p, 0);
+    let task_fee: f64 = bits_to_f64(vec_get(p, 1));
+    let per_shot: f64 = bits_to_f64(vec_get(p, 2));
+    let per_minute: f64 = bits_to_f64(vec_get(p, 3));
+    let per_second: f64 = bits_to_f64(vec_get(p, 4));
+    let shots_f: f64 = shots as f64;
+    if provider == PROVIDER_BRAKET() {
+        if per_minute > 0.0 {
+            let est_min: f64 = shots_f / 10000.0;
+            if est_min < 0.1 {
+                return f64_to_bits(per_minute * 0.1);
+            }
+            return f64_to_bits(per_minute * est_min);
+        }
+        return f64_to_bits(task_fee + shots_f * per_shot);
+    }
+    if provider == PROVIDER_IBM() {
+        let batches: f64 = shots_f / 4096.0 + 1.0;
+        let est_sec: f64 = batches * 0.1;
+        return f64_to_bits(per_second * est_sec);
+    }
+    if provider == PROVIDER_AZURE() {
+        return f64_to_bits(shots_f * per_shot);
+    }
+    f64_to_bits(0.0)
+}
+
+// Estimate cost of a variational algorithm. Returns f64 bits (USD).
+fn estimate_variational_cost(model: i64, n_iters: i64, n_params: i64, shots: i64, device: i64) -> i64 {
+    let circuits_per_iter: i64 = n_params * 2;
+    let total_circuits: i64 = n_iters * circuits_per_iter;
+    let p: i64 = get_device_pricing(model, device);
+    let provider: i64 = vec_get(p, 0);
+    let task_fee: f64 = bits_to_f64(vec_get(p, 1));
+    let per_shot: f64 = bits_to_f64(vec_get(p, 2));
+    let per_second: f64 = bits_to_f64(vec_get(p, 4));
+    let tc_f: f64 = total_circuits as f64;
+    let shots_f: f64 = shots as f64;
+    if provider == PROVIDER_BRAKET() {
+        let task_costs: f64 = tc_f * task_fee;
+        let shot_costs: f64 = tc_f * shots_f * per_shot;
+        return f64_to_bits(task_costs + shot_costs);
+    }
+    if provider == PROVIDER_IBM() {
+        let total_shots: f64 = tc_f * shots_f;
+        let batches: f64 = total_shots / 4096.0 + 1.0;
+        let est_sec: f64 = batches * 0.1;
+        return f64_to_bits(per_second * est_sec);
+    }
+    if provider == PROVIDER_AZURE() {
+        let total_shots: f64 = tc_f * shots_f;
+        return f64_to_bits(total_shots * per_shot);
+    }
+    f64_to_bits(0.0)
+}
+
+fn device_supports_qubits(model: i64, device: i64, required: i64) -> i64 {
+    let max: i64 = cost_model_max_qubits(model, device);
+    if required <= max { 1 } else { 0 }
+}
+
+fn find_cheapest_device(model: i64, required_qubits: i64, shots: i64) -> i64 {
+    var best_device: i64 = -1;
+    var best_cost_bits: i64 = f64_to_bits(1000000000000000000.0);
+    var d: i64 = 0;
+    while d < DEVICE_COUNT() {
+        if device_supports_qubits(model, d, required_qubits) == 1 {
+            let cost_bits: i64 = estimate_circuit_cost(model, shots, d);
+            let cost: f64 = bits_to_f64(cost_bits);
+            let best_cost: f64 = bits_to_f64(best_cost_bits);
+            if cost < best_cost {
+                best_cost_bits = cost_bits;
+                best_device = d;
+            }
+        }
+        d = d + 1;
+    }
+    best_device
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

@@ -241,7 +241,7 @@ fn test_learnable_function_has_no_attrs() {
 //    - Added cg_in_no_gradient_context(), cg_in_no_learn_context()
 //    - Updated gen_fn() to track and report function attributes
 //
-// 4. AST Definitions (lib/ast_defs.sx):
+// 4. AST Definitions (simplex-core/src/ast_defs.sx):
 //    - Added ATTR_NO_LEARN(), ATTR_NO_GRADIENT(), ATTR_INVARIANT() tags
 //    - Added ATTR_FLAG_NO_LEARN(), ATTR_FLAG_NO_GRADIENT(), ATTR_FLAG_INVARIANT()
 //

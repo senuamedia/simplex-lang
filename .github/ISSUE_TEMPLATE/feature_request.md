@@ -21,8 +21,9 @@ Which part of the project does this relate to?
 - [ ] Runtime (`runtime/`)
 - [ ] Standard library (`lib/`)
 - [ ] Learning system (`simplex-learning/`)
-- [ ] Edge Hive (`edge-hive/`)
-- [ ] Nexus (`nexus/`)
+- [ ] Edge Hive (`simplex-edge-hive/`)
+- [ ] Nexus (`simplex-nexus/`)
+- [ ] Quantum (`simplex-quantum/`)
 - [ ] Toolchain (`sxpm`, `sxfmt`, `sxlint`, `sxlsp`, `sxdoc`)
 - [ ] Documentation (`simplex-docs/`)
 - [ ] Other

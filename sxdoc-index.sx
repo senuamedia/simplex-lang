@@ -5,7 +5,7 @@
 // Licensed under AGPL-3.0 - see LICENSE file
 // https://github.com/senuamedia/simplex
 
-fn VERSION() -> i64 { string_from("0.13.0") }
+fn VERSION() -> i64 { string_from("0.14.0") }
 
 fn show_help() -> i64 {
     println("sxdoc-index - Documentation Index Generator");
@@ -453,8 +453,8 @@ fn scan_manifests(api_dir: i64) -> i64 {
     vec_push(cat_names, string_from("ses"));
     vec_push(cat_names, string_from("inference"));
     vec_push(cat_names, string_from("learning"));
-    vec_push(cat_names, string_from("edge-hive"));
-    vec_push(cat_names, string_from("nexus"));
+    vec_push(cat_names, string_from("simplex-edge-hive"));
+    vec_push(cat_names, string_from("simplex-nexus"));
     vec_push(cat_names, string_from("lib"));
     vec_push(cat_names, string_from("core"));
     vec_push(cat_names, string_from("tools"));

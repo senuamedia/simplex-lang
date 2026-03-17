@@ -111,7 +111,8 @@ enum TokenKind {
     KwRequires,      // requires precondition
     KwEnsures,       // ensures postcondition
     KwInvariant,     // invariant struct/type constraint
-    KwFallback       // fallback handler on contract failure
+    KwFallback,      // fallback handler on contract failure
+    KwExtern         // extern keyword for extern "C" blocks
 }
 
 // Lexer state - we pass this to all functions instead of using self
@@ -300,6 +301,7 @@ fn check_keyword(text: i64) -> i64 {
     if string_eq(text, "in") { return TokenKind::KwIn; }
     if string_eq(text, "impl") { return TokenKind::KwImpl; }
     if string_eq(text, "self") { return TokenKind::KwSelf; }
+    if string_eq(text, "Self") { return TokenKind::KwSelf; }
     if string_eq(text, "match") { return TokenKind::KwMatch; }
     if string_eq(text, "break") { return TokenKind::KwBreak; }
     if string_eq(text, "loop") { return TokenKind::KwLoop; }
@@ -309,6 +311,7 @@ fn check_keyword(text: i64) -> i64 {
     if string_eq(text, "use") { return TokenKind::KwUse; }
     if string_eq(text, "mod") { return TokenKind::KwMod; }
     if string_eq(text, "const") { return TokenKind::KwConst; }
+    if string_eq(text, "extern") { return TokenKind::KwExtern; }
     if string_eq(text, "async") { return TokenKind::KwAsync; }
     if string_eq(text, "await") { return TokenKind::KwAwait; }
     if string_eq(text, "yield") { return TokenKind::KwYield; }

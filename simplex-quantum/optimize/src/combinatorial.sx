@@ -1,0 +1,213 @@
+// simplex-quantum-optimize::combinatorial - QAOA-Based Combinatorial Optimization
+// Encodes MaxCut, TSP as Ising Hamiltonians for quantum optimization.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// Ising Hamiltonian stored as a collection of vecs:
+//   handle -> vec:
+//     [0] n_spins
+//     [1] coupling_i (vec handle)
+//     [2] coupling_j (vec handle)
+//     [3] coupling_vals (vec of f64 bits)
+//     [4] n_couplings
+//     [5] local_fields (vec of f64 bits, length n_spins)
+//     [6] offset (f64 bits)
+
+fn ising_new(n_spins: i64) -> i64 {
+    let h: i64 = vec_new();
+    vec_push(h, n_spins);
+    vec_push(h, vec_new());
+    vec_push(h, vec_new());
+    vec_push(h, vec_new());
+    vec_push(h, 0);
+    let lf: i64 = vec_new();
+    var k: i64 = 0;
+    while k < n_spins {
+        vec_push(lf, f64_to_bits(0.0));
+        k = k + 1;
+    }
+    vec_push(h, lf);
+    vec_push(h, f64_to_bits(0.0));
+    h
+}
+
+fn ising_n_spins(h: i64) -> i64 { vec_get(h, 0) }
+fn ising_n_couplings(h: i64) -> i64 { vec_get(h, 4) }
+
+fn ising_add_coupling(h: i64, i: i64, j: i64, val_bits: i64) -> i64 {
+    if i == j {
+        let lf: i64 = vec_get(h, 5);
+        let cur: f64 = bits_to_f64(vec_get(lf, i));
+        let v: f64 = bits_to_f64(val_bits);
+        vec_set(lf, i, f64_to_bits(cur + v));
+        return h;
+    }
+    let ci: i64 = vec_get(h, 1);
+    let cj: i64 = vec_get(h, 2);
+    let cv: i64 = vec_get(h, 3);
+    vec_push(ci, i);
+    vec_push(cj, j);
+    vec_push(cv, val_bits);
+    let nc: i64 = vec_get(h, 4);
+    vec_set(h, 4, nc + 1);
+    h
+}
+
+fn ising_set_local_field(h: i64, i: i64, val_bits: i64) -> i64 {
+    let lf: i64 = vec_get(h, 5);
+    vec_set(lf, i, val_bits);
+    h
+}
+
+fn ising_get_local_field_bits(h: i64, i: i64) -> i64 {
+    let lf: i64 = vec_get(h, 5);
+    vec_get(lf, i)
+}
+
+fn ising_set_offset(h: i64, offset_bits: i64) -> i64 {
+    vec_set(h, 6, offset_bits);
+    h
+}
+
+fn ising_get_offset_bits(h: i64) -> i64 { vec_get(h, 6) }
+
+// Evaluate Ising energy for a spin config (vec of +1/-1). Returns f64 bits.
+fn ising_evaluate(h: i64, spins: i64) -> i64 {
+    var energy: f64 = bits_to_f64(vec_get(h, 6));
+    let ci: i64 = vec_get(h, 1);
+    let cj: i64 = vec_get(h, 2);
+    let cv: i64 = vec_get(h, 3);
+    let nc: i64 = vec_get(h, 4);
+    var k: i64 = 0;
+    while k < nc {
+        let ii: i64 = vec_get(ci, k);
+        let jj: i64 = vec_get(cj, k);
+        let jval: f64 = bits_to_f64(vec_get(cv, k));
+        let si: f64 = vec_get(spins, ii) as f64;
+        let sj: f64 = vec_get(spins, jj) as f64;
+        energy = energy + jval * si * sj;
+        k = k + 1;
+    }
+    let ns: i64 = vec_get(h, 0);
+    let lf: i64 = vec_get(h, 5);
+    var i: i64 = 0;
+    while i < ns {
+        let hval: f64 = bits_to_f64(vec_get(lf, i));
+        let si: f64 = vec_get(spins, i) as f64;
+        energy = energy + hval * si;
+        i = i + 1;
+    }
+    f64_to_bits(energy)
+}
+
+// Encode MaxCut as Ising Hamiltonian.
+// edges = flat pairs [i0,j0,i1,j1,...], n_nodes = vertex count
+fn maxcut_encode(edges: i64, n_nodes: i64) -> i64 {
+    let h: i64 = ising_new(n_nodes);
+    let n_total: i64 = vec_len(edges);
+    let n_edges: i64 = n_total / 2;
+    let half: i64 = f64_to_bits(0.5);
+    var k: i64 = 0;
+    while k < n_total {
+        let i: i64 = vec_get(edges, k);
+        let j: i64 = vec_get(edges, k + 1);
+        ising_add_coupling(h, i, j, half);
+        k = k + 2;
+    }
+    let off: f64 = 0.0 - (n_edges as f64) / 2.0;
+    ising_set_offset(h, f64_to_bits(off));
+    h
+}
+
+// Evaluate a bitstring against MaxCut edges. Returns cut value.
+fn maxcut_evaluate(bitstring: i64, edges: i64) -> i64 {
+    var cut: i64 = 0;
+    let n: i64 = vec_len(edges);
+    var k: i64 = 0;
+    while k < n {
+        let i: i64 = vec_get(edges, k);
+        let j: i64 = vec_get(edges, k + 1);
+        let bi: i64 = vec_get(bitstring, i);
+        let bj: i64 = vec_get(bitstring, j);
+        if bi != bj {
+            cut = cut + 1;
+        }
+        k = k + 2;
+    }
+    cut
+}
+
+// Encode TSP as Ising Hamiltonian.
+// distances = flat n*n matrix (f64 bits), n_cities = city count
+fn tsp_encode(distances: i64, n_cities: i64) -> i64 {
+    let n_qubits: i64 = n_cities * n_cities;
+    let h: i64 = ising_new(n_qubits);
+    let penalty_bits: i64 = f64_to_bits(10.0);
+    let penalty: f64 = 10.0;
+    let half_pen_bits: i64 = f64_to_bits(5.0);
+    let neg_pen_bits: i64 = f64_to_bits(0.0 - penalty);
+    // Constraint 1: each city visited exactly once
+    var i: i64 = 0;
+    while i < n_cities {
+        var t: i64 = 0;
+        while t < n_cities {
+            let idx: i64 = i * n_cities + t;
+            let cur: f64 = bits_to_f64(ising_get_local_field_bits(h, idx));
+            ising_set_local_field(h, idx, f64_to_bits(cur - penalty));
+            var t2: i64 = t + 1;
+            while t2 < n_cities {
+                let idx2: i64 = i * n_cities + t2;
+                ising_add_coupling(h, idx, idx2, half_pen_bits);
+                t2 = t2 + 1;
+            }
+            t = t + 1;
+        }
+        let off: f64 = bits_to_f64(ising_get_offset_bits(h));
+        ising_set_offset(h, f64_to_bits(off + penalty));
+        i = i + 1;
+    }
+    // Constraint 2: each time slot has exactly one city
+    var t: i64 = 0;
+    while t < n_cities {
+        var i: i64 = 0;
+        while i < n_cities {
+            let idx: i64 = i * n_cities + t;
+            let cur: f64 = bits_to_f64(ising_get_local_field_bits(h, idx));
+            ising_set_local_field(h, idx, f64_to_bits(cur - penalty));
+            var i2: i64 = i + 1;
+            while i2 < n_cities {
+                let idx2: i64 = i2 * n_cities + t;
+                ising_add_coupling(h, idx, idx2, half_pen_bits);
+                i2 = i2 + 1;
+            }
+            i = i + 1;
+        }
+        let off: f64 = bits_to_f64(ising_get_offset_bits(h));
+        ising_set_offset(h, f64_to_bits(off + penalty));
+        t = t + 1;
+    }
+    // Route cost
+    var i: i64 = 0;
+    while i < n_cities {
+        var j: i64 = 0;
+        while j < n_cities {
+            if i != j {
+                let d: f64 = bits_to_f64(vec_get(distances, i * n_cities + j));
+                let quarter_d_bits: i64 = f64_to_bits(d / 4.0);
+                var t: i64 = 0;
+                while t < n_cities {
+                    let t_next: i64 = (t + 1) % n_cities;
+                    let idx_it: i64 = i * n_cities + t;
+                    let idx_jtn: i64 = j * n_cities + t_next;
+                    ising_add_coupling(h, idx_it, idx_jtn, quarter_d_bits);
+                    t = t + 1;
+                }
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    h
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }
