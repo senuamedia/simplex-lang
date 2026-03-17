@@ -18,10 +18,7 @@
 
 ; Closures
 (closure_expression
-  body: (block) @function.inner) @function.outer
-
-(closure_expression
-  body: (_) @function.inner) @function.outer
+  (block) @function.inner) @function.outer
 
 ; =============================================================================
 ; Classes/Types
@@ -117,7 +114,6 @@
 
 (line_comment) @comment.outer
 (block_comment) @comment.outer
-(doc_comment) @comment.outer
 
 ; =============================================================================
 ; Calls

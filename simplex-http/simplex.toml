@@ -1,6 +1,6 @@
 [package]
 name = "simplex-http"
-version = "0.12.0"
+version = "0.9.0"
 description = "High-level HTTP client and server for Simplex"
 license = "MIT"
 

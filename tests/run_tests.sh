@@ -6,7 +6,7 @@
 #
 # Categories:
 #   all, language, types, neural, stdlib, runtime, ai, integration,
-#   toolchain, basics, async, actors, learning, observability
+#   toolchain, basics, async, actors, learning, quantum, observability
 #
 # Types (based on naming convention):
 #   all   - Run all test types
@@ -243,7 +243,7 @@ print_header() {
     if [ -n "$USE_PYTHON" ]; then
         echo -e "  Compiler: ${YELLOW}stage0.py (Python bootstrap)${NC}"
     else
-        echo -e "  Compiler: ${GREEN}sxc v0.13.0 (self-hosted)${NC}"
+        echo -e "  Compiler: ${GREEN}sxc v0.14.0 (self-hosted)${NC}"
     fi
     if [ "$TEST_TYPE" != "all" ]; then
         echo -e "  Filter: ${CYAN}$TEST_TYPE${NC} tests only"
@@ -288,6 +288,7 @@ print_usage() {
     echo "  runtime      Runtime system tests"
     echo "  ai           AI/cognitive framework tests"
     echo "  learning     Automatic differentiation tests"
+    echo "  quantum      Quantum computing tests"
     echo "  toolchain    Compiler toolchain tests"
     echo "  integration  End-to-end integration tests"
     echo "  observability Metrics and tracing tests"
@@ -366,6 +367,11 @@ run_all_tests() {
     # Observability Tests
     echo -e "${YELLOW}Observability${NC}"
     run_category "$SCRIPT_DIR/observability" "" "  "
+    echo ""
+
+    # Quantum Tests
+    echo -e "${YELLOW}Quantum${NC}"
+    run_category "$SCRIPT_DIR/quantum" "" "  "
     echo ""
 
     # Integration Tests
@@ -467,6 +473,10 @@ case "$CATEGORY" in
     integration)
         echo -e "${YELLOW}Integration${NC}"
         run_category "$SCRIPT_DIR/integration" "" "  "
+        ;;
+    quantum)
+        echo -e "${YELLOW}Quantum${NC}"
+        run_category "$SCRIPT_DIR/quantum" "" "  "
         ;;
     observability)
         echo -e "${YELLOW}Observability${NC}"

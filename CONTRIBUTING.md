@@ -36,9 +36,11 @@ clang -c -O2 standalone_runtime.c -o standalone_runtime.o
 | `lib/` | Shared libraries — platform, version, safety, strings, llm, ast_defs |
 | `simplex-std/` | Standard library |
 | `simplex-learning/` | ML/AI learning framework — dual numbers, tensors, beliefs, epistemics |
-| `lib/simplex-training/` | Training pipeline — neural gates, LoRA, schedules, data generators |
-| `nexus/` | Nexus protocol for hive communication |
-| `edge-hive/` | Edge deployment framework |
+| `simplex-training/` | Training pipeline — neural gates, LoRA, schedules, data generators |
+| `simplex-inference/` | High-performance SLM inference via native bindings |
+| `simplex-nexus/` | Nexus protocol for hive communication |
+| `simplex-edge-hive/` | Edge deployment framework |
+| `simplex-quantum/` | Quantum computing framework |
 | `tools/` | Developer tools — sxc, sxpm, sxdoc, sxlsp, sxfmt, sxlint, cursus |
 | `tests/` | Test suite (unit, integration, language, toolchain) |
 | `simplex-docs/` | Specification, tutorials, and API docs |

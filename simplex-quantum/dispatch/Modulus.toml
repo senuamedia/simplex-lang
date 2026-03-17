@@ -1,0 +1,18 @@
+# Simplex Quantum Dispatch -- Cost-Aware Task Dispatcher
+# Phase 4: Analyzes problems, estimates costs, and routes to optimal backend
+#
+# Provides a complete dispatch pipeline: problem analysis, multi-provider
+# cost modeling (Amazon Braket, IBM Quantum, Azure Quantum), policy-driven
+# routing, and budget enforcement with per-backend tracking.
+
+[package]
+name = "simplex-quantum-dispatch"
+version = "0.14.0"
+description = "Cost-aware quantum task dispatcher -- problem analysis, pricing, routing, budget"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
+
+[dependencies]
+simplex-std = { path = "../../simplex-std" }
+simplex-quantum = { path = ".." }
+simplex-quantum-backend = { path = "../backend" }

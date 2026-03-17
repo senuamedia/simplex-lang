@@ -1,0 +1,43 @@
+// simplex-quantum-optimize -- Quantum-Enhanced Optimization Module
+//
+// Re-exports all submodules for the quantum optimization toolkit:
+//
+// - `combinatorial` -- QAOA-based MaxCut, TSP, and scheduling problems
+// - `molecular`     -- VQE molecular simulation with Pauli Hamiltonians
+// - `search`        -- Grover-based structured search with oracle construction
+// - `hybrid_anneal` -- Hybrid classical-quantum annealing with adaptive transition
+//
+// # Example
+//
+// ```simplex
+// use quantum::optimize::{combinatorial, molecular, search, hybrid_anneal};
+//
+// // Encode a MaxCut instance
+// let h = combinatorial::maxcut_encode(edges, 6);
+//
+// // Build H2 Hamiltonian at equilibrium bond length
+// let h2 = molecular::h2_hamiltonian(0.735);
+//
+// // Grover search over 1024 items
+// let iters = search::grover_iterations(1024);
+//
+// // Hybrid anneal with automatic quantum transition
+// let annealer = hybrid_anneal::hybrid_annealer_new(100.0, 0.995);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+mod combinatorial;
+mod molecular;
+mod search;
+mod hybrid_anneal;
+
+// Re-export key types for convenience
+use combinatorial::{IsingHamiltonian, maxcut_encode, tsp_encode, schedule_encode};
+use combinatorial::{bitstring_to_cut, compare_to_classical};
+use molecular::{PauliTerm, MolecularHamiltonian, hamiltonian_new, hamiltonian_add_term};
+use molecular::{hw_efficient_ansatz, h2_hamiltonian};
+use search::{GroverOracle, grover_oracle_new, grover_iterations, grover_circuit};
+use search::{grover_depth_estimate, hybrid_search};
+use hybrid_anneal::{HybridAnnealer, hybrid_annealer_new, anneal_step};

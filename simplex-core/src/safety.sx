@@ -1,0 +1,149 @@
+// Simplex Safety Utilities
+// Adopted from TASK-010 runtime memory safety patterns
+// Provides safe memory management and bounds checking for toolchain
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex
+
+// Safe Memory Management (from TASK-010)
+// ========================================
+
+// Safe malloc that aborts on OOM with diagnostic
+// From runtime/standalone_runtime.c:40-54
+fn safe_malloc(size: i64) -> i64 {
+    let ptr: i64 = malloc(size);
+    if ptr == 0 {
+        println(string_concat("FATAL: Out of memory (malloc ", 
+                          string_concat(int_to_string(size), " bytes)")));
+        abort();
+    }
+    ptr
+}
+
+// Safe realloc that preserves original pointer on failure
+// From runtime/standalone_runtime.c:60-72
+fn safe_realloc(ptr: i64, size: i64) -> i64 {
+    if size == 0 {
+        free(ptr);
+        return 0;
+    }
+    let new_ptr: i64 = realloc(ptr, size);
+    if new_ptr == 0 && size > 0 {
+        println(string_concat("FATAL: Out of memory (realloc ", 
+                          string_concat(int_to_string(size), " bytes)")));
+        return ptr;  // Return original pointer on failure
+    }
+    new_ptr
+}
+
+// Abort-on-OOM realloc for critical allocations
+// From runtime/standalone_runtime.c:71-64
+fn safe_realloc_abort(ptr: i64, size: i64) -> i64 {
+    let new_ptr: i64 = realloc(ptr, size);
+    if !new_ptr && size > 0 {
+        println(string_concat("FATAL: Out of memory (realloc ", 
+                          string_concat(int_to_string(size), " bytes)")));
+        abort();
+    }
+    new_ptr
+}
+
+// Bounds Checking (inspired by TASK-010)
+// ========================================
+
+// Generic bounds check with context
+fn bounds_check(index: i64, max: i64, context: i64) -> i64 {
+    if index < 0 || index >= max {
+        println(string_concat("FATAL: Bounds check failed - index: ",
+                          string_concat(int_to_string(index),
+                          string_concat(", max: ",
+                          string_concat(int_to_string(max),
+                          string_concat(", context: ", context))))));
+        abort();
+    }
+    index
+}
+
+// Array bounds check for VM operations
+fn array_bounds_check(index: i64, size: i64, array_name: i64) -> i64 {
+    if index < 0 || index >= size {
+        println(string_concat("FATAL: Array bounds check failed - ",
+                          string_concat(array_name,
+                          string_concat("[", string_concat(int_to_string(index),
+                          string_concat(") out of bounds (size: ",
+                          string_concat(int_to_string(size), ")")))))));
+        abort();
+    }
+    index
+}
+
+// Safe String Operations
+// ========================================
+
+// Safe string builder with automatic cleanup
+fn safe_sb_new() -> i64 {
+    sb_new_cap(4096)  // Reasonable default capacity
+}
+
+// Safe string builder with specified capacity
+fn safe_sb_new_cap(cap: i64) -> i64 {
+    if cap <= 0 {
+        cap = 256;  // Minimum reasonable capacity
+    }
+    sb_new_cap(cap)
+}
+
+// Constants for Struct Sizes
+// ========================================
+
+// From TASK-010 magic number audit - define constants instead
+fn CODEGEN_SIZE() -> i64 { 272 }  // 34 slots * 8 bytes
+fn VM_SIZE() -> i64 { 96 }        // 12 slots * 8 bytes  
+fn PARSER_SIZE() -> i64 { 32 }     // 4 slots * 8 bytes
+fn CVM_STACK_SIZE() -> i64 { 1024 } // VM stack capacity
+fn CVM_FRAMES_SIZE() -> i64 { 128 } // Call frame capacity
+
+// Version Constants
+// ========================================
+
+fn SIMPLEX_VERSION() -> i64 { string_from("0.14.0") }
+fn TOOLCHAIN_VERSION() -> i64 { string_from("0.14.0") }
+fn RUNTIME_VERSION() -> i64 { string_from("0.14.0") }
+
+// Error Handling Helpers
+// ========================================
+
+// Print error message and return error code
+fn error_return(message: i64, code: i64) -> i64 {
+    println(string_concat("Error: ", message));
+    code
+}
+
+// Print error message and abort
+fn error_abort(message: i64) -> i64 {
+    println(string_concat("FATAL: ", message));
+    abort();
+    0  // Unreachable
+}
+
+// Cleanup Helpers
+// ========================================
+
+// Safe vector cleanup
+fn safe_vec_free(vec: i64) -> i64 {
+    if vec != 0 {
+        // Note: vec_free() should be implemented in runtime
+        // For now, this is a placeholder for future implementation
+        vec = 0;
+    }
+    0
+}
+
+// Safe string builder cleanup
+fn safe_sb_free(sb: i64) -> i64 {
+    if sb != 0 {
+        sb_free(sb);
+    }
+    0
+}

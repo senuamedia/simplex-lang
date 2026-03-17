@@ -1,0 +1,128 @@
+// simplex-quantum-variational::vqe - Variational Quantum Eigensolver
+// Finds ground-state energy by minimizing <psi(theta)|H|psi(theta)>.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// VQE instance layout (vec):
+//   [0] hamiltonian  [1] ansatz (param circuit)  [2] backend
+//   [3] learning_rate (f64 bits)  [4] tolerance (f64 bits)
+
+fn vqe_new(hamiltonian: i64, ansatz: i64, backend: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, hamiltonian);
+    vec_push(v, ansatz);
+    vec_push(v, backend);
+    vec_push(v, f64_to_bits(0.1));
+    vec_push(v, f64_to_bits(0.000001));
+    v
+}
+
+fn vqe_set_lr(vqe: i64, lr_bits: i64) -> i64 {
+    vec_set(vqe, 3, lr_bits);
+    vqe
+}
+
+fn vqe_set_tolerance(vqe: i64, tol_bits: i64) -> i64 {
+    vec_set(vqe, 4, tol_bits);
+    vqe
+}
+
+// VQE result layout (vec):
+//   [0] energy (f64 bits)  [1] optimal_params (vec)  [2] iterations  [3] converged (0/1)
+
+fn vqe_result_energy_bits(r: i64) -> i64 { vec_get(r, 0) }
+fn vqe_result_params(r: i64) -> i64 { vec_get(r, 1) }
+fn vqe_result_iterations(r: i64) -> i64 { vec_get(r, 2) }
+fn vqe_result_converged(r: i64) -> i64 { vec_get(r, 3) }
+
+// Run VQE optimization loop.
+// max_iter = max optimizer iterations, shots = measurements per evaluation.
+// Returns VQE result handle.
+fn vqe_run(vqe: i64, max_iter: i64, shots: i64) -> i64 {
+    let hamiltonian: i64 = vec_get(vqe, 0);
+    let ansatz: i64 = vec_get(vqe, 1);
+    let backend: i64 = vec_get(vqe, 2);
+    let lr_bits: i64 = vec_get(vqe, 3);
+    let tol: f64 = bits_to_f64(vec_get(vqe, 4));
+    let n_params: i64 = param_count(ansatz);
+    // Initialize params from circuit
+    let params: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_params {
+        vec_push(params, param_get_value_bits(ansatz, i));
+        i = i + 1;
+    }
+    let adam: i64 = adam_new(lr_bits, n_params);
+    var current_params: i64 = params;
+    var prev_cost_bits: i64 = f64_to_bits(1000000000000000000000000000000.0);
+    var converged: i64 = 0;
+    var iter: i64 = 0;
+    while iter < max_iter {
+        // Compute gradient via parameter-shift
+        let grads: i64 = param_shift_gradient(ansatz, current_params, 0, backend);
+        // Adam step
+        current_params = adam_step(adam, current_params, grads);
+        // Evaluate energy at current params
+        let bound: i64 = param_bind(ansatz, current_params);
+        // Placeholder energy evaluation
+        let energy_bits: i64 = estimate_energy(hamiltonian, bound, backend, shots);
+        // Check convergence
+        if iter > 0 {
+            let prev: f64 = bits_to_f64(prev_cost_bits);
+            let curr: f64 = bits_to_f64(energy_bits);
+            var change: f64 = curr - prev;
+            if change < 0.0 {
+                change = 0.0 - change;
+            }
+            if change < tol {
+                converged = 1;
+                let result: i64 = vec_new();
+                vec_push(result, energy_bits);
+                vec_push(result, current_params);
+                vec_push(result, iter + 1);
+                vec_push(result, 1);
+                return result;
+            }
+        }
+        prev_cost_bits = energy_bits;
+        iter = iter + 1;
+    }
+    let result: i64 = vec_new();
+    vec_push(result, prev_cost_bits);
+    vec_push(result, current_params);
+    vec_push(result, max_iter);
+    vec_push(result, converged);
+    result
+}
+
+// Estimate Hamiltonian energy. Returns f64 bits.
+// In a full implementation this measures each Pauli term.
+fn estimate_energy(hamiltonian: i64, bound_circuit: i64, backend: i64, shots: i64) -> i64 {
+    // Placeholder: returns 0
+    f64_to_bits(0.0)
+}
+
+// Build hardware-efficient ansatz circuit.
+fn build_hea_ansatz(n_qubits: i64, depth: i64) -> i64 {
+    let pc: i64 = param_circuit_new(n_qubits);
+    var d: i64 = 0;
+    while d < depth {
+        var q: i64 = 0;
+        while q < n_qubits {
+            let ry_idx: i64 = param_add(pc, string_from("ry"), f64_to_bits(0.01));
+            param_ry(pc, q, ry_idx);
+            let rz_idx: i64 = param_add(pc, string_from("rz"), f64_to_bits(0.01));
+            param_rz(pc, q, rz_idx);
+            q = q + 1;
+        }
+        var q: i64 = 0;
+        while q < n_qubits - 1 {
+            param_cnot(pc, q, q + 1);
+            q = q + 1;
+        }
+        d = d + 1;
+    }
+    pc
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

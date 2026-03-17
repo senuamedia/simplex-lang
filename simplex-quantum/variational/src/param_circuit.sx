@@ -1,0 +1,148 @@
+// simplex-quantum-variational::param_circuit - Parameterized Quantum Circuits
+// Circuit templates with symbolic parameters for variational algorithms.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// Gate opcodes
+fn OP_H() -> i64 { 1 }
+fn OP_X() -> i64 { 2 }
+fn OP_Y() -> i64 { 3 }
+fn OP_Z() -> i64 { 4 }
+fn OP_CNOT() -> i64 { 5 }
+fn OP_CZ() -> i64 { 6 }
+fn OP_RX() -> i64 { 7 }
+fn OP_RY() -> i64 { 8 }
+fn OP_RZ() -> i64 { 9 }
+fn OP_SWAP() -> i64 { 10 }
+fn OP_MEASURE() -> i64 { 13 }
+fn NO_PARAM() -> i64 { -1 }
+
+// Gate instruction stored as vec:
+//   [0] opcode  [1] qubit0  [2] qubit1  [3] param_idx
+
+fn gate_fixed_1q(opcode: i64, qubit: i64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, opcode);
+    vec_push(g, qubit);
+    vec_push(g, -1);
+    vec_push(g, NO_PARAM());
+    g
+}
+
+fn gate_fixed_2q(opcode: i64, control: i64, target: i64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, opcode);
+    vec_push(g, control);
+    vec_push(g, target);
+    vec_push(g, NO_PARAM());
+    g
+}
+
+fn gate_parameterized(opcode: i64, qubit: i64, param_idx: i64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, opcode);
+    vec_push(g, qubit);
+    vec_push(g, -1);
+    vec_push(g, param_idx);
+    g
+}
+
+// ParameterizedCircuit stored as vec:
+//   [0] n_qubits  [1] instructions (vec)  [2] param_names (vec of string handles)
+//   [3] param_values (vec of f64 bits)  [4] n_params  [5] n_instructions
+
+fn param_circuit_new(n_qubits: i64) -> i64 {
+    let pc: i64 = vec_new();
+    vec_push(pc, n_qubits);
+    vec_push(pc, vec_new());
+    vec_push(pc, vec_new());
+    vec_push(pc, vec_new());
+    vec_push(pc, 0);
+    vec_push(pc, 0);
+    pc
+}
+
+// Add a named parameter. Returns the parameter index.
+fn param_add(pc: i64, name: i64, init_bits: i64) -> i64 {
+    let names: i64 = vec_get(pc, 2);
+    let vals: i64 = vec_get(pc, 3);
+    let idx: i64 = vec_get(pc, 4);
+    vec_push(names, name);
+    vec_push(vals, init_bits);
+    vec_set(pc, 4, idx + 1);
+    idx
+}
+
+fn param_count(pc: i64) -> i64 { vec_get(pc, 4) }
+fn param_n_qubits(pc: i64) -> i64 { vec_get(pc, 0) }
+fn param_n_instructions(pc: i64) -> i64 { vec_get(pc, 5) }
+
+fn param_get_value_bits(pc: i64, idx: i64) -> i64 {
+    let vals: i64 = vec_get(pc, 3);
+    vec_get(vals, idx)
+}
+
+fn param_set_value(pc: i64, idx: i64, val_bits: i64) -> i64 {
+    let vals: i64 = vec_get(pc, 3);
+    vec_set(vals, idx, val_bits);
+    pc
+}
+
+// Append gate instructions
+fn append_instr(pc: i64, instr: i64) -> i64 {
+    let instrs: i64 = vec_get(pc, 1);
+    vec_push(instrs, instr);
+    let ni: i64 = vec_get(pc, 5);
+    vec_set(pc, 5, ni + 1);
+    pc
+}
+
+fn param_h(pc: i64, qubit: i64) -> i64 { append_instr(pc, gate_fixed_1q(OP_H(), qubit)) }
+fn param_x(pc: i64, qubit: i64) -> i64 { append_instr(pc, gate_fixed_1q(OP_X(), qubit)) }
+fn param_cnot(pc: i64, control: i64, target: i64) -> i64 { append_instr(pc, gate_fixed_2q(OP_CNOT(), control, target)) }
+fn param_cz(pc: i64, control: i64, target: i64) -> i64 { append_instr(pc, gate_fixed_2q(OP_CZ(), control, target)) }
+fn param_rx(pc: i64, qubit: i64, pidx: i64) -> i64 { append_instr(pc, gate_parameterized(OP_RX(), qubit, pidx)) }
+fn param_ry(pc: i64, qubit: i64, pidx: i64) -> i64 { append_instr(pc, gate_parameterized(OP_RY(), qubit, pidx)) }
+fn param_rz(pc: i64, qubit: i64, pidx: i64) -> i64 { append_instr(pc, gate_parameterized(OP_RZ(), qubit, pidx)) }
+
+fn param_measure(pc: i64, qubit: i64) -> i64 { append_instr(pc, gate_fixed_1q(OP_MEASURE(), qubit)) }
+
+fn param_measure_all(pc: i64) -> i64 {
+    let nq: i64 = vec_get(pc, 0);
+    var q: i64 = 0;
+    while q < nq {
+        param_measure(pc, q);
+        q = q + 1;
+    }
+    pc
+}
+
+// Bind parameter values to produce a bound circuit.
+// values = vec of f64 bits. Returns bound circuit handle (vec).
+//   [0] n_qubits  [1] instructions (vec)  [2] param_values (vec)  [3] n_instructions
+fn param_bind(pc: i64, values: i64) -> i64 {
+    let n_values: i64 = vec_len(values);
+    let n_params: i64 = vec_get(pc, 4);
+    if n_values != n_params {
+        return -1;
+    }
+    let instrs: i64 = vec_get(pc, 1);
+    let ni: i64 = vec_get(pc, 5);
+    let bound_instrs: i64 = vec_new();
+    var i: i64 = 0;
+    while i < ni {
+        vec_push(bound_instrs, vec_get(instrs, i));
+        i = i + 1;
+    }
+    let bc: i64 = vec_new();
+    vec_push(bc, vec_get(pc, 0));
+    vec_push(bc, bound_instrs);
+    vec_push(bc, values);
+    vec_push(bc, ni);
+    bc
+}
+
+fn bound_n_qubits(bc: i64) -> i64 { vec_get(bc, 0) }
+fn bound_n_instructions(bc: i64) -> i64 { vec_get(bc, 3) }
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

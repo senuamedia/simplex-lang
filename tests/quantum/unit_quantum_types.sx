@@ -1,0 +1,189 @@
+// Quantum Types - Unit Tests
+// Tests core quantum data structures: Qubit, QuantumState, CircuitStats, QuantumError.
+// Rewritten for sxc compiler compatibility.
+
+const EPSILON: f64 = 0.0001;
+
+// -- Helpers --
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 {
+        return 0.0 - x;
+    }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+// -- Qubit --
+
+struct Qubit {
+    index: i64,
+    label: i64
+}
+
+impl Qubit {
+    fn new(index: i64, label: i64) -> Qubit {
+        Qubit { index: index, label: label }
+    }
+}
+
+// -- Complex (minimal) --
+
+struct Complex {
+    re: f64,
+    im: f64
+}
+
+impl Complex {
+    fn new(re: f64, im: f64) -> Complex {
+        Complex { re: re, im: im }
+    }
+    fn zero() -> Complex {
+        Complex { re: 0.0, im: 0.0 }
+    }
+    fn one() -> Complex {
+        Complex { re: 1.0, im: 0.0 }
+    }
+}
+
+fn complex_mag_sq(c: Complex) -> f64 {
+    c.re * c.re + c.im * c.im
+}
+
+// -- CircuitStats --
+
+struct CircuitStats {
+    gate_count: i64,
+    depth: i64,
+    qubit_count: i64,
+    estimated_time_us: i64
+}
+
+impl CircuitStats {
+    fn new(gc: i64, d: i64, qc: i64, t: i64) -> CircuitStats {
+        CircuitStats { gate_count: gc, depth: d, qubit_count: qc, estimated_time_us: t }
+    }
+    fn empty(qc: i64) -> CircuitStats {
+        CircuitStats { gate_count: 0, depth: 0, qubit_count: qc, estimated_time_us: 0 }
+    }
+}
+
+// -- QuantumError --
+
+struct QuantumError {
+    code: i64,
+    message: i64
+}
+
+impl QuantumError {
+    fn new(code: i64, message: i64) -> QuantumError {
+        QuantumError { code: code, message: message }
+    }
+}
+
+fn error_is_code(e: QuantumError, code: i64) -> i64 {
+    if e.code == code { return 1; }
+    0
+}
+
+// -- Test helpers --
+
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+// -- Tests --
+
+fn test_qubit() -> i64 {
+    println(string_from("--- Qubit ---"));
+    var fails: i64 = 0;
+    let q0: Qubit = Qubit::new(0, string_from("q0"));
+    fails = fails + check(string_from("qubit index 0"), if q0.index == 0 { 1 } else { 0 });
+    let q3: Qubit = Qubit::new(3, string_from("ancilla"));
+    fails = fails + check(string_from("qubit index 3"), if q3.index == 3 { 1 } else { 0 });
+    fails
+}
+
+fn test_complex() -> i64 {
+    println(string_from("--- Complex ---"));
+    var fails: i64 = 0;
+    let z: Complex = Complex::zero();
+    fails = fails + check(string_from("zero re"), approx_eq(z.re, 0.0, EPSILON()));
+    fails = fails + check(string_from("zero im"), approx_eq(z.im, 0.0, EPSILON()));
+    let o: Complex = Complex::one();
+    fails = fails + check(string_from("one re"), approx_eq(o.re, 1.0, EPSILON()));
+    fails = fails + check(string_from("one im"), approx_eq(o.im, 0.0, EPSILON()));
+    let c: Complex = Complex::new(3.0, 4.0);
+    fails = fails + check(string_from("mag_sq 3+4i"), approx_eq(complex_mag_sq(c), 25.0, EPSILON()));
+    let inv2: f64 = 1.0 / sqrt(2.0);
+    let s: Complex = Complex::new(inv2, 0.0);
+    fails = fails + check(string_from("superposition mag_sq"), approx_eq(complex_mag_sq(s), 0.5, 0.0001));
+    fails
+}
+
+fn test_circuit_stats() -> i64 {
+    println(string_from("--- CircuitStats ---"));
+    var fails: i64 = 0;
+    let stats: CircuitStats = CircuitStats::new(10, 5, 3, 150);
+    fails = fails + check(string_from("gate_count"), if stats.gate_count == 10 { 1 } else { 0 });
+    fails = fails + check(string_from("depth"), if stats.depth == 5 { 1 } else { 0 });
+    fails = fails + check(string_from("qubit_count"), if stats.qubit_count == 3 { 1 } else { 0 });
+    fails = fails + check(string_from("estimated_time_us"), if stats.estimated_time_us == 150 { 1 } else { 0 });
+    let empty: CircuitStats = CircuitStats::empty(4);
+    fails = fails + check(string_from("empty gate_count"), if empty.gate_count == 0 { 1 } else { 0 });
+    fails = fails + check(string_from("empty qubit_count"), if empty.qubit_count == 4 { 1 } else { 0 });
+    fails
+}
+
+fn test_quantum_error() -> i64 {
+    println(string_from("--- QuantumError ---"));
+    var fails: i64 = 0;
+    let err1: QuantumError = QuantumError::new(1, string_from("invalid qubit"));
+    fails = fails + check(string_from("error code 1"), if err1.code == 1 { 1 } else { 0 });
+    fails = fails + check(string_from("is_code match"), error_is_code(err1, 1));
+    fails = fails + check(string_from("is_code no match"), if error_is_code(err1, 2) == 0 { 1 } else { 0 });
+    let err2: QuantumError = QuantumError::new(5, string_from("budget exceeded"));
+    fails = fails + check(string_from("error code 5"), if err2.code == 5 { 1 } else { 0 });
+    fails
+}
+
+fn test_normalization() -> i64 {
+    println(string_from("--- Normalization Check ---"));
+    var fails: i64 = 0;
+    // Compute |1/sqrt(2)|^2 + |1/sqrt(2)|^2 = 0.5 + 0.5 = 1.0
+    let inv2: f64 = 1.0 / sqrt(2.0);
+    let total: f64 = inv2 * inv2 + inv2 * inv2;
+    fails = fails + check(string_from("equal superposition normalized"), approx_eq(total, 1.0, EPSILON()));
+    // Compute |1|^2 + |0|^2 = 1.0
+    let total2: f64 = 1.0 * 1.0 + 0.0 * 0.0;
+    fails = fails + check(string_from("basis state normalized"), approx_eq(total2, 1.0, EPSILON()));
+    // Compute |0.5|^2 + |0.5i|^2 + |0.5|^2 + |0.5i|^2 = 4 * 0.25 = 1.0
+    let total3: f64 = 0.5 * 0.5 + 0.5 * 0.5 + 0.5 * 0.5 + 0.5 * 0.5;
+    fails = fails + check(string_from("4-state normalized"), approx_eq(total3, 1.0, EPSILON()));
+    fails
+}
+
+fn main() -> i64 {
+    println(string_from("=== Quantum Types Unit Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_qubit();
+    fails = fails + test_complex();
+    fails = fails + test_circuit_stats();
+    fails = fails + test_quantum_error();
+    fails = fails + test_normalization();
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

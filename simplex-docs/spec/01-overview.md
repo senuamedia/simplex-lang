@@ -1,12 +1,53 @@
 # Simplex Overview and Philosophy
 
-**Version 0.13.0**
+**Version 0.14.0**
 
 ---
 
 ## Vision
 
 Simplex is built on a singular premise: modern software runs on distributed, ephemeral infrastructure and increasingly relies on AI capabilities. The language should embrace these realities as first-class concerns, not afterthoughts.
+
+---
+
+## What's New in v0.14.0
+
+### Quantum Bridge
+
+v0.14.0 introduces hybrid classical-quantum computation, built on the mathematical foundations from v0.13.0 (complex numbers, matrices, eigendecomposition).
+
+```simplex
+use simplex_quantum::{Qubit, Circuit, Hadamard, CNOT, measure};
+use simplex_quantum::backend::{LocalSimulator};
+
+// Build a Bell state circuit
+let circuit = Circuit::new(2);
+circuit.add(Hadamard::on(0));
+circuit.add(CNOT::on(0, 1));
+
+// Execute on local simulator
+let backend = LocalSimulator::new();
+let result = backend.run(circuit, shots: 1000);
+```
+
+**Quantum modules:**
+- `simplex-quantum` -- Core types, circuit builder, gate library, measurement
+- `simplex-quantum/backend` -- Amazon Braket, IBM Quantum, Azure Quantum, local simulator
+- `simplex-quantum/variational` -- VQE, QAOA, parameter-shift gradients
+- `simplex-quantum/dispatch` -- Cost-aware task routing with budget tracking
+- `simplex-quantum/optimize` -- MaxCut, molecular simulation, Grover search, hybrid annealing
+
+See [RELEASE-0.14.0.md](../RELEASE-0.14.0.md) for complete release notes.
+
+---
+
+## What's New in v0.13.0
+
+### Completion & Foundations
+
+v0.13.0 completed all outstanding partial work from v0.9.0--v0.12.0 and added mathematical foundations for the quantum bridge: complex numbers, matrices, eigendecomposition, full dual number support, HTTP client, and JSON parser.
+
+See [RELEASE-0.13.0.md](../RELEASE-0.13.0.md) for complete release notes.
 
 ---
 
@@ -129,6 +170,7 @@ Tests organized across multiple categories (language, types, neural, stdlib, ai,
 - **Fault-tolerant**: Any worker can die at any time; the system continues
 - **Resumable**: Computations checkpoint and resume transparently
 - **Lightweight syntax**: Simple, readable code that compiles to efficient native binaries
+- **Quantum-ready**: Hybrid classical-quantum computation with multi-backend support (v0.14.0)
 
 ---
 

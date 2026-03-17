@@ -1,0 +1,164 @@
+// Edge Hive - Core Types
+// Fundamental data structures for the Edge Hive system
+//
+// Uses i64 encoding patterns for compatibility with Simplex 0.14.0 compiler
+
+// =============================================================================
+// Device Classes
+// =============================================================================
+
+fn DEVICE_UNKNOWN() -> i64 { 0 }
+fn DEVICE_WATCH() -> i64 { 1 }
+fn DEVICE_WEARABLE() -> i64 { 2 }
+fn DEVICE_PHONE() -> i64 { 3 }
+fn DEVICE_TABLET() -> i64 { 4 }
+fn DEVICE_LAPTOP() -> i64 { 5 }
+fn DEVICE_DESKTOP() -> i64 { 6 }
+
+fn device_class_name(class: i64) -> i64 {
+    if class == DEVICE_WATCH() { string_from("watch") }
+    else if class == DEVICE_WEARABLE() { string_from("wearable") }
+    else if class == DEVICE_PHONE() { string_from("phone") }
+    else if class == DEVICE_TABLET() { string_from("tablet") }
+    else if class == DEVICE_LAPTOP() { string_from("laptop") }
+    else if class == DEVICE_DESKTOP() { string_from("desktop") }
+    else { string_from("unknown") }
+}
+
+// =============================================================================
+// Network States
+// =============================================================================
+
+fn NET_DISCONNECTED() -> i64 { 0 }
+fn NET_WIFI() -> i64 { 1 }
+fn NET_CELLULAR() -> i64 { 2 }
+fn NET_ETHERNET() -> i64 { 3 }
+fn NET_BLUETOOTH() -> i64 { 4 }
+
+fn is_connected(net_state: i64) -> i64 {
+    if net_state > NET_DISCONNECTED() { 1 } else { 0 }
+}
+
+fn is_high_bandwidth(net_state: i64) -> i64 {
+    if net_state == NET_WIFI() { 1 }
+    else if net_state == NET_ETHERNET() { 1 }
+    else { 0 }
+}
+
+// =============================================================================
+// Data Sensitivity Levels
+// =============================================================================
+
+fn SENSITIVITY_PUBLIC() -> i64 { 0 }      // Can share with cloud freely
+fn SENSITIVITY_PRIVATE() -> i64 { 1 }     // Syncs to user's devices only
+fn SENSITIVITY_SENSITIVE() -> i64 { 2 }   // Encrypted, minimal sync
+fn SENSITIVITY_LOCAL() -> i64 { 3 }       // Never leaves this device
+
+// =============================================================================
+// Request/Response Types
+// =============================================================================
+
+fn REQUEST_QUERY() -> i64 { 1 }
+fn REQUEST_COMMAND() -> i64 { 2 }
+fn REQUEST_SYNC() -> i64 { 3 }
+fn REQUEST_NOTIFICATION() -> i64 { 4 }
+
+fn RESPONSE_SUCCESS() -> i64 { 0 }
+fn RESPONSE_QUEUED() -> i64 { 1 }
+fn RESPONSE_CACHED() -> i64 { 2 }
+fn RESPONSE_OFFLINE() -> i64 { 3 }
+fn RESPONSE_ERROR() -> i64 { -1 }
+fn RESPONSE_TIMEOUT() -> i64 { -2 }
+
+// =============================================================================
+// Specialist Types
+// =============================================================================
+
+fn SPECIALIST_CONTEXT() -> i64 { 1 }      // Context-aware, learns user patterns
+fn SPECIALIST_UI() -> i64 { 2 }           // Device-specific interface
+fn SPECIALIST_OFFLINE() -> i64 { 3 }      // Works without network
+fn SPECIALIST_TASK() -> i64 { 4 }         // Task management
+fn SPECIALIST_CALENDAR() -> i64 { 5 }     // Calendar/scheduling
+fn SPECIALIST_NOTIFICATION() -> i64 { 6 } // Notification handling
+fn SPECIALIST_HEALTH() -> i64 { 7 }       // Health/fitness (watch/wearable)
+fn SPECIALIST_CONVERSATION() -> i64 { 8 } // Full conversation
+fn SPECIALIST_QUICK() -> i64 { 9 }        // Quick responses (watch)
+
+// =============================================================================
+// Federation States
+// =============================================================================
+
+fn FED_DISCONNECTED() -> i64 { 0 }
+fn FED_CONNECTING() -> i64 { 1 }
+fn FED_CONNECTED() -> i64 { 2 }
+fn FED_SYNCING() -> i64 { 3 }
+fn FED_ERROR() -> i64 { -1 }
+
+// =============================================================================
+// Belief Types
+// =============================================================================
+
+fn BELIEF_PREFERENCE() -> i64 { 1 }       // User preference
+fn BELIEF_PATTERN() -> i64 { 2 }          // Learned pattern
+fn BELIEF_CONTEXT() -> i64 { 3 }          // Current context
+fn BELIEF_TASK() -> i64 { 4 }             // Pending task
+fn BELIEF_RELATIONSHIP() -> i64 { 5 }     // User relationship info
+
+// =============================================================================
+// Priority Levels
+// =============================================================================
+
+fn PRIORITY_LOW() -> i64 { 1 }
+fn PRIORITY_NORMAL() -> i64 { 2 }
+fn PRIORITY_HIGH() -> i64 { 3 }
+fn PRIORITY_URGENT() -> i64 { 4 }
+
+// =============================================================================
+// Sync Strategies
+// =============================================================================
+
+fn SYNC_AGGRESSIVE() -> i64 { 1 }   // Delegate most to cloud
+fn SYNC_BALANCED() -> i64 { 2 }     // Balance local/cloud
+fn SYNC_LOCAL_FIRST() -> i64 { 3 }  // Prefer local processing
+
+fn default_sync_strategy(device_class: i64) -> i64 {
+    if device_class == DEVICE_WATCH() { SYNC_AGGRESSIVE() }
+    else if device_class == DEVICE_WEARABLE() { SYNC_AGGRESSIVE() }
+    else if device_class == DEVICE_PHONE() { SYNC_BALANCED() }
+    else if device_class == DEVICE_TABLET() { SYNC_BALANCED() }
+    else { SYNC_LOCAL_FIRST() }
+}
+
+// =============================================================================
+// Resource Limits by Device
+// =============================================================================
+
+fn max_model_params(device_class: i64) -> i64 {
+    if device_class == DEVICE_WATCH() { 0 }
+    else if device_class == DEVICE_WEARABLE() { 0 }
+    else if device_class == DEVICE_PHONE() { 500000000 }      // 500M
+    else if device_class == DEVICE_TABLET() { 1000000000 }    // 1B
+    else if device_class == DEVICE_LAPTOP() { 7000000000 }    // 7B
+    else if device_class == DEVICE_DESKTOP() { 70000000000 }  // 70B
+    else { 0 }
+}
+
+fn max_belief_store_entries(device_class: i64) -> i64 {
+    if device_class == DEVICE_WATCH() { 100 }
+    else if device_class == DEVICE_WEARABLE() { 100 }
+    else if device_class == DEVICE_PHONE() { 10000 }
+    else if device_class == DEVICE_TABLET() { 50000 }
+    else if device_class == DEVICE_LAPTOP() { 100000 }
+    else if device_class == DEVICE_DESKTOP() { 1000000 }
+    else { 1000 }
+}
+
+fn max_cache_size_kb(device_class: i64) -> i64 {
+    if device_class == DEVICE_WATCH() { 1024 }         // 1MB
+    else if device_class == DEVICE_WEARABLE() { 512 }  // 512KB
+    else if device_class == DEVICE_PHONE() { 51200 }   // 50MB
+    else if device_class == DEVICE_TABLET() { 102400 } // 100MB
+    else if device_class == DEVICE_LAPTOP() { 512000 } // 500MB
+    else if device_class == DEVICE_DESKTOP() { 1024000 } // 1GB
+    else { 10240 }  // 10MB default
+}

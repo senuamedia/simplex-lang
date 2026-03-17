@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.13.0**
+**Version 0.14.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -107,7 +107,36 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.13.0)
+## Key Features (v0.14.0)
+
+### NEW in v0.14.0: Quantum Bridge
+
+**Hybrid classical-quantum computation** built on the mathematical foundations from v0.13.0 (complex numbers, matrices, eigendecomposition). Simplex now provides a complete quantum computing framework.
+
+```simplex
+use simplex_quantum::{Qubit, Circuit, Hadamard, CNOT, measure};
+use simplex_quantum::backend::{LocalSimulator};
+
+// Build a Bell state circuit
+let circuit = Circuit::new(2);
+circuit.add(Hadamard::on(0));
+circuit.add(CNOT::on(0, 1));
+
+// Execute on local simulator
+let backend = LocalSimulator::new();
+let result = backend.run(circuit, shots: 1000);
+// Measures |00> ~50%, |11> ~50% -- entangled qubits
+```
+
+- **Core quantum types**: Qubit, Circuit, Gate, Measurement with statevector simulation
+- **Gate library**: Hadamard, Pauli-X/Y/Z, CNOT, Phase, T-gate, Toffoli, and custom unitaries
+- **Backend abstraction**: Amazon Braket, IBM Quantum, Azure Quantum, local simulator
+- **Variational algorithms**: VQE, QAOA with parameter-shift gradient estimation
+- **Cost-aware dispatch**: Automatic routing to cheapest backend with budget tracking
+- **Quantum optimization**: MaxCut, molecular simulation, Grover search, hybrid annealing
+- **Ecosystem integration**: Quantum neural gates, epistemic quantum beliefs, gradient bridge
+
+See [RELEASE-0.14.0.md](RELEASE-0.14.0.md) for complete release notes.
 
 ### NEW in v0.9.0: Edge Hive
 
@@ -328,6 +357,15 @@ See [RELEASE-0.5.0.md](RELEASE-0.5.0.md) for complete release notes.
 - GPU offloading (CUDA, Metal) support
 - Smart routing based on query complexity
 
+### Quantum Computing Bridge (v0.14.0)
+- `simplex-quantum` core: Qubit, Circuit, Gate, Measurement with statevector simulation
+- Gate library: Hadamard, Pauli-X/Y/Z, CNOT, Phase, T-gate, Toffoli, custom unitaries
+- Backend abstraction: Amazon Braket, IBM Quantum, Azure Quantum, local simulator
+- Variational algorithms: VQE, QAOA, parameter-shift gradient estimation
+- Cost-aware task dispatcher with budget enforcement and per-backend tracking
+- Quantum optimization: MaxCut (QAOA), molecular simulation (VQE), Grover search, hybrid annealing
+- Ecosystem bridges: quantum neural gates, epistemic quantum beliefs, gradient bridge to dual numbers
+
 ### Observability
 - Metrics (counter, gauge, histogram)
 - Distributed tracing
@@ -402,6 +440,8 @@ Simplex uses the following terminology for its module system:
 | 0.9.9 | 2026-01-18 | Runtime stability, 175 ABI fixes, device ID collision fix |
 | 0.10.0 | 2026-01-18 | Developer Experience: sxfmt, sxlint, benchmarking, profiling, coverage, playground, Tree-sitter |
 | 0.12.0 | 2026-01-19 | Module System: Cross-module function imports via `use`, automatic LLVM declaration generation |
+| 0.13.0 | 2026-03-16 | Completion & Foundations: compiler stability, complex numbers, matrices, dual number extensions, training pipeline, HTTP client, JSON parser |
+| 0.14.0 | 2026-03-17 | Quantum Bridge: quantum computing primitives, backend abstraction, variational algorithms, cost-aware dispatch, quantum-enhanced optimization |
 
 ---
 

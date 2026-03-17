@@ -1,0 +1,12 @@
+// simplex-core - Core Infrastructure
+//
+// Foundational types and utilities for the Simplex compiler,
+// toolchain, and runtime. Application code should use simplex-std.
+
+pub mod ast_defs;
+pub mod bench;
+pub mod llm;
+pub mod platform;
+pub mod safety;
+pub mod strings;
+pub mod version;

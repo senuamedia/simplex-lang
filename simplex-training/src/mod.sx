@@ -1,50 +1,60 @@
-// simplex-training - Self-Learning Training Runtime
+// simplex-training - Self-Learning Training Pipeline
 //
-// High-performance training library with self-learning annealing for AWS Inferentia.
-// Uses meta-gradients to automatically discover optimal training schedules.
+// Implements the training infrastructure for Simplex models with
+// self-learning schedules that discover optimal hyperparameters
+// through meta-gradient optimization.
 //
-// # Architecture
+// # Key Components
 //
-// This library builds on simplex-inference for forward pass optimization and adds:
-// - Learnable schedules (LR, distillation, pruning, quantization, curriculum)
-// - Meta-gradient optimization via dual numbers
-// - Backward pass with Neuron SDK integration
-// - Compression pipeline for seed model optimization
-//
-// # AWS Inferentia Requirement
-//
-// This library is designed exclusively for AWS Inferentia instances:
-// - 10-20x cost reduction vs traditional GPU training
-// - Neuron SDK for optimized forward/backward passes
-// - Spot instance friendly with checkpoint/resume
+// - `schedules`: Learnable LR, distillation, pruning, quantization schedules
+// - `trainer`: Meta-training framework for specialists
+// - `compress`: Model compression pipeline (prune, quantize, distill)
+// - `neural`: Neural gates and soft logic operators
+// - `layers`: Model layers (Linear, Attention, Embedding, Norm)
+// - `lora`: LoRA adapters for efficient fine-tuning
+// - `pipeline`: Training pipeline orchestration
+// - `research`: Research data refinement and validation
+// - `export`: GGUF export for deployment
 //
 // # Example
 //
 // ```simplex
-// use simplex_training::{MetaTrainer, SpecialistConfig, CompressionPipeline};
+// use simplex_training::{MetaTrainer, MetaConfig, SpecialistConfig};
 //
-// // Create meta-trainer with all learnable schedules
-// let trainer = MetaTrainer::new()
+// // Create meta-trainer with learnable schedules
+// let trainer = MetaTrainer::new(MetaConfig::default())
 //     .with_learnable_lr()
 //     .with_learnable_distillation()
-//     .with_learnable_pruning()
-//     .with_learnable_quantization()
-//     .with_learnable_curriculum();
+//     .with_learnable_pruning();
 //
-// // Meta-train across all specialists
-// trainer.meta_train(&specialists, &teacher_model).await;
-//
-// // Compress for deployment
-// let pipeline = CompressionPipeline::for_seed_models();
-// for specialist in specialists {
-//     let compressed = pipeline.compress(&specialist).await;
-//     compressed.export_gguf(&output_path).await;
-// }
+// // Train all specialists
+// let specialists = trainer.train_all(&base_model, &configs);
 // ```
+//
+// # Architecture
+//
+// Training follows a meta-learning approach where schedule parameters
+// are treated as learnable variables. Each training epoch produces
+// gradients that update not just model weights, but also the schedules
+// that govern learning rate, distillation temperature, pruning rate,
+// and quantization precision.
 
 // Require Inferentia for production builds
 #[cfg(all(not(feature = "neuron"), not(feature = "cpu-dev")))]
 compile_error!("simplex-training requires 'neuron' feature for production or 'cpu-dev' for local development");
+
+use simplex_std::String;
+
+pub mod schedules;
+pub mod trainer;
+pub mod compress;
+pub mod export;
+pub mod neural;
+pub mod layers;
+pub mod lora;
+pub mod data;
+pub mod pipeline;
+pub mod research;
 
 // =============================================================================
 // Public API
@@ -52,30 +62,120 @@ compile_error!("simplex-training requires 'neuron' feature for production or 'cp
 
 // Learnable schedules
 pub use schedules::{
-    LearnableLRSchedule, LRGradient,
-    LearnableDistillation, DistillGradient,
-    LearnablePruning, PruneGradient,
-    LearnableQuantization, QuantGradient,
-    LearnableCurriculum, CurriculumGradient,
+    LearnableLRSchedule,
+    LearnableDistillation,
+    LearnablePruning,
+    LearnableQuantization,
     LearnedSchedules,
+    LearnableCurriculum,
+    CurriculumGradient,
+    TaskDescriptor,
 };
 
 // Trainers
 pub use trainer::{
-    MetaTrainer, MetaLoss, MetaConfig,
-    SpecialistTrainer, SpecialistConfig,
-    CompressionPipeline, CompressionStage, CompressedModel,
+    MetaTrainer,
+    MetaConfig,
+    MetaLoss,
+    MetaOptimizer,
+    MetaDiagnostics,
+    SpecialistTrainer,
+    SpecialistConfig,
+    StepResult,
+    TrainingHistory,
+    Checkpoint,
+    EarlyStopping,
 };
 
-// Data loading
-pub use data::{
-    DataLoader, DataConfig,
-    SpecialistGenerator, GeneratorRegistry,
+// Compression
+pub use compress::{
+    CompressionPipeline,
+    CompressionConfig,
+    CompressionResult,
+    PruningPipeline,
+    PruningConfig,
+    PruningResult,
+    QuantizationPipeline,
+    QuantConfig,
+    QuantResult,
 };
 
 // Export
 pub use export::{
-    GgufExporter, GgufConfig,
+    GgufExporter,
+    GgufConfig,
+    GgufTensor,
+    GgufMetadata,
+    ExportConfig,
+    ExportFormat,
+    ExportTensor,
+    ExportResult,
+    TensorDtype,
+};
+
+// Neural gates and logic
+pub use neural::{
+    DualGate,
+    GateMode,
+    GumbelSoftmax,
+    StraightThroughEstimator,
+    SoftLogic,
+    SoftLogicGate,
+    TemperatureAttention,
+    LearnableTemperature,
+};
+
+// Model layers
+pub use layers::{
+    Linear,
+    LinearConfig,
+    MultiHeadAttention,
+    Embedding,
+    PositionalEmbedding,
+    RotaryEmbedding,
+    LayerNorm,
+    RMSNorm,
+};
+
+// LoRA adapters
+pub use lora::{
+    LoRALayer,
+    LoRAConfig,
+    LoRAModel,
+    LoRAAdapter,
+};
+
+// Data loading and generation
+pub use data::{
+    DataGenerator,
+    TrainingExample,
+    DataLoader,
+    DataLoaderConfig,
+    Batch,
+    DocumentGenerator,
+    CodeGenerator,
+    SentimentGenerator,
+    ReasoningGenerator,
+    NeuralIRGenerator,
+    ClassificationGenerator,
+};
+
+// Research pipeline
+pub use research::{
+    ResearchSpecialist,
+    ResearchConfig,
+    ResearchResult,
+    DataValidator,
+    ValidationResult,
+    DatasetAnnealer,
+    AnnealedExample,
+    DataRefiner,
+    RefinerConfig,
+    RefinementReport,
+    SourceRegistry,
+    SourceType,
+    refine_training_data,
+    quick_refine,
 };
 
 // Re-export from simplex-inference for convenience
@@ -84,130 +184,272 @@ pub use simplex_inference::{
     PromptCache, ResponseCache, CacheConfig,
 };
 
-mod schedules;
-mod trainer;
-mod data;
-mod export;
-
 // =============================================================================
 // Core Types
 // =============================================================================
 
-use simplex_std::sync::Arc;
-
 /// Dual number type for automatic differentiation
-/// Re-exported from simplex core for convenience
 pub type dual = simplex_std::dual;
 
-/// Training configuration
-#[derive(Clone)]
-pub struct TrainingConfig {
-    /// Number of training epochs
-    pub epochs: i64,
-    /// Batch size for training
-    pub batch_size: usize,
-    /// Gradient accumulation steps
-    pub gradient_accumulation: usize,
-    /// Maximum sequence length
-    pub max_seq_len: usize,
-    /// Enable mixed precision (BF16)
-    pub mixed_precision: bool,
-    /// Checkpoint every N steps
-    pub checkpoint_steps: i64,
-    /// Enable meta-learning for schedules
-    pub meta_learning: bool,
-    /// Meta-learning rate
-    pub meta_lr: f64,
-}
-
-impl Default for TrainingConfig {
-    fn default() -> Self {
-        TrainingConfig {
-            epochs: 3,
-            batch_size: 8,
-            gradient_accumulation: 4,
-            max_seq_len: 2048,
-            mixed_precision: true,
-            checkpoint_steps: 1000,
-            meta_learning: true,
-            meta_lr: 0.001,
-        }
-    }
-}
-
-impl TrainingConfig {
-    /// Config for small-scale local development
-    pub fn dev() -> Self {
-        TrainingConfig {
-            epochs: 1,
-            batch_size: 2,
-            gradient_accumulation: 1,
-            max_seq_len: 512,
-            mixed_precision: false,
-            checkpoint_steps: 100,
-            meta_learning: false,
-            meta_lr: 0.001,
-        }
-    }
-
-    /// Config for production training on Inferentia
-    pub fn production() -> Self {
-        TrainingConfig {
-            epochs: 3,
-            batch_size: 16,
-            gradient_accumulation: 8,
-            max_seq_len: 4096,
-            mixed_precision: true,
-            checkpoint_steps: 500,
-            meta_learning: true,
-            meta_lr: 0.0001,
-        }
-    }
-}
-
-/// Model size tiers for distillation
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Model size variants
+#[derive(Clone, Copy)]
 pub enum ModelSize {
-    /// 0.5B parameters - tiny specialist
-    B05,
-    /// 1.5B parameters - light specialist
-    B15,
-    /// 8B parameters - full specialist
-    B8,
-    /// 70B parameters - teacher model
+    /// 70 billion parameters (teacher)
     B70,
+    /// 8 billion parameters (large student)
+    B8,
+    /// 3 billion parameters (medium student)
+    B3,
+    /// 1 billion parameters (small student)
+    B1,
+    /// 500 million parameters (tiny student)
+    M500,
+    /// Small model (~500M-1B)
+    Small,
+    /// Medium model (~3B)
+    Medium,
+    /// Large model (~8B)
+    Large,
 }
 
 impl ModelSize {
     /// Approximate parameter count
-    pub fn params(&self) -> u64 {
+    pub fn params(&self) -> i64 {
         match self {
-            ModelSize::B05 => 500_000_000,
-            ModelSize::B15 => 1_500_000_000,
-            ModelSize::B8 => 8_000_000_000,
             ModelSize::B70 => 70_000_000_000,
+            ModelSize::B8 => 8_000_000_000,
+            ModelSize::B3 => 3_000_000_000,
+            ModelSize::B1 => 1_000_000_000,
+            ModelSize::M500 => 500_000_000,
+            ModelSize::Small => 500_000_000,
+            ModelSize::Medium => 3_000_000_000,
+            ModelSize::Large => 8_000_000_000,
         }
+    }
+
+    /// Memory footprint in bytes (fp16)
+    pub fn memory_bytes(&self) -> i64 {
+        self.params() * 2
     }
 
     /// Approximate memory usage in GB (Q4 quantized)
     pub fn memory_gb_q4(&self) -> f32 {
         match self {
-            ModelSize::B05 => 0.5,
-            ModelSize::B15 => 1.0,
-            ModelSize::B8 => 5.0,
             ModelSize::B70 => 40.0,
+            ModelSize::B8 => 5.0,
+            ModelSize::B3 => 2.0,
+            ModelSize::B1 => 0.8,
+            ModelSize::M500 => 0.5,
+            ModelSize::Small => 0.5,
+            ModelSize::Medium => 2.0,
+            ModelSize::Large => 5.0,
+        }
+    }
+
+    /// Get name as string
+    pub fn name(&self) -> &str {
+        match self {
+            ModelSize::B70 => "70B",
+            ModelSize::B8 => "8B",
+            ModelSize::B3 => "3B",
+            ModelSize::B1 => "1B",
+            ModelSize::M500 => "500M",
+            ModelSize::Small => "small",
+            ModelSize::Medium => "medium",
+            ModelSize::Large => "large",
         }
     }
 
     /// Model name for this size
-    pub fn model_name(&self) -> &'static str {
+    pub fn model_name(&self) -> &str {
         match self {
-            ModelSize::B05 => "simplex-cognitive-0.5b",
-            ModelSize::B15 => "simplex-cognitive-1.5b",
-            ModelSize::B8 => "simplex-cognitive-8b",
             ModelSize::B70 => "qwen2.5-72b",
+            ModelSize::B8 => "simplex-cognitive-8b",
+            ModelSize::B3 => "simplex-cognitive-3b",
+            ModelSize::B1 => "simplex-cognitive-1b",
+            ModelSize::M500 => "simplex-cognitive-0.5b",
+            ModelSize::Small => "simplex-cognitive-0.5b",
+            ModelSize::Medium => "simplex-cognitive-3b",
+            ModelSize::Large => "simplex-cognitive-8b",
         }
     }
+}
+
+/// Training configuration
+#[derive(Clone)]
+pub struct TrainingConfig {
+    /// Batch size
+    pub batch_size: i64,
+    /// Number of epochs
+    pub epochs: i64,
+    /// Maximum learning rate
+    pub max_lr: f64,
+    /// Weight decay
+    pub weight_decay: f64,
+    /// Gradient accumulation steps
+    pub gradient_accumulation: i64,
+    /// Mixed precision training
+    pub mixed_precision: bool,
+    /// Checkpoint interval (steps)
+    pub checkpoint_interval: i64,
+    /// Enable meta-learning for schedules
+    pub meta_learning: bool,
+    /// Meta-learning rate
+    pub meta_lr: f64,
+    /// Maximum sequence length
+    pub max_seq_len: i64,
+}
+
+impl TrainingConfig {
+    /// Default configuration for 8B models
+    pub fn default_8b() -> TrainingConfig {
+        TrainingConfig {
+            batch_size: 8,
+            epochs: 3,
+            max_lr: 2e-4,
+            weight_decay: 0.01,
+            gradient_accumulation: 4,
+            mixed_precision: true,
+            checkpoint_interval: 1000,
+            meta_learning: true,
+            meta_lr: 0.001,
+            max_seq_len: 4096,
+        }
+    }
+
+    /// Default configuration for 3B models
+    pub fn default_3b() -> TrainingConfig {
+        TrainingConfig {
+            batch_size: 16,
+            epochs: 3,
+            max_lr: 3e-4,
+            weight_decay: 0.01,
+            gradient_accumulation: 2,
+            mixed_precision: true,
+            checkpoint_interval: 500,
+            meta_learning: true,
+            meta_lr: 0.001,
+            max_seq_len: 2048,
+        }
+    }
+
+    /// Default configuration for 1B models
+    pub fn default_1b() -> TrainingConfig {
+        TrainingConfig {
+            batch_size: 32,
+            epochs: 5,
+            max_lr: 5e-4,
+            weight_decay: 0.01,
+            gradient_accumulation: 1,
+            mixed_precision: true,
+            checkpoint_interval: 250,
+            meta_learning: true,
+            meta_lr: 0.001,
+            max_seq_len: 2048,
+        }
+    }
+
+    /// Config for small-scale local development
+    pub fn dev() -> TrainingConfig {
+        TrainingConfig {
+            batch_size: 2,
+            epochs: 1,
+            max_lr: 5e-4,
+            weight_decay: 0.01,
+            gradient_accumulation: 1,
+            mixed_precision: false,
+            checkpoint_interval: 100,
+            meta_learning: false,
+            meta_lr: 0.001,
+            max_seq_len: 512,
+        }
+    }
+
+    /// Config for production training on Inferentia
+    pub fn production() -> TrainingConfig {
+        TrainingConfig::default_8b()
+    }
+}
+
+impl Default for TrainingConfig {
+    fn default() -> TrainingConfig {
+        TrainingConfig::default_8b()
+    }
+}
+
+/// Specialist domain
+#[derive(Clone)]
+pub enum SpecialistDomain {
+    /// Code generation and understanding
+    Code,
+    /// Mathematical reasoning
+    Math,
+    /// General reasoning and logic
+    Reasoning,
+    /// Document processing
+    Document,
+    /// Data extraction
+    Extraction,
+    /// Classification tasks
+    Classification,
+    /// Summarization
+    Summarization,
+    /// Translation
+    Translation,
+    /// Custom domain
+    Custom(String),
+}
+
+impl SpecialistDomain {
+    /// Get domain name as string
+    pub fn name(&self) -> String {
+        match self {
+            SpecialistDomain::Code => "code".to_string(),
+            SpecialistDomain::Math => "math".to_string(),
+            SpecialistDomain::Reasoning => "reasoning".to_string(),
+            SpecialistDomain::Document => "document".to_string(),
+            SpecialistDomain::Extraction => "extraction".to_string(),
+            SpecialistDomain::Classification => "classification".to_string(),
+            SpecialistDomain::Summarization => "summarization".to_string(),
+            SpecialistDomain::Translation => "translation".to_string(),
+            SpecialistDomain::Custom(s) => s.clone(),
+        }
+    }
+}
+
+// =============================================================================
+// Tensor Type
+// =============================================================================
+
+/// Tensor type for training operations
+#[derive(Clone)]
+pub struct Tensor {
+    data: Vec<f32>,
+    shape: Vec<i64>,
+}
+
+impl Tensor {
+    pub fn new(data: Vec<f32>, shape: Vec<i64>) -> Self {
+        Tensor { data, shape }
+    }
+
+    pub fn zeros(shape: &[i64]) -> Self {
+        let size: i64 = shape.iter().product();
+        Tensor {
+            data: vec![0.0; size],
+            shape: shape.to_vec(),
+        }
+    }
+
+    pub fn as_ptr(&self) -> *const f32 {
+        self.data.as_ptr()
+    }
+}
+
+/// Gradient tensors from backward pass
+pub struct Gradients {
+    pub weights: Vec<Tensor>,
+    pub biases: Vec<Tensor>,
 }
 
 // =============================================================================
@@ -220,7 +462,6 @@ mod neuron {
 
     /// Initialize Neuron runtime
     pub fn init() -> Result<(), NeuronError> {
-        // Initialize Neuron SDK
         unsafe {
             neuron_runtime_init()
         }
@@ -228,7 +469,6 @@ mod neuron {
 
     /// Compile model for Inferentia
     pub fn compile_model(model_path: &str, output_path: &str) -> Result<(), NeuronError> {
-        // Use neuronx-cc to compile model
         unsafe {
             neuron_compile(model_path.as_ptr(), output_path.as_ptr())
         }
@@ -279,7 +519,7 @@ mod neuron {
     }
 
     pub fn compile_model(_model_path: &str, _output_path: &str) -> Result<(), NeuronError> {
-        Ok(()) // No-op in dev mode
+        Ok(())
     }
 
     #[derive(Debug)]
@@ -288,39 +528,4 @@ mod neuron {
         CompileFailed(String),
         RuntimeError(String),
     }
-}
-
-// =============================================================================
-// Tensor Type (placeholder - would use actual tensor library)
-// =============================================================================
-
-/// Tensor type for training operations
-#[derive(Clone)]
-pub struct Tensor {
-    data: Vec<f32>,
-    shape: Vec<usize>,
-}
-
-impl Tensor {
-    pub fn new(data: Vec<f32>, shape: Vec<usize>) -> Self {
-        Tensor { data, shape }
-    }
-
-    pub fn zeros(shape: &[usize]) -> Self {
-        let size: usize = shape.iter().product();
-        Tensor {
-            data: vec![0.0; size],
-            shape: shape.to_vec(),
-        }
-    }
-
-    pub fn as_ptr(&self) -> *const f32 {
-        self.data.as_ptr()
-    }
-}
-
-/// Gradient tensors from backward pass
-pub struct Gradients {
-    pub weights: Vec<Tensor>,
-    pub biases: Vec<Tensor>,
 }

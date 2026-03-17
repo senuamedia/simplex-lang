@@ -1,0 +1,27 @@
+// simplex-quantum - Quantum Computing Primitives for Simplex
+//
+// A pure-Simplex quantum computing library providing core types, a standard
+// gate library, a circuit builder, and measurement utilities.
+//
+// Modules:
+//   error.sx       -- Error codes and error constructors (qerr_new, qerr_format, etc.)
+//   types.sx       -- Qubit, QuantumState, MeasurementResult, CircuitStats (all as vecs)
+//   gates.sx       -- Gate opcodes and matrix data (gate_hadamard, gate_cnot, etc.)
+//   circuit.sx     -- Circuit builder (circuit_new, circuit_h, circuit_cnot, etc.)
+//   measurement.sx -- Shot aggregation, expectation values, entropy, convergence
+//
+// All types are represented as i64 vec handles. No structs with f64 fields
+// are passed between functions. All functions are standalone (no self_handle: i64).
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+fn main() -> i64 {
+    println(string_from("simplex-quantum module index"));
+    println(string_from("  error.sx       - quantum error types"));
+    println(string_from("  types.sx       - core quantum types"));
+    println(string_from("  gates.sx       - standard gate library"));
+    println(string_from("  circuit.sx     - circuit builder"));
+    println(string_from("  measurement.sx - measurement utilities"));
+    0
+}

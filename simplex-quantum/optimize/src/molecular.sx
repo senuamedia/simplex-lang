@@ -1,0 +1,146 @@
+// simplex-quantum-optimize::molecular - VQE Molecular Simulation
+// Encodes molecular Hamiltonians as sums of Pauli operator strings.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// Pauli operator constants
+fn PAULI_I() -> i64 { 0 }
+fn PAULI_X() -> i64 { 1 }
+fn PAULI_Y() -> i64 { 2 }
+fn PAULI_Z() -> i64 { 3 }
+
+// MolecularHamiltonian layout (vec):
+//   [0] n_qubits
+//   [1] coeffs (vec of f64 bits)
+//   [2] pauli_strings (vec of pauli-op vecs)
+//   [3] n_terms
+//   [4] constant_term (f64 bits)
+
+fn hamiltonian_new() -> i64 {
+    let h: i64 = vec_new();
+    vec_push(h, 0);
+    vec_push(h, vec_new());
+    vec_push(h, vec_new());
+    vec_push(h, 0);
+    vec_push(h, f64_to_bits(0.0));
+    h
+}
+
+fn hamiltonian_set_n_qubits(h: i64, n: i64) -> i64 {
+    vec_set(h, 0, n);
+    h
+}
+
+fn hamiltonian_n_qubits(h: i64) -> i64 { vec_get(h, 0) }
+fn hamiltonian_n_terms(h: i64) -> i64 { vec_get(h, 3) }
+fn hamiltonian_constant_bits(h: i64) -> i64 { vec_get(h, 4) }
+
+fn hamiltonian_set_constant(h: i64, c_bits: i64) -> i64 {
+    vec_set(h, 4, c_bits);
+    h
+}
+
+// Add a Pauli term. coeff_bits = f64 bits, pauli_str = string handle ("XZIY")
+fn hamiltonian_add_term(h: i64, coeff_bits: i64, pauli_str: i64) -> i64 {
+    let coeff: f64 = bits_to_f64(coeff_bits);
+    let abs_coeff: f64 = coeff;
+    if coeff < 0.0 {
+        let abs_coeff: f64 = 0.0 - coeff;
+    }
+    let len: i64 = string_len(pauli_str);
+    let ops: i64 = vec_new();
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(pauli_str, i);
+        if ch == 73 {
+            vec_push(ops, PAULI_I());
+        } else if ch == 105 {
+            vec_push(ops, PAULI_I());
+        } else if ch == 88 {
+            vec_push(ops, PAULI_X());
+        } else if ch == 120 {
+            vec_push(ops, PAULI_X());
+        } else if ch == 89 {
+            vec_push(ops, PAULI_Y());
+        } else if ch == 121 {
+            vec_push(ops, PAULI_Y());
+        } else if ch == 90 {
+            vec_push(ops, PAULI_Z());
+        } else if ch == 122 {
+            vec_push(ops, PAULI_Z());
+        } else {
+            vec_push(ops, PAULI_I());
+        }
+        i = i + 1;
+    }
+    // Set n_qubits from first term
+    if vec_get(h, 3) == 0 {
+        vec_set(h, 0, len);
+    }
+    let coeffs: i64 = vec_get(h, 1);
+    let strings: i64 = vec_get(h, 2);
+    vec_push(coeffs, coeff_bits);
+    vec_push(strings, ops);
+    let nt: i64 = vec_get(h, 3);
+    vec_set(h, 3, nt + 1);
+    h
+}
+
+// Get coefficient at index k (f64 bits)
+fn hamiltonian_coeff_at(h: i64, k: i64) -> i64 {
+    let coeffs: i64 = vec_get(h, 1);
+    vec_get(coeffs, k)
+}
+
+// Get pauli ops vec at index k
+fn hamiltonian_pauli_at(h: i64, k: i64) -> i64 {
+    let strings: i64 = vec_get(h, 2);
+    vec_get(strings, k)
+}
+
+// Build H2 hydrogen molecule Hamiltonian (4 qubits, STO-3G/JW).
+fn h2_hamiltonian() -> i64 {
+    let h: i64 = hamiltonian_new();
+    hamiltonian_set_n_qubits(h, 4);
+    // Nuclear repulsion at equilibrium (0.735 A): ~0.7137 Ha
+    // Constant = nuclear_repulsion + g0
+    let nuc_rep: f64 = 1.0 / (0.735 * 1.8897259886);
+    let g0: f64 = 0.0 - 0.8105;
+    hamiltonian_set_constant(h, f64_to_bits(nuc_rep + g0));
+    let g1: f64 = 0.1711;
+    let g2: f64 = 0.0 - 0.2227;
+    let g3: f64 = 0.1711;
+    let g4: f64 = 0.1209;
+    let g5: f64 = 0.0453;
+    let ng5: f64 = 0.0 - 0.0453;
+    hamiltonian_add_term(h, f64_to_bits(g1), string_from("IIIZ"));
+    hamiltonian_add_term(h, f64_to_bits(g1), string_from("IIZI"));
+    hamiltonian_add_term(h, f64_to_bits(g3), string_from("IZII"));
+    hamiltonian_add_term(h, f64_to_bits(g3), string_from("ZIII"));
+    hamiltonian_add_term(h, f64_to_bits(g2), string_from("IIZZ"));
+    hamiltonian_add_term(h, f64_to_bits(g2), string_from("IZIZ"));
+    hamiltonian_add_term(h, f64_to_bits(g4), string_from("ZIZI"));
+    hamiltonian_add_term(h, f64_to_bits(g2), string_from("ZZII"));
+    hamiltonian_add_term(h, f64_to_bits(g4), string_from("IZZI"));
+    hamiltonian_add_term(h, f64_to_bits(g2), string_from("ZIIZ"));
+    hamiltonian_add_term(h, f64_to_bits(g5), string_from("XXYY"));
+    hamiltonian_add_term(h, f64_to_bits(g5), string_from("YYXX"));
+    hamiltonian_add_term(h, f64_to_bits(ng5), string_from("XYYX"));
+    hamiltonian_add_term(h, f64_to_bits(ng5), string_from("YXXY"));
+    h
+}
+
+// Estimate number of qubits for an active space.
+fn active_space_qubits(n_orbitals: i64) -> i64 {
+    2 * n_orbitals
+}
+
+// Estimate number of Pauli terms.
+fn estimate_pauli_terms(n_qubits: i64) -> i64 {
+    let m: i64 = n_qubits;
+    let two_e: i64 = (m * m * m * m) / 8;
+    let one_e: i64 = m * m;
+    two_e + one_e + 1
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

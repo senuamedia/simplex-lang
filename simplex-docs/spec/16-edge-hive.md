@@ -520,7 +520,7 @@ fn main() -> i64 {
 ## File Structure
 
 ```
-edge-hive/
+simplex-edge-hive/
 ├── src/
 │   ├── runtime.sx      # Runtime function declarations
 │   ├── types.sx        # Core type constants

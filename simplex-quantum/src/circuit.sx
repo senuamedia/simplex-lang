@@ -1,0 +1,258 @@
+// simplex-quantum::circuit - Quantum Circuit Builder
+//
+// A quantum circuit that accumulates gate instructions and measurements.
+// The circuit is stored as flat vecs:
+//   - instruction list: flat array of [opcode, target0, target1, theta_bits] per gate
+//   - per-qubit depth counters
+//   - measurement targets
+//
+// Circuit representation as vec:
+//   [n_qubits, gate_count, measurement_count,
+//    instructions_vec, qubit_depths_vec, measurements_vec]
+//
+// Each instruction is 4 entries in the instructions vec:
+//   [opcode, target0, target1, theta_bits]
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// Estimated gate execution times (microseconds)
+const SINGLE_GATE_TIME_US: i64 = 20;
+const TWO_GATE_TIME_US: i64 = 100;
+const MEASURE_TIME_US: i64 = 500;
+
+// Gate opcodes (same as gates.sx)
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+// Circuit vec offsets
+const C_NQUBITS: i64 = 0;
+const C_GATE_COUNT: i64 = 1;
+const C_MEAS_COUNT: i64 = 2;
+const C_INSTR: i64 = 3;
+const C_DEPTHS: i64 = 4;
+const C_MEAS: i64 = 5;
+
+// Instruction stride (entries per instruction)
+const INSTR_STRIDE: i64 = 4;
+
+fn circuit_new(n_qubits: i64) -> i64 {
+    let instr: i64 = vec_new();
+    let depths: i64 = vec_new();
+    let meas: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_qubits {
+        vec_push(depths, 0);
+        i = i + 1;
+    }
+    let c: i64 = vec_new();
+    vec_push(c, n_qubits);
+    vec_push(c, 0);
+    vec_push(c, 0);
+    vec_push(c, instr);
+    vec_push(c, depths);
+    vec_push(c, meas);
+    c
+}
+
+fn circuit_n_qubits(c: i64) -> i64 { vec_get(c, C_NQUBITS()); }
+fn circuit_gate_count(c: i64) -> i64 { vec_get(c, C_GATE_COUNT()); }
+fn circuit_meas_count(c: i64) -> i64 { vec_get(c, C_MEAS_COUNT()); }
+fn circuit_instr(c: i64) -> i64 { vec_get(c, C_INSTR()); }
+fn circuit_depths(c: i64) -> i64 { vec_get(c, C_DEPTHS()); }
+fn circuit_meas(c: i64) -> i64 { vec_get(c, C_MEAS()); }
+
+// Validate qubit in range [0, n_qubits)
+fn circuit_valid_qubit(c: i64, qubit: i64) -> i64 {
+    if qubit < 0 { return 0; }
+    if qubit >= circuit_n_qubits(c) { return 0; }
+    1
+}
+
+// Add a single-qubit instruction
+fn circuit_add_1q(c: i64, opcode: i64, target: i64, theta: f64) -> i64 {
+    if circuit_valid_qubit(c, target) == 0 { return 0 - 1; }
+    let instr: i64 = circuit_instr(c);
+    vec_push(instr, opcode);
+    vec_push(instr, target);
+    vec_push(instr, 0 - 1);
+    vec_push(instr, f64_to_bits(theta));
+    // Update depth
+    let depths: i64 = circuit_depths(c);
+    let d: i64 = vec_get(depths, target);
+    vec_set(depths, target, d + 1);
+    // Increment gate count
+    let gc: i64 = circuit_gate_count(c);
+    vec_set(c, C_GATE_COUNT(), gc + 1);
+    0
+}
+
+// Add a two-qubit instruction
+fn circuit_add_2q(c: i64, opcode: i64, q1: i64, q2: i64, theta: f64) -> i64 {
+    if circuit_valid_qubit(c, q1) == 0 { return 0 - 1; }
+    if circuit_valid_qubit(c, q2) == 0 { return 0 - 1; }
+    if q1 == q2 { return 0 - 1; }
+    let instr: i64 = circuit_instr(c);
+    vec_push(instr, opcode);
+    vec_push(instr, q1);
+    vec_push(instr, q2);
+    vec_push(instr, f64_to_bits(theta));
+    // Update depths: both advance to max(d1, d2) + 1
+    let depths: i64 = circuit_depths(c);
+    let d1: i64 = vec_get(depths, q1);
+    let d2: i64 = vec_get(depths, q2);
+    var nd: i64 = d1 + 1;
+    if d2 + 1 > nd { nd = d2 + 1; }
+    vec_set(depths, q1, nd);
+    vec_set(depths, q2, nd);
+    // Increment gate count
+    let gc: i64 = circuit_gate_count(c);
+    vec_set(c, C_GATE_COUNT(), gc + 1);
+    0
+}
+
+// Convenience gate adders
+fn circuit_h(c: i64, qubit: i64) -> i64 { circuit_add_1q(c, OP_H(), qubit, 0.0); }
+fn circuit_x(c: i64, qubit: i64) -> i64 { circuit_add_1q(c, OP_X(), qubit, 0.0); }
+fn circuit_y(c: i64, qubit: i64) -> i64 { circuit_add_1q(c, OP_Y(), qubit, 0.0); }
+fn circuit_z(c: i64, qubit: i64) -> i64 { circuit_add_1q(c, OP_Z(), qubit, 0.0); }
+fn circuit_s(c: i64, qubit: i64) -> i64 { circuit_add_1q(c, OP_S(), qubit, 0.0); }
+fn circuit_t(c: i64, qubit: i64) -> i64 { circuit_add_1q(c, OP_T(), qubit, 0.0); }
+fn circuit_rx(c: i64, qubit: i64, theta: f64) -> i64 { circuit_add_1q(c, OP_RX(), qubit, theta); }
+fn circuit_ry(c: i64, qubit: i64, theta: f64) -> i64 { circuit_add_1q(c, OP_RY(), qubit, theta); }
+fn circuit_rz(c: i64, qubit: i64, theta: f64) -> i64 { circuit_add_1q(c, OP_RZ(), qubit, theta); }
+fn circuit_cnot(c: i64, control: i64, target: i64) -> i64 { circuit_add_2q(c, OP_CNOT(), control, target, 0.0); }
+fn circuit_cz(c: i64, control: i64, target: i64) -> i64 { circuit_add_2q(c, OP_CZ(), control, target, 0.0); }
+fn circuit_swap(c: i64, q1: i64, q2: i64) -> i64 { circuit_add_2q(c, OP_SWAP(), q1, q2, 0.0); }
+fn circuit_crz(c: i64, control: i64, target: i64, theta: f64) -> i64 { circuit_add_2q(c, OP_CRZ(), control, target, theta); }
+
+// Measurement
+fn circuit_measure(c: i64, qubit: i64) -> i64 {
+    if circuit_valid_qubit(c, qubit) == 0 { return 0 - 1; }
+    let meas: i64 = circuit_meas(c);
+    vec_push(meas, qubit);
+    let mc: i64 = circuit_meas_count(c);
+    vec_set(c, C_MEAS_COUNT(), mc + 1);
+    0
+}
+
+fn circuit_measure_all(c: i64) -> i64 {
+    let nq: i64 = circuit_n_qubits(c);
+    var i: i64 = 0;
+    while i < nq {
+        circuit_measure(c, i);
+        i = i + 1;
+    }
+    0
+}
+
+// Statistics
+fn circuit_depth(c: i64) -> i64 {
+    let depths: i64 = circuit_depths(c);
+    let nq: i64 = circuit_n_qubits(c);
+    var max_d: i64 = 0;
+    var i: i64 = 0;
+    while i < nq {
+        let d: i64 = vec_get(depths, i);
+        if d > max_d { max_d = d; }
+        i = i + 1;
+    }
+    max_d
+}
+
+// Get instruction fields
+fn circuit_instr_opcode(c: i64, idx: i64) -> i64 {
+    let instr: i64 = circuit_instr(c);
+    vec_get(instr, idx * INSTR_STRIDE())
+}
+
+fn circuit_instr_target0(c: i64, idx: i64) -> i64 {
+    let instr: i64 = circuit_instr(c);
+    vec_get(instr, idx * INSTR_STRIDE() + 1)
+}
+
+fn circuit_instr_target1(c: i64, idx: i64) -> i64 {
+    let instr: i64 = circuit_instr(c);
+    vec_get(instr, idx * INSTR_STRIDE() + 2)
+}
+
+fn circuit_instr_theta(c: i64, idx: i64) -> f64 {
+    let instr: i64 = circuit_instr(c);
+    bits_to_f64(vec_get(instr, idx * INSTR_STRIDE() + 3))
+}
+
+// Opcode name lookup
+fn opcode_name(op: i64) -> i64 {
+    match op {
+        1 => string_from("H"),
+        2 => string_from("X"),
+        3 => string_from("Y"),
+        4 => string_from("Z"),
+        5 => string_from("S"),
+        6 => string_from("T"),
+        7 => string_from("Rx"),
+        8 => string_from("Ry"),
+        9 => string_from("Rz"),
+        10 => string_from("CNOT"),
+        11 => string_from("CZ"),
+        12 => string_from("SWAP"),
+        13 => string_from("CRz"),
+        _ => string_from("?")
+    }
+}
+
+// Format circuit as summary string
+fn circuit_to_string(c: i64) -> i64 {
+    string_concat(
+        string_concat(
+            string_from("QuantumCircuit(qubits="),
+            int_to_string(circuit_n_qubits(c))
+        ),
+        string_concat(
+            string_concat(
+                string_from(", gates="),
+                int_to_string(circuit_gate_count(c))
+            ),
+            string_concat(
+                string_concat(
+                    string_from(", depth="),
+                    int_to_string(circuit_depth(c))
+                ),
+                string_concat(
+                    string_from(", measurements="),
+                    string_concat(int_to_string(circuit_meas_count(c)), string_from(")"))
+                )
+            )
+        )
+    )
+}
+
+fn main() -> i64 {
+    // Self-test: build a Bell state circuit
+    let c: i64 = circuit_new(2);
+    circuit_h(c, 0);
+    circuit_cnot(c, 0, 1);
+    circuit_measure_all(c);
+    println(circuit_to_string(c));
+    println(string_concat(string_from("gate_count: "), int_to_string(circuit_gate_count(c))));
+    println(string_concat(string_from("depth: "), int_to_string(circuit_depth(c))));
+    println(string_concat(string_from("measurements: "), int_to_string(circuit_meas_count(c))));
+
+    // Verify instruction access
+    println(string_concat(string_from("instr[0] opcode: "), opcode_name(circuit_instr_opcode(c, 0))));
+    println(string_concat(string_from("instr[1] opcode: "), opcode_name(circuit_instr_opcode(c, 1))));
+
+    println(string_from("circuit.sx OK"));
+    0
+}

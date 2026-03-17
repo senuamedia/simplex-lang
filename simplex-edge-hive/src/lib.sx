@@ -1,0 +1,341 @@
+// Edge Hive - Main Library
+// A lightweight, autonomous cognitive hive for edge devices
+//
+// The Edge Hive provides:
+// - Local intelligence with offline capability
+// - User advocacy (represents user's interests)
+// - Federated sync with cloud hives and peer devices
+// - Adaptive resource management
+// - Privacy-first design
+// - Security-first architecture with encryption at rest
+//
+// Module Structure:
+// - runtime.sx: Runtime function declarations
+// - types.sx: Core type constants and encodings
+// - device.sx: Device profile detection and adaptation (platform-specific)
+// - beliefs.sx: Persistent belief store with CRDT merge
+// - specialist.sx: Local specialist system with routing
+// - federation.sx: Cloud/peer synchronization
+// - network.sx: WebSocket I/O with TLS and message authentication
+// - persistence.sx: Encrypted file-based storage for beliefs/config
+// - security.sx: User identity, encryption, secure file operations
+// - hive.sx: Main cognitive loop
+// - nexus.sx: Nexus Protocol implementation (TASK-012) - bit-packed delta streams
+// - epistemic.sx: Grounded beliefs with provenance (TASK-014) - GroundedBelief<T>
+// - adaptation.sx: Battery-aware scheduling, platform adapters
+// - hardening.sx: Production hardening, security audit, crash recovery
+
+// =============================================================================
+// Re-exports from modules
+// =============================================================================
+
+// From types.sx
+// Device classes: DEVICE_WATCH, DEVICE_PHONE, DEVICE_LAPTOP, DEVICE_DESKTOP
+// Network states: NET_DISCONNECTED, NET_WIFI, NET_CELLULAR, NET_ETHERNET
+// Sensitivity levels: SENSITIVITY_PUBLIC, SENSITIVITY_PRIVATE, SENSITIVITY_LOCAL
+// Specialist types: SPECIALIST_CONTEXT, SPECIALIST_TASK, SPECIALIST_QUICK, etc.
+
+// From device.sx
+// device_profile_new, detect_device_profile
+// device_get_class, device_get_ram_mb, device_get_battery
+// device_can_run_local_model, device_sync_strategy
+
+// From beliefs.sx
+// belief_store_new, belief_store_set, belief_store_get
+// belief_set_preference, belief_get_preference
+// belief_set_task, belief_complete_task
+
+// From specialist.sx
+// specialist_new, specialist_can_handle, specialist_handle_request
+// specialist_registry_new, create_default_specialists
+// find_best_specialist
+
+// From federation.sx
+// federation_new, federation_connect, federation_disconnect
+// federation_delegate_request, federation_sync_beliefs
+
+// From network.sx
+// ws_connection_new, ws_connect, ws_disconnect, ws_is_connected
+// ws_send, ws_recv, ws_maintenance
+// ws_send_delegate, ws_send_sync, ws_send_ping
+
+// From persistence.sx (secure versions)
+// save_belief_store_secure, load_belief_store_secure
+// save_hive_config_secure, load_hive_config_secure
+// save_cached_response_secure, load_cached_response_secure, clear_cache_secure
+
+// From security.sx
+// user_identity_new, user_identity_login, user_identity_change_password
+// encrypt_data, decrypt_data, verify_data_integrity
+// get_user_data_directory, ensure_user_directory
+// generate_secure_device_id, sign_message, verify_message_signature
+
+// From hive.sx
+// edge_hive_new_secure, hive_handle_request, hive_maintenance_cycle
+// hive_set_preference, hive_get_preference
+// hive_print_status, hive_shutdown_secure
+
+// From nexus.sx (TASK-012 Nexus Protocol)
+// nexus_connection_new, nexus_connect, nexus_is_active
+// vector_clock_new, vector_clock_merge, vector_clock_serialize
+// belief_catalog_new, catalog_add, catalog_get_position
+// create_sync_frame, create_checksum_frame
+// nexus_sync_beliefs, handle_sync_frame
+
+// From epistemic.sx (TASK-014 Belief Epistemics)
+// evidence_link_new, evidence_strength
+// falsifier_new, falsifier_is_triggered
+// grounded_belief_new, grounded_add_evidence, grounded_add_falsifier
+// calibrated_confidence_new, calibrated_record, calibrated_ece
+// epistemic_schedule_new, schedule_should_challenge, schedule_learning_rate
+// skeptic_new, skeptic_challenge, skeptic_effectiveness
+// epistemic_monitors_new, monitors_health_score
+// mark_no_learn_zone, is_no_learn_type
+
+// From adaptation.sx (Phase 3)
+// battery_scheduler_new, scheduler_update, scheduler_can_run_model
+// specialist_scaler_new, scaler_adapt_to_memory_pressure
+// platform_adapter_new, adapter_format_response, adapter_send_notification
+// sensor_manager_new, sensor_activate, sensor_read
+// create_adaptive_config
+
+// From hardening.sx (Phase 5)
+// security_manager_new, security_audit, security_check_rate_limit
+// checkpoint_manager_new, checkpoint_create, checkpoint_restore_latest
+// update_manager_new, update_verify_signature, update_apply_pending
+// human_signed_belief_new, hsb_approve, hsb_is_valid
+// performance_monitor_new, perf_record_response_time, perf_memory_leak_check
+// privacy_can_store, privacy_anonymize, privacy_export_user_data
+
+// =============================================================================
+// Quick Start Example (Secure API)
+// =============================================================================
+//
+// // Create or login to user identity
+// let identity: i64 = user_identity_new(
+//     string_from("user@example.com"),
+//     string_from("secure_password123")
+// );
+//
+// // Create an Edge Hive instance with identity
+// let cloud_endpoint: i64 = string_from("wss://hive.example.com/edge");
+// let hive: i64 = edge_hive_new_secure(identity, cloud_endpoint);
+//
+// // Connect to cloud (TLS required, authenticated)
+// let fed: i64 = hive_federation(hive);
+// federation_connect(fed);
+//
+// // Handle a user request
+// let response: i64 = hive_handle_request(hive, REQUEST_QUERY(), payload);
+//
+// // Set user preferences (stored encrypted)
+// hive_set_preference(hive, string_from("theme"), string_from("dark"));
+//
+// // Run maintenance (call periodically)
+// hive_maintenance_cycle(hive);
+//
+// // Shutdown cleanly (saves encrypted state)
+// hive_shutdown_secure(hive);
+
+// =============================================================================
+// Version Info
+// =============================================================================
+
+fn EDGE_HIVE_VERSION_MAJOR() -> i64 { 0 }
+fn EDGE_HIVE_VERSION_MINOR() -> i64 { 11 }
+fn EDGE_HIVE_VERSION_PATCH() -> i64 { 0 }
+
+fn edge_hive_version() -> i64 {
+    // Returns version as packed integer: major*10000 + minor*100 + patch
+    EDGE_HIVE_VERSION_MAJOR() * 10000 + EDGE_HIVE_VERSION_MINOR() * 100 + EDGE_HIVE_VERSION_PATCH()
+}
+
+fn edge_hive_version_string() -> i64 {
+    string_from("0.14.0")
+}
+
+// =============================================================================
+// Secure Entry Points (Recommended)
+// =============================================================================
+
+fn create_edge_hive_secure(identity: i64, cloud_endpoint: i64) -> i64 {
+    // Secure hive creation with user identity
+    // Device ID is generated cryptographically
+    let device_id: i64 = generate_secure_device_id();
+    edge_hive_new_secure(identity, device_id, cloud_endpoint)
+}
+
+fn edge_hive_login(username: i64, password: i64, cloud_endpoint: i64) -> i64 {
+    // Convenience function: login and create hive in one call
+    let identity: i64 = user_identity_login(username, password);
+    if identity == 0 {
+        return 0;  // Login failed
+    }
+    create_edge_hive_secure(identity, cloud_endpoint)
+}
+
+fn edge_hive_register(username: i64, password: i64, cloud_endpoint: i64) -> i64 {
+    // Convenience function: register new user and create hive
+    let identity: i64 = user_identity_new(username, password);
+    if identity == 0 {
+        return 0;  // Registration failed
+    }
+    create_edge_hive_secure(identity, cloud_endpoint)
+}
+
+// =============================================================================
+// Legacy Entry Point (Deprecated - Use Secure API)
+// =============================================================================
+
+fn create_edge_hive(cloud_endpoint: i64) -> i64 {
+    // DEPRECATED: Use create_edge_hive_secure(identity, cloud_endpoint) instead
+    // This function creates hive without user identity - insecure!
+    let device_id: i64 = generate_secure_device_id();
+    edge_hive_new(device_id, cloud_endpoint)
+}
+
+fn generate_device_id() -> i64 {
+    // DEPRECATED: Use generate_secure_device_id() instead
+    // Now forwards to secure implementation
+    generate_secure_device_id()
+}
+
+// =============================================================================
+// High-Level API
+// =============================================================================
+
+fn edge_hive_query(hive: i64, query: i64) -> i64 {
+    hive_handle_request(hive, REQUEST_QUERY(), query)
+}
+
+fn edge_hive_command(hive: i64, command: i64) -> i64 {
+    hive_handle_request(hive, REQUEST_COMMAND(), command)
+}
+
+fn edge_hive_notify(hive: i64, notification: i64) -> i64 {
+    hive_handle_request(hive, REQUEST_NOTIFICATION(), notification)
+}
+
+fn edge_hive_sync(hive: i64) -> i64 {
+    let fed: i64 = hive_federation(hive);
+    let beliefs: i64 = hive_belief_store(hive);
+    federation_sync_beliefs(fed, beliefs)
+}
+
+fn edge_hive_connect(hive: i64) -> i64 {
+    let fed: i64 = hive_federation(hive);
+    federation_connect(fed)
+}
+
+fn edge_hive_is_online(hive: i64) -> i64 {
+    let fed: i64 = hive_federation(hive);
+    federation_is_connected(fed)
+}
+
+// =============================================================================
+// Device-Specific Helpers (Secure)
+// =============================================================================
+
+fn edge_hive_for_watch_secure(identity: i64, cloud_endpoint: i64) -> i64 {
+    let hive: i64 = create_edge_hive_secure(identity, cloud_endpoint);
+    // Configure for minimal footprint
+    hive_set_auto_sync(hive, 1);
+    let config: i64 = hive_config(hive);
+    vec_set(config, 1, 60);  // Sync every minute on watch
+    hive
+}
+
+fn edge_hive_for_phone_secure(identity: i64, cloud_endpoint: i64) -> i64 {
+    let hive: i64 = create_edge_hive_secure(identity, cloud_endpoint);
+    // Balanced configuration
+    hive_set_auto_sync(hive, 1);
+    hive
+}
+
+fn edge_hive_for_desktop_secure(identity: i64, cloud_endpoint: i64) -> i64 {
+    let hive: i64 = create_edge_hive_secure(identity, cloud_endpoint);
+    // Configure for maximum local capability
+    let fed: i64 = hive_federation(hive);
+    federation_set_sync_strategy(fed, SYNC_LOCAL_FIRST());
+    hive
+}
+
+// Legacy (deprecated) - use secure versions above
+fn edge_hive_for_watch(cloud_endpoint: i64) -> i64 {
+    let hive: i64 = create_edge_hive(cloud_endpoint);
+    hive_set_auto_sync(hive, 1);
+    let config: i64 = hive_config(hive);
+    vec_set(config, 1, 60);
+    hive
+}
+
+fn edge_hive_for_phone(cloud_endpoint: i64) -> i64 {
+    let hive: i64 = create_edge_hive(cloud_endpoint);
+    hive_set_auto_sync(hive, 1);
+    hive
+}
+
+fn edge_hive_for_desktop(cloud_endpoint: i64) -> i64 {
+    let hive: i64 = create_edge_hive(cloud_endpoint);
+    let fed: i64 = hive_federation(hive);
+    federation_set_sync_strategy(fed, SYNC_LOCAL_FIRST());
+    hive
+}
+
+// =============================================================================
+// Testing Support
+// =============================================================================
+
+fn edge_hive_test_mode(hive: i64) -> i64 {
+    // Disable cloud sync for testing
+    hive_set_auto_sync(hive, 0);
+    let fed: i64 = hive_federation(hive);
+    federation_set_sync_strategy(fed, SYNC_LOCAL_FIRST());
+    0
+}
+
+// =============================================================================
+// Runtime Declarations (provided by compiler/runtime)
+// =============================================================================
+
+// These are declared here for reference but implemented by the runtime:
+// - vec_new, vec_push, vec_get, vec_set, vec_len, vec_pop
+// - string_from, string_concat, string_hash
+// - print, println, print_i64
+// - time_now, time_hour
+
+// =============================================================================
+// Extern Declarations from Other Modules
+// =============================================================================
+
+// From security.sx
+extern fn user_identity_new(username: i64, password: i64) -> i64;
+extern fn user_identity_login(username: i64, password: i64) -> i64;
+extern fn generate_secure_device_id() -> i64;
+
+// From hive.sx
+extern fn edge_hive_new(device_id: i64, cloud_endpoint: i64) -> i64;
+extern fn edge_hive_new_secure(identity: i64, device_id: i64, cloud_endpoint: i64) -> i64;
+extern fn hive_handle_request(hive: i64, request_type: i64, payload: i64) -> i64;
+extern fn hive_maintenance_cycle(hive: i64) -> i64;
+extern fn hive_set_auto_sync(hive: i64, enabled: i64) -> i64;
+extern fn hive_config(hive: i64) -> i64;
+extern fn hive_federation(hive: i64) -> i64;
+extern fn hive_belief_store(hive: i64) -> i64;
+
+// From federation.sx
+extern fn federation_connect(fed: i64) -> i64;
+extern fn federation_is_connected(fed: i64) -> i64;
+extern fn federation_sync_beliefs(fed: i64, beliefs: i64) -> i64;
+extern fn federation_set_sync_strategy(fed: i64, strategy: i64) -> i64;
+
+// From types.sx
+extern fn REQUEST_QUERY() -> i64;
+extern fn REQUEST_COMMAND() -> i64;
+extern fn REQUEST_NOTIFICATION() -> i64;
+extern fn SYNC_LOCAL_FIRST() -> i64;
+
+// From runtime
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn time_now() -> i64;
+extern fn string_from(s: &str) -> i64;

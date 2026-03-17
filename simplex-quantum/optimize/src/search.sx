@@ -1,0 +1,124 @@
+// simplex-quantum-optimize::search - Grover-Based Structured Search
+// Grover's algorithm: finds marked items in O(sqrt(N)) queries.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// Grover oracle stored as vec:
+//   [0] n_qubits  [1] target_states (vec)  [2] n_targets  [3] estimated_depth
+
+fn grover_oracle_new(n_qubits: i64, target_states: i64) -> i64 {
+    let oracle: i64 = vec_new();
+    let n_targets: i64 = vec_len(target_states);
+    let est_depth: i64 = n_targets * (2 * n_qubits + 1);
+    vec_push(oracle, n_qubits);
+    vec_push(oracle, target_states);
+    vec_push(oracle, n_targets);
+    vec_push(oracle, est_depth);
+    oracle
+}
+
+fn oracle_n_qubits(o: i64) -> i64 { vec_get(o, 0) }
+fn oracle_n_targets(o: i64) -> i64 { vec_get(o, 2) }
+fn oracle_estimated_depth(o: i64) -> i64 { vec_get(o, 3) }
+
+// Check if a state is a target. Returns 1 if yes.
+fn oracle_is_target(o: i64, state: i64) -> i64 {
+    let targets: i64 = vec_get(o, 1);
+    let nt: i64 = vec_get(o, 2);
+    var i: i64 = 0;
+    while i < nt {
+        if vec_get(targets, i) == state {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Optimal Grover iterations for N items with 1 target.
+// floor(pi/4 * sqrt(N)), at least 1.
+fn grover_iterations(n_items: i64) -> i64 {
+    var sq: i64 = 1;
+    while sq * sq < n_items {
+        sq = sq + 1;
+    }
+    // pi/4 ~ 0.785, approximate: sq * 785 / 1000
+    let iters: i64 = sq * 785 / 1000;
+    if iters < 1 { 1 } else { iters }
+}
+
+// Optimal Grover iterations for N items with M targets.
+fn grover_iterations_with_targets(n_items: i64, n_targets: i64) -> i64 {
+    if n_targets <= 0 {
+        return 1;
+    }
+    let ratio: i64 = n_items / n_targets;
+    var sq: i64 = 1;
+    while sq * sq < ratio {
+        sq = sq + 1;
+    }
+    let iters: i64 = sq * 785 / 1000;
+    if iters < 1 { 1 } else { iters }
+}
+
+// Estimate circuit depth for one Grover iteration.
+fn grover_depth_estimate(n_qubits: i64) -> i64 {
+    let oracle_depth: i64 = 2 + 2 * n_qubits;
+    let diffusion_depth: i64 = 4 + 2 * n_qubits;
+    oracle_depth + diffusion_depth
+}
+
+// Grover circuit descriptor stored as vec:
+//   [0] oracle  [1] n_qubits  [2] iterations  [3] total_depth  [4] total_gates
+
+fn grover_circuit(oracle: i64, n_qubits: i64, iterations: i64) -> i64 {
+    let oracle_depth: i64 = oracle_estimated_depth(oracle);
+    let diff_depth: i64 = 4 + 2 * n_qubits;
+    let per_iter_depth: i64 = oracle_depth + diff_depth;
+    let total_depth: i64 = 1 + iterations * per_iter_depth;
+    let diff_gates: i64 = 4 * n_qubits + 6 * (n_qubits - 1);
+    let per_iter_gates: i64 = oracle_depth + diff_gates;
+    let total_gates: i64 = n_qubits + iterations * per_iter_gates;
+    let circuit: i64 = vec_new();
+    vec_push(circuit, oracle);
+    vec_push(circuit, n_qubits);
+    vec_push(circuit, iterations);
+    vec_push(circuit, total_depth);
+    vec_push(circuit, total_gates);
+    circuit
+}
+
+fn circuit_total_depth(c: i64) -> i64 { vec_get(c, 3) }
+fn circuit_total_gates(c: i64) -> i64 { vec_get(c, 4) }
+fn circuit_iterations(c: i64) -> i64 { vec_get(c, 2) }
+
+// Hybrid search result stored as vec:
+//   [0] classical_steps  [1] quantum_iterations  [2] reduced_space_size  [3] quantum_depth
+
+fn hybrid_search(total_items: i64, filter_rate_bits: i64, target_count: i64) -> i64 {
+    let filter_rate: f64 = bits_to_f64(filter_rate_bits);
+    let surviving_f: f64 = (total_items as f64) * (1.0 - filter_rate);
+    var reduced_size: i64 = surviving_f as i64;
+    if reduced_size < 1 {
+        reduced_size = 1;
+    }
+    var n_qubits: i64 = 1;
+    while (1 << n_qubits) < reduced_size {
+        n_qubits = n_qubits + 1;
+    }
+    let surv_targets_f: f64 = (target_count as f64) * (1.0 - filter_rate);
+    var eff_targets: i64 = surv_targets_f as i64;
+    if eff_targets < 1 {
+        eff_targets = 1;
+    }
+    let q_iters: i64 = grover_iterations_with_targets(reduced_size, eff_targets);
+    let q_depth: i64 = grover_depth_estimate(n_qubits) * q_iters;
+    let result: i64 = vec_new();
+    vec_push(result, total_items);
+    vec_push(result, q_iters);
+    vec_push(result, reduced_size);
+    vec_push(result, q_depth);
+    result
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

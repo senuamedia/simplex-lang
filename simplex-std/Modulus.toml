@@ -10,10 +10,10 @@
 
 [package]
 name = "simplex-std"
-version = "0.13.0"
+version = "0.14.0"
 description = "Simplex Standard Library - core types, traits, and utilities"
 authors = ["Rod Higgins", "Simplex Team"]
-license = "MIT"
+license = "AGPL-3.0"
 repository = "https://github.com/anthropics/simplex-lang"
 
 # No dependencies - this is the foundational library

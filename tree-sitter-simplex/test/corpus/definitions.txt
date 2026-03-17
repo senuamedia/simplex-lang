@@ -153,13 +153,9 @@ impl Display for Point {
 (source_file
   (impl_block
     trait: (type
-      (path
-        (path_segment
-          (identifier))))
+      (type_identifier))
     type: (type
-      (path
-        (path_segment
-          (identifier))))
+      (type_identifier))
     (impl_body
       (function_definition
         name: (identifier)
@@ -215,13 +211,10 @@ use std::collections::HashMap;
 (source_file
   (use_declaration
     (use_tree
-      (path
-        (path_segment
-          (identifier))
-        (path_segment
-          (identifier))
-        (path_segment
-          (identifier))))))
+      (use_path
+        (identifier)
+        (identifier)
+        (identifier)))))
 
 ================================================================================
 Actor definition

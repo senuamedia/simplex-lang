@@ -66,7 +66,7 @@ println(response);
 hive_shutdown_secure(hive);
 ```
 
-See [edge-hive/RELEASE.md](../edge-hive/RELEASE.md) for full documentation.
+See [simplex-edge-hive/RELEASE.md](../simplex-edge-hive/RELEASE.md) for full documentation.
 
 ---
 
@@ -84,7 +84,7 @@ High-performance protocol for constant hive-to-hive communication achieving **23
 #### Protocol Modules (28 total)
 
 ```
-nexus/src/
+simplex-nexus/src/
 ├── bits.sx           # Bit manipulation primitives
 ├── frame.sx          # Wire format framing
 ├── sync.sx           # Belief synchronization
@@ -198,7 +198,7 @@ Platform: linux-x86_64
 
 ### Centralized Version Management
 
-All binary versions managed from single source in `lib/version.sx`:
+All binary versions managed from single source in `simplex-core/src/version.sx`:
 
 ```simplex
 pub fn SIMPLEX_VERSION() -> i64 { string_from("0.9.5") }
@@ -211,7 +211,7 @@ pub fn CURSUS_VERSION() -> i64 { string_from("0.9.5") }
 
 **Version Utilities:**
 ```simplex
-use lib::version::{parse_version, version_meets_min, is_version_compatible};
+use simplex_core::version::{parse_version, version_meets_min, is_version_compatible};
 
 if version_meets_min(SIMPLEX_VERSION(), "0.9.0") {
     // Use v0.9+ features
@@ -238,24 +238,24 @@ Comprehensive audit of ~21,400 lines of pure Simplex toolchain code:
 
 ## New Libraries
 
-### lib/platform.sx
+### simplex-core/src/platform.sx
 
 Cross-platform operations:
 
 ```simplex
-use lib::platform::{get_os_name, get_arch_name, get_path_separator};
+use simplex_core::platform::{get_os_name, get_arch_name, get_path_separator};
 
 let os = get_os_name();     // "windows", "linux", "macos"
 let arch = get_arch_name(); // "x86_64", "aarch64"
 let sep = get_path_separator(); // "/" or "\"
 ```
 
-### lib/safety.sx
+### simplex-core/src/safety.sx
 
 Runtime safety primitives:
 
 ```simplex
-use lib::safety::{bounds_check, safe_div, null_check};
+use simplex_core::safety::{bounds_check, safe_div, null_check};
 
 // Safe array access
 if bounds_check(index, array_len) {
@@ -297,7 +297,7 @@ All tools updated to version 0.9.5:
 
 4. **Version utilities**: Use new centralized module
    ```simplex
-   use lib::version::{SIMPLEX_VERSION, version_meets_min};
+   use simplex_core::version::{SIMPLEX_VERSION, version_meets_min};
    ```
 
 ---

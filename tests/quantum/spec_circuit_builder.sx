@@ -1,0 +1,216 @@
+// Circuit Builder - Specification Tests
+// Tests circuit construction: gate opcodes, sequencing, depth tracking.
+// Rewritten for sxc compiler compatibility.
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_CNOT: i64 = 5;
+const OP_CZ: i64 = 6;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_SWAP: i64 = 10;
+const OP_S: i64 = 11;
+const OP_T: i64 = 12;
+const OP_MEASURE: i64 = 13;
+
+// Circuit stores instructions as flat vec: [opcode, qubit0, qubit1, ...]
+// Each instruction is 3 entries: opcode, qubit0, qubit1 (-1 if single-qubit)
+
+fn circuit_new() -> i64 {
+    vec_new()
+}
+
+fn circuit_add(circ: i64, opcode: i64, q0: i64, q1: i64) -> i64 {
+    vec_push(circ, opcode);
+    vec_push(circ, q0);
+    vec_push(circ, q1);
+    vec_len(circ) / 3
+}
+
+fn circuit_n_instr(circ: i64) -> i64 {
+    vec_len(circ) / 3
+}
+
+fn circuit_get_op(circ: i64, idx: i64) -> i64 {
+    vec_get(circ, idx * 3)
+}
+
+fn circuit_get_q0(circ: i64, idx: i64) -> i64 {
+    vec_get(circ, idx * 3 + 1)
+}
+
+fn circuit_get_q1(circ: i64, idx: i64) -> i64 {
+    vec_get(circ, idx * 3 + 2)
+}
+
+fn circuit_gate_count(circ: i64) -> i64 {
+    var count: i64 = 0;
+    let n: i64 = circuit_n_instr(circ);
+    var i: i64 = 0;
+    while i < n {
+        if circuit_get_op(circ, i) != OP_MEASURE() {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+fn circuit_depth(circ: i64, n_qubits: i64) -> i64 {
+    let depths: i64 = vec_new();
+    var q: i64 = 0;
+    while q < n_qubits {
+        vec_push(depths, 0);
+        q = q + 1;
+    }
+    let n: i64 = circuit_n_instr(circ);
+    var i: i64 = 0;
+    while i < n {
+        let op: i64 = circuit_get_op(circ, i);
+        if op != OP_MEASURE() {
+            let q0: i64 = circuit_get_q0(circ, i);
+            let d0: i64 = vec_get(depths, q0);
+            vec_set(depths, q0, d0 + 1);
+            let q1: i64 = circuit_get_q1(circ, i);
+            if q1 >= 0 {
+                let d1: i64 = vec_get(depths, q1);
+                vec_set(depths, q1, d1 + 1);
+            }
+        }
+        i = i + 1;
+    }
+    var max_d: i64 = 0;
+    q = 0;
+    while q < n_qubits {
+        let d: i64 = vec_get(depths, q);
+        if d > max_d { max_d = d; }
+        q = q + 1;
+    }
+    max_d
+}
+
+fn check(name: i64, cond: i64) -> i64 {
+    if cond != 0 {
+        println(string_concat(string_from("  PASS: "), name));
+        return 0;
+    }
+    println(string_concat(string_from("  FAIL: "), name));
+    1
+}
+
+fn test_circuit_creation() -> i64 {
+    println(string_from("--- Circuit Creation ---"));
+    var f: i64 = 0;
+    let c: i64 = circuit_new();
+    f = f + check(string_from("empty n_instr=0"), if circuit_n_instr(c) == 0 { 1 } else { 0 });
+    f = f + check(string_from("empty gate_count=0"), if circuit_gate_count(c) == 0 { 1 } else { 0 });
+    f
+}
+
+fn test_gate_sequence() -> i64 {
+    println(string_from("--- Gate Sequence ---"));
+    var f: i64 = 0;
+    let c: i64 = circuit_new();
+    circuit_add(c, OP_H(), 0, -1);
+    circuit_add(c, OP_X(), 1, -1);
+    circuit_add(c, OP_CNOT(), 0, 1);
+    f = f + check(string_from("3 instructions"), if circuit_n_instr(c) == 3 { 1 } else { 0 });
+    f = f + check(string_from("3 gates"), if circuit_gate_count(c) == 3 { 1 } else { 0 });
+    f = f + check(string_from("first is H"), if circuit_get_op(c, 0) == OP_H() { 1 } else { 0 });
+    f = f + check(string_from("first on q0"), if circuit_get_q0(c, 0) == 0 { 1 } else { 0 });
+    f = f + check(string_from("second is X"), if circuit_get_op(c, 1) == OP_X() { 1 } else { 0 });
+    f = f + check(string_from("third is CNOT"), if circuit_get_op(c, 2) == OP_CNOT() { 1 } else { 0 });
+    f = f + check(string_from("CNOT ctrl=0"), if circuit_get_q0(c, 2) == 0 { 1 } else { 0 });
+    f = f + check(string_from("CNOT tgt=1"), if circuit_get_q1(c, 2) == 1 { 1 } else { 0 });
+    f
+}
+
+fn test_bell_circuit() -> i64 {
+    println(string_from("--- Bell State Circuit ---"));
+    var f: i64 = 0;
+    let c: i64 = circuit_new();
+    circuit_add(c, OP_H(), 0, -1);
+    circuit_add(c, OP_CNOT(), 0, 1);
+    circuit_add(c, OP_MEASURE(), 0, -1);
+    circuit_add(c, OP_MEASURE(), 1, -1);
+    f = f + check(string_from("bell gate_count=2"), if circuit_gate_count(c) == 2 { 1 } else { 0 });
+    f = f + check(string_from("bell total=4"), if circuit_n_instr(c) == 4 { 1 } else { 0 });
+    f = f + check(string_from("bell depth=2"), if circuit_depth(c, 2) == 2 { 1 } else { 0 });
+    f
+}
+
+fn test_ghz_circuit() -> i64 {
+    println(string_from("--- GHZ Circuit ---"));
+    var f: i64 = 0;
+    let c: i64 = circuit_new();
+    circuit_add(c, OP_H(), 0, -1);
+    circuit_add(c, OP_CNOT(), 0, 1);
+    circuit_add(c, OP_CNOT(), 1, 2);
+    circuit_add(c, OP_CNOT(), 2, 3);
+    f = f + check(string_from("ghz gate_count=4"), if circuit_gate_count(c) == 4 { 1 } else { 0 });
+    f = f + check(string_from("ghz first is H"), if circuit_get_op(c, 0) == OP_H() { 1 } else { 0 });
+    f = f + check(string_from("ghz last is CNOT"), if circuit_get_op(c, 3) == OP_CNOT() { 1 } else { 0 });
+    f = f + check(string_from("ghz last ctrl=2"), if circuit_get_q0(c, 3) == 2 { 1 } else { 0 });
+    f = f + check(string_from("ghz last tgt=3"), if circuit_get_q1(c, 3) == 3 { 1 } else { 0 });
+    f
+}
+
+fn test_depth() -> i64 {
+    println(string_from("--- Depth Tracking ---"));
+    var f: i64 = 0;
+    // Parallel: 3 H gates on 3 qubits -> depth=1
+    let c1: i64 = circuit_new();
+    circuit_add(c1, OP_H(), 0, -1);
+    circuit_add(c1, OP_H(), 1, -1);
+    circuit_add(c1, OP_H(), 2, -1);
+    f = f + check(string_from("parallel depth=1"), if circuit_depth(c1, 3) == 1 { 1 } else { 0 });
+    // Sequential on same qubit: depth=5
+    let c2: i64 = circuit_new();
+    circuit_add(c2, OP_H(), 0, -1);
+    circuit_add(c2, OP_X(), 0, -1);
+    circuit_add(c2, OP_Z(), 0, -1);
+    circuit_add(c2, OP_S(), 0, -1);
+    circuit_add(c2, OP_T(), 0, -1);
+    f = f + check(string_from("sequential depth=5"), if circuit_depth(c2, 1) == 5 { 1 } else { 0 });
+    f
+}
+
+fn test_all_gate_types() -> i64 {
+    println(string_from("--- All Gate Types ---"));
+    var f: i64 = 0;
+    let c: i64 = circuit_new();
+    circuit_add(c, OP_H(), 0, -1);
+    circuit_add(c, OP_X(), 0, -1);
+    circuit_add(c, OP_Y(), 0, -1);
+    circuit_add(c, OP_Z(), 0, -1);
+    circuit_add(c, OP_S(), 0, -1);
+    circuit_add(c, OP_T(), 0, -1);
+    circuit_add(c, OP_CNOT(), 0, 1);
+    circuit_add(c, OP_CZ(), 1, 2);
+    circuit_add(c, OP_SWAP(), 0, 2);
+    f = f + check(string_from("all gates count=9"), if circuit_gate_count(c) == 9 { 1 } else { 0 });
+    f = f + check(string_from("op H"), if circuit_get_op(c, 0) == OP_H() { 1 } else { 0 });
+    f = f + check(string_from("op X"), if circuit_get_op(c, 1) == OP_X() { 1 } else { 0 });
+    f = f + check(string_from("op SWAP"), if circuit_get_op(c, 8) == OP_SWAP() { 1 } else { 0 });
+    f
+}
+
+fn main() -> i64 {
+    println(string_from("=== Circuit Builder Spec Tests ==="));
+    var fails: i64 = 0;
+    fails = fails + test_circuit_creation();
+    fails = fails + test_gate_sequence();
+    fails = fails + test_bell_circuit();
+    fails = fails + test_ghz_circuit();
+    fails = fails + test_depth();
+    fails = fails + test_all_gate_types();
+    if fails > 0 {
+        println(string_from("FAIL"));
+        return 1;
+    }
+    println(string_from("ALL TESTS PASSED"));
+    0
+}

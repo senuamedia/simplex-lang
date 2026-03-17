@@ -3684,8 +3684,73 @@ fn parse_item(parser: i64) -> i64 {
     if parser_check(parser, TokenKind::KwInvariant) {
         return parse_invariant_decl(parser);
     }
+    if parser_check(parser, TokenKind::KwConst) {
+        return parse_const_def(parser);
+    }
+    if parser_check(parser, TokenKind::KwExtern) {
+        return parse_extern_block(parser);
+    }
 
     // Unknown item
+    0
+}
+
+// ========================================
+// Const Definitions
+// ========================================
+
+// Parse: const NAME: TYPE = VALUE;
+// Emits as a zero-arg function returning the value.
+// Layout: tag=TAG_FN, name, type_params=[], params=[], ret_type, body
+fn parse_const_def(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwConst);
+    let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+    let name: i64 = token_text(name_tok);
+    parser_expect(parser, TokenKind::Colon);
+    let ty: i64 = parse_type(parser);
+    parser_expect(parser, TokenKind::Eq);
+    let value: i64 = parse_expr(parser);
+    parser_expect(parser, TokenKind::Semi);
+
+    // Emit as fn NAME() -> TYPE { VALUE }
+    let empty_params: i64 = vec_new();
+    let empty_type_params: i64 = vec_new();
+    let stmts: i64 = vec_new();
+    let body: i64 = ast_block(stmts, value);
+    ast_fn_def(name, empty_type_params, empty_params, ty, body, 0)
+}
+
+// ========================================
+// Extern Blocks
+// ========================================
+
+// Parse: extern "C" { fn name(params) -> ret; ... }
+// Skips the entire block - extern functions are already declared in the runtime.
+// The codegen emits declares for all runtime functions automatically.
+fn parse_extern_block(parser: i64) -> i64 {
+    parser_expect(parser, TokenKind::KwExtern);
+    // Skip "C" string literal
+    if parser_check(parser, TokenKind::String) {
+        parser_advance(parser);
+    }
+    parser_expect(parser, TokenKind::LBrace);
+
+    // Skip everything until closing brace
+    let depth: i64 = 1;
+    while depth > 0 {
+        if parser_at_end(parser) { break; }
+        if parser_check(parser, TokenKind::LBrace) {
+            depth = depth + 1;
+        }
+        if parser_check(parser, TokenKind::RBrace) {
+            depth = depth - 1;
+            if depth == 0 { break; }
+        }
+        parser_advance(parser);
+    }
+    parser_expect(parser, TokenKind::RBrace);
+
+    // Return 0 (no item) - extern functions are handled by runtime declarations
     0
 }
 

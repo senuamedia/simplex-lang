@@ -1,0 +1,102 @@
+// simplex-quantum-dispatch::budget - Budget Tracker
+// Tracks quantum compute spending against a configurable budget.
+// Copyright (c) 2025-2026 Rod Higgins -- AGPL-3.0
+
+// BudgetTracker layout (vec):
+//   [0] total_budget (f64 bits)
+//   [1] total_spent (f64 bits)
+//   [2] warning_threshold (f64 bits, fraction 0-1)
+//   [3] hard_limit (f64 bits, fraction)
+//   [4] n_charges
+
+// Create a new budget tracker with the given total in USD.
+fn budget_new(total_bits: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, total_bits);
+    vec_push(v, f64_to_bits(0.0));
+    vec_push(v, f64_to_bits(0.8));
+    vec_push(v, f64_to_bits(1.0));
+    vec_push(v, 0);
+    v
+}
+
+// Charge an amount. Returns 1 if accepted, 0 if over budget.
+fn budget_charge(bt: i64, amount_bits: i64) -> i64 {
+    let total: f64 = bits_to_f64(vec_get(bt, 0));
+    let spent: f64 = bits_to_f64(vec_get(bt, 1));
+    let hard_limit: f64 = bits_to_f64(vec_get(bt, 3));
+    let amount: f64 = bits_to_f64(amount_bits);
+    let max_allowed: f64 = total * hard_limit;
+    let new_spent: f64 = spent + amount;
+    if new_spent > max_allowed {
+        return 0;
+    }
+    vec_set(bt, 1, f64_to_bits(new_spent));
+    let n: i64 = vec_get(bt, 4);
+    vec_set(bt, 4, n + 1);
+    1
+}
+
+// Get remaining budget. Returns f64 bits.
+fn budget_remaining(bt: i64) -> i64 {
+    let total: f64 = bits_to_f64(vec_get(bt, 0));
+    let spent: f64 = bits_to_f64(vec_get(bt, 1));
+    let remaining: f64 = total - spent;
+    if remaining < 0.0 {
+        return f64_to_bits(0.0);
+    }
+    f64_to_bits(remaining)
+}
+
+// Get total spent. Returns f64 bits.
+fn budget_spent(bt: i64) -> i64 {
+    vec_get(bt, 1)
+}
+
+// Get total budget ceiling. Returns f64 bits.
+fn budget_total(bt: i64) -> i64 {
+    vec_get(bt, 0)
+}
+
+// Get charge count.
+fn budget_charge_count(bt: i64) -> i64 {
+    vec_get(bt, 4)
+}
+
+// Check if past warning threshold. Returns 1 if yes.
+fn budget_check_warning(bt: i64) -> i64 {
+    let total: f64 = bits_to_f64(vec_get(bt, 0));
+    if total <= 0.0 {
+        return 1;
+    }
+    let spent: f64 = bits_to_f64(vec_get(bt, 1));
+    let threshold: f64 = bits_to_f64(vec_get(bt, 2));
+    let fraction: f64 = spent / total;
+    if fraction >= threshold { 1 } else { 0 }
+}
+
+// Check if budget is exhausted. Returns 1 if yes.
+fn budget_is_exhausted(bt: i64) -> i64 {
+    let total: f64 = bits_to_f64(vec_get(bt, 0));
+    let spent: f64 = bits_to_f64(vec_get(bt, 1));
+    let hard_limit: f64 = bits_to_f64(vec_get(bt, 3));
+    if spent >= total * hard_limit { 1 } else { 0 }
+}
+
+// Reset spending to zero.
+fn budget_reset(bt: i64) -> i64 {
+    vec_set(bt, 1, f64_to_bits(0.0));
+    vec_set(bt, 4, 0);
+    bt
+}
+
+// Add additional funds.
+fn budget_add_funds(bt: i64, additional_bits: i64) -> i64 {
+    let current: f64 = bits_to_f64(vec_get(bt, 0));
+    let additional: f64 = bits_to_f64(additional_bits);
+    vec_set(bt, 0, f64_to_bits(current + additional));
+    bt
+}
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }

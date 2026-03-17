@@ -31,10 +31,10 @@
     "learning": {
       "modules": ["lib"]
     },
-    "edge-hive": {
+    "simplex-edge-hive": {
       "modules": ["epistemic", "persistence", "lib", "device", "security", "types", "runtime", "model", "hive", "nexus", "specialist", "network", "main", "adaptation", "federation", "hardening", "beliefs"]
     },
-    "nexus": {
+    "simplex-nexus": {
       "modules": ["secure_conn", "sync", "address", "bits", "reconnect", "coordinator", "neural", "tcp_transport", "conn_pool", "lib", "transport", "crdt", "control", "request_response", "security", "vector_clock", "session", "message", "trajectory", "dual", "types", "flow_control", "prediction", "multiplex", "frame", "stf", "secure_frame", "conn", "federation"]
     },
     "lib": {

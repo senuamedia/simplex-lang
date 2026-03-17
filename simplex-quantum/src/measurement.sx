@@ -1,0 +1,252 @@
+// simplex-quantum::measurement - Measurement Utilities
+//
+// Post-processing utilities for quantum measurement results:
+// shot aggregation, expectation values, convergence estimation,
+// and Shannon entropy computation.
+//
+// All functions are standalone, operating on measurement result vecs
+// (as produced by mresult_new/mresult_record from types.sx).
+//
+// MeasurementResult vec layout: [shot_count, n_qubits, outcomes_vec, probs_vec]
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// ln(2), used for log base-2 conversion
+const LN2: f64 = 0.69314718055994530941;
+
+// Minimum probability threshold to avoid log(0)
+const PROB_EPSILON: f64 = 0.000000000000001;
+
+// Helpers to access MeasurementResult fields
+// (duplicated from types.sx so this file can compile standalone)
+fn mr_shot_count(mr: i64) -> i64 { vec_get(mr, 0); }
+fn mr_n_qubits(mr: i64) -> i64 { vec_get(mr, 1); }
+fn mr_outcomes(mr: i64) -> i64 { vec_get(mr, 2); }
+fn mr_probs(mr: i64) -> i64 { vec_get(mr, 3); }
+
+fn mr_get_count(mr: i64, k: i64) -> i64 {
+    vec_get(mr_outcomes(mr), k)
+}
+
+fn mr_get_prob(mr: i64, k: i64) -> f64 {
+    bits_to_f64(vec_get(mr_probs(mr), k))
+}
+
+fn mr_record(mr: i64, basis_index: i64) -> i64 {
+    let oc: i64 = mr_outcomes(mr);
+    let cur: i64 = vec_get(oc, basis_index);
+    vec_set(oc, basis_index, cur + 1);
+    0
+}
+
+fn mr_compute_probs(mr: i64) -> i64 {
+    let dim: i64 = 1 << mr_n_qubits(mr);
+    let sc: i64 = mr_shot_count(mr);
+    let oc: i64 = mr_outcomes(mr);
+    let pr: i64 = mr_probs(mr);
+    var i: i64 = 0;
+    while i < dim {
+        let count: i64 = vec_get(oc, i);
+        let prob: f64 = (count as f64) / (sc as f64);
+        vec_set(pr, i, f64_to_bits(prob));
+        i = i + 1;
+    }
+    0
+}
+
+fn mr_new(n_qubits: i64, shot_count: i64) -> i64 {
+    let dim: i64 = 1 << n_qubits;
+    let outcomes: i64 = vec_new();
+    let probs: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(outcomes, 0);
+        vec_push(probs, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    let v: i64 = vec_new();
+    vec_push(v, shot_count);
+    vec_push(v, n_qubits);
+    vec_push(v, outcomes);
+    vec_push(v, probs);
+    v
+}
+
+// Shot aggregation: take a vec of raw outcome indices and produce a MeasurementResult
+fn shot_aggregation(raw_outcomes: i64, n_qubits: i64) -> i64 {
+    let shot_count: i64 = vec_len(raw_outcomes);
+    let result: i64 = mr_new(n_qubits, shot_count);
+    var i: i64 = 0;
+    while i < shot_count {
+        let outcome: i64 = vec_get(raw_outcomes, i);
+        mr_record(result, outcome);
+        i = i + 1;
+    }
+    mr_compute_probs(result);
+    result
+}
+
+// Expectation value of Pauli-Z on a single qubit
+// <Z_q> = sum_k (-1)^(bit q of k) * p_k
+fn expectation_value_z(mr: i64, qubit: i64) -> f64 {
+    let dim: i64 = 1 << mr_n_qubits(mr);
+    var exp_val: f64 = 0.0;
+    var k: i64 = 0;
+    while k < dim {
+        let prob: f64 = mr_get_prob(mr, k);
+        let bit: i64 = (k >> qubit) & 1;
+        if bit == 0 {
+            exp_val = exp_val + prob;
+        } else {
+            exp_val = exp_val - prob;
+        }
+        k = k + 1;
+    }
+    exp_val
+}
+
+// Expectation value of Z tensor product on multiple qubits
+fn expectation_value_zz(mr: i64, qubits: i64) -> f64 {
+    let dim: i64 = 1 << mr_n_qubits(mr);
+    let n_obs: i64 = vec_len(qubits);
+    var exp_val: f64 = 0.0;
+    var k: i64 = 0;
+    while k < dim {
+        let prob: f64 = mr_get_prob(mr, k);
+        var parity: i64 = 0;
+        var q: i64 = 0;
+        while q < n_obs {
+            let qubit: i64 = vec_get(qubits, q);
+            parity = parity ^ ((k >> qubit) & 1);
+            q = q + 1;
+        }
+        if parity == 0 {
+            exp_val = exp_val + prob;
+        } else {
+            exp_val = exp_val - prob;
+        }
+        k = k + 1;
+    }
+    exp_val
+}
+
+// Convergence estimation using Hoeffding bound
+// n >= ln(2/delta) / (2 * epsilon^2)
+fn convergence_estimate(epsilon: f64, confidence: f64) -> i64 {
+    let delta: f64 = 1.0 - confidence;
+    if epsilon <= 0.0 { return 1000000; }
+    if delta <= 0.0 { return 1000000; }
+    if delta >= 1.0 { return 1000000; }
+    // log is a runtime intrinsic (natural log)
+    let n: f64 = log(2.0 / delta) / (2.0 * epsilon * epsilon);
+    (n + 0.999999) as i64
+}
+
+// Standard error of a probability estimate
+// SE = sqrt(p * (1-p) / n)
+fn probability_std_error(probability: f64, shot_count: i64) -> f64 {
+    if shot_count <= 0 { return 1.0; }
+    let p: f64 = probability;
+    let n: f64 = shot_count as f64;
+    sqrt(p * (1.0 - p) / n)
+}
+
+// Shannon entropy in bits
+// H = -sum p_k * log2(p_k)
+fn measurement_entropy(mr: i64) -> f64 {
+    let dim: i64 = 1 << mr_n_qubits(mr);
+    var entropy: f64 = 0.0;
+    var k: i64 = 0;
+    while k < dim {
+        let p: f64 = mr_get_prob(mr, k);
+        if p > PROB_EPSILON() {
+            entropy = entropy - p * log(p) / LN2();
+        }
+        k = k + 1;
+    }
+    entropy
+}
+
+// Relative entropy (KL divergence) in bits
+// D_KL(P || Q) = sum p_k * log2(p_k / q_k)
+fn relative_entropy(p_mr: i64, q_mr: i64) -> f64 {
+    let dim: i64 = 1 << mr_n_qubits(p_mr);
+    var kl: f64 = 0.0;
+    var k: i64 = 0;
+    while k < dim {
+        let p: f64 = mr_get_prob(p_mr, k);
+        let q: f64 = mr_get_prob(q_mr, k);
+        if p > PROB_EPSILON() {
+            if q < PROB_EPSILON() {
+                return 1000000000000.0;
+            }
+            kl = kl + p * log(p / q) / LN2();
+        }
+        k = k + 1;
+    }
+    kl
+}
+
+// Total variation distance
+// TVD = (1/2) * sum |p_k - q_k|
+fn total_variation_distance(p_mr: i64, q_mr: i64) -> f64 {
+    let dim: i64 = 1 << mr_n_qubits(p_mr);
+    var tvd: f64 = 0.0;
+    var k: i64 = 0;
+    while k < dim {
+        let p: f64 = mr_get_prob(p_mr, k);
+        let q: f64 = mr_get_prob(q_mr, k);
+        var diff: f64 = p - q;
+        if diff < 0.0 { diff = 0.0 - diff; }
+        tvd = tvd + diff;
+        k = k + 1;
+    }
+    tvd / 2.0
+}
+
+fn my_abs_f64(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs_f64(a - b) < eps { return 1; }
+    0
+}
+
+fn main() -> i64 {
+    // Self-test: create a simple measurement result for 1 qubit, 100 shots
+    let mr: i64 = mr_new(1, 100);
+    // Record 60 shots of |0> and 40 shots of |1>
+    var i: i64 = 0;
+    while i < 60 {
+        mr_record(mr, 0);
+        i = i + 1;
+    }
+    i = 0;
+    while i < 40 {
+        mr_record(mr, 1);
+        i = i + 1;
+    }
+    mr_compute_probs(mr);
+
+    println(string_concat(string_from("count[0]: "), int_to_string(mr_get_count(mr, 0))));
+    println(string_concat(string_from("count[1]: "), int_to_string(mr_get_count(mr, 1))));
+
+    // Check expectation value of Z on qubit 0
+    let ez: f64 = expectation_value_z(mr, 0);
+    // Expected: 0.6 - 0.4 = 0.2
+    println(string_concat(string_from("E[Z_0] approx 0.2: "), int_to_string(approx_eq(ez, 0.2, 0.01))));
+
+    // Check convergence estimate
+    let n_shots: i64 = convergence_estimate(0.01, 0.99);
+    println(string_concat(string_from("shots for eps=0.01, conf=0.99: "), int_to_string(n_shots)));
+
+    // Check std error
+    let se: f64 = probability_std_error(0.5, 1000);
+    println(string_concat(string_from("SE(0.5, 1000) approx 0.0158: "), int_to_string(approx_eq(se, 0.0158, 0.001))));
+
+    println(string_from("measurement.sx OK"));
+    0
+}

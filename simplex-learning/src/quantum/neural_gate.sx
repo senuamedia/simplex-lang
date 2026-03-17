@@ -1,0 +1,510 @@
+// TASK-021 Phase 6: Quantum-Aware Neural Gates
+//
+// Neural gates that dispatch computation to either a simulated quantum
+// circuit or a classical fallback, with gradient support via the
+// parameter-shift rule.
+//
+// Exports:
+//   quantum_gate_new          - create a new gate
+//   quantum_gate_forward      - forward pass (quantum or classical)
+//   quantum_gate_set_training - toggle training mode
+//   quantum_gate_gradient     - parameter-shift gradients
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+const DEFAULT_ANSATZ_DEPTH: i64 = 3;
+const DEFAULT_SHIFT: f64 = 1.5707963267948966;
+const PI2: f64 = 6.28318530717958647;
+
+// =============================================================================
+// QuantumNeuralGate -- stored as a vec of fields
+// =============================================================================
+//
+// Layout:
+//   [0] name           i64 (string handle)
+//   [1] n_qubits       i64
+//   [2] depth          i64 (ansatz depth)
+//   [3] n_params       i64
+//   [4] params_vec     i64 (handle to vec of f64-as-bits)
+//   [5] training       i64 (0=inference, 1=training)
+//   [6] step_count     i64
+//   [7] last_grads_vec i64 (handle to vec of f64-as-bits)
+
+fn QG_NAME() -> i64        { 0 }
+fn QG_N_QUBITS() -> i64    { 1 }
+fn QG_DEPTH() -> i64        { 2 }
+fn QG_N_PARAMS() -> i64     { 3 }
+fn QG_PARAMS() -> i64       { 4 }
+fn QG_TRAINING() -> i64     { 5 }
+fn QG_STEP() -> i64         { 6 }
+fn QG_LAST_GRADS() -> i64   { 7 }
+fn QG_FIELDS() -> i64       { 8 }
+
+// =============================================================================
+// Constructor
+// =============================================================================
+
+// Create a new quantum neural gate.
+//
+// The number of variational parameters is n_qubits * depth * 3
+// (Rx, Ry, Rz per qubit per layer). Parameters are initialized
+// with a deterministic sinusoidal pattern.
+//
+// Arguments:
+//   name     - string handle for gate name
+//   n_qubits - number of qubits in the circuit
+//   depth    - number of ansatz layers
+//
+// Returns: handle (i64) to the gate vec
+fn quantum_gate_new(name: i64, n_qubits: i64, depth: i64) -> i64 {
+    let n_params: i64 = n_qubits * depth * 3;
+
+    // Initialize parameters with small deterministic values
+    let params = vec_new();
+    var i: i64 = 0;
+    while i < n_params {
+        let seed: f64 = ((i as f64) + 0.5) * 0.1;
+        let val: f64 = sin(seed * PI2()) * 0.1;
+        vec_push(params, f64_to_bits(val));
+        i = i + 1;
+    }
+
+    // Initialize last gradients to zero
+    let grads = vec_new();
+    i = 0;
+    while i < n_params {
+        vec_push(grads, f64_to_bits(0.0));
+        i = i + 1;
+    }
+
+    let v = vec_new();
+    vec_push(v, name);           // [0] name
+    vec_push(v, n_qubits);      // [1] n_qubits
+    vec_push(v, depth);          // [2] depth
+    vec_push(v, n_params);       // [3] n_params
+    vec_push(v, params);         // [4] params_vec
+    vec_push(v, 0);              // [5] training (off)
+    vec_push(v, 0);              // [6] step_count
+    vec_push(v, grads);          // [7] last_grads_vec
+    v
+}
+
+// =============================================================================
+// Mode Control
+// =============================================================================
+
+// Set training mode on/off.
+// enabled: 1 = training, 0 = inference
+fn quantum_gate_set_training(gate: i64, enabled: i64) -> i64 {
+    vec_set(gate, QG_TRAINING(), enabled);
+    gate
+}
+
+fn quantum_gate_is_training(gate: i64) -> i64 {
+    vec_get(gate, QG_TRAINING())
+}
+
+// =============================================================================
+// Forward Pass
+// =============================================================================
+
+// Execute the forward pass of a quantum neural gate.
+//
+// In training mode, uses a simulated quantum circuit (rotation-based model).
+// In inference mode, uses a simpler classical approximation.
+//
+// Arguments:
+//   gate      - handle to the gate vec
+//   input_vec - handle to vec of f64-as-bits input values
+//   backend   - 0 = auto (quantum if training, classical if inference)
+//               1 = force quantum, 2 = force classical
+//
+// Returns: handle to output vec of f64-as-bits (probability distribution)
+fn quantum_gate_forward(gate: i64, input_vec: i64, backend: i64) -> i64 {
+    // Increment step count
+    let old_step: i64 = vec_get(gate, QG_STEP());
+    vec_set(gate, QG_STEP(), old_step + 1);
+
+    let n_qubits: i64 = vec_get(gate, QG_N_QUBITS());
+    let depth: i64 = vec_get(gate, QG_DEPTH());
+    let params: i64 = vec_get(gate, QG_PARAMS());
+    let training: i64 = vec_get(gate, QG_TRAINING());
+
+    var use_quantum: i64 = 0;
+    if backend == 1 { use_quantum = 1; }
+    if backend == 0 {
+        if training == 1 { use_quantum = 1; }
+    }
+
+    let dim: i64 = 1;
+    // 2^n_qubits
+    var output_dim: i64 = 1;
+    var q: i64 = 0;
+    while q < n_qubits {
+        output_dim = output_dim * 2;
+        q = q + 1;
+    }
+
+    if use_quantum == 1 {
+        return quantum_forward_sim(gate, input_vec, output_dim);
+    }
+
+    classical_forward_sim(gate, input_vec, output_dim)
+}
+
+// Internal: simulated quantum circuit forward pass.
+// Combines input encoding with variational parameters via rotation model.
+fn quantum_forward_sim(gate: i64, input_vec: i64, output_dim: i64) -> i64 {
+    let n_qubits: i64 = vec_get(gate, QG_N_QUBITS());
+    let depth: i64 = vec_get(gate, QG_DEPTH());
+    let params: i64 = vec_get(gate, QG_PARAMS());
+    let in_len: i64 = vec_len(input_vec);
+
+    // Compute logits for each output basis state
+    let logits = vec_new();
+    var k: i64 = 0;
+    while k < output_dim {
+        var sum: f64 = 0.0;
+        var layer: i64 = 0;
+        while layer < depth {
+            var qb: i64 = 0;
+            while qb < n_qubits {
+                let param_idx: i64 = (layer * n_qubits + qb) * 3;
+                let n_params: i64 = vec_len(params);
+                if param_idx + 2 < n_params {
+                    let rx: f64 = bits_to_f64(vec_get(params, param_idx));
+                    let ry: f64 = bits_to_f64(vec_get(params, param_idx + 1));
+                    let rz: f64 = bits_to_f64(vec_get(params, param_idx + 2));
+
+                    var input_val: f64 = 0.0;
+                    if qb < in_len {
+                        input_val = bits_to_f64(vec_get(input_vec, qb));
+                    }
+
+                    // Rotation-based contribution
+                    sum = sum + cos(input_val + rx) * sin(ry) + cos(rz);
+
+                    // Entanglement-like mixing
+                    if qb > 0 {
+                        let prev_idx: i64 = (layer * n_qubits + qb - 1) * 3;
+                        sum = sum + 0.1 * sin(bits_to_f64(vec_get(params, prev_idx)))
+                            * cos(bits_to_f64(vec_get(params, param_idx)));
+                    }
+                }
+                qb = qb + 1;
+            }
+            layer = layer + 1;
+        }
+
+        // k-dependent phase to differentiate outputs
+        sum = sum + sin((k as f64) * 0.3);
+        vec_push(logits, f64_to_bits(sum));
+        k = k + 1;
+    }
+
+    // Softmax to get probabilities
+    softmax_vec(logits)
+}
+
+// Internal: classical approximation forward pass.
+// Simple sigmoid model normalized to probability distribution.
+fn classical_forward_sim(gate: i64, input_vec: i64, output_dim: i64) -> i64 {
+    let params: i64 = vec_get(gate, QG_PARAMS());
+    let in_len: i64 = vec_len(input_vec);
+    let n_params: i64 = vec_len(params);
+
+    let output = vec_new();
+    var total: f64 = 0.0;
+    var k: i64 = 0;
+    while k < output_dim {
+        var sum: f64 = 0.0;
+        var j: i64 = 0;
+        while j < in_len {
+            let w_idx: i64 = (k * in_len + j) % n_params;
+            let w: f64 = bits_to_f64(vec_get(params, w_idx));
+            let x: f64 = bits_to_f64(vec_get(input_vec, j));
+            sum = sum + w * x;
+            j = j + 1;
+        }
+        // Sigmoid activation
+        let sig: f64 = sigmoid(sum);
+        vec_push(output, f64_to_bits(sig));
+        total = total + sig;
+        k = k + 1;
+    }
+
+    // Normalize to probability distribution
+    if total > 0.0 {
+        var i: i64 = 0;
+        while i < output_dim {
+            let val: f64 = bits_to_f64(vec_get(output, i));
+            vec_set(output, i, f64_to_bits(val / total));
+            i = i + 1;
+        }
+    }
+
+    output
+}
+
+// =============================================================================
+// Gradient Computation
+// =============================================================================
+
+// Compute gradients via parameter-shift rule.
+//
+// For each parameter theta_i, evaluate the circuit at theta_i +/- pi/2:
+//   gradient_i = (loss(theta+s) - loss(theta-s)) / (2 * sin(s))
+// With s = pi/2, sin(s) = 1, so gradient = (loss+ - loss-) / 2.
+//
+// Arguments:
+//   gate      - handle to the gate vec
+//   input_vec - handle to vec of f64-as-bits input values
+//
+// Returns: handle to gradient vec (f64-as-bits)
+//
+// Note: This computes gradients of the output probabilities themselves,
+// treating the sum of output elements as the objective. For actual
+// training, the caller applies a loss function to the forward outputs.
+fn quantum_gate_gradient(gate: i64, input_vec: i64) -> i64 {
+    let n_params: i64 = vec_get(gate, QG_N_PARAMS());
+    let params: i64 = vec_get(gate, QG_PARAMS());
+    let shift: f64 = DEFAULT_SHIFT();
+
+    let grads = vec_new();
+    var i: i64 = 0;
+    while i < n_params {
+        // Save original parameter
+        let orig: f64 = bits_to_f64(vec_get(params, i));
+
+        // Evaluate at theta + shift
+        vec_set(params, i, f64_to_bits(orig + shift));
+        let out_plus: i64 = quantum_forward_sim(gate, input_vec, compute_output_dim(gate));
+        let sum_plus: f64 = vec_sum_f64(out_plus);
+
+        // Evaluate at theta - shift
+        vec_set(params, i, f64_to_bits(orig - shift));
+        let out_minus: i64 = quantum_forward_sim(gate, input_vec, compute_output_dim(gate));
+        let sum_minus: f64 = vec_sum_f64(out_minus);
+
+        // Restore original parameter
+        vec_set(params, i, f64_to_bits(orig));
+
+        // gradient = (f+ - f-) / (2 * sin(shift)) = (f+ - f-) / 2
+        let grad: f64 = (sum_plus - sum_minus) / 2.0;
+        vec_push(grads, f64_to_bits(grad));
+
+        i = i + 1;
+    }
+
+    // Store as last gradients
+    vec_set(gate, QG_LAST_GRADS(), grads);
+
+    grads
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+fn compute_output_dim(gate: i64) -> i64 {
+    let n_qubits: i64 = vec_get(gate, QG_N_QUBITS());
+    var dim: i64 = 1;
+    var i: i64 = 0;
+    while i < n_qubits {
+        dim = dim * 2;
+        i = i + 1;
+    }
+    dim
+}
+
+fn sigmoid(x: f64) -> f64 {
+    // Clamp to avoid overflow
+    var cx: f64 = x;
+    if cx > 20.0 { cx = 20.0; }
+    if cx < -20.0 { cx = -20.0; }
+    // exp(-x) approximation for sigmoid
+    let neg_x: f64 = 0.0 - cx;
+    let ex: f64 = exp_approx(neg_x);
+    1.0 / (1.0 + ex)
+}
+
+// Approximate exp(x) using the identity exp(x) = 2^(x/ln2)
+// and a polynomial approximation for 2^frac.
+fn exp_approx(x: f64) -> f64 {
+    if x > 20.0 { return 485165195.0; }
+    if x < -20.0 { return 0.0; }
+
+    let ln2: f64 = 0.6931471805599453;
+    let y: f64 = x / ln2;
+
+    // Separate integer and fractional parts
+    var int_part: i64 = y as i64;
+    var frac: f64 = y - (int_part as f64);
+    if frac < 0.0 {
+        int_part = int_part - 1;
+        frac = frac + 1.0;
+    }
+
+    // 2^frac approximation (minimax on [0,1])
+    // 2^f ~ 1 + f*ln2 + f^2*ln2^2/2 + f^3*ln2^3/6
+    let f1: f64 = frac * ln2;
+    let f2: f64 = f1 * frac * ln2 / 2.0;
+    let f3: f64 = f2 * frac * ln2 / 3.0;
+    let pow_frac: f64 = 1.0 + f1 + f2 + f3;
+
+    // 2^int_part
+    var pow_int: f64 = 1.0;
+    if int_part >= 0 {
+        var j: i64 = 0;
+        while j < int_part {
+            pow_int = pow_int * 2.0;
+            j = j + 1;
+        }
+    } else {
+        var j: i64 = 0;
+        while j < (0 - int_part) {
+            pow_int = pow_int / 2.0;
+            j = j + 1;
+        }
+    }
+
+    pow_int * pow_frac
+}
+
+// Softmax: convert a vec of logits (f64-as-bits) to probabilities
+fn softmax_vec(logits: i64) -> i64 {
+    let n: i64 = vec_len(logits);
+    if n == 0 {
+        return vec_new();
+    }
+
+    // Find max logit for numerical stability
+    var max_val: f64 = bits_to_f64(vec_get(logits, 0));
+    var i: i64 = 1;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    // Compute exp(logit - max) and sum
+    let result = vec_new();
+    var exp_sum: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        let e: f64 = exp_approx(v - max_val);
+        vec_push(result, f64_to_bits(e));
+        exp_sum = exp_sum + e;
+        i = i + 1;
+    }
+
+    // Normalize
+    if exp_sum > 0.0 {
+        i = 0;
+        while i < n {
+            let v: f64 = bits_to_f64(vec_get(result, i));
+            vec_set(result, i, f64_to_bits(v / exp_sum));
+            i = i + 1;
+        }
+    }
+
+    result
+}
+
+// Sum all f64 values in a vec (stored as i64 bits)
+fn vec_sum_f64(v: i64) -> f64 {
+    let n: i64 = vec_len(v);
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        sum = sum + bits_to_f64(vec_get(v, i));
+        i = i + 1;
+    }
+    sum
+}
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+// =============================================================================
+// Accessors
+// =============================================================================
+
+fn quantum_gate_n_params(gate: i64) -> i64 {
+    vec_get(gate, QG_N_PARAMS())
+}
+
+fn quantum_gate_params(gate: i64) -> i64 {
+    vec_get(gate, QG_PARAMS())
+}
+
+fn quantum_gate_name(gate: i64) -> i64 {
+    vec_get(gate, QG_NAME())
+}
+
+// =============================================================================
+// Main (smoke test)
+// =============================================================================
+
+fn main() -> i64 {
+    // Create a 2-qubit, depth-2 gate
+    let gate = quantum_gate_new(string_from("test_gate"), 2, 2);
+
+    let np: i64 = quantum_gate_n_params(gate);
+    // 2 qubits * 2 depth * 3 angles = 12
+    if np != 12 { return 1; }
+
+    // Should start in inference mode
+    if quantum_gate_is_training(gate) != 0 { return 2; }
+
+    // Switch to training
+    quantum_gate_set_training(gate, 1);
+    if quantum_gate_is_training(gate) != 1 { return 3; }
+
+    // Forward pass (training -> quantum sim)
+    let input = vec_new();
+    vec_push(input, f64_to_bits(0.5));
+    vec_push(input, f64_to_bits(0.3));
+
+    let output = quantum_gate_forward(gate, input, 0);
+
+    // Should have 2^2 = 4 probabilities
+    let out_len: i64 = vec_len(output);
+    if out_len != 4 { return 4; }
+
+    // Should sum to ~1.0
+    let total: f64 = vec_sum_f64(output);
+    if my_abs(total - 1.0) > 0.01 { return 5; }
+
+    // All probabilities should be non-negative
+    var i: i64 = 0;
+    while i < out_len {
+        let p: f64 = bits_to_f64(vec_get(output, i));
+        if p < 0.0 { return 6; }
+        i = i + 1;
+    }
+
+    // Compute gradients
+    let grads = quantum_gate_gradient(gate, input);
+    let grad_len: i64 = vec_len(grads);
+    if grad_len != 12 { return 7; }
+
+    // Classical forward (force backend=2)
+    let class_out = quantum_gate_forward(gate, input, 2);
+    let class_len: i64 = vec_len(class_out);
+    if class_len != 4 { return 8; }
+
+    let class_total: f64 = vec_sum_f64(class_out);
+    if my_abs(class_total - 1.0) > 0.01 { return 9; }
+
+    println(string_from("neural_gate: all checks passed"));
+    0
+}
