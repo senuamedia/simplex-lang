@@ -1,0 +1,360 @@
+// simplex-quantum::circuit-opt::native - Native Gate Decomposition
+//
+// Decompose arbitrary gates into target native gate sets.
+// Supports Clifford+T, CX+Rz, and IBM native gate sets.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const PI: f64 = 3.14159265358979323846;
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+const INSTR_STRIDE: i64 = 4;
+
+// Native gate set constants
+const GATESET_CLIFFORD_T: i64 = 1;   // H, S, T, CNOT
+const GATESET_CX_RZ: i64 = 2;        // CNOT, Rz, Rx
+const GATESET_IBM: i64 = 3;           // CNOT, Rz, Rx, X
+
+fn push_instr(dst: i64, op: i64, q0: i64, q1: i64, theta_bits: i64) -> i64 {
+    vec_push(dst, op);
+    vec_push(dst, q0);
+    vec_push(dst, q1);
+    vec_push(dst, theta_bits);
+    0
+}
+
+// Check if a gate is native in the given gate set
+fn is_native(op: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        if op == OP_H() { return 1; }
+        if op == OP_S() { return 1; }
+        if op == OP_T() { return 1; }
+        if op == OP_CNOT() { return 1; }
+        return 0;
+    }
+    if gateset == GATESET_CX_RZ() {
+        if op == OP_CNOT() { return 1; }
+        if op == OP_RZ() { return 1; }
+        if op == OP_RX() { return 1; }
+        return 0;
+    }
+    if gateset == GATESET_IBM() {
+        if op == OP_CNOT() { return 1; }
+        if op == OP_RZ() { return 1; }
+        if op == OP_RX() { return 1; }
+        if op == OP_X() { return 1; }
+        return 0;
+    }
+    0
+}
+
+// Decompose all gates to the target native gate set.
+// Returns new instruction list with only native gates.
+fn decompose_to_native(instrs: i64, gateset: i64) -> i64 {
+    let n: i64 = vec_len(instrs) / INSTR_STRIDE();
+    let result: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < n {
+        let base: i64 = i * INSTR_STRIDE();
+        let op: i64 = vec_get(instrs, base);
+        let q0: i64 = vec_get(instrs, base + 1);
+        let q1: i64 = vec_get(instrs, base + 2);
+        let tb: i64 = vec_get(instrs, base + 3);
+
+        if is_native(op, gateset) != 0 {
+            push_instr(result, op, q0, q1, tb);
+        } else {
+            if op == OP_H() {
+                decompose_h_to(result, q0, gateset);
+            }
+            if op == OP_X() {
+                decompose_x_to(result, q0, gateset);
+            }
+            if op == OP_Y() {
+                decompose_y_to(result, q0, gateset);
+            }
+            if op == OP_Z() {
+                decompose_z_to(result, q0, gateset);
+            }
+            if op == OP_S() {
+                decompose_s_to(result, q0, gateset);
+            }
+            if op == OP_T() {
+                decompose_t_to(result, q0, gateset);
+            }
+            if op == OP_RX() {
+                decompose_rx_to(result, q0, tb, gateset);
+            }
+            if op == OP_RY() {
+                decompose_ry_to(result, q0, tb, gateset);
+            }
+            if op == OP_RZ() {
+                decompose_rz_to(result, q0, tb, gateset);
+            }
+            if op == OP_SWAP() {
+                decompose_swap_to(result, q0, q1);
+            }
+            if op == OP_CZ() {
+                decompose_cz_to(result, q0, q1, gateset);
+            }
+            if op == OP_CRZ() {
+                decompose_crz_to(result, q0, q1, tb, gateset);
+            }
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// Decompose H: H = Rz(pi) . Rx(pi/2) . Rz(pi) for CX_RZ/IBM
+fn decompose_h_to(result: i64, q: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RZ(), q, 0 - 1, f64_to_bits(PI()));
+    push_instr(result, OP_RX(), q, 0 - 1, f64_to_bits(PI() / 2.0));
+    push_instr(result, OP_RZ(), q, 0 - 1, f64_to_bits(PI()));
+    0
+}
+
+// Decompose X
+fn decompose_x_to(result: i64, q: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_IBM() {
+        push_instr(result, OP_X(), q, 0 - 1, 0);
+        return 0;
+    }
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RX(), q, 0 - 1, f64_to_bits(PI()));
+    0
+}
+
+// Decompose Y: Y = Rz(pi) . Rx(pi) up to global phase
+fn decompose_y_to(result: i64, q: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RZ(), q, 0 - 1, f64_to_bits(PI()));
+    push_instr(result, OP_RX(), q, 0 - 1, f64_to_bits(PI()));
+    0
+}
+
+// Decompose Z
+fn decompose_z_to(result: i64, q: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RZ(), q, 0 - 1, f64_to_bits(PI()));
+    0
+}
+
+// Decompose S
+fn decompose_s_to(result: i64, q: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RZ(), q, 0 - 1, f64_to_bits(PI() / 2.0));
+    0
+}
+
+// Decompose T
+fn decompose_t_to(result: i64, q: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_T(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RZ(), q, 0 - 1, f64_to_bits(PI() / 4.0));
+    0
+}
+
+// Decompose Rx
+fn decompose_rx_to(result: i64, q: i64, tb: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RX(), q, 0 - 1, tb);
+    0
+}
+
+// Decompose Ry: Ry(t) = Rz(pi/2) . Rx(t) . Rz(-pi/2)
+fn decompose_ry_to(result: i64, q: i64, tb: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        push_instr(result, OP_S(), q, 0 - 1, 0);
+        push_instr(result, OP_H(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RZ(), q, 0 - 1, f64_to_bits(PI() / 2.0));
+    push_instr(result, OP_RX(), q, 0 - 1, tb);
+    push_instr(result, OP_RZ(), q, 0 - 1, f64_to_bits(0.0 - PI() / 2.0));
+    0
+}
+
+// Decompose Rz
+fn decompose_rz_to(result: i64, q: i64, tb: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_T(), q, 0 - 1, 0);
+        return 0;
+    }
+    push_instr(result, OP_RZ(), q, 0 - 1, tb);
+    0
+}
+
+// Decompose SWAP = 3 CNOTs
+fn decompose_swap_to(result: i64, q0: i64, q1: i64) -> i64 {
+    push_instr(result, OP_CNOT(), q0, q1, 0);
+    push_instr(result, OP_CNOT(), q1, q0, 0);
+    push_instr(result, OP_CNOT(), q0, q1, 0);
+    0
+}
+
+// Decompose H gate standalone (for use in other decompositions)
+fn decompose_h(instrs: i64) -> i64 {
+    let n: i64 = vec_len(instrs) / INSTR_STRIDE();
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let base: i64 = i * INSTR_STRIDE();
+        let op: i64 = vec_get(instrs, base);
+        let q0: i64 = vec_get(instrs, base + 1);
+        let q1: i64 = vec_get(instrs, base + 2);
+        let tb: i64 = vec_get(instrs, base + 3);
+        if op == OP_H() {
+            push_instr(result, OP_RZ(), q0, 0 - 1, f64_to_bits(PI()));
+            push_instr(result, OP_RX(), q0, 0 - 1, f64_to_bits(PI() / 2.0));
+            push_instr(result, OP_RZ(), q0, 0 - 1, f64_to_bits(PI()));
+        } else {
+            push_instr(result, op, q0, q1, tb);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// Decompose all SWAP gates to 3 CNOTs
+fn decompose_swap(instrs: i64) -> i64 {
+    let n: i64 = vec_len(instrs) / INSTR_STRIDE();
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let base: i64 = i * INSTR_STRIDE();
+        let op: i64 = vec_get(instrs, base);
+        let q0: i64 = vec_get(instrs, base + 1);
+        let q1: i64 = vec_get(instrs, base + 2);
+        let tb: i64 = vec_get(instrs, base + 3);
+        if op == OP_SWAP() {
+            push_instr(result, OP_CNOT(), q0, q1, 0);
+            push_instr(result, OP_CNOT(), q1, q0, 0);
+            push_instr(result, OP_CNOT(), q0, q1, 0);
+        } else {
+            push_instr(result, op, q0, q1, tb);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// Decompose CZ: CZ = H(target) . CNOT . H(target)
+fn decompose_cz_to(result: i64, q0: i64, q1: i64, gateset: i64) -> i64 {
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_H(), q1, 0 - 1, 0);
+        push_instr(result, OP_CNOT(), q0, q1, 0);
+        push_instr(result, OP_H(), q1, 0 - 1, 0);
+        return 0;
+    }
+    decompose_h_to(result, q1, gateset);
+    push_instr(result, OP_CNOT(), q0, q1, 0);
+    decompose_h_to(result, q1, gateset);
+    0
+}
+
+// Decompose CRZ: CRz(t) = Rz(t/2) . CNOT . Rz(-t/2) . CNOT
+fn decompose_crz_to(result: i64, q0: i64, q1: i64, tb: i64, gateset: i64) -> i64 {
+    let theta: f64 = bits_to_f64(tb);
+    let half: f64 = theta / 2.0;
+    let half_bits: i64 = f64_to_bits(half);
+    let neg_half_bits: i64 = f64_to_bits(0.0 - half);
+
+    if gateset == GATESET_CLIFFORD_T() {
+        push_instr(result, OP_T(), q1, 0 - 1, 0);
+        push_instr(result, OP_CNOT(), q0, q1, 0);
+        push_instr(result, OP_T(), q1, 0 - 1, 0);
+        push_instr(result, OP_CNOT(), q0, q1, 0);
+        return 0;
+    }
+
+    push_instr(result, OP_RZ(), q1, 0 - 1, half_bits);
+    push_instr(result, OP_CNOT(), q0, q1, 0);
+    push_instr(result, OP_RZ(), q1, 0 - 1, neg_half_bits);
+    push_instr(result, OP_CNOT(), q0, q1, 0);
+    0
+}
+
+// Count gates that are native in the given gate set
+fn native_gate_count(instrs: i64, gateset: i64) -> i64 {
+    let n: i64 = vec_len(instrs) / INSTR_STRIDE();
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let op: i64 = vec_get(instrs, i * INSTR_STRIDE());
+        if is_native(op, gateset) != 0 {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+fn main() -> i64 {
+    let instrs: i64 = vec_new();
+    // H(0), SWAP(0,1), CZ(0,1)
+    vec_push(instrs, 1); vec_push(instrs, 0); vec_push(instrs, 0 - 1); vec_push(instrs, 0);
+    vec_push(instrs, 12); vec_push(instrs, 0); vec_push(instrs, 1); vec_push(instrs, 0);
+    vec_push(instrs, 11); vec_push(instrs, 0); vec_push(instrs, 1); vec_push(instrs, 0);
+
+    let before: i64 = vec_len(instrs) / INSTR_STRIDE();
+    let decomposed: i64 = decompose_to_native(instrs, GATESET_CX_RZ());
+    let after: i64 = vec_len(decomposed) / INSTR_STRIDE();
+
+    println(string_concat(string_from("before: "), int_to_string(before)));
+    println(string_concat(string_from("after decomposition: "), int_to_string(after)));
+    println(string_concat(string_from("native gates: "), int_to_string(native_gate_count(decomposed, GATESET_CX_RZ()))));
+
+    println(string_from("circuit-opt/native.sx OK"));
+    0
+}

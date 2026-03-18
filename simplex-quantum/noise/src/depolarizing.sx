@@ -1,0 +1,81 @@
+// Depolarizing Noise Channel
+// Single-qubit: rho -> (1-p)rho + p/3(X rho X + Y rho Y + Z rho Z)
+// Two-qubit: rho -> (1-p)rho + p/15 sum(Pi x Pj) rho (Pi x Pj)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const CHANNEL_DEPOLARIZING: i64 = 1;
+const PI: f64 = 3.14159265358979323846;
+
+fn depolarizing_new(error_rate: f64) -> i64 {
+    let ch: i64 = vec_new();
+    vec_push(ch, CHANNEL_DEPOLARIZING);
+    vec_push(ch, f64_to_bits(error_rate));
+    ch
+}
+
+fn depolarizing_error_rate(channel: i64) -> f64 {
+    bits_to_f64(vec_get(channel, 1))
+}
+
+// Apply single-qubit depolarizing to a density matrix diagonal
+// For statevector sim: mix populations toward uniform
+// state_re/state_im: malloc buffers, dim entries each
+// qubit: target qubit index
+// p: error probability
+fn depolarizing_apply_single(state_re: i64, state_im: i64, dim: i64, qubit: i64, p: f64) -> i64 {
+    let stride: i64 = 1 << qubit;
+    let keep: f64 = 1.0 - p;
+    let mix: f64 = p / 3.0;
+    var i: i64 = 0;
+    while i < dim {
+        if (i >> qubit) % 2 == 0 {
+            let j: i64 = i + stride;
+            // Load amplitudes
+            let re_i: f64 = bits_to_f64(load_ptr(state_re, i));
+            let im_i: f64 = bits_to_f64(load_ptr(state_im, i));
+            let re_j: f64 = bits_to_f64(load_ptr(state_re, j));
+            let im_j: f64 = bits_to_f64(load_ptr(state_im, j));
+
+            let p0: f64 = re_i * re_i + im_i * im_i;
+            let p1: f64 = re_j * re_j + im_j * im_j;
+
+            // Mixed populations
+            let new_p0: f64 = (1.0 - 2.0 * p / 3.0) * p0 + (2.0 * p / 3.0) * p1;
+            let new_p1: f64 = (1.0 - 2.0 * p / 3.0) * p1 + (2.0 * p / 3.0) * p0;
+
+            // Scale amplitudes
+            if p0 > 0.000001 {
+                let scale: f64 = sqrt(new_p0 / p0);
+                store_ptr(state_re, i, f64_to_bits(re_i * scale));
+                store_ptr(state_im, i, f64_to_bits(im_i * scale));
+            }
+            if p1 > 0.000001 {
+                let scale: f64 = sqrt(new_p1 / p1);
+                store_ptr(state_re, j, f64_to_bits(re_j * scale));
+                store_ptr(state_im, j, f64_to_bits(im_j * scale));
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Two-qubit depolarizing
+fn depolarizing_apply_two(state_re: i64, state_im: i64, dim: i64, q1: i64, q2: i64, p: f64) -> i64 {
+    // Apply single-qubit depolarizing to each qubit with scaled probability
+    let p_eff: f64 = p * 4.0 / 5.0;  // effective per-qubit rate
+    depolarizing_apply_single(state_re, state_im, dim, q1, p_eff);
+    depolarizing_apply_single(state_re, state_im, dim, q2, p_eff);
+    0
+}
+
+fn depolarizing_channel_type(channel: i64) -> i64 {
+    vec_get(channel, 0)
+}
+
+fn main() -> i64 {
+    println(string_from("depolarizing.sx OK"));
+    0
+}

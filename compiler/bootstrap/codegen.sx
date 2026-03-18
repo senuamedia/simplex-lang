@@ -1415,7 +1415,7 @@ fn extract_type_param_name(type_param: i64) -> i64 {
         return string_slice(type_param, 6, string_len(type_param));
     }
     // Check for trait bound (contains : but not const:)
-    let colon_pos: i64 = string_find(type_param, string_from(":"));
+    let colon_pos: i64 = string_find(type_param, string_from(":"), 0);
     if colon_pos > 0 {
         return string_slice(type_param, 0, colon_pos);
     }
@@ -1429,7 +1429,7 @@ fn extract_trait_bound(type_param: i64) -> i64 {
         return 0;
     }
     // Check for trait bound
-    let colon_pos: i64 = string_find(type_param, string_from(":"));
+    let colon_pos: i64 = string_find(type_param, string_from(":"), 0);
     if colon_pos > 0 {
         return string_slice(type_param, colon_pos + 1, string_len(type_param));
     }
@@ -1456,12 +1456,12 @@ fn check_trait_bounds(cg: i64, type_params: i64, type_args: i64) -> i64 {
                 let concrete_type: i64 = vec_get(type_args, i);
                 // Check if concrete type implements the bound trait
                 // Handle multiple bounds separated by +
-                let plus_pos: i64 = string_find(bound, string_from("+"));
+                let plus_pos: i64 = string_find(bound, string_from("+"), 0);
                 if plus_pos > 0 {
                     // Multiple bounds: check each one
                     let remaining: i64 = bound;
                     while string_len(remaining) > 0 {
-                        plus_pos = string_find(remaining, string_from("+"));
+                        plus_pos = string_find(remaining, string_from("+"), 0);
                         let trait_name: i64 = remaining;
                         if plus_pos > 0 {
                             trait_name = string_slice(remaining, 0, plus_pos);
@@ -3651,6 +3651,9 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
         if string_eq(callee_name, "sb_to_string") {
             return emit_intrinsic_ptr_ptr(cg, "intrinsic_sb_to_string", vec_get(arg_values, 0));
         }
+        if string_eq(callee_name, "sb_build") {
+            return emit_intrinsic_ptr_ptr(cg, "intrinsic_sb_to_string", vec_get(arg_values, 0));
+        }
         if string_eq(callee_name, "sb_clear") {
             emit_intrinsic_void_ptr(cg, "intrinsic_sb_clear", vec_get(arg_values, 0));
             return string_from("0");
@@ -3700,7 +3703,11 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
             return emit_intrinsic_i64_ptr(cg, "intrinsic_string_hash", vec_get(arg_values, 0));
         }
         if string_eq(callee_name, "string_find") {
-            return emit_intrinsic_i64_ptr_ptr_i64(cg, "intrinsic_string_find", vec_get(arg_values, 0), vec_get(arg_values, 1), vec_get(arg_values, 2));
+            let sf_start: i64 = string_from("0");
+            if vec_len(arg_values) > 2 {
+                sf_start = vec_get(arg_values, 2);
+            }
+            return emit_intrinsic_i64_ptr_ptr_i64(cg, "intrinsic_string_find", vec_get(arg_values, 0), vec_get(arg_values, 1), sf_start);
         }
         if string_eq(callee_name, "string_trim") {
             return emit_intrinsic_ptr_ptr(cg, "intrinsic_string_trim", vec_get(arg_values, 0));
@@ -4548,6 +4555,11 @@ fn gen_expr(cg: i64, expr: i64) -> i64 {
     // For expression
     if tag == EXPR_FOR() {
         return gen_for(cg, expr);
+    }
+
+    // For-each expression (collection iteration)
+    if tag == EXPR_FOR_EACH() {
+        return gen_for_each(cg, expr);
     }
 
     // Match expression
@@ -6314,6 +6326,127 @@ fn gen_for(cg: i64, expr: i64) -> i64 {
     emit(cg, ", ptr %local.");
     emit_line(cg, unique_name);
 
+    emit(cg, "  br label %");
+    emit_line(cg, loop_lbl);
+
+    // End
+    emit(cg, end_lbl);
+    emit_line(cg, ":");
+
+    string_from("0")
+}
+
+// Generate for-each expression: for x in collection { body }
+// Desugars to: let _len = vec_len(collection); for _i in 0.._len { let x = vec_get(collection, _i); body }
+fn gen_for_each(cg: i64, expr: i64) -> i64 {
+    let var_name: i64 = load_ptr(expr, 1);
+    let collection_expr: i64 = load_ptr(expr, 2);
+    let body: i64 = load_ptr(expr, 3);
+
+    // Generate collection expression
+    let coll_val: i64 = gen_expr(cg, collection_expr);
+
+    // Get collection length: %len = call i64 @vec_len(i64 %coll)
+    let len_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(len_t));
+    emit(cg, " = call i64 @vec_len(i64 ");
+    emit(cg, coll_val);
+    emit_line(cg, ")");
+
+    // Allocate loop counter
+    let idx_id: i64 = cg_next_temp(cg);
+    let idx_name: i64 = string_concat("foreach_idx", int_to_string(idx_id));
+    emit(cg, "  %local.");
+    emit(cg, idx_name);
+    emit_line(cg, " = alloca i64");
+    emit(cg, "  store i64 0, ptr %local.");
+    emit_line(cg, idx_name);
+
+    // Allocate element variable
+    let elem_id: i64 = cg_next_temp(cg);
+    let elem_name: i64 = str_unique(var_name, elem_id);
+    emit(cg, "  %local.");
+    emit(cg, elem_name);
+    emit_line(cg, " = alloca i64");
+    add_local(cg, var_name, elem_name);
+
+    let l: i64 = cg_next_label(cg);
+    let loop_lbl: i64 = string_concat("foreach", int_to_string(l));
+    let body_lbl: i64 = string_concat("foreachbody", int_to_string(l));
+    let inc_lbl: i64 = string_concat("foreachinc", int_to_string(l));
+    let end_lbl: i64 = string_concat("endforeach", int_to_string(l));
+
+    emit(cg, "  br label %");
+    emit_line(cg, loop_lbl);
+
+    // Loop condition: idx < len
+    emit(cg, loop_lbl);
+    emit_line(cg, ":");
+    let cur_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(cur_t));
+    emit(cg, " = load i64, ptr %local.");
+    emit_line(cg, idx_name);
+
+    let cmp_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(cmp_t));
+    emit(cg, " = icmp slt i64 %t");
+    emit(cg, int_to_string(cur_t));
+    emit(cg, ", %t");
+    emit_line(cg, int_to_string(len_t));
+
+    emit(cg, "  br i1 %t");
+    emit(cg, int_to_string(cmp_t));
+    emit(cg, ", label %");
+    emit(cg, body_lbl);
+    emit(cg, ", label %");
+    emit_line(cg, end_lbl);
+
+    // Body: get element and store in variable
+    emit(cg, body_lbl);
+    emit_line(cg, ":");
+
+    // let x = vec_get(collection, idx)
+    let get_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(get_t));
+    emit(cg, " = call i64 @vec_get(i64 ");
+    emit(cg, coll_val);
+    emit(cg, ", i64 %t");
+    emit(cg, int_to_string(cur_t));
+    emit_line(cg, ")");
+    emit(cg, "  store i64 %t");
+    emit(cg, int_to_string(get_t));
+    emit(cg, ", ptr %local.");
+    emit_line(cg, elem_name);
+
+    // Generate body
+    push_loop(cg, inc_lbl, end_lbl);
+    gen_block(cg, body);
+    pop_loop(cg);
+    emit(cg, "  br label %");
+    emit_line(cg, inc_lbl);
+
+    // Increment
+    emit(cg, inc_lbl);
+    emit_line(cg, ":");
+    let load_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(load_t));
+    emit(cg, " = load i64, ptr %local.");
+    emit_line(cg, idx_name);
+    let inc_t: i64 = cg_next_temp(cg);
+    emit(cg, "  %t");
+    emit(cg, int_to_string(inc_t));
+    emit(cg, " = add nsw i64 %t");
+    emit(cg, int_to_string(load_t));
+    emit_line(cg, ", 1");
+    emit(cg, "  store i64 %t");
+    emit(cg, int_to_string(inc_t));
+    emit(cg, ", ptr %local.");
+    emit_line(cg, idx_name);
     emit(cg, "  br label %");
     emit_line(cg, loop_lbl);
 

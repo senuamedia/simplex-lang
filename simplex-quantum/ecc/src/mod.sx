@@ -1,0 +1,94 @@
+// Quantum Error Correction Codes - Module Root
+// Defines code type constants and basic code information
+
+// Code type constants
+let CODE_BITFLIP: i64 = 1;
+let CODE_PHASEFLIP: i64 = 2;
+let CODE_SHOR: i64 = 3;
+let CODE_STEANE: i64 = 4;
+let CODE_SURFACE: i64 = 5;
+
+// Pauli type constants for corrections
+let PAULI_I: i64 = 0;
+let PAULI_X: i64 = 1;
+let PAULI_Y: i64 = 2;
+let PAULI_Z: i64 = 3;
+
+// Gate instruction constants
+let GATE_CNOT: i64 = 1;
+let GATE_H: i64 = 2;
+let GATE_X: i64 = 3;
+let GATE_Z: i64 = 4;
+let GATE_Y: i64 = 5;
+let GATE_MEASURE: i64 = 6;
+
+// Return code parameters: [n_physical, n_logical, distance]
+fn ecc_info(code_type: i64) -> i64 {
+    let info: i64 = vec_new();
+
+    if code_type == CODE_BITFLIP {
+        vec_push(info, 3);   // n_physical
+        vec_push(info, 1);   // n_logical
+        vec_push(info, 1);   // distance (corrects 1 bit-flip)
+        return info;
+    }
+    if code_type == CODE_PHASEFLIP {
+        vec_push(info, 3);
+        vec_push(info, 1);
+        vec_push(info, 1);
+        return info;
+    }
+    if code_type == CODE_SHOR {
+        vec_push(info, 9);
+        vec_push(info, 1);
+        vec_push(info, 3);
+        return info;
+    }
+    if code_type == CODE_STEANE {
+        vec_push(info, 7);
+        vec_push(info, 1);
+        vec_push(info, 3);
+        return info;
+    }
+    if code_type == CODE_SURFACE {
+        // Default distance 3 surface code
+        vec_push(info, 9);    // d^2 data qubits
+        vec_push(info, 1);
+        vec_push(info, 3);
+        return info;
+    }
+
+    // Unknown code
+    vec_push(info, 0);
+    vec_push(info, 0);
+    vec_push(info, 0);
+    return info;
+}
+
+// Return t = floor((d-1)/2), the number of errors the code can correct
+fn ecc_can_correct(code_type: i64) -> i64 {
+    let info: i64 = ecc_info(code_type);
+    let d: i64 = vec_get(info, 2);
+    let t: i64 = (d - 1) / 2;
+    return t;
+}
+
+// Return code name as string handle
+fn ecc_name(code_type: i64) -> i64 {
+    if code_type == CODE_BITFLIP {
+        return string_from("BitFlip [[3,1,1]]");
+    }
+    if code_type == CODE_PHASEFLIP {
+        return string_from("PhaseFlip [[3,1,1]]");
+    }
+    if code_type == CODE_SHOR {
+        return string_from("Shor [[9,1,3]]");
+    }
+    if code_type == CODE_STEANE {
+        return string_from("Steane [[7,1,3]]");
+    }
+    if code_type == CODE_SURFACE {
+        return string_from("Surface Code");
+    }
+    return string_from("Unknown");
+}

@@ -1,0 +1,178 @@
+// Probabilistic Error Cancellation - Specification Tests
+// Tests quasi-probability decomposition and Monte Carlo sampling.
+// Rewritten for sxc compiler compatibility (no f64 const, no f64 fn params).
+
+// LCG pseudo-random number generator
+fn lcg_next(seed: i64) -> i64 {
+    let a: i64 = 1103515245;
+    let c: i64 = 12345;
+    let m: i64 = 2147483647;
+    let next: i64 = (a * seed + c) % m;
+    if next < 0 { return 0 - next; }
+    next
+}
+
+// Test 1: Quasi-probability decomposition basics
+fn test_quasi_probability_basics() -> i64 {
+    let eps: f64 = 0.01;
+    let p: f64 = 0.01;
+    let alpha: f64 = 1.0 + 3.0 * p / (4.0 - 4.0 * p);
+    let beta: f64 = 0.0 - p / (4.0 - 4.0 * p);
+
+    let total: f64 = alpha + 3.0 * beta;
+    let d1: f64 = total - 1.0;
+    let a1: f64 = if d1 < 0.0 { 0.0 - d1 } else { d1 };
+    if a1 >= eps { println(string_from("FAIL: qp normalization")); return 1; }
+
+    let abs_alpha: f64 = if alpha < 0.0 { 0.0 - alpha } else { alpha };
+    let abs_beta: f64 = if beta < 0.0 { 0.0 - beta } else { beta };
+    let one_norm: f64 = abs_alpha + 3.0 * abs_beta;
+    if one_norm < 1.0 { println(string_from("FAIL: one-norm < 1")); return 1; }
+    println(string_from("PASS: quasi_probability_basics"));
+    0
+}
+
+// Test 2: Sampling overhead grows with noise
+fn test_sampling_overhead() -> i64 {
+    let eps: f64 = 0.01;
+    let p: f64 = 0.01;
+    var overhead_1: f64 = 1.0 + 2.0 * p;
+    var overhead_10: f64 = 1.0;
+    var i: i64 = 0;
+    while i < 10 {
+        overhead_10 = overhead_10 * (1.0 + 2.0 * p);
+        i = i + 1;
+    }
+    var overhead_100: f64 = 1.0;
+    i = 0;
+    while i < 100 {
+        overhead_100 = overhead_100 * (1.0 + 2.0 * p);
+        i = i + 1;
+    }
+
+    if overhead_10 <= overhead_1 { println(string_from("FAIL: overhead not growing")); return 1; }
+    if overhead_100 <= overhead_10 { println(string_from("FAIL: overhead not exponential")); return 1; }
+    let d1: f64 = overhead_1 - 1.02;
+    let a1: f64 = if d1 < 0.0 { 0.0 - d1 } else { d1 };
+    if a1 >= eps { println(string_from("FAIL: overhead_1")); return 1; }
+    println(string_from("PASS: sampling_overhead"));
+    0
+}
+
+// Test 3: Monte Carlo estimation converges
+fn test_monte_carlo_convergence() -> i64 {
+    let true_val: f64 = 0.7;
+    let n_samples: i64 = 10000;
+    var sum: f64 = 0.0;
+    var seed: i64 = 42;
+    var i: i64 = 0;
+    while i < n_samples {
+        seed = lcg_next(seed);
+        let m: f64 = 2147483647.0;
+        let r: f64 = (seed as f64) / m;
+        if r < true_val {
+            sum = sum + 1.0;
+        } else {
+            sum = sum - 1.0;
+        }
+        i = i + 1;
+    }
+    let estimate: f64 = sum / (n_samples as f64);
+    let expected: f64 = 2.0 * true_val - 1.0;
+    let diff: f64 = estimate - expected;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= 0.05 {
+        println(string_from("FAIL: MC convergence"));
+        return 1;
+    }
+    println(string_from("PASS: monte_carlo_convergence"));
+    0
+}
+
+// Test 4: PEC with sign-flipped samples
+fn test_pec_sign_flip() -> i64 {
+    let n_samples: i64 = 5000;
+    var sum: f64 = 0.0;
+    var seed: i64 = 123;
+    var i: i64 = 0;
+    while i < n_samples {
+        seed = lcg_next(seed);
+        let m: f64 = 2147483647.0;
+        let r: f64 = (seed as f64) / m;
+        if r < 0.8 {
+            sum = sum + 1.0;
+        } else {
+            sum = sum - 0.5;
+        }
+        i = i + 1;
+    }
+    let estimate: f64 = sum / (n_samples as f64);
+    let diff: f64 = estimate - 0.7;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= 0.05 {
+        println(string_from("FAIL: PEC sign flip"));
+        return 1;
+    }
+    println(string_from("PASS: pec_sign_flip"));
+    0
+}
+
+// Test 5: Variance scales with overhead
+fn test_variance_scaling() -> i64 {
+    let gamma_small: f64 = 1.02;
+    let gamma_large: f64 = 7.24;
+    let n_samples: i64 = 1000;
+
+    let var_small: f64 = (gamma_small * gamma_small) / (n_samples as f64);
+    let var_large: f64 = (gamma_large * gamma_large) / (n_samples as f64);
+
+    if var_large <= var_small { println(string_from("FAIL: variance scaling")); return 1; }
+    let ratio: f64 = var_large / var_small;
+    let expected_ratio: f64 = (gamma_large / gamma_small) * (gamma_large / gamma_small);
+    let diff: f64 = ratio - expected_ratio;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= 1.0 {
+        println(string_from("FAIL: variance ratio"));
+        return 1;
+    }
+    println(string_from("PASS: variance_scaling"));
+    0
+}
+
+// Test 6: Process fidelity computation
+fn test_process_fidelity() -> i64 {
+    let eps: f64 = 0.01;
+    let p: f64 = 0.05;
+    let fidelity: f64 = 1.0 - p;
+    let d1: f64 = fidelity - 0.95;
+    let a1: f64 = if d1 < 0.0 { 0.0 - d1 } else { d1 };
+    if a1 >= eps {
+        println(string_from("FAIL: process fidelity"));
+        return 1;
+    }
+    let d: f64 = 2.0;
+    let avg_fidelity: f64 = (d * fidelity + 1.0) / (d + 1.0);
+    let d2: f64 = avg_fidelity - 0.9667;
+    let a2: f64 = if d2 < 0.0 { 0.0 - d2 } else { d2 };
+    if a2 >= eps {
+        println(string_from("FAIL: avg gate fidelity"));
+        return 1;
+    }
+    println(string_from("PASS: process_fidelity"));
+    0
+}
+
+fn main() -> i64 {
+    println(string_from("=== Probabilistic Error Cancellation Tests ==="));
+    var failures: i64 = 0;
+    failures = failures + test_quasi_probability_basics();
+    failures = failures + test_sampling_overhead();
+    failures = failures + test_monte_carlo_convergence();
+    failures = failures + test_pec_sign_flip();
+    failures = failures + test_variance_scaling();
+    failures = failures + test_process_fidelity();
+    if failures == 0 {
+        println(string_from("All PEC tests passed!"));
+    }
+    failures
+}

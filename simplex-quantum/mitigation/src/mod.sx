@@ -1,0 +1,89 @@
+// Quantum Error Mitigation - Module Root
+// Defines mitigation strategy types and result wrapper
+
+// Strategy constants
+let STRATEGY_ZNE: i64 = 1;
+let STRATEGY_PEC: i64 = 2;
+let STRATEGY_READOUT: i64 = 3;
+
+// Create a mitigation result storing value, error bar, and method used
+// Returns vec handle: [method, value_bits, error_bits]
+fn mitigation_result_new(value: f64, error_bar: f64, method: i64) -> i64 {
+    let result: i64 = vec_new();
+    let value_bits: i64 = f64_to_bits(value);
+    let error_bits: i64 = f64_to_bits(error_bar);
+    vec_push(result, method);
+    vec_push(result, value_bits);
+    vec_push(result, error_bits);
+    return result;
+}
+
+// Extract the mitigated value from a result
+fn mitigation_value(result: i64) -> f64 {
+    let bits: i64 = vec_get(result, 1);
+    let value: f64 = bits_to_f64(bits);
+    return value;
+}
+
+// Extract the error bar from a result
+fn mitigation_error_bar(result: i64) -> f64 {
+    let bits: i64 = vec_get(result, 2);
+    let error: f64 = bits_to_f64(bits);
+    return error;
+}
+
+// Extract the method identifier from a result
+fn mitigation_method(result: i64) -> i64 {
+    let method: i64 = vec_get(result, 0);
+    return method;
+}
+
+// Create a result with zero error bar (exact value)
+fn mitigation_exact(value: f64, method: i64) -> i64 {
+    return mitigation_result_new(value, 0.0, method);
+}
+
+// Compute relative error: error_bar / |value|
+fn mitigation_relative_error(result: i64) -> f64 {
+    let val: f64 = mitigation_value(result);
+    let err: f64 = mitigation_error_bar(result);
+    if val < 0.0 {
+        let neg_val: f64 = 0.0 - val;
+        return err / neg_val;
+    }
+    if val > 0.0 {
+        return err / val;
+    }
+    return 0.0;
+}
+
+// Check if a result is within tolerance
+fn mitigation_within_tolerance(result: i64, target: f64, tolerance: f64) -> i64 {
+    let val: f64 = mitigation_value(result);
+    let diff: f64 = val - target;
+    if diff < 0.0 {
+        let neg_diff: f64 = 0.0 - diff;
+        if neg_diff < tolerance {
+            return 1;
+        }
+        return 0;
+    }
+    if diff < tolerance {
+        return 1;
+    }
+    return 0;
+}
+
+// Return strategy name as string handle
+fn mitigation_strategy_name(method: i64) -> i64 {
+    if method == 1 {
+        return string_from("ZNE");
+    }
+    if method == 2 {
+        return string_from("PEC");
+    }
+    if method == 3 {
+        return string_from("Readout");
+    }
+    return string_from("Unknown");
+}

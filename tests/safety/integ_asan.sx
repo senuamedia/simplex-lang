@@ -1,0 +1,136 @@
+// Address sanitizer integration tests - memory safety verification
+// Uses store_ptr(ptr, offset, value) and load_ptr(ptr, offset) with correct signatures
+
+fn test_malloc_write_read() -> i64 {
+    // Allocate memory, write, read
+    var ptr: i64 = malloc(64);
+    if ptr == 0 { println(string_from("FAIL: malloc returned null")); return 1; }
+    store_ptr(ptr, 0, 42);
+    var val: i64 = load_ptr(ptr, 0);
+    if val != 42 { println(string_from("FAIL: write/read mismatch")); return 1; }
+    println(string_from("PASS: test_malloc_write_read"));
+    0
+}
+
+fn test_multiple_alloc() -> i64 {
+    // Multiple allocations
+    var ptrs: i64 = vec_new();
+    var i: i64 = 0;
+    while i < 20 {
+        var p: i64 = malloc(32);
+        if p == 0 { println(string_from("FAIL: malloc failed in loop")); return 1; }
+        store_ptr(p, 0, i * 10);
+        vec_push(ptrs, p);
+        i = i + 1;
+    }
+    // Verify all values
+    i = 0;
+    while i < 20 {
+        var p: i64 = vec_get(ptrs, i);
+        var val: i64 = load_ptr(p, 0);
+        if val != i * 10 { println(string_from("FAIL: multi alloc value mismatch")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_multiple_alloc"));
+    0
+}
+
+fn test_vec_push_pop_sequence() -> i64 {
+    // Vec push/access sequences (100 iterations)
+    var v: i64 = vec_new();
+    var i: i64 = 0;
+    while i < 100 {
+        vec_push(v, i * i);
+        i = i + 1;
+    }
+    if vec_len(v) != 100 { println(string_from("FAIL: vec push count")); return 1; }
+    // Verify samples
+    if vec_get(v, 0) != 0 { println(string_from("FAIL: vec[0]")); return 1; }
+    if vec_get(v, 10) != 100 { println(string_from("FAIL: vec[10]")); return 1; }
+    if vec_get(v, 50) != 2500 { println(string_from("FAIL: vec[50]")); return 1; }
+    if vec_get(v, 99) != 9801 { println(string_from("FAIL: vec[99]")); return 1; }
+    println(string_from("PASS: test_vec_push_pop_sequence"));
+    0
+}
+
+fn test_string_concat_chain() -> i64 {
+    // String concatenation chains (50 iterations)
+    var s: i64 = string_from("");
+    var i: i64 = 0;
+    while i < 50 {
+        s = string_concat(s, string_from("xy"));
+        i = i + 1;
+    }
+    if string_len(s) != 100 { println(string_from("FAIL: string concat chain length")); return 1; }
+    println(string_from("PASS: test_string_concat_chain"));
+    0
+}
+
+fn test_vec_of_strings() -> i64 {
+    // Nested structure: vec of strings
+    var v: i64 = vec_new();
+    var i: i64 = 0;
+    while i < 30 {
+        var s: i64 = string_from("item_");
+        s = string_concat(s, string_from("x"));
+        vec_push(v, s);
+        i = i + 1;
+    }
+    if vec_len(v) != 30 { println(string_from("FAIL: vec of strings count")); return 1; }
+    var first: i64 = vec_get(v, 0);
+    if string_len(first) != 6 { println(string_from("FAIL: vec string element length")); return 1; }
+    println(string_from("PASS: test_vec_of_strings"));
+    0
+}
+
+fn test_large_allocation() -> i64 {
+    // Large single allocation
+    var ptr: i64 = malloc(4096);
+    if ptr == 0 { println(string_from("FAIL: large malloc failed")); return 1; }
+    // Write at beginning and middle
+    store_ptr(ptr, 0, 111);
+    store_ptr(ptr, 100, 222);
+    var v1: i64 = load_ptr(ptr, 0);
+    var v2: i64 = load_ptr(ptr, 100);
+    if v1 != 111 { println(string_from("FAIL: large alloc begin")); return 1; }
+    if v2 != 222 { println(string_from("FAIL: large alloc mid")); return 1; }
+    println(string_from("PASS: test_large_allocation"));
+    0
+}
+
+fn test_vec_overwrite() -> i64 {
+    // Overwrite vec elements repeatedly
+    var v: i64 = vec_new();
+    var i: i64 = 0;
+    while i < 50 {
+        vec_push(v, 0);
+        i = i + 1;
+    }
+    // Overwrite all elements 3 times
+    var round: i64 = 0;
+    while round < 3 {
+        i = 0;
+        while i < 50 {
+            vec_set(v, i, round * 100 + i);
+            i = i + 1;
+        }
+        round = round + 1;
+    }
+    // After round 2 (last), values should be 200+i
+    if vec_get(v, 0) != 200 { println(string_from("FAIL: vec overwrite 0")); return 1; }
+    if vec_get(v, 49) != 249 { println(string_from("FAIL: vec overwrite 49")); return 1; }
+    println(string_from("PASS: test_vec_overwrite"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_malloc_write_read();
+    failures = failures + test_multiple_alloc();
+    failures = failures + test_vec_push_pop_sequence();
+    failures = failures + test_string_concat_chain();
+    failures = failures + test_vec_of_strings();
+    failures = failures + test_large_allocation();
+    failures = failures + test_vec_overwrite();
+    failures
+}

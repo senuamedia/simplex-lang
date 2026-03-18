@@ -1,0 +1,207 @@
+// simplex-quantum::circuit-opt::topology - Hardware Topology
+//
+// Represents qubit connectivity for routing. Supports linear chains,
+// 2D grids, and fully-connected (all-to-all) topologies.
+//
+// Topology layout (vec):
+//   [0] n_qubits  [1] edges_vec (flat pairs: [q1, q2, q1, q2, ...])
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const TOPO_NQUBITS: i64 = 0;
+const TOPO_EDGES: i64 = 1;
+
+// Create a new empty topology
+fn topology_new(n_qubits: i64) -> i64 {
+    let topo: i64 = vec_new();
+    vec_push(topo, n_qubits);
+    vec_push(topo, vec_new());
+    topo
+}
+
+// Add a bidirectional edge between q1 and q2
+fn topology_add_edge(topo: i64, q1: i64, q2: i64) -> i64 {
+    if q1 == q2 { return 0; }
+    // Check for duplicate
+    if topology_is_adjacent(topo, q1, q2) != 0 { return 0; }
+    let edges: i64 = vec_get(topo, TOPO_EDGES());
+    vec_push(edges, q1);
+    vec_push(edges, q2);
+    0
+}
+
+// Check if two qubits are adjacent
+fn topology_is_adjacent(topo: i64, q1: i64, q2: i64) -> i64 {
+    let edges: i64 = vec_get(topo, TOPO_EDGES());
+    let n: i64 = vec_len(edges) / 2;
+    var i: i64 = 0;
+    while i < n {
+        let a: i64 = vec_get(edges, i * 2);
+        let b: i64 = vec_get(edges, i * 2 + 1);
+        if a == q1 {
+            if b == q2 { return 1; }
+        }
+        if a == q2 {
+            if b == q1 { return 1; }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Get all neighbors of a qubit
+fn topology_neighbors(topo: i64, qubit: i64) -> i64 {
+    let edges: i64 = vec_get(topo, TOPO_EDGES());
+    let n: i64 = vec_len(edges) / 2;
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let a: i64 = vec_get(edges, i * 2);
+        let b: i64 = vec_get(edges, i * 2 + 1);
+        if a == qubit { vec_push(result, b); }
+        if b == qubit { vec_push(result, a); }
+        i = i + 1;
+    }
+    result
+}
+
+// Create a linear chain topology: 0-1-2-...-n-1
+fn topology_linear(n: i64) -> i64 {
+    let topo: i64 = topology_new(n);
+    var i: i64 = 0;
+    while i < n - 1 {
+        topology_add_edge(topo, i, i + 1);
+        i = i + 1;
+    }
+    topo
+}
+
+// Create a 2D grid topology: rows x cols
+// Qubit index = row * cols + col
+fn topology_grid(rows: i64, cols: i64) -> i64 {
+    let n: i64 = rows * cols;
+    let topo: i64 = topology_new(n);
+
+    var r: i64 = 0;
+    while r < rows {
+        var c: i64 = 0;
+        while c < cols {
+            let q: i64 = r * cols + c;
+            // Right neighbor
+            if c + 1 < cols {
+                topology_add_edge(topo, q, q + 1);
+            }
+            // Down neighbor
+            if r + 1 < rows {
+                topology_add_edge(topo, q, q + cols);
+            }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+    topo
+}
+
+// Create a fully-connected (all-to-all) topology
+fn topology_all_to_all(n: i64) -> i64 {
+    let topo: i64 = topology_new(n);
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = i + 1;
+        while j < n {
+            topology_add_edge(topo, i, j);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    topo
+}
+
+// Count total edges
+fn topology_edge_count(topo: i64) -> i64 {
+    let edges: i64 = vec_get(topo, TOPO_EDGES());
+    vec_len(edges) / 2
+}
+
+// Count degree (number of neighbors) of a qubit
+fn topology_degree(topo: i64, qubit: i64) -> i64 {
+    let nb: i64 = topology_neighbors(topo, qubit);
+    vec_len(nb)
+}
+
+// Find maximum degree in the topology
+fn topology_max_degree(topo: i64) -> i64 {
+    let n: i64 = vec_get(topo, TOPO_NQUBITS());
+    var max_deg: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let d: i64 = topology_degree(topo, i);
+        if d > max_deg { max_deg = d; }
+        i = i + 1;
+    }
+    max_deg
+}
+
+// Check if topology is connected (BFS from qubit 0)
+fn topology_is_connected(topo: i64) -> i64 {
+    let n: i64 = vec_get(topo, TOPO_NQUBITS());
+    if n <= 1 { return 1; }
+
+    let visited: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(visited, 0);
+        i = i + 1;
+    }
+
+    let queue: i64 = vec_new();
+    vec_push(queue, 0);
+    vec_set(visited, 0, 1);
+    var count: i64 = 1;
+    var front: i64 = 0;
+
+    while front < vec_len(queue) {
+        let cur: i64 = vec_get(queue, front);
+        front = front + 1;
+
+        let nb: i64 = topology_neighbors(topo, cur);
+        var ni: i64 = 0;
+        while ni < vec_len(nb) {
+            let next: i64 = vec_get(nb, ni);
+            if vec_get(visited, next) == 0 {
+                vec_set(visited, next, 1);
+                vec_push(queue, next);
+                count = count + 1;
+            }
+            ni = ni + 1;
+        }
+    }
+
+    if count == n { return 1; }
+    0
+}
+
+fn main() -> i64 {
+    // Test linear topology
+    let lin: i64 = topology_linear(5);
+    println(string_concat(string_from("linear edges: "), int_to_string(topology_edge_count(lin))));
+    println(string_concat(string_from("linear connected: "), int_to_string(topology_is_connected(lin))));
+
+    // Test grid topology
+    let grid: i64 = topology_grid(2, 3);
+    println(string_concat(string_from("grid 2x3 edges: "), int_to_string(topology_edge_count(grid))));
+    println(string_concat(string_from("grid connected: "), int_to_string(topology_is_connected(grid))));
+
+    // Test all-to-all
+    let full: i64 = topology_all_to_all(4);
+    println(string_concat(string_from("all-to-all edges: "), int_to_string(topology_edge_count(full))));
+    println(string_concat(string_from("max degree: "), int_to_string(topology_max_degree(full))));
+
+    // Test adjacency
+    println(string_concat(string_from("lin 0-1 adj: "), int_to_string(topology_is_adjacent(lin, 0, 1))));
+    println(string_concat(string_from("lin 0-3 adj: "), int_to_string(topology_is_adjacent(lin, 0, 3))));
+
+    println(string_from("circuit-opt/topology.sx OK"));
+    0
+}

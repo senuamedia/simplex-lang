@@ -1,0 +1,245 @@
+// Mathematical Fitting Functions for Extrapolation
+// Provides polynomial fitting, Gaussian elimination, and Richardson weights
+
+// Compute least-squares polynomial fit coefficients
+// x_vals, y_vals: vec handles of f64_bits
+// degree: polynomial degree (0 = constant, 1 = linear, etc.)
+// Returns vec of (degree+1) coefficient f64_bits: c0 + c1*x + c2*x^2 + ...
+fn polyfit_coeffs(x_vals: i64, y_vals: i64, degree: i64) -> i64 {
+    let n: i64 = vec_len(x_vals);
+    let m: i64 = degree + 1;
+
+    // Build normal equations: A^T A c = A^T y
+    // (A^T A) is m x m, (A^T y) is m x 1
+    // Augmented matrix is m x (m+1)
+
+    let aug: i64 = vec_new();
+    let aug_size: i64 = m * (m + 1);
+
+    // Initialize augmented matrix to zero
+    let idx: i64 = 0;
+    while idx < aug_size {
+        vec_push(aug, f64_to_bits(0.0));
+        idx = idx + 1;
+    }
+
+    // Fill A^T A (symmetric)
+    let row: i64 = 0;
+    while row < m {
+        let col: i64 = 0;
+        while col < m {
+            let power: i64 = row + col;
+            let sum: f64 = 0.0;
+            let i: i64 = 0;
+            while i < n {
+                let x: f64 = bits_to_f64(vec_get(x_vals, i));
+                let xp: f64 = pow_int(x, power);
+                sum = sum + xp;
+                i = i + 1;
+            }
+            let ata_idx: i64 = row * (m + 1) + col;
+            vec_set(aug, ata_idx, f64_to_bits(sum));
+            col = col + 1;
+        }
+
+        // Fill A^T y (right-hand side)
+        let rhs_sum: f64 = 0.0;
+        let i: i64 = 0;
+        while i < n {
+            let x: f64 = bits_to_f64(vec_get(x_vals, i));
+            let y: f64 = bits_to_f64(vec_get(y_vals, i));
+            let xp: f64 = pow_int(x, row);
+            rhs_sum = rhs_sum + y * xp;
+            i = i + 1;
+        }
+        let rhs_idx: i64 = row * (m + 1) + m;
+        vec_set(aug, rhs_idx, f64_to_bits(rhs_sum));
+
+        row = row + 1;
+    }
+
+    // Solve via Gaussian elimination
+    let solution: i64 = gauss_eliminate(aug, m);
+    return solution;
+}
+
+// Evaluate polynomial at a point x
+// coeffs: vec of f64_bits [c0, c1, c2, ...]
+// result = c0 + c1*x + c2*x^2 + ...
+fn polyeval(coeffs: i64, x: f64) -> f64 {
+    let n: i64 = vec_len(coeffs);
+    if n == 0 {
+        return 0.0;
+    }
+
+    // Horner's method: evaluate from highest degree down
+    let result: f64 = bits_to_f64(vec_get(coeffs, n - 1));
+    let i: i64 = n - 2;
+    while i >= 0 {
+        result = result * x + bits_to_f64(vec_get(coeffs, i));
+        i = i - 1;
+    }
+    return result;
+}
+
+// Gaussian elimination with partial pivoting
+// augmented_matrix: vec of n*(n+1) f64_bits, row-major
+// Returns: vec of n solution values as f64_bits
+fn gauss_eliminate(augmented_matrix: i64, n: i64) -> i64 {
+    let ncols: i64 = n + 1;
+
+    // Forward elimination with partial pivoting
+    let col: i64 = 0;
+    while col < n {
+        // Find pivot: row with maximum absolute value in this column
+        let max_val: f64 = 0.0;
+        let max_row: i64 = col;
+        let row: i64 = col;
+        while row < n {
+            let idx: i64 = row * ncols + col;
+            let val: f64 = bits_to_f64(vec_get(augmented_matrix, idx));
+            let abs_val: f64 = val;
+            if abs_val < 0.0 {
+                abs_val = 0.0 - abs_val;
+            }
+            if abs_val > max_val {
+                max_val = abs_val;
+                max_row = row;
+            }
+            row = row + 1;
+        }
+
+        // Swap rows if needed
+        if max_row != col {
+            let k: i64 = 0;
+            while k < ncols {
+                let idx_a: i64 = col * ncols + k;
+                let idx_b: i64 = max_row * ncols + k;
+                let tmp: i64 = vec_get(augmented_matrix, idx_a);
+                vec_set(augmented_matrix, idx_a, vec_get(augmented_matrix, idx_b));
+                vec_set(augmented_matrix, idx_b, tmp);
+                k = k + 1;
+            }
+        }
+
+        // Eliminate below
+        let pivot_idx: i64 = col * ncols + col;
+        let pivot: f64 = bits_to_f64(vec_get(augmented_matrix, pivot_idx));
+        if pivot < 0.0000000001 {
+            if pivot > -0.0000000001 {
+                col = col + 1;
+                // Skip singular column (continue)
+                // We just move on; solution may be degenerate
+            }
+        }
+
+        let elim_row: i64 = col + 1;
+        while elim_row < n {
+            let elim_idx: i64 = elim_row * ncols + col;
+            let factor: f64 = bits_to_f64(vec_get(augmented_matrix, elim_idx)) / pivot;
+
+            let k: i64 = col;
+            while k < ncols {
+                let src_idx: i64 = col * ncols + k;
+                let dst_idx: i64 = elim_row * ncols + k;
+                let src_val: f64 = bits_to_f64(vec_get(augmented_matrix, src_idx));
+                let dst_val: f64 = bits_to_f64(vec_get(augmented_matrix, dst_idx));
+                vec_set(augmented_matrix, dst_idx, f64_to_bits(dst_val - factor * src_val));
+                k = k + 1;
+            }
+            elim_row = elim_row + 1;
+        }
+        col = col + 1;
+    }
+
+    // Back substitution
+    let solution: i64 = vec_new();
+    // Initialize solution vec with zeros
+    let si: i64 = 0;
+    while si < n {
+        vec_push(solution, f64_to_bits(0.0));
+        si = si + 1;
+    }
+
+    let row: i64 = n - 1;
+    while row >= 0 {
+        let diag_idx: i64 = row * ncols + row;
+        let diag: f64 = bits_to_f64(vec_get(augmented_matrix, diag_idx));
+        let rhs_idx: i64 = row * ncols + n;
+        let rhs: f64 = bits_to_f64(vec_get(augmented_matrix, rhs_idx));
+
+        // Subtract known variables
+        let k: i64 = row + 1;
+        while k < n {
+            let coeff_idx: i64 = row * ncols + k;
+            let coeff: f64 = bits_to_f64(vec_get(augmented_matrix, coeff_idx));
+            let sol_k: f64 = bits_to_f64(vec_get(solution, k));
+            rhs = rhs - coeff * sol_k;
+            k = k + 1;
+        }
+
+        if diag < 0.0000000001 {
+            if diag > -0.0000000001 {
+                vec_set(solution, row, f64_to_bits(0.0));
+                row = row - 1;
+                // continue
+            }
+        }
+
+        if diag > 0.0000000001 {
+            vec_set(solution, row, f64_to_bits(rhs / diag));
+        }
+        if diag < -0.0000000001 {
+            vec_set(solution, row, f64_to_bits(rhs / diag));
+        }
+
+        row = row - 1;
+    }
+
+    return solution;
+}
+
+// Compute Richardson extrapolation weights via Lagrange basis at x=0
+// scale_factors: vec of f64_bits
+// Returns: vec of f64_bits weights
+fn richardson_weights(scale_factors: i64) -> i64 {
+    let n: i64 = vec_len(scale_factors);
+    let weights: i64 = vec_new();
+
+    let i: i64 = 0;
+    while i < n {
+        let xi: f64 = bits_to_f64(vec_get(scale_factors, i));
+
+        // Lagrange basis L_i(0) = product_{j!=i} (0 - xj) / (xi - xj)
+        let basis: f64 = 1.0;
+        let j: i64 = 0;
+        while j < n {
+            if j != i {
+                let xj: f64 = bits_to_f64(vec_get(scale_factors, j));
+                let num: f64 = 0.0 - xj;
+                let den: f64 = xi - xj;
+                basis = basis * (num / den);
+            }
+            j = j + 1;
+        }
+
+        vec_push(weights, f64_to_bits(basis));
+        i = i + 1;
+    }
+
+    return weights;
+}
+
+// Helper: compute x^n for integer n >= 0
+fn pow_int(x: f64, n: i64) -> f64 {
+    if n == 0 {
+        return 1.0;
+    }
+    let result: f64 = 1.0;
+    let i: i64 = 0;
+    while i < n {
+        result = result * x;
+        i = i + 1;
+    }
+    return result;
+}

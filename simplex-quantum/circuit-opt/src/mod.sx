@@ -1,0 +1,115 @@
+// simplex-quantum::circuit-opt - Quantum Circuit Optimization
+//
+// Multi-pass circuit optimizer with configurable passes:
+//   identity elimination, rotation merging, single-qubit fusion,
+//   commutation-based cancellation, depth reduction.
+//
+// Optimizer layout (vec):
+//   [0] n_passes  [1] passes_vec  [2] stats_vec
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const PI: f64 = 3.14159265358979323846;
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+// Instruction stride
+const INSTR_STRIDE: i64 = 4;
+
+// Optimization pass types
+const PASS_IDENTITY_ELIM: i64 = 1;
+const PASS_ROTATION_MERGE: i64 = 2;
+const PASS_SINGLE_QUBIT_FUSION: i64 = 3;
+const PASS_COMMUTATION_CANCEL: i64 = 4;
+const PASS_DEPTH_REDUCE: i64 = 5;
+
+// Stats offsets
+const STAT_GATES_BEFORE: i64 = 0;
+const STAT_GATES_AFTER: i64 = 1;
+const STAT_DEPTH_BEFORE: i64 = 2;
+const STAT_DEPTH_AFTER: i64 = 3;
+
+fn optimizer_new() -> i64 {
+    let opt: i64 = vec_new();
+    vec_push(opt, 0);
+    vec_push(opt, vec_new());
+    let stats: i64 = vec_new();
+    vec_push(stats, 0);
+    vec_push(stats, 0);
+    vec_push(stats, 0);
+    vec_push(stats, 0);
+    vec_push(opt, stats);
+    opt
+}
+
+fn optimizer_add_pass(opt: i64, pass_type: i64) -> i64 {
+    let passes: i64 = vec_get(opt, 1);
+    vec_push(passes, pass_type);
+    let n: i64 = vec_get(opt, 0);
+    vec_set(opt, 0, n + 1);
+    opt
+}
+
+fn optimizer_run(opt: i64, instrs: i64, n_qubits: i64) -> i64 {
+    let stats: i64 = vec_get(opt, 2);
+    let before_count: i64 = vec_len(instrs) / INSTR_STRIDE();
+    let before_depth: i64 = compute_depth(instrs, n_qubits);
+    vec_set(stats, STAT_GATES_BEFORE(), before_count);
+    vec_set(stats, STAT_DEPTH_BEFORE(), before_depth);
+
+    var current: i64 = instrs;
+    let passes: i64 = vec_get(opt, 1);
+    let n_passes: i64 = vec_get(opt, 0);
+    var p: i64 = 0;
+    while p < n_passes {
+        let pass_type: i64 = vec_get(passes, p);
+        if pass_type == PASS_IDENTITY_ELIM() {
+            current = identity_elimination(current);
+        }
+        if pass_type == PASS_ROTATION_MERGE() {
+            current = rotation_merge(current);
+        }
+        if pass_type == PASS_SINGLE_QUBIT_FUSION() {
+            current = single_qubit_fusion(current);
+        }
+        if pass_type == PASS_COMMUTATION_CANCEL() {
+            current = commutation_cancel(current);
+        }
+        if pass_type == PASS_DEPTH_REDUCE() {
+            current = depth_reduce(current, n_qubits);
+        }
+        p = p + 1;
+    }
+
+    let after_count: i64 = vec_len(current) / INSTR_STRIDE();
+    let after_depth: i64 = compute_depth(current, n_qubits);
+    vec_set(stats, STAT_GATES_AFTER(), after_count);
+    vec_set(stats, STAT_DEPTH_AFTER(), after_depth);
+    current
+}
+
+fn optimizer_stats(opt: i64) -> i64 {
+    vec_get(opt, 2)
+}
+
+fn main() -> i64 {
+    let opt: i64 = optimizer_new();
+    optimizer_add_pass(opt, PASS_IDENTITY_ELIM());
+    optimizer_add_pass(opt, PASS_ROTATION_MERGE());
+    println(string_from("circuit-opt/mod.sx OK"));
+    0
+}

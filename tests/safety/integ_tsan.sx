@@ -1,0 +1,134 @@
+// Thread sanitizer integration tests - sequential data consistency
+
+fn test_sequential_vec_consistency() -> i64 {
+    // Sequential operations maintain correct state
+    var v: Vec<i64> = vec_new();
+    var i: i64 = 0;
+    while i < 100 {
+        vec_push(v, i);
+        if vec_len(v) != i + 1 {
+            println(string_from("FAIL: vec length inconsistent during push"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    // Verify all elements
+    i = 0;
+    while i < 100 {
+        if vec_get(v, i) != i {
+            println(string_from("FAIL: vec element inconsistent"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_sequential_vec_consistency"));
+    0
+}
+
+fn test_interleaved_vec_ops() -> i64 {
+    // Interleaved push and read operations
+    var v: Vec<i64> = vec_new();
+    var i: i64 = 0;
+    while i < 50 {
+        vec_push(v, i * 3);
+        // Immediately read back what we just pushed
+        var val: i64 = vec_get(v, i);
+        if val != i * 3 {
+            println(string_from("FAIL: interleaved push/read"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    if vec_len(v) != 50 { println(string_from("FAIL: interleaved vec length")); return 1; }
+    println(string_from("PASS: test_interleaved_vec_ops"));
+    0
+}
+
+fn test_multiple_vecs_independent() -> i64 {
+    // Multiple independent vecs do not interfere
+    var v1: Vec<i64> = vec_new();
+    var v2: Vec<i64> = vec_new();
+    var v3: Vec<i64> = vec_new();
+    var i: i64 = 0;
+    while i < 30 {
+        vec_push(v1, i);
+        vec_push(v2, i * 10);
+        vec_push(v3, i * 100);
+        i = i + 1;
+    }
+    // Verify independence
+    if vec_get(v1, 5) != 5 { println(string_from("FAIL: v1 independence")); return 1; }
+    if vec_get(v2, 5) != 50 { println(string_from("FAIL: v2 independence")); return 1; }
+    if vec_get(v3, 5) != 500 { println(string_from("FAIL: v3 independence")); return 1; }
+    if vec_len(v1) != 30 { println(string_from("FAIL: v1 len")); return 1; }
+    if vec_len(v2) != 30 { println(string_from("FAIL: v2 len")); return 1; }
+    if vec_len(v3) != 30 { println(string_from("FAIL: v3 len")); return 1; }
+    println(string_from("PASS: test_multiple_vecs_independent"));
+    0
+}
+
+fn test_vec_set_consistency() -> i64 {
+    // Overwrites maintain data consistency
+    var v: Vec<i64> = vec_new();
+    var i: i64 = 0;
+    while i < 20 {
+        vec_push(v, 0);
+        i = i + 1;
+    }
+    // Write pass 1
+    i = 0;
+    while i < 20 {
+        vec_set(v, i, i + 100);
+        i = i + 1;
+    }
+    // Verify pass 1
+    i = 0;
+    while i < 20 {
+        if vec_get(v, i) != i + 100 { println(string_from("FAIL: set pass 1")); return 1; }
+        i = i + 1;
+    }
+    // Write pass 2 (reverse order)
+    i = 19;
+    while i >= 0 {
+        vec_set(v, i, i + 200);
+        i = i - 1;
+    }
+    // Verify pass 2
+    i = 0;
+    while i < 20 {
+        if vec_get(v, i) != i + 200 { println(string_from("FAIL: set pass 2")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_vec_set_consistency"));
+    0
+}
+
+fn test_string_concat_consistency() -> i64 {
+    // String operations maintain consistent state
+    var parts: Vec<String> = vec_new();
+    var i: i64 = 0;
+    while i < 20 {
+        vec_push(parts, string_from("ab"));
+        i = i + 1;
+    }
+    // Concatenate all parts
+    var result: String = string_from("");
+    i = 0;
+    while i < vec_len(parts) {
+        result = string_concat(result, vec_get(parts, i));
+        i = i + 1;
+    }
+    if string_len(result) != 40 { println(string_from("FAIL: string concat consistency")); return 1; }
+    println(string_from("PASS: test_string_concat_consistency"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_sequential_vec_consistency();
+    failures = failures + test_interleaved_vec_ops();
+    failures = failures + test_multiple_vecs_independent();
+    failures = failures + test_vec_set_consistency();
+    failures = failures + test_string_concat_consistency();
+    failures
+}

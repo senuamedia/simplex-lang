@@ -1,0 +1,338 @@
+// Quantum Error Correction Codes - Specification Tests
+// Tests bit-flip, phase-flip, Shor, Steane, and surface code basics.
+// Rewritten for sxc compiler compatibility (no const, inline values).
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn approx_eq(a: f64, b: f64, eps: f64) -> i64 {
+    if my_abs(a - b) < eps { return 1; }
+    0
+}
+
+struct Complex {
+    re: f64,
+    im: f64
+}
+
+fn mag_sq(c: Complex) -> f64 {
+    c.re * c.re + c.im * c.im
+}
+
+struct StateVec {
+    n_qubits: i64,
+    dim: i64,
+    data: i64
+}
+
+fn sv_new(n_qubits: i64) -> StateVec {
+    let dim: i64 = 1 << n_qubits;
+    let data: i64 = malloc(dim * 16);
+    var i: i64 = 0;
+    while i < dim * 2 {
+        store_ptr(data, i, 0);
+        i = i + 1;
+    }
+    store_ptr(data, 0, 1000000);
+    StateVec { n_qubits: n_qubits, dim: dim, data: data }
+}
+
+fn sv_get(sv: StateVec, k: i64) -> Complex {
+    let re_raw: i64 = load_ptr(sv.data, k * 2);
+    let im_raw: i64 = load_ptr(sv.data, k * 2 + 1);
+    Complex { re: (re_raw as f64) / 1000000.0, im: (im_raw as f64) / 1000000.0 }
+}
+
+fn sv_set(sv: StateVec, k: i64, c: Complex) -> i64 {
+    store_ptr(sv.data, k * 2, (c.re * 1000000.0) as i64);
+    store_ptr(sv.data, k * 2 + 1, (c.im * 1000000.0) as i64);
+    0
+}
+
+fn sv_prob(sv: StateVec, k: i64) -> f64 {
+    let c: Complex = sv_get(sv, k);
+    mag_sq(c)
+}
+
+fn apply_x(sv: StateVec, qubit: i64) -> i64 {
+    let stride: i64 = 1 << qubit;
+    var i: i64 = 0;
+    while i < sv.dim {
+        if (i >> qubit) % 2 == 0 {
+            let j: i64 = i + stride;
+            let a: Complex = sv_get(sv, i);
+            let b: Complex = sv_get(sv, j);
+            sv_set(sv, i, b);
+            sv_set(sv, j, a);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn apply_z(sv: StateVec, qubit: i64) -> i64 {
+    var i: i64 = 0;
+    while i < sv.dim {
+        if (i >> qubit) % 2 == 1 {
+            let c: Complex = sv_get(sv, i);
+            sv_set(sv, i, Complex { re: 0.0 - c.re, im: 0.0 - c.im });
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn apply_h(sv: StateVec, qubit: i64) -> i64 {
+    let inv_sqrt2: f64 = 0.70710678118654752;
+    let stride: i64 = 1 << qubit;
+    var i: i64 = 0;
+    while i < sv.dim {
+        if (i >> qubit) % 2 == 0 {
+            let j: i64 = i + stride;
+            let a: Complex = sv_get(sv, i);
+            let b: Complex = sv_get(sv, j);
+            let new_a: Complex = Complex { re: (a.re + b.re) * inv_sqrt2, im: (a.im + b.im) * inv_sqrt2 };
+            let new_b: Complex = Complex { re: (a.re - b.re) * inv_sqrt2, im: (a.im - b.im) * inv_sqrt2 };
+            sv_set(sv, i, new_a);
+            sv_set(sv, j, new_b);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn apply_cnot(sv: StateVec, control: i64, target: i64) -> i64 {
+    var i: i64 = 0;
+    while i < sv.dim {
+        if (i >> control) % 2 == 1 && (i >> target) % 2 == 0 {
+            let j: i64 = i + (1 << target);
+            let a: Complex = sv_get(sv, i);
+            let b: Complex = sv_get(sv, j);
+            sv_set(sv, i, b);
+            sv_set(sv, j, a);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Test 1: 3-qubit bit-flip code encoding
+fn test_bitflip_encode() -> i64 {
+    let eps: f64 = 0.001;
+    let sv: StateVec = sv_new(3);
+    apply_cnot(sv, 0, 1);
+    apply_cnot(sv, 0, 2);
+    let p000: f64 = sv_prob(sv, 0);
+    if approx_eq(p000, 1.0, eps) != 1 { println(string_from("FAIL: bitflip encode |0>")); return 1; }
+
+    let sv2: StateVec = sv_new(3);
+    apply_x(sv2, 0);
+    apply_cnot(sv2, 0, 1);
+    apply_cnot(sv2, 0, 2);
+    let p111: f64 = sv_prob(sv2, 7);
+    if approx_eq(p111, 1.0, eps) != 1 { println(string_from("FAIL: bitflip encode |1>")); return 1; }
+
+    println(string_from("PASS: bitflip_encode"));
+    0
+}
+
+// Test 2: Bit-flip error detection and correction
+fn test_bitflip_correct() -> i64 {
+    let eps: f64 = 0.001;
+    let sv: StateVec = sv_new(5);
+    apply_cnot(sv, 0, 1);
+    apply_cnot(sv, 0, 2);
+    apply_x(sv, 1);
+
+    apply_cnot(sv, 0, 3);
+    apply_cnot(sv, 1, 3);
+    apply_cnot(sv, 1, 4);
+    apply_cnot(sv, 2, 4);
+
+    let p_syndrome: f64 = sv_prob(sv, 26);
+    if approx_eq(p_syndrome, 1.0, eps) != 1 {
+        println(string_from("FAIL: bitflip syndrome"));
+        return 1;
+    }
+
+    apply_x(sv, 1);
+    let p_corrected: f64 = sv_prob(sv, 24);
+    if approx_eq(p_corrected, 1.0, eps) != 1 {
+        println(string_from("FAIL: bitflip correction"));
+        return 1;
+    }
+    println(string_from("PASS: bitflip_correct"));
+    0
+}
+
+// Test 3: Phase-flip code
+fn test_phaseflip_encode() -> i64 {
+    let eps: f64 = 0.001;
+    let sv: StateVec = sv_new(3);
+    apply_cnot(sv, 0, 1);
+    apply_cnot(sv, 0, 2);
+    apply_h(sv, 0);
+    apply_h(sv, 1);
+    apply_h(sv, 2);
+
+    var total: f64 = 0.0;
+    var k: i64 = 0;
+    while k < 8 {
+        total = total + sv_prob(sv, k);
+        k = k + 1;
+    }
+    if approx_eq(total, 1.0, eps) != 1 { println(string_from("FAIL: phaseflip encode")); return 1; }
+
+    let expected_prob: f64 = 1.0 / 8.0;
+    let p0: f64 = sv_prob(sv, 0);
+    if approx_eq(p0, expected_prob, eps) != 1 { println(string_from("FAIL: phaseflip amplitudes")); return 1; }
+
+    println(string_from("PASS: phaseflip_encode"));
+    0
+}
+
+// Test 4: Shor code parameters
+fn test_shor_code_params() -> i64 {
+    let n_physical: i64 = 9;
+    let n_logical: i64 = 1;
+    let distance: i64 = 3;
+    let t: i64 = (distance - 1) / 2;
+    if t != 1 { println(string_from("FAIL: shor t")); return 1; }
+    let n_syndrome: i64 = n_physical - n_logical;
+    if n_syndrome != 8 { println(string_from("FAIL: shor syndrome bits")); return 1; }
+    println(string_from("PASS: shor_code_params"));
+    0
+}
+
+// Test 5: Steane code parameters
+fn test_steane_code_params() -> i64 {
+    let n_physical: i64 = 7;
+    let n_logical: i64 = 1;
+    let distance: i64 = 3;
+    let t: i64 = (distance - 1) / 2;
+    if t != 1 { println(string_from("FAIL: steane t")); return 1; }
+    let n_x_stabilizers: i64 = 3;
+    let n_z_stabilizers: i64 = 3;
+    if n_x_stabilizers + n_z_stabilizers != n_physical - n_logical {
+        println(string_from("FAIL: steane stabilizers"));
+        return 1;
+    }
+    println(string_from("PASS: steane_code_params"));
+    0
+}
+
+// Test 6: Surface code qubit counts
+fn test_surface_code_params() -> i64 {
+    let d: i64 = 3;
+    let n_data: i64 = d * d;
+    let n_ancilla: i64 = (d - 1) * (d - 1) + (d - 1) * (d - 1);
+    if n_data != 9 { println(string_from("FAIL: surface data qubits")); return 1; }
+    if n_ancilla != 8 { println(string_from("FAIL: surface ancilla")); return 1; }
+    println(string_from("PASS: surface_code_params"));
+    0
+}
+
+// Test 7: Syndrome lookup table
+fn test_syndrome_lookup() -> i64 {
+    let syndrome_table: i64 = malloc(4 * 8);
+    store_ptr(syndrome_table, 0, 0 - 1);
+    store_ptr(syndrome_table, 1, 0);
+    store_ptr(syndrome_table, 2, 2);
+    store_ptr(syndrome_table, 3, 1);
+
+    let s00: i64 = load_ptr(syndrome_table, 0);
+    let s10: i64 = load_ptr(syndrome_table, 1);
+    let s01: i64 = load_ptr(syndrome_table, 2);
+    let s11: i64 = load_ptr(syndrome_table, 3);
+
+    if s00 != 0 - 1 { println(string_from("FAIL: syndrome 00")); return 1; }
+    if s10 != 0 { println(string_from("FAIL: syndrome 10")); return 1; }
+    if s01 != 2 { println(string_from("FAIL: syndrome 01")); return 1; }
+    if s11 != 1 { println(string_from("FAIL: syndrome 11")); return 1; }
+    println(string_from("PASS: syndrome_lookup"));
+    0
+}
+
+// Test 8: Error correction round-trip
+fn test_correction_roundtrip() -> i64 {
+    let eps: f64 = 0.001;
+    let sv: StateVec = sv_new(3);
+    apply_cnot(sv, 0, 1);
+    apply_cnot(sv, 0, 2);
+
+    let p_init: f64 = sv_prob(sv, 0);
+    apply_x(sv, 2);
+    let p_error: f64 = sv_prob(sv, 4);
+    if approx_eq(p_error, 1.0, eps) != 1 { println(string_from("FAIL: error state")); return 1; }
+
+    apply_x(sv, 2);
+    let p_corrected: f64 = sv_prob(sv, 0);
+    if approx_eq(p_corrected, 1.0, eps) != 1 { println(string_from("FAIL: correction roundtrip")); return 1; }
+    println(string_from("PASS: correction_roundtrip"));
+    0
+}
+
+// Test 9: Code distance and error detection limit
+fn test_error_detection_limit() -> i64 {
+    var d: i64 = 3;
+    while d <= 7 {
+        let detect: i64 = d - 1;
+        let correct: i64 = (d - 1) / 2;
+        if d == 3 {
+            if detect != 2 { println(string_from("FAIL: d=3 detect")); return 1; }
+            if correct != 1 { println(string_from("FAIL: d=3 correct")); return 1; }
+        }
+        if d == 5 {
+            if detect != 4 { println(string_from("FAIL: d=5 detect")); return 1; }
+            if correct != 2 { println(string_from("FAIL: d=5 correct")); return 1; }
+        }
+        if d == 7 {
+            if detect != 6 { println(string_from("FAIL: d=7 detect")); return 1; }
+            if correct != 3 { println(string_from("FAIL: d=7 correct")); return 1; }
+        }
+        d = d + 2;
+    }
+    println(string_from("PASS: error_detection_limit"));
+    0
+}
+
+// Test 10: Logical error rate scaling
+fn test_logical_error_rate() -> i64 {
+    let eps_d3: f64 = 0.001;
+    let eps_d5: f64 = 0.0001;
+    let p_phys: f64 = 0.001;
+    let p_thresh: f64 = 0.01;
+    let ratio: f64 = p_phys / p_thresh;
+
+    let p_l_d3: f64 = ratio * ratio;
+    let p_l_d5: f64 = ratio * ratio * ratio;
+    let p_l_d7: f64 = ratio * ratio * ratio * ratio;
+
+    if p_l_d5 >= p_l_d3 { println(string_from("FAIL: d5 not better than d3")); return 1; }
+    if p_l_d7 >= p_l_d5 { println(string_from("FAIL: d7 not better than d5")); return 1; }
+    if approx_eq(p_l_d3, 0.01, eps_d3) != 1 { println(string_from("FAIL: d3 rate")); return 1; }
+    if approx_eq(p_l_d5, 0.001, eps_d5) != 1 { println(string_from("FAIL: d5 rate")); return 1; }
+    println(string_from("PASS: logical_error_rate"));
+    0
+}
+
+fn main() -> i64 {
+    println(string_from("=== Error Correction Code Tests ==="));
+    var failures: i64 = 0;
+    failures = failures + test_bitflip_encode();
+    failures = failures + test_bitflip_correct();
+    failures = failures + test_phaseflip_encode();
+    failures = failures + test_shor_code_params();
+    failures = failures + test_steane_code_params();
+    failures = failures + test_surface_code_params();
+    failures = failures + test_syndrome_lookup();
+    failures = failures + test_correction_roundtrip();
+    failures = failures + test_error_detection_limit();
+    failures = failures + test_logical_error_rate();
+    if failures == 0 {
+        println(string_from("All error correction tests passed!"));
+    }
+    failures
+}

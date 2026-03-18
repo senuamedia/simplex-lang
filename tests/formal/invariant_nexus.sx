@@ -1,0 +1,176 @@
+// Protocol invariant checks - verify encoding/decoding roundtrips
+
+fn test_integer_serialization_roundtrip() -> i64 {
+    // Invariant: i64 -> bytes -> i64 preserves value
+    // Simulate by splitting i64 into bytes via bit operations and reassembling
+    var values: Vec<i64> = vec_new();
+    vec_push(values, 0);
+    vec_push(values, 1);
+    vec_push(values, 255);
+    vec_push(values, 256);
+    vec_push(values, 65535);
+    vec_push(values, 1000000);
+    vec_push(values, 42);
+
+    var i: i64 = 0;
+    while i < vec_len(values) {
+        var original: i64 = vec_get(values, i);
+        // Encode: store in a vec of "bytes" (low 8 bits at a time)
+        var encoded: Vec<i64> = vec_new();
+        var temp: i64 = original;
+        var b: i64 = 0;
+        while b < 8 {
+            vec_push(encoded, temp % 256);
+            temp = temp / 256;
+            b = b + 1;
+        }
+        // Decode: reassemble from bytes
+        var decoded: i64 = 0;
+        var multiplier: i64 = 1;
+        b = 0;
+        while b < 8 {
+            decoded = decoded + vec_get(encoded, b) * multiplier;
+            multiplier = multiplier * 256;
+            b = b + 1;
+        }
+        if decoded != original {
+            println(string_from("FAIL: integer serialization roundtrip"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_integer_serialization_roundtrip"));
+    0
+}
+
+fn test_vec_serialization_roundtrip() -> i64 {
+    // Invariant: vec serialize then deserialize preserves elements
+    // Simulate: write length + elements to a flat vec, then read back
+    var original: Vec<i64> = vec_new();
+    vec_push(original, 10);
+    vec_push(original, 20);
+    vec_push(original, 30);
+    vec_push(original, 40);
+    vec_push(original, 50);
+
+    // Serialize: first element is length, then data
+    var serialized: Vec<i64> = vec_new();
+    vec_push(serialized, vec_len(original));
+    var i: i64 = 0;
+    while i < vec_len(original) {
+        vec_push(serialized, vec_get(original, i));
+        i = i + 1;
+    }
+
+    // Deserialize: read length, then elements
+    var length: i64 = vec_get(serialized, 0);
+    var deserialized: Vec<i64> = vec_new();
+    i = 0;
+    while i < length {
+        vec_push(deserialized, vec_get(serialized, i + 1));
+        i = i + 1;
+    }
+
+    // Verify
+    if vec_len(deserialized) != vec_len(original) {
+        println(string_from("FAIL: vec roundtrip length mismatch"));
+        return 1;
+    }
+    i = 0;
+    while i < vec_len(original) {
+        if vec_get(deserialized, i) != vec_get(original, i) {
+            println(string_from("FAIL: vec roundtrip element mismatch"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_vec_serialization_roundtrip"));
+    0
+}
+
+fn test_comparison_transitivity() -> i64 {
+    // Invariant: comparison is transitive (if a < b and b < c then a < c)
+    var values: Vec<i64> = vec_new();
+    vec_push(values, 1);
+    vec_push(values, 5);
+    vec_push(values, 10);
+    vec_push(values, 50);
+    vec_push(values, 100);
+
+    var i: i64 = 0;
+    while i < vec_len(values) {
+        var j: i64 = i + 1;
+        while j < vec_len(values) {
+            var k: i64 = j + 1;
+            while k < vec_len(values) {
+                var a: i64 = vec_get(values, i);
+                var b: i64 = vec_get(values, j);
+                var c: i64 = vec_get(values, k);
+                if a < b && b < c {
+                    if !(a < c) {
+                        println(string_from("FAIL: transitivity violated"));
+                        return 1;
+                    }
+                }
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_comparison_transitivity"));
+    0
+}
+
+fn test_message_encode_decode() -> i64 {
+    // Invariant: message encode then decode roundtrip
+    // Simulate a message as: [type, length, ...payload]
+    var msg_type: i64 = 42;
+    var payload: Vec<i64> = vec_new();
+    vec_push(payload, 100);
+    vec_push(payload, 200);
+    vec_push(payload, 300);
+
+    // Encode
+    var wire: Vec<i64> = vec_new();
+    vec_push(wire, msg_type);
+    vec_push(wire, vec_len(payload));
+    var i: i64 = 0;
+    while i < vec_len(payload) {
+        vec_push(wire, vec_get(payload, i));
+        i = i + 1;
+    }
+
+    // Decode
+    var dec_type: i64 = vec_get(wire, 0);
+    var dec_len: i64 = vec_get(wire, 1);
+    var dec_payload: Vec<i64> = vec_new();
+    i = 0;
+    while i < dec_len {
+        vec_push(dec_payload, vec_get(wire, i + 2));
+        i = i + 1;
+    }
+
+    // Verify
+    if dec_type != msg_type { println(string_from("FAIL: message type mismatch")); return 1; }
+    if vec_len(dec_payload) != vec_len(payload) { println(string_from("FAIL: payload length mismatch")); return 1; }
+    i = 0;
+    while i < vec_len(payload) {
+        if vec_get(dec_payload, i) != vec_get(payload, i) {
+            println(string_from("FAIL: payload element mismatch"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_message_encode_decode"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_integer_serialization_roundtrip();
+    failures = failures + test_vec_serialization_roundtrip();
+    failures = failures + test_comparison_transitivity();
+    failures = failures + test_message_encode_decode();
+    failures
+}

@@ -5,6 +5,70 @@ All notable changes to Simplex will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-03-19
+
+### Highlights
+
+**Production Hardening & Quantum Maturity** — Quantum error mitigation, circuit optimization, compiler improvements, and comprehensive production hardening. 197 tests passing across 21 categories (100%).
+
+### Added
+
+#### Quantum Error Mitigation (TASK-031)
+- Noise models: depolarizing, amplitude/phase damping, readout error, custom Kraus channels
+- Noisy simulator with per-gate noise injection
+- Zero-noise extrapolation: Richardson, linear, polynomial, exponential methods
+- Probabilistic error cancellation with Monte Carlo sampling
+- Error correction codes: bit-flip, phase-flip, Shor [[9,1,3]], Steane [[7,1,3]], surface code (d=3)
+- MWPM syndrome decoder for surface codes
+
+#### Quantum Circuit Optimization (TASK-032)
+- Gate fusion: identity elimination, rotation merging, single-qubit fusion via ZYZ decomposition
+- Commutation analysis with DAG-based gate dependency tracking
+- Depth reduction with ASAP/ALAP scheduling and gate parallelization
+- Qubit routing for linear, grid, all-to-all topologies with SWAP insertion
+- Native gate set decomposition (IBM, IonQ, Clifford+T)
+- Multi-pass optimization pipeline with convergence detection
+
+#### Self-Hosted Compiler (TASK-033)
+- Where clause parsing (`where T: Trait`)
+- Trait object types (`dyn Trait`)
+- Nested generic parsing (`Vec<Option<T>>`, `Arc<Mutex<T>>`)
+- Collection iteration: `for x in collection { }` and `for x in &collection { }`
+- Keywords as method names: `.send()`, `.match()` now work after dot
+- Enhanced constant folding (boolean short-circuit, identity ops)
+- Match exhaustiveness warnings for enum types
+- Bootstrap verification script (three-stage reproducibility)
+
+#### Performance Optimization (TASK-034)
+- Extended constant folding for nested expressions
+- LLVM optimization hints: branch prediction, noalias, readonly
+- String interning for generated IR
+- Incremental build script with SHA256 change detection
+
+#### Production Hardening (TASK-035)
+- Compiler fuzzing harnesses (lexer, parser, codegen, grammar-aware)
+- Property-based tests for lexer, parser, codegen, type system
+- Runtime safety tests: ASan, UBSan, TSan integration
+- Formal invariant verification: compiler, runtime, protocol
+- CI hardening workflow
+
+### New Packages
+- `simplex-quantum-noise` v0.15.0
+- `simplex-quantum-mitigation` v0.15.0
+- `simplex-quantum-ecc` v0.15.0
+- `simplex-quantum-circuit-opt` v0.15.0
+
+### New Test Files (30)
+- 9 quantum tests: noise, ZNE, ECC, PEC, fusion, commutation, depth, routing, pipeline
+- 4 fuzz tests: lexer, parser, codegen, grammar
+- 4 property tests: lexer, parser, codegen, types
+- 3 safety tests: ASan, UBSan, TSan
+- 3 formal tests: compiler, runtime, nexus invariants
+- 3 toolchain tests: self-host, optimization, inlining
+- 4 new scripts: bootstrap-verify, incremental-build, run-fuzz, run-sanitizers
+
+---
+
 ## [0.14.0] - 2026-03-17
 
 ### Highlights

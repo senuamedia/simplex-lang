@@ -1,0 +1,13 @@
+# Simplex Quantum Circuit Optimization
+# Gate fusion, commutation analysis, depth reduction, qubit routing
+
+[package]
+name = "simplex-quantum-circuit-opt"
+version = "0.15.0"
+description = "Quantum circuit optimization passes -- fusion, commutation, routing, native gates"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
+
+[dependencies]
+simplex-std = { path = "../../simplex-std" }
+simplex-quantum = { path = ".." }

@@ -1,0 +1,194 @@
+// Runtime invariant checks - verify fundamental runtime guarantees
+
+fn test_vec_length_non_negative() -> i64 {
+    // Invariant: vec length is always >= 0
+    var v: Vec<i64> = vec_new();
+    if vec_len(v) < 0 { println(string_from("FAIL: empty vec negative length")); return 1; }
+
+    vec_push(v, 1);
+    if vec_len(v) < 0 { println(string_from("FAIL: vec len negative after push")); return 1; }
+
+    var i: i64 = 0;
+    while i < 50 {
+        vec_push(v, i);
+        if vec_len(v) < 0 { println(string_from("FAIL: vec len negative in loop")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_vec_length_non_negative"));
+    0
+}
+
+fn test_vec_push_increases_length() -> i64 {
+    // Invariant: push increases length by exactly 1
+    var v: Vec<i64> = vec_new();
+    var i: i64 = 0;
+    while i < 100 {
+        var before: i64 = vec_len(v);
+        vec_push(v, i);
+        var after: i64 = vec_len(v);
+        if after != before + 1 {
+            println(string_from("FAIL: push did not increase length by 1"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_vec_push_increases_length"));
+    0
+}
+
+fn test_vec_get_after_push() -> i64 {
+    // Invariant: get after push returns pushed value
+    var v: Vec<i64> = vec_new();
+    var i: i64 = 0;
+    while i < 50 {
+        var val: i64 = i * 7 + 3;
+        vec_push(v, val);
+        var retrieved: i64 = vec_get(v, i);
+        if retrieved != val {
+            println(string_from("FAIL: get after push mismatch"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_vec_get_after_push"));
+    0
+}
+
+fn test_string_length_matches() -> i64 {
+    // Invariant: string length matches content
+    var tests: Vec<String> = vec_new();
+    var expected: Vec<i64> = vec_new();
+
+    vec_push(tests, string_from(""));
+    vec_push(expected, 0);
+
+    vec_push(tests, string_from("a"));
+    vec_push(expected, 1);
+
+    vec_push(tests, string_from("ab"));
+    vec_push(expected, 2);
+
+    vec_push(tests, string_from("abc"));
+    vec_push(expected, 3);
+
+    vec_push(tests, string_from("hello"));
+    vec_push(expected, 5);
+
+    vec_push(tests, string_from("hello world"));
+    vec_push(expected, 11);
+
+    var i: i64 = 0;
+    while i < vec_len(tests) {
+        var s: String = vec_get(tests, i);
+        var exp: i64 = vec_get(expected, i);
+        if string_len(s) != exp {
+            println(string_from("FAIL: string length mismatch"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_string_length_matches"));
+    0
+}
+
+fn test_malloc_returns_nonzero() -> i64 {
+    // Invariant: malloc returns non-zero for small sizes
+    var sizes: Vec<i64> = vec_new();
+    vec_push(sizes, 1);
+    vec_push(sizes, 8);
+    vec_push(sizes, 16);
+    vec_push(sizes, 32);
+    vec_push(sizes, 64);
+    vec_push(sizes, 128);
+    vec_push(sizes, 256);
+    vec_push(sizes, 512);
+    vec_push(sizes, 1024);
+
+    var i: i64 = 0;
+    while i < vec_len(sizes) {
+        var size: i64 = vec_get(sizes, i);
+        var ptr: i64 = malloc(size);
+        if ptr == 0 {
+            println(string_from("FAIL: malloc returned zero"));
+            return 1;
+        }
+        free(ptr);
+        i = i + 1;
+    }
+    println(string_from("PASS: test_malloc_returns_nonzero"));
+    0
+}
+
+fn test_additive_identity() -> i64 {
+    // Invariant: a + 0 = a
+    var values: Vec<i64> = vec_new();
+    vec_push(values, 0);
+    vec_push(values, 1);
+    vec_push(values, 42);
+    vec_push(values, 0 - 1);
+    vec_push(values, 0 - 999);
+    vec_push(values, 1000000);
+
+    var i: i64 = 0;
+    while i < vec_len(values) {
+        var a: i64 = vec_get(values, i);
+        if a + 0 != a { println(string_from("FAIL: a + 0 != a")); return 1; }
+        if 0 + a != a { println(string_from("FAIL: 0 + a != a")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_additive_identity"));
+    0
+}
+
+fn test_multiplicative_identity() -> i64 {
+    // Invariant: a * 1 = a
+    var values: Vec<i64> = vec_new();
+    vec_push(values, 0);
+    vec_push(values, 1);
+    vec_push(values, 42);
+    vec_push(values, 0 - 7);
+    vec_push(values, 999);
+
+    var i: i64 = 0;
+    while i < vec_len(values) {
+        var a: i64 = vec_get(values, i);
+        if a * 1 != a { println(string_from("FAIL: a * 1 != a")); return 1; }
+        if 1 * a != a { println(string_from("FAIL: 1 * a != a")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_multiplicative_identity"));
+    0
+}
+
+fn test_multiplicative_zero() -> i64 {
+    // Invariant: a * 0 = 0
+    var values: Vec<i64> = vec_new();
+    vec_push(values, 0);
+    vec_push(values, 1);
+    vec_push(values, 42);
+    vec_push(values, 0 - 7);
+    vec_push(values, 1000000);
+
+    var i: i64 = 0;
+    while i < vec_len(values) {
+        var a: i64 = vec_get(values, i);
+        if a * 0 != 0 { println(string_from("FAIL: a * 0 != 0")); return 1; }
+        if 0 * a != 0 { println(string_from("FAIL: 0 * a != 0")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_multiplicative_zero"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_vec_length_non_negative();
+    failures = failures + test_vec_push_increases_length();
+    failures = failures + test_vec_get_after_push();
+    failures = failures + test_string_length_matches();
+    failures = failures + test_malloc_returns_nonzero();
+    failures = failures + test_additive_identity();
+    failures = failures + test_multiplicative_identity();
+    failures = failures + test_multiplicative_zero();
+    failures
+}

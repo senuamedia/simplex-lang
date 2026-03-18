@@ -1,0 +1,209 @@
+// Grammar-aware random program generator using LCG PRNG
+
+fn lcg(seed: i64) -> i64 {
+    (seed * 1103515245 + 12345) % 2147483647
+}
+
+fn abs_val(x: i64) -> i64 {
+    if x < 0 { 0 - x } else { x }
+}
+
+fn gen_identifier(seed: i64) -> String {
+    var s: String = string_from("var_");
+    var idx: i64 = abs_val(seed) % 26;
+    if idx == 0 { s = string_concat(s, string_from("a")); }
+    else if idx == 1 { s = string_concat(s, string_from("b")); }
+    else if idx == 2 { s = string_concat(s, string_from("c")); }
+    else if idx == 3 { s = string_concat(s, string_from("d")); }
+    else if idx == 4 { s = string_concat(s, string_from("e")); }
+    else if idx == 5 { s = string_concat(s, string_from("f")); }
+    else if idx == 6 { s = string_concat(s, string_from("g")); }
+    else if idx == 7 { s = string_concat(s, string_from("h")); }
+    else if idx == 8 { s = string_concat(s, string_from("i")); }
+    else if idx == 9 { s = string_concat(s, string_from("j")); }
+    else if idx == 10 { s = string_concat(s, string_from("k")); }
+    else if idx == 11 { s = string_concat(s, string_from("l")); }
+    else if idx == 12 { s = string_concat(s, string_from("m")); }
+    else if idx == 13 { s = string_concat(s, string_from("n")); }
+    else if idx == 14 { s = string_concat(s, string_from("o")); }
+    else if idx == 15 { s = string_concat(s, string_from("p")); }
+    else if idx == 16 { s = string_concat(s, string_from("q")); }
+    else if idx == 17 { s = string_concat(s, string_from("r")); }
+    else if idx == 18 { s = string_concat(s, string_from("s")); }
+    else if idx == 19 { s = string_concat(s, string_from("t")); }
+    else if idx == 20 { s = string_concat(s, string_from("u")); }
+    else if idx == 21 { s = string_concat(s, string_from("v")); }
+    else if idx == 22 { s = string_concat(s, string_from("w")); }
+    else if idx == 23 { s = string_concat(s, string_from("x")); }
+    else if idx == 24 { s = string_concat(s, string_from("y")); }
+    else { s = string_concat(s, string_from("z")); }
+    // Append a numeric suffix from seed
+    var suffix: i64 = abs_val(seed / 26) % 100;
+    if suffix < 10 {
+        s = string_concat(s, string_from("0"));
+    }
+    s
+}
+
+fn gen_integer(seed: i64) -> String {
+    var val: i64 = abs_val(seed) % 10000;
+    if val == 0 { return string_from("0"); }
+    var result: String = string_from("");
+    var n: i64 = val;
+    // Build digits in reverse via a vec
+    var digits: Vec<String> = vec_new();
+    while n > 0 {
+        var d: i64 = n % 10;
+        if d == 0 { vec_push(digits, string_from("0")); }
+        else if d == 1 { vec_push(digits, string_from("1")); }
+        else if d == 2 { vec_push(digits, string_from("2")); }
+        else if d == 3 { vec_push(digits, string_from("3")); }
+        else if d == 4 { vec_push(digits, string_from("4")); }
+        else if d == 5 { vec_push(digits, string_from("5")); }
+        else if d == 6 { vec_push(digits, string_from("6")); }
+        else if d == 7 { vec_push(digits, string_from("7")); }
+        else if d == 8 { vec_push(digits, string_from("8")); }
+        else { vec_push(digits, string_from("9")); }
+        n = n / 10;
+    }
+    // Reverse
+    var i: i64 = vec_len(digits) - 1;
+    while i >= 0 {
+        result = string_concat(result, vec_get(digits, i));
+        i = i - 1;
+    }
+    result
+}
+
+fn gen_type(seed: i64) -> String {
+    var pick: i64 = abs_val(seed) % 4;
+    if pick == 0 { string_from("i64") }
+    else if pick == 1 { string_from("f64") }
+    else if pick == 2 { string_from("bool") }
+    else { string_from("String") }
+}
+
+fn gen_expr(seed: i64, depth: i64) -> String {
+    if depth <= 0 {
+        return gen_integer(seed);
+    }
+    var pick: i64 = abs_val(seed) % 4;
+    if pick == 0 {
+        // Binary add
+        var s1: i64 = lcg(seed);
+        var s2: i64 = lcg(s1);
+        var left: String = gen_expr(s1, depth - 1);
+        var right: String = gen_expr(s2, depth - 1);
+        return string_concat(string_concat(string_concat(string_concat(string_from("("), left), string_from(" + ")), right), string_from(")"));
+    } else if pick == 1 {
+        // Binary mul
+        var s1: i64 = lcg(seed);
+        var s2: i64 = lcg(s1);
+        var left: String = gen_expr(s1, depth - 1);
+        var right: String = gen_expr(s2, depth - 1);
+        return string_concat(string_concat(string_concat(string_concat(string_from("("), left), string_from(" * ")), right), string_from(")"));
+    } else if pick == 2 {
+        // Identifier
+        return gen_identifier(seed);
+    } else {
+        // Integer literal
+        return gen_integer(seed);
+    }
+}
+
+fn gen_function(seed: i64) -> String {
+    var name: String = gen_identifier(seed);
+    var s1: i64 = lcg(seed);
+    var ret_type: String = gen_type(s1);
+    var s2: i64 = lcg(s1);
+    var body_expr: String = gen_expr(s2, 2);
+    var result: String = string_from("fn ");
+    result = string_concat(result, name);
+    result = string_concat(result, string_from("() -> "));
+    result = string_concat(result, ret_type);
+    result = string_concat(result, string_from(" { "));
+    result = string_concat(result, body_expr);
+    result = string_concat(result, string_from(" }"));
+    result
+}
+
+fn test_generate_programs() -> i64 {
+    var seed: i64 = 42;
+    var i: i64 = 0;
+    var all_valid: bool = true;
+    while i < 50 {
+        seed = lcg(seed);
+        var program: String = gen_function(seed);
+        var len: i64 = string_len(program);
+        if len <= 0 {
+            println(string_from("FAIL: generated empty program"));
+            all_valid = false;
+        }
+        if len > 10000 {
+            println(string_from("FAIL: generated unreasonably long program"));
+            all_valid = false;
+        }
+        i = i + 1;
+    }
+    if !all_valid { println(string_from("FAIL: test_generate_programs")); return 1; }
+    println(string_from("PASS: test_generate_programs"));
+    0
+}
+
+fn test_identifier_generation() -> i64 {
+    var seed: i64 = 123;
+    var i: i64 = 0;
+    while i < 20 {
+        seed = lcg(seed);
+        var id: String = gen_identifier(seed);
+        if string_len(id) < 4 { println(string_from("FAIL: identifier too short")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_identifier_generation"));
+    0
+}
+
+fn test_integer_generation() -> i64 {
+    var seed: i64 = 999;
+    var i: i64 = 0;
+    while i < 20 {
+        seed = lcg(seed);
+        var num: String = gen_integer(seed);
+        if string_len(num) < 1 { println(string_from("FAIL: integer gen empty")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_integer_generation"));
+    0
+}
+
+fn test_expr_depth_limit() -> i64 {
+    var seed: i64 = 7;
+    var expr: String = gen_expr(seed, 0);
+    if string_len(expr) < 1 { println(string_from("FAIL: depth 0 expr empty")); return 1; }
+    var expr2: String = gen_expr(seed, 3);
+    if string_len(expr2) < 1 { println(string_from("FAIL: depth 3 expr empty")); return 1; }
+    // Deeper expression should generally be longer
+    println(string_from("PASS: test_expr_depth_limit"));
+    0
+}
+
+fn test_lcg_determinism() -> i64 {
+    var a: i64 = lcg(42);
+    var b: i64 = lcg(42);
+    if a != b { println(string_from("FAIL: LCG not deterministic")); return 1; }
+    var c: i64 = lcg(a);
+    var d: i64 = lcg(b);
+    if c != d { println(string_from("FAIL: LCG chain not deterministic")); return 1; }
+    println(string_from("PASS: test_lcg_determinism"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_generate_programs();
+    failures = failures + test_identifier_generation();
+    failures = failures + test_integer_generation();
+    failures = failures + test_expr_depth_limit();
+    failures = failures + test_lcg_determinism();
+    failures
+}
