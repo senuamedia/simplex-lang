@@ -1,0 +1,458 @@
+// Noisy Quantum Simulator
+// Extends statevector simulation with noise channel injection after each gate.
+// Uses f64_to_bits / bits_to_f64 for amplitude storage in malloc buffers.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const PI: f64 = 3.14159265358979323846;
+const INV_SQRT2: f64 = 0.70710678118654752;
+const SCALE: f64 = 1000000.0;
+
+const CHANNEL_DEPOLARIZING: i64 = 1;
+const CHANNEL_AMPLITUDE_DAMPING: i64 = 2;
+const CHANNEL_PHASE_DAMPING: i64 = 3;
+const CHANNEL_READOUT: i64 = 4;
+const CHANNEL_CUSTOM: i64 = 5;
+
+// Gate opcodes (matching backend/src/simulator.sx)
+const GATE_H: i64 = 0;
+const GATE_X: i64 = 1;
+const GATE_Y: i64 = 2;
+const GATE_Z: i64 = 3;
+const GATE_CNOT: i64 = 4;
+const GATE_RX: i64 = 5;
+const GATE_RY: i64 = 6;
+const GATE_RZ: i64 = 7;
+
+// ============================================================================
+// LCG Pseudo-random number generator
+// ============================================================================
+fn lcg_next(seed: i64) -> i64 {
+    let next: i64 = seed * 1103515245 + 12345;
+    if next < 0 { return 0 - next; }
+    next
+}
+
+fn lcg_f64(seed: i64) -> f64 {
+    let s: i64 = lcg_next(seed);
+    let v: f64 = (s % 1000000) as f64;
+    v / 1000000.0
+}
+
+// ============================================================================
+// NoisySim state: vec [n_qubits, dim, state_re_ptr, state_im_ptr, rng_seed]
+// ============================================================================
+fn noisy_sim_new(n_qubits: i64) -> i64 {
+    let dim: i64 = 1 << n_qubits;
+    let state_re: i64 = malloc(dim * 8);
+    let state_im: i64 = malloc(dim * 8);
+
+    // Initialize to |0...0>
+    store_ptr(state_re, 0, f64_to_bits(1.0));
+    store_ptr(state_im, 0, f64_to_bits(0.0));
+    var i: i64 = 1;
+    while i < dim {
+        store_ptr(state_re, i, f64_to_bits(0.0));
+        store_ptr(state_im, i, f64_to_bits(0.0));
+        i = i + 1;
+    }
+
+    let sim: i64 = vec_new();
+    vec_push(sim, n_qubits);
+    vec_push(sim, dim);
+    vec_push(sim, state_re);
+    vec_push(sim, state_im);
+    vec_push(sim, 42);  // rng seed
+    sim
+}
+
+fn sim_n_qubits(sim: i64) -> i64 { vec_get(sim, 0); }
+fn sim_dim(sim: i64) -> i64 { vec_get(sim, 1); }
+fn sim_state_re(sim: i64) -> i64 { vec_get(sim, 2); }
+fn sim_state_im(sim: i64) -> i64 { vec_get(sim, 3); }
+fn sim_seed(sim: i64) -> i64 { vec_get(sim, 4); }
+
+fn sim_set_seed(sim: i64, seed: i64) -> i64 {
+    vec_set(sim, 4, seed);
+    0
+}
+
+// ============================================================================
+// Single-qubit gate application on f64_bits buffers
+// ============================================================================
+fn apply_1q_gate(state_re: i64, state_im: i64, dim: i64, target: i64,
+                 m00_re: f64, m00_im: f64, m01_re: f64, m01_im: f64,
+                 m10_re: f64, m10_im: f64, m11_re: f64, m11_im: f64) -> i64 {
+    let stride: i64 = 1 << target;
+    var i: i64 = 0;
+    while i < dim {
+        if (i >> target) % 2 == 0 {
+            let j: i64 = i + stride;
+            let a_re: f64 = bits_to_f64(load_ptr(state_re, i));
+            let a_im: f64 = bits_to_f64(load_ptr(state_im, i));
+            let b_re: f64 = bits_to_f64(load_ptr(state_re, j));
+            let b_im: f64 = bits_to_f64(load_ptr(state_im, j));
+
+            // new_a = m00*a + m01*b
+            let na_re: f64 = (m00_re*a_re - m00_im*a_im) + (m01_re*b_re - m01_im*b_im);
+            let na_im: f64 = (m00_re*a_im + m00_im*a_re) + (m01_re*b_im + m01_im*b_re);
+            // new_b = m10*a + m11*b
+            let nb_re: f64 = (m10_re*a_re - m10_im*a_im) + (m11_re*b_re - m11_im*b_im);
+            let nb_im: f64 = (m10_re*a_im + m10_im*a_re) + (m11_re*b_im + m11_im*b_re);
+
+            store_ptr(state_re, i, f64_to_bits(na_re));
+            store_ptr(state_im, i, f64_to_bits(na_im));
+            store_ptr(state_re, j, f64_to_bits(nb_re));
+            store_ptr(state_im, j, f64_to_bits(nb_im));
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Hadamard
+fn noisy_apply_h(sim: i64, target: i64) -> i64 {
+    let h: f64 = INV_SQRT2;
+    apply_1q_gate(sim_state_re(sim), sim_state_im(sim), sim_dim(sim), target,
+                  h, 0.0, h, 0.0, h, 0.0, 0.0 - h, 0.0)
+}
+
+// Pauli-X
+fn noisy_apply_x(sim: i64, target: i64) -> i64 {
+    apply_1q_gate(sim_state_re(sim), sim_state_im(sim), sim_dim(sim), target,
+                  0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 0.0)
+}
+
+// Pauli-Y
+fn noisy_apply_y(sim: i64, target: i64) -> i64 {
+    apply_1q_gate(sim_state_re(sim), sim_state_im(sim), sim_dim(sim), target,
+                  0.0, 0.0, 0.0, 0.0 - 1.0, 0.0, 1.0, 0.0, 0.0)
+}
+
+// Pauli-Z
+fn noisy_apply_z(sim: i64, target: i64) -> i64 {
+    apply_1q_gate(sim_state_re(sim), sim_state_im(sim), sim_dim(sim), target,
+                  1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 - 1.0, 0.0)
+}
+
+// Rx(theta)
+fn noisy_apply_rx(sim: i64, target: i64, theta: f64) -> i64 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    apply_1q_gate(sim_state_re(sim), sim_state_im(sim), sim_dim(sim), target,
+                  c, 0.0, 0.0, 0.0 - s, 0.0, 0.0 - s, c, 0.0)
+}
+
+// Ry(theta)
+fn noisy_apply_ry(sim: i64, target: i64, theta: f64) -> i64 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    apply_1q_gate(sim_state_re(sim), sim_state_im(sim), sim_dim(sim), target,
+                  c, 0.0, 0.0 - s, 0.0, s, 0.0, c, 0.0)
+}
+
+// Rz(theta)
+fn noisy_apply_rz(sim: i64, target: i64, theta: f64) -> i64 {
+    let c: f64 = cos(theta / 2.0);
+    let s: f64 = sin(theta / 2.0);
+    apply_1q_gate(sim_state_re(sim), sim_state_im(sim), sim_dim(sim), target,
+                  c, 0.0 - s, 0.0, 0.0, 0.0, 0.0, c, s)
+}
+
+// ============================================================================
+// CNOT gate
+// ============================================================================
+fn noisy_apply_cnot(sim: i64, control: i64, target: i64) -> i64 {
+    let state_re: i64 = sim_state_re(sim);
+    let state_im: i64 = sim_state_im(sim);
+    let dim: i64 = sim_dim(sim);
+    let ctrl_mask: i64 = 1 << control;
+    let tgt_mask: i64 = 1 << target;
+    var i: i64 = 0;
+    while i < dim {
+        if (i & ctrl_mask) != 0 {
+            if (i & tgt_mask) == 0 {
+                let j: i64 = i | tgt_mask;
+                let re_i: i64 = load_ptr(state_re, i);
+                let im_i: i64 = load_ptr(state_im, i);
+                let re_j: i64 = load_ptr(state_re, j);
+                let im_j: i64 = load_ptr(state_im, j);
+                store_ptr(state_re, i, re_j);
+                store_ptr(state_im, i, im_j);
+                store_ptr(state_re, j, re_i);
+                store_ptr(state_im, j, im_i);
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// ============================================================================
+// Apply noise channels from a noise model after a gate
+// ============================================================================
+fn apply_single_noise(sim: i64, target: i64, model: i64) -> i64 {
+    let n_ch: i64 = vec_get(model, 0);
+    let singles: i64 = vec_get(model, 3);
+    let state_re: i64 = sim_state_re(sim);
+    let state_im: i64 = sim_state_im(sim);
+    let dim: i64 = sim_dim(sim);
+
+    var c: i64 = 0;
+    while c < n_ch {
+        let ch: i64 = vec_get(singles, c);
+        let ch_type: i64 = vec_get(ch, 0);
+
+        if ch_type == CHANNEL_DEPOLARIZING {
+            let p: f64 = bits_to_f64(vec_get(ch, 1));
+            // Inline depolarizing: mix populations
+            let stride: i64 = 1 << target;
+            var i: i64 = 0;
+            while i < dim {
+                if (i >> target) % 2 == 0 {
+                    let j: i64 = i + stride;
+                    let re_i: f64 = bits_to_f64(load_ptr(state_re, i));
+                    let im_i: f64 = bits_to_f64(load_ptr(state_im, i));
+                    let re_j: f64 = bits_to_f64(load_ptr(state_re, j));
+                    let im_j: f64 = bits_to_f64(load_ptr(state_im, j));
+                    let p0: f64 = re_i * re_i + im_i * im_i;
+                    let p1: f64 = re_j * re_j + im_j * im_j;
+                    let new_p0: f64 = (1.0 - 2.0 * p / 3.0) * p0 + (2.0 * p / 3.0) * p1;
+                    let new_p1: f64 = (1.0 - 2.0 * p / 3.0) * p1 + (2.0 * p / 3.0) * p0;
+                    if p0 > 0.000001 {
+                        let sc: f64 = sqrt(new_p0 / p0);
+                        store_ptr(state_re, i, f64_to_bits(re_i * sc));
+                        store_ptr(state_im, i, f64_to_bits(im_i * sc));
+                    }
+                    if p1 > 0.000001 {
+                        let sc: f64 = sqrt(new_p1 / p1);
+                        store_ptr(state_re, j, f64_to_bits(re_j * sc));
+                        store_ptr(state_im, j, f64_to_bits(im_j * sc));
+                    }
+                }
+                i = i + 1;
+            }
+        } else if ch_type == CHANNEL_AMPLITUDE_DAMPING {
+            let gamma: f64 = bits_to_f64(vec_get(ch, 1));
+            let stride: i64 = 1 << target;
+            var i: i64 = 0;
+            while i < dim {
+                if (i >> target) % 2 == 0 {
+                    let j: i64 = i + stride;
+                    let re_i: f64 = bits_to_f64(load_ptr(state_re, i));
+                    let im_i: f64 = bits_to_f64(load_ptr(state_im, i));
+                    let re_j: f64 = bits_to_f64(load_ptr(state_re, j));
+                    let im_j: f64 = bits_to_f64(load_ptr(state_im, j));
+                    let p0: f64 = re_i * re_i + im_i * im_i;
+                    let p1: f64 = re_j * re_j + im_j * im_j;
+                    let new_p0: f64 = p0 + gamma * p1;
+                    let new_p1: f64 = (1.0 - gamma) * p1;
+                    store_ptr(state_re, i, f64_to_bits(sqrt(new_p0)));
+                    store_ptr(state_im, i, f64_to_bits(0.0));
+                    store_ptr(state_re, j, f64_to_bits(sqrt(new_p1)));
+                    store_ptr(state_im, j, f64_to_bits(0.0));
+                }
+                i = i + 1;
+            }
+        } else if ch_type == CHANNEL_PHASE_DAMPING {
+            let lambda: f64 = bits_to_f64(vec_get(ch, 1));
+            let damp: f64 = sqrt(1.0 - lambda);
+            let stride: i64 = 1 << target;
+            var i: i64 = 0;
+            while i < dim {
+                if (i >> target) % 2 == 0 {
+                    let j: i64 = i + stride;
+                    let re_j: f64 = bits_to_f64(load_ptr(state_re, j));
+                    let im_j: f64 = bits_to_f64(load_ptr(state_im, j));
+                    store_ptr(state_re, j, f64_to_bits(re_j * damp));
+                    store_ptr(state_im, j, f64_to_bits(im_j * damp));
+                }
+                i = i + 1;
+            }
+        }
+        c = c + 1;
+    }
+    0
+}
+
+fn apply_two_noise(sim: i64, q1: i64, q2: i64, model: i64) -> i64 {
+    let n_ch: i64 = vec_get(model, 1);
+    let twos: i64 = vec_get(model, 4);
+
+    var c: i64 = 0;
+    while c < n_ch {
+        let ch: i64 = vec_get(twos, c);
+        let ch_type: i64 = vec_get(ch, 0);
+
+        if ch_type == CHANNEL_DEPOLARIZING {
+            let p: f64 = bits_to_f64(vec_get(ch, 1));
+            let p_eff: f64 = p * 4.0 / 5.0;
+            // Apply per-qubit depolarizing with effective rate
+            apply_single_noise(sim, q1, model);
+            apply_single_noise(sim, q2, model);
+        }
+        c = c + 1;
+    }
+    0
+}
+
+// ============================================================================
+// Dispatch a single gate instruction
+// ============================================================================
+fn noisy_apply_gate(sim: i64, gate_code: i64, target: i64, control: i64, param: f64) -> i64 {
+    if gate_code == GATE_H { return noisy_apply_h(sim, target); }
+    if gate_code == GATE_X { return noisy_apply_x(sim, target); }
+    if gate_code == GATE_Y { return noisy_apply_y(sim, target); }
+    if gate_code == GATE_Z { return noisy_apply_z(sim, target); }
+    if gate_code == GATE_CNOT { return noisy_apply_cnot(sim, control, target); }
+    if gate_code == GATE_RX { return noisy_apply_rx(sim, target, param); }
+    if gate_code == GATE_RY { return noisy_apply_ry(sim, target, param); }
+    if gate_code == GATE_RZ { return noisy_apply_rz(sim, target, param); }
+    0
+}
+
+// ============================================================================
+// Get probabilities from current state
+// ============================================================================
+fn noisy_probabilities(sim: i64) -> i64 {
+    let dim: i64 = sim_dim(sim);
+    let state_re: i64 = sim_state_re(sim);
+    let state_im: i64 = sim_state_im(sim);
+    let probs: i64 = vec_new();
+    var k: i64 = 0;
+    while k < dim {
+        let re: f64 = bits_to_f64(load_ptr(state_re, k));
+        let im: f64 = bits_to_f64(load_ptr(state_im, k));
+        let p: f64 = re * re + im * im;
+        vec_push(probs, f64_to_bits(p));
+        k = k + 1;
+    }
+    probs
+}
+
+// ============================================================================
+// Sample measurement outcome from current state
+// ============================================================================
+fn noisy_sample_once(sim: i64) -> i64 {
+    let dim: i64 = sim_dim(sim);
+    let state_re: i64 = sim_state_re(sim);
+    let state_im: i64 = sim_state_im(sim);
+    let seed: i64 = sim_seed(sim);
+    let next_seed: i64 = lcg_next(seed);
+    sim_set_seed(sim, next_seed);
+    let r: f64 = lcg_f64(next_seed);
+
+    var cumulative: f64 = 0.0;
+    var k: i64 = 0;
+    while k < dim {
+        let re: f64 = bits_to_f64(load_ptr(state_re, k));
+        let im: f64 = bits_to_f64(load_ptr(state_im, k));
+        cumulative = cumulative + re * re + im * im;
+        if r < cumulative {
+            return k;
+        }
+        k = k + 1;
+    }
+    dim - 1
+}
+
+// ============================================================================
+// Run a circuit with noise model
+// circuit_instrs: vec of gate vecs [gate_code, target, control, param_scaled_i64]
+// Returns: vec of counts per basis state over shots
+// ============================================================================
+fn noisy_run(circuit_instrs: i64, n_qubits: i64, noise_model: i64, shots: i64) -> i64 {
+    let dim: i64 = 1 << n_qubits;
+    let counts: i64 = vec_new();
+    var k: i64 = 0;
+    while k < dim {
+        vec_push(counts, 0);
+        k = k + 1;
+    }
+
+    var shot: i64 = 0;
+    while shot < shots {
+        // Fresh simulator for each shot
+        let sim: i64 = noisy_sim_new(n_qubits);
+        sim_set_seed(sim, 42 + shot * 7919);
+
+        let num_gates: i64 = vec_len(circuit_instrs);
+        var gi: i64 = 0;
+        while gi < num_gates {
+            let gate: i64 = vec_get(circuit_instrs, gi);
+            let code: i64 = vec_get(gate, 0);
+            let target: i64 = vec_get(gate, 1);
+            let control: i64 = vec_get(gate, 2);
+            let param_int: i64 = vec_get(gate, 3);
+            let param: f64 = (param_int as f64) / SCALE;
+
+            // Apply ideal gate
+            noisy_apply_gate(sim, code, target, control, param);
+
+            // Apply noise after gate
+            if code == GATE_CNOT {
+                apply_two_noise(sim, control, target, noise_model);
+            } else {
+                apply_single_noise(sim, target, noise_model);
+            }
+
+            gi = gi + 1;
+        }
+
+        // Sample measurement
+        let outcome: i64 = noisy_sample_once(sim);
+        vec_set(counts, outcome, vec_get(counts, outcome) + 1);
+
+        shot = shot + 1;
+    }
+
+    counts
+}
+
+// ============================================================================
+// Compute noisy expectation value of Z on a target qubit
+// Runs circuit, measures Z expectation = P(0) - P(1) for target qubit
+// ============================================================================
+fn noisy_expectation(circuit_instrs: i64, n_qubits: i64, noise_model: i64, shots: i64, target_qubit: i64) -> f64 {
+    let counts: i64 = noisy_run(circuit_instrs, n_qubits, noise_model, shots);
+    let dim: i64 = 1 << n_qubits;
+    var expect: f64 = 0.0;
+    var total: f64 = 0.0;
+
+    var k: i64 = 0;
+    while k < dim {
+        let c: f64 = vec_get(counts, k) as f64;
+        total = total + c;
+        let bit: i64 = (k >> target_qubit) % 2;
+        if bit == 0 {
+            expect = expect + c;
+        } else {
+            expect = expect - c;
+        }
+        k = k + 1;
+    }
+
+    if total > 0.0 {
+        return expect / total;
+    }
+    0.0
+}
+
+// ============================================================================
+// Helper: build a gate instruction vec
+// ============================================================================
+fn noisy_make_gate(code: i64, target: i64, control: i64, param: f64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, code);
+    vec_push(g, target);
+    vec_push(g, control);
+    let param_int: i64 = (param * SCALE) as i64;
+    vec_push(g, param_int);
+    g
+}
+
+fn main() -> i64 {
+    println(string_from("noisy simulator OK"));
+    0
+}

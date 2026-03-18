@@ -1,0 +1,128 @@
+// Undefined behavior sanitizer integration tests
+
+fn test_arithmetic_near_max() -> i64 {
+    // Integer arithmetic near boundaries (avoiding actual overflow)
+    var large: i64 = 1000000000;
+    var result: i64 = large + large;
+    if result != 2000000000 { println(string_from("FAIL: large addition")); return 1; }
+
+    var neg_large: i64 = 0 - 1000000000;
+    var neg_result: i64 = neg_large - large;
+    if neg_result != 0 - 2000000000 { println(string_from("FAIL: large subtraction")); return 1; }
+
+    // Multiplication staying in bounds
+    var m: i64 = 100000;
+    var m_result: i64 = m * m;
+    if m_result != 10000000000 { println(string_from("FAIL: safe large multiply")); return 1; }
+
+    println(string_from("PASS: test_arithmetic_near_max"));
+    0
+}
+
+fn test_safe_division() -> i64 {
+    // Division with safe divisors (no divide by zero)
+    var a: i64 = 100;
+    if a / 1 != 100 { println(string_from("FAIL: div by 1")); return 1; }
+    if a / 2 != 50 { println(string_from("FAIL: div by 2")); return 1; }
+    if a / 3 != 33 { println(string_from("FAIL: div by 3")); return 1; }
+    if a / 10 != 10 { println(string_from("FAIL: div by 10")); return 1; }
+    if a / 100 != 1 { println(string_from("FAIL: div by 100")); return 1; }
+
+    // Guard against zero division
+    var divisor: i64 = 5;
+    if divisor != 0 {
+        var r: i64 = a / divisor;
+        if r != 20 { println(string_from("FAIL: guarded div")); return 1; }
+    }
+    println(string_from("PASS: test_safe_division"));
+    0
+}
+
+fn test_modulo_safe() -> i64 {
+    // Modulo with safe divisors
+    if 10 % 3 != 1 { println(string_from("FAIL: 10%3")); return 1; }
+    if 100 % 7 != 2 { println(string_from("FAIL: 100%7")); return 1; }
+    if 0 % 5 != 0 { println(string_from("FAIL: 0%5")); return 1; }
+    if 1 % 1 != 0 { println(string_from("FAIL: 1%1")); return 1; }
+    println(string_from("PASS: test_modulo_safe"));
+    0
+}
+
+fn test_array_index_bounds() -> i64 {
+    // Array index within bounds
+    var v: Vec<i64> = vec_new();
+    var i: i64 = 0;
+    while i < 10 {
+        vec_push(v, i * 10);
+        i = i + 1;
+    }
+    // Access only valid indices
+    i = 0;
+    while i < vec_len(v) {
+        var val: i64 = vec_get(v, i);
+        if val != i * 10 { println(string_from("FAIL: bounds check access")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_array_index_bounds"));
+    0
+}
+
+fn test_no_overflow_in_loops() -> i64 {
+    // No integer overflow in loop counters
+    var sum: i64 = 0;
+    var i: i64 = 0;
+    while i < 10000 {
+        sum = sum + 1;
+        i = i + 1;
+    }
+    if sum != 10000 { println(string_from("FAIL: loop counter overflow")); return 1; }
+
+    // Decreasing loop
+    var count: i64 = 0;
+    var j: i64 = 1000;
+    while j > 0 {
+        count = count + 1;
+        j = j - 1;
+    }
+    if count != 1000 { println(string_from("FAIL: decreasing loop count")); return 1; }
+
+    println(string_from("PASS: test_no_overflow_in_loops"));
+    0
+}
+
+fn test_safe_negation() -> i64 {
+    // Negation within safe bounds
+    var x: i64 = 42;
+    var neg: i64 = 0 - x;
+    if neg != 0 - 42 { println(string_from("FAIL: negation 42")); return 1; }
+    var double_neg: i64 = 0 - neg;
+    if double_neg != 42 { println(string_from("FAIL: double negation")); return 1; }
+    println(string_from("PASS: test_safe_negation"));
+    0
+}
+
+fn test_accumulator_no_overflow() -> i64 {
+    // Accumulate values staying in safe range
+    var acc: i64 = 0;
+    var i: i64 = 1;
+    while i <= 100 {
+        acc = acc + i;
+        i = i + 1;
+    }
+    // Sum 1..100 = 5050
+    if acc != 5050 { println(string_from("FAIL: accumulator sum")); return 1; }
+    println(string_from("PASS: test_accumulator_no_overflow"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_arithmetic_near_max();
+    failures = failures + test_safe_division();
+    failures = failures + test_modulo_safe();
+    failures = failures + test_array_index_bounds();
+    failures = failures + test_no_overflow_in_loops();
+    failures = failures + test_safe_negation();
+    failures = failures + test_accumulator_no_overflow();
+    failures
+}

@@ -1,0 +1,254 @@
+// Quantum Error Correction Decoders
+// Implements lookup table and MWPM-approximation decoders
+
+// Code type constants
+let CODE_BITFLIP: i64 = 1;
+let CODE_PHASEFLIP: i64 = 2;
+let CODE_SHOR: i64 = 3;
+let CODE_STEANE: i64 = 4;
+let CODE_SURFACE: i64 = 5;
+
+// Create a lookup table decoder for a given code type
+// Returns decoder handle: vec [code_type, table_size, lookup_table]
+// lookup_table maps syndrome -> correction qubit
+fn lookup_decoder_new(code_type: i64) -> i64 {
+    let decoder: i64 = vec_new();
+    vec_push(decoder, code_type);
+
+    if code_type == CODE_BITFLIP {
+        // 2-bit syndrome -> 4 entries
+        vec_push(decoder, 4);
+        let table: i64 = vec_new();
+        vec_push(table, -1);  // syndrome 0: no error
+        vec_push(table, 0);   // syndrome 1: error on qubit 0
+        vec_push(table, 2);   // syndrome 2: error on qubit 2
+        vec_push(table, 1);   // syndrome 3: error on qubit 1
+        vec_push(decoder, table);
+        return decoder;
+    }
+
+    if code_type == CODE_PHASEFLIP {
+        vec_push(decoder, 4);
+        let table: i64 = vec_new();
+        vec_push(table, -1);
+        vec_push(table, 0);
+        vec_push(table, 2);
+        vec_push(table, 1);
+        vec_push(decoder, table);
+        return decoder;
+    }
+
+    if code_type == CODE_STEANE {
+        // 3-bit syndrome per type -> 8 entries each
+        // For X errors (from Z syndrome) and Z errors (from X syndrome)
+        vec_push(decoder, 8);
+        let table: i64 = vec_new();
+        vec_push(table, -1);  // 0: no error
+        vec_push(table, 0);   // 1: qubit 0
+        vec_push(table, 1);   // 2: qubit 1
+        vec_push(table, 2);   // 3: qubit 2
+        vec_push(table, 3);   // 4: qubit 3
+        vec_push(table, 4);   // 5: qubit 4
+        vec_push(table, 5);   // 6: qubit 5
+        vec_push(table, 6);   // 7: qubit 6
+        vec_push(decoder, table);
+        return decoder;
+    }
+
+    if code_type == CODE_SHOR {
+        // 8-bit syndrome -> 256 entries (only populate single-error entries)
+        vec_push(decoder, 256);
+        let table: i64 = vec_new();
+        let i: i64 = 0;
+        while i < 256 {
+            vec_push(table, -1);  // Default: no correction
+            i = i + 1;
+        }
+        // Populate bit-flip corrections for each block
+        // Block 0: syndromes in bits 0-1
+        vec_set(table, 1, 0);    // bf0=1: qubit 0
+        vec_set(table, 2, 2);    // bf0=2: qubit 2
+        vec_set(table, 3, 1);    // bf0=3: qubit 1
+        // Block 1: syndromes in bits 2-3
+        vec_set(table, 4, 3);    // bf1=1: qubit 3
+        vec_set(table, 8, 5);    // bf1=2: qubit 5
+        vec_set(table, 12, 4);   // bf1=3: qubit 4
+        // Block 2: syndromes in bits 4-5
+        vec_set(table, 16, 6);   // bf2=1: qubit 6
+        vec_set(table, 32, 8);   // bf2=2: qubit 8
+        vec_set(table, 48, 7);   // bf2=3: qubit 7
+        // Phase-flip: syndromes in bits 6-7
+        vec_set(table, 64, 0);   // pf=1: block 0 -> qubit 0
+        vec_set(table, 128, 6);  // pf=2: block 2 -> qubit 6
+        vec_set(table, 192, 3);  // pf=3: block 1 -> qubit 3
+        vec_push(decoder, table);
+        return decoder;
+    }
+
+    // Surface code: use dynamic lookup
+    vec_push(decoder, 0);
+    let table: i64 = vec_new();
+    vec_push(decoder, table);
+    return decoder;
+}
+
+// Decode syndrome using lookup table
+// Returns qubit index to correct (-1 if no correction needed)
+fn lookup_decode(decoder: i64, syndrome: i64) -> i64 {
+    let table_size: i64 = vec_get(decoder, 1);
+    let table: i64 = vec_get(decoder, 2);
+
+    if syndrome < 0 {
+        return -1;
+    }
+    if syndrome >= table_size {
+        return -1;
+    }
+
+    return vec_get(table, syndrome);
+}
+
+// Create a MWPM (Minimum Weight Perfect Matching) decoder
+// For surface codes, uses greedy matching approximation
+// Returns decoder state: [code_type, distance, defect_history]
+fn mwpm_decoder_new(code_type: i64) -> i64 {
+    let decoder: i64 = vec_new();
+    vec_push(decoder, code_type);
+    // Default distance
+    if code_type == CODE_SURFACE {
+        vec_push(decoder, 3);  // default d=3
+    } else {
+        vec_push(decoder, 1);
+    }
+    let history: i64 = vec_new();
+    vec_push(decoder, history);
+    return decoder;
+}
+
+// Decode syndrome using greedy MWPM approximation
+// Finds pairs of syndrome defects (triggered stabilizers) and matches nearest pairs
+// Returns vec of correction operations: each is [qubit, pauli_type]
+fn mwpm_decode(decoder: i64, syndrome: i64) -> i64 {
+    let corrections: i64 = vec_new();
+    let code_type: i64 = vec_get(decoder, 0);
+    let distance: i64 = vec_get(decoder, 1);
+
+    // Extract defect positions (set bits in syndrome)
+    let defects: i64 = vec_new();
+    let s: i64 = syndrome;
+    let pos: i64 = 0;
+    while s > 0 {
+        if s % 2 == 1 {
+            vec_push(defects, pos);
+        }
+        s = s / 2;
+        pos = pos + 1;
+    }
+
+    let n_defects: i64 = vec_len(defects);
+    if n_defects == 0 {
+        return corrections;
+    }
+
+    // Greedy matching: pair up nearest defects
+    let matched: i64 = vec_new();
+    let mi: i64 = 0;
+    while mi < n_defects {
+        vec_push(matched, 0);  // 0 = unmatched
+        mi = mi + 1;
+    }
+
+    let pairs_found: i64 = 0;
+    while pairs_found < n_defects / 2 {
+        // Find closest unmatched pair
+        let best_i: i64 = -1;
+        let best_j: i64 = -1;
+        let best_dist: i64 = 999999;
+
+        let i: i64 = 0;
+        while i < n_defects {
+            if vec_get(matched, i) == 0 {
+                let j: i64 = i + 1;
+                while j < n_defects {
+                    if vec_get(matched, j) == 0 {
+                        let di: i64 = vec_get(defects, i);
+                        let dj: i64 = vec_get(defects, j);
+                        let dist: i64 = dj - di;
+                        if dist < 0 {
+                            dist = 0 - dist;
+                        }
+                        if dist < best_dist {
+                            best_dist = dist;
+                            best_i = i;
+                            best_j = j;
+                        }
+                    }
+                    j = j + 1;
+                }
+            }
+            i = i + 1;
+        }
+
+        if best_i < 0 {
+            // No more pairs possible
+            pairs_found = n_defects;
+        } else {
+            vec_set(matched, best_i, 1);
+            vec_set(matched, best_j, 1);
+
+            // Generate correction along path between defects
+            let d1: i64 = vec_get(defects, best_i);
+            let d2: i64 = vec_get(defects, best_j);
+            let corr: i64 = vec_new();
+            vec_push(corr, d1);
+            vec_push(corr, 1);  // PAULI_X correction
+            vec_push(corrections, corr);
+
+            pairs_found = pairs_found + 1;
+        }
+    }
+
+    // Handle unpaired defects (boundary matching)
+    let ui: i64 = 0;
+    while ui < n_defects {
+        if vec_get(matched, ui) == 0 {
+            let defect_pos: i64 = vec_get(defects, ui);
+            let corr: i64 = vec_new();
+            vec_push(corr, defect_pos);
+            vec_push(corr, 1);  // PAULI_X
+            vec_push(corrections, corr);
+        }
+        ui = ui + 1;
+    }
+
+    return corrections;
+}
+
+// Estimate logical error rate from physical error rate and code distance
+// Uses the heuristic: p_L ~ (p / p_th)^((d+1)/2)
+// where p_th ~ 0.01 is the threshold error rate
+fn decoder_logical_error_rate(physical_error_rate: f64, distance: i64) -> f64 {
+    let p_th: f64 = 0.01;
+    let ratio: f64 = physical_error_rate / p_th;
+
+    // Compute power: (d+1)/2
+    let exponent: i64 = (distance + 1) / 2;
+
+    // ratio^exponent
+    let result: f64 = 1.0;
+    let i: i64 = 0;
+    while i < exponent {
+        result = result * ratio;
+        i = i + 1;
+    }
+
+    // Clamp to [0, 1]
+    if result > 1.0 {
+        result = 1.0;
+    }
+    if result < 0.0 {
+        result = 0.0;
+    }
+
+    return result;
+}

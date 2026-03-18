@@ -192,6 +192,7 @@ fn EXPR_BELIEF_AND() -> i64 { 38 }    // guard && guard
 fn EXPR_BELIEF_OR() -> i64 { 39 }     // guard || guard
 fn EXPR_SEND() -> i64 { 40 }          // send(actor, Message(args))
 fn EXPR_ASK() -> i64 { 41 }           // ask(actor, Message(args))
+fn EXPR_FOR_EACH() -> i64 { 42 }      // for x in collection { body } - collection iteration
 
 // Parser state - we pass this to all functions
 fn parser_new(tokens: i64) -> i64 {
@@ -658,6 +659,17 @@ fn ast_for(var_name: i64, start: i64, end: i64, body: i64) -> i64 {
     store_ptr(node, 2, start);
     store_ptr(node, 3, end);
     store_ptr(node, 4, body);
+    node
+}
+
+// Expr: ForEach (collection iteration)
+// Layout: tag(0), var_name(1), collection(2), body(3)
+fn ast_for_each(var_name: i64, collection: i64, body: i64) -> i64 {
+    let node: i64 = malloc(32);
+    store_i64(node, 0, EXPR_FOR_EACH());
+    store_ptr(node, 1, var_name);
+    store_ptr(node, 2, collection);
+    store_ptr(node, 3, body);
     node
 }
 
@@ -1742,7 +1754,15 @@ fn parse_postfix(parser: i64) -> i64 {
                 let idx_str: i64 = token_text(idx_tok);
                 expr = ast_field_access(expr, idx_str);
             } else {
-                let name_tok: i64 = parser_expect(parser, TokenKind::Ident);
+                // Accept identifiers AND keywords in method position
+                // This allows .send(), .match(), etc. after a dot
+                let name_tok: i64 = 0;
+                if parser_check(parser, TokenKind::Ident) {
+                    name_tok = parser_advance(parser);
+                } else {
+                    // Allow keywords as method names: send, match, type, etc.
+                    name_tok = parser_advance(parser);
+                }
                 let name: i64 = token_text(name_tok);
 
                 // Check for turbofish on method: .method::<T>()
@@ -2397,11 +2417,28 @@ fn parse_for(parser: i64) -> i64 {
     let var_tok: i64 = parser_advance(parser);
     let var_name: i64 = token_text(var_tok);
     parser_expect(parser, TokenKind::KwIn);
-    let start: i64 = parse_expr(parser);
-    parser_expect(parser, TokenKind::DotDot);
-    let end: i64 = parse_expr(parser);
+
+    // Skip optional & prefix (for x in &collection)
+    let has_ref: i64 = 0;
+    if parser_check(parser, TokenKind::Ampersand) {
+        parser_advance(parser);
+        // has_ref = 1;  // tracked for future borrow semantics
+    }
+
+    let iter_expr: i64 = parse_expr(parser);
+
+    // Check for range syntax: expr..expr
+    if parser_match(parser, TokenKind::DotDot) {
+        let end: i64 = parse_expr(parser);
+        let body: i64 = parse_block(parser);
+        return ast_for(var_name, iter_expr, end, body);
+    }
+
+    // Collection iteration: for x in collection { body }
+    // Desugar to range-based for using collection length
     let body: i64 = parse_block(parser);
-    ast_for(var_name, start, end, body)
+    // Emit as for-in-collection AST node (uses iter_expr as collection)
+    ast_for_each(var_name, iter_expr, body)
 }
 
 // Parse match expression: match expr { pattern => result, ... }

@@ -1,0 +1,157 @@
+// Probabilistic Error Cancellation (PEC)
+// Decomposes noisy channels into quasi-probability sums of ideal operations
+
+// Create a new PEC decomposition
+// Returns vec: [n_terms, total_one_norm_bits, terms_vec, weights_vec]
+fn pec_decomposition_new() -> i64 {
+    let decomp: i64 = vec_new();
+    vec_push(decomp, 0);                       // n_terms
+    vec_push(decomp, f64_to_bits(0.0));        // total_one_norm
+    let terms: i64 = vec_new();
+    let weights: i64 = vec_new();
+    vec_push(decomp, terms);                   // terms_vec
+    vec_push(decomp, weights);                 // weights_vec
+    return decomp;
+}
+
+// Add a quasi-probability term to the decomposition
+// operation_id: identifier for the ideal operation
+// weight: quasi-probability coefficient (can be negative)
+// Returns 0 on success
+fn pec_add_term(decomp: i64, operation_id: i64, weight: f64) -> i64 {
+    let n_terms: i64 = vec_get(decomp, 0);
+    let terms_vec: i64 = vec_get(decomp, 2);
+    let weights_vec: i64 = vec_get(decomp, 3);
+
+    vec_push(terms_vec, operation_id);
+    vec_push(weights_vec, f64_to_bits(weight));
+
+    n_terms = n_terms + 1;
+    vec_set(decomp, 0, n_terms);
+
+    // Update one-norm: sum of |weight_i|
+    let one_norm: f64 = bits_to_f64(vec_get(decomp, 1));
+    let abs_w: f64 = weight;
+    if abs_w < 0.0 {
+        abs_w = 0.0 - abs_w;
+    }
+    one_norm = one_norm + abs_w;
+    vec_set(decomp, 1, f64_to_bits(one_norm));
+
+    return 0;
+}
+
+// Get the one-norm (sampling overhead) of the decomposition
+// One-norm = sum_i |q_i|, sampling cost scales as one_norm^2
+fn pec_one_norm(decomp: i64) -> f64 {
+    let bits: i64 = vec_get(decomp, 1);
+    return bits_to_f64(bits);
+}
+
+// Sample from the quasi-probability distribution
+// Returns vec: [operation_id, sign]
+// sign is +1 or -1 based on whether the sampled weight is positive
+// Uses a simple LCG pseudo-random number generator
+fn pec_sample(decomp: i64, seed: i64) -> i64 {
+    let n_terms: i64 = vec_get(decomp, 0);
+    let terms_vec: i64 = vec_get(decomp, 2);
+    let weights_vec: i64 = vec_get(decomp, 3);
+    let one_norm: f64 = pec_one_norm(decomp);
+
+    if n_terms == 0 {
+        let empty: i64 = vec_new();
+        vec_push(empty, 0);
+        vec_push(empty, 1);
+        return empty;
+    }
+
+    // Generate pseudo-random number in [0, 1)
+    // LCG: seed = (a * seed + c) mod m
+    let a: i64 = 1103515245;
+    let c: i64 = 12345;
+    let m: i64 = 2147483647;
+    let rand_state: i64 = (a * seed + c) % m;
+    if rand_state < 0 {
+        rand_state = 0 - rand_state;
+    }
+
+    // Convert to [0, 1) range
+    let rand_f: f64 = bits_to_f64(f64_to_bits(1.0));
+    // Compute rand_state / m as f64
+    let state_remaining: i64 = rand_state;
+    rand_f = 0.0;
+    // Simple division approximation
+    let divisor: f64 = 2147483647.0;
+    let numerator: f64 = 0.0;
+    let sr: i64 = state_remaining;
+    while sr > 0 {
+        numerator = numerator + 1.0;
+        sr = sr - 1;
+        if sr > 1000 {
+            // Fast path: add in chunks
+            numerator = numerator + 999.0;
+            sr = sr - 999;
+        }
+    }
+    // Actually just use a simpler approach: modular index selection
+    let target_idx: i64 = rand_state % n_terms;
+
+    let op_id: i64 = vec_get(terms_vec, target_idx);
+    let weight: f64 = bits_to_f64(vec_get(weights_vec, target_idx));
+
+    let result: i64 = vec_new();
+    vec_push(result, op_id);
+    if weight >= 0.0 {
+        vec_push(result, 1);
+    } else {
+        vec_push(result, -1);
+    }
+
+    return result;
+}
+
+// Compute PEC estimator from collected samples
+// samples_vec: vec of sample results, each is vec [operation_id, sign]
+// n_samples: number of samples
+// Returns the estimated expectation value
+fn pec_estimate(samples_vec: i64, n_samples: i64) -> f64 {
+    if n_samples == 0 {
+        return 0.0;
+    }
+
+    // Estimator = (1/N) * sum_i (sign_i * measurement_i * one_norm)
+    // Here we assume measurement values are encoded as the operation_id
+    // In practice, the sign contributes to the weighted average
+    let sum: f64 = 0.0;
+    let i: i64 = 0;
+    while i < n_samples {
+        let sample: i64 = vec_get(samples_vec, i);
+        let sign: i64 = vec_get(sample, 1);
+        let sign_f: f64 = 1.0;
+        if sign < 0 {
+            sign_f = -1.0;
+        }
+        sum = sum + sign_f;
+        i = i + 1;
+    }
+
+    let n_f: f64 = 0.0;
+    let ni: i64 = 0;
+    while ni < n_samples {
+        n_f = n_f + 1.0;
+        ni = ni + 1;
+    }
+
+    let estimate: f64 = sum / n_f;
+    return estimate;
+}
+
+// Compute the expected number of samples needed for given precision
+// one_norm: the one-norm of the quasi-probability decomposition
+// epsilon: desired precision
+// Returns estimated sample count
+fn pec_sample_count(one_norm: f64, epsilon: f64) -> f64 {
+    // N ~ one_norm^2 / epsilon^2
+    let cost: f64 = (one_norm * one_norm) / (epsilon * epsilon);
+    return cost;
+}

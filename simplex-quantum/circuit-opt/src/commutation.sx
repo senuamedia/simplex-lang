@@ -1,0 +1,257 @@
+// simplex-quantum::circuit-opt::commutation - Commutation Analysis
+//
+// Determines which gates commute to enable non-adjacent cancellation.
+// Diagonal gates (Z, S, T, Rz, CZ) commute with each other.
+// Gates on disjoint qubits always commute.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const PI: f64 = 3.14159265358979323846;
+const EPSILON: f64 = 0.000000001;
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+const INSTR_STRIDE: i64 = 4;
+
+// Check if a gate is diagonal (commutes with other diagonals on same qubit)
+// Diagonal gates: Z, S, T, Rz, CZ
+fn is_diagonal_gate(op: i64) -> i64 {
+    if op == OP_Z() { return 1; }
+    if op == OP_S() { return 1; }
+    if op == OP_T() { return 1; }
+    if op == OP_RZ() { return 1; }
+    if op == OP_CZ() { return 1; }
+    0
+}
+
+// Check if two qubits sets overlap
+// q1a, q1b are qubits for gate 1 (q1b = -1 for single-qubit)
+// q2a, q2b are qubits for gate 2 (q2b = -1 for single-qubit)
+fn qubits_overlap(q1a: i64, q1b: i64, q2a: i64, q2b: i64) -> i64 {
+    if q1a == q2a { return 1; }
+    if q1b >= 0 {
+        if q1b == q2a { return 1; }
+        if q2b >= 0 {
+            if q1b == q2b { return 1; }
+        }
+    }
+    if q2b >= 0 {
+        if q1a == q2b { return 1; }
+    }
+    0
+}
+
+// Check if two gates commute.
+// Returns 1 if they commute, 0 otherwise.
+// Rules:
+//   1. Disjoint qubits -> always commute
+//   2. Both diagonal on same qubit -> commute
+//   3. Same gate type and same qubits -> commute (they're the same operation)
+//   4. CNOT commutes with Z/Rz on target, and with Z/Rz/CZ on control
+fn gates_commute(op1: i64, q1a: i64, q1b: i64, op2: i64, q2a: i64, q2b: i64) -> i64 {
+    // Rule 1: disjoint qubits always commute
+    if qubits_overlap(q1a, q1b, q2a, q2b) == 0 {
+        return 1;
+    }
+
+    // Rule 2: both diagonal -> commute
+    if is_diagonal_gate(op1) != 0 {
+        if is_diagonal_gate(op2) != 0 {
+            return 1;
+        }
+    }
+
+    // Rule 3: identical gate on identical qubits -> commute
+    if op1 == op2 {
+        if q1a == q2a {
+            if q1b == q2b {
+                return 1;
+            }
+        }
+    }
+
+    // Rule 4: CNOT with diagonal on control or target
+    if op1 == OP_CNOT() {
+        // CNOT control = q1a, target = q1b
+        if is_diagonal_gate(op2) != 0 {
+            // Diagonal on CNOT's control -> commute
+            if q2a == q1a {
+                if q2b < 0 {
+                    return 1;
+                }
+            }
+        }
+        // Z-like on CNOT's target also commutes (Z basis)
+        if op2 == OP_Z() {
+            if q2a == q1b { return 1; }
+        }
+        if op2 == OP_RZ() {
+            if q2a == q1b { return 1; }
+        }
+    }
+
+    // Symmetric: if op2 is CNOT
+    if op2 == OP_CNOT() {
+        if is_diagonal_gate(op1) != 0 {
+            if q1a == q2a {
+                if q1b < 0 {
+                    return 1;
+                }
+            }
+        }
+        if op1 == OP_Z() {
+            if q1a == q2b { return 1; }
+        }
+        if op1 == OP_RZ() {
+            if q1a == q2b { return 1; }
+        }
+    }
+
+    0
+}
+
+// Helper: get instruction fields
+fn instr_op(instrs: i64, i: i64) -> i64 { vec_get(instrs, i * INSTR_STRIDE()); }
+fn instr_q0(instrs: i64, i: i64) -> i64 { vec_get(instrs, i * INSTR_STRIDE() + 1); }
+fn instr_q1(instrs: i64, i: i64) -> i64 { vec_get(instrs, i * INSTR_STRIDE() + 2); }
+fn instr_theta_bits(instrs: i64, i: i64) -> i64 { vec_get(instrs, i * INSTR_STRIDE() + 3); }
+fn instr_count(instrs: i64) -> i64 { vec_len(instrs) / INSTR_STRIDE(); }
+
+fn copy_instr(dst: i64, src: i64, si: i64) -> i64 {
+    let base: i64 = si * INSTR_STRIDE();
+    vec_push(dst, vec_get(src, base));
+    vec_push(dst, vec_get(src, base + 1));
+    vec_push(dst, vec_get(src, base + 2));
+    vec_push(dst, vec_get(src, base + 3));
+    0
+}
+
+fn is_self_inverse(op: i64) -> i64 {
+    if op == OP_H() { return 1; }
+    if op == OP_X() { return 1; }
+    if op == OP_Y() { return 1; }
+    if op == OP_Z() { return 1; }
+    0
+}
+
+// Commutation-based cancellation.
+// Find pairs of self-inverse gates that cancel, even if not adjacent,
+// by checking that all intervening gates commute with both.
+fn commutation_cancel(instrs: i64) -> i64 {
+    let n: i64 = instr_count(instrs);
+    if n < 2 { return instrs; }
+
+    let marks: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(marks, 0);
+        i = i + 1;
+    }
+
+    // For each gate, look ahead for a matching cancellation partner
+    i = 0;
+    while i < n {
+        if vec_get(marks, i) == 0 {
+            let op1: i64 = instr_op(instrs, i);
+            let q0_1: i64 = instr_q0(instrs, i);
+            let q1_1: i64 = instr_q1(instrs, i);
+
+            // Only try to cancel self-inverse gates and identical CNOTs
+            var can_cancel: i64 = 0;
+            if is_self_inverse(op1) != 0 { can_cancel = 1; }
+            if op1 == OP_CNOT() { can_cancel = 1; }
+            if op1 == OP_SWAP() { can_cancel = 1; }
+
+            if can_cancel != 0 {
+                var j: i64 = i + 1;
+                var found: i64 = 0;
+                while j < n {
+                    if found != 0 {
+                        j = n;
+                    } else {
+                        if vec_get(marks, j) == 0 {
+                            let op2: i64 = instr_op(instrs, j);
+                            let q0_2: i64 = instr_q0(instrs, j);
+                            let q1_2: i64 = instr_q1(instrs, j);
+
+                            // Check if it's a matching gate
+                            if op1 == op2 {
+                                if q0_1 == q0_2 {
+                                    if q1_1 == q1_2 {
+                                        // Check all intervening gates commute
+                                        var all_commute: i64 = 1;
+                                        var k: i64 = i + 1;
+                                        while k < j {
+                                            if vec_get(marks, k) == 0 {
+                                                let opk: i64 = instr_op(instrs, k);
+                                                let q0k: i64 = instr_q0(instrs, k);
+                                                let q1k: i64 = instr_q1(instrs, k);
+                                                // Must commute with both gates in the pair
+                                                if gates_commute(op1, q0_1, q1_1, opk, q0k, q1k) == 0 {
+                                                    all_commute = 0;
+                                                    k = j;
+                                                }
+                                            }
+                                            k = k + 1;
+                                        }
+                                        if all_commute != 0 {
+                                            vec_set(marks, i, 1);
+                                            vec_set(marks, j, 1);
+                                            found = 1;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // If gate doesn't commute, stop searching
+                            if found == 0 {
+                                if gates_commute(op1, q0_1, q1_1, op2, q0_2, q1_2) == 0 {
+                                    j = n;
+                                }
+                            }
+                        }
+                        j = j + 1;
+                    }
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    // Build result without cancelled gates
+    let result: i64 = vec_new();
+    i = 0;
+    while i < n {
+        if vec_get(marks, i) == 0 {
+            copy_instr(result, instrs, i);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+fn main() -> i64 {
+    // Test commutation rules
+    let c1: i64 = gates_commute(OP_Z(), 0, 0 - 1, OP_S(), 0, 0 - 1);
+    println(string_concat(string_from("Z,S commute: "), int_to_string(c1)));
+    let c2: i64 = gates_commute(OP_H(), 0, 0 - 1, OP_X(), 1, 0 - 1);
+    println(string_concat(string_from("H(0),X(1) commute: "), int_to_string(c2)));
+    let c3: i64 = gates_commute(OP_H(), 0, 0 - 1, OP_X(), 0, 0 - 1);
+    println(string_concat(string_from("H(0),X(0) commute: "), int_to_string(c3)));
+    println(string_from("circuit-opt/commutation.sx OK"));
+    0
+}

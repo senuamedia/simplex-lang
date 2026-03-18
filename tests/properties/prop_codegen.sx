@@ -1,0 +1,126 @@
+// Property-based tests for codegen correctness
+
+fn test_constant_arithmetic() -> i64 {
+    // Property: constant arithmetic produces correct results
+    if 2 + 3 != 5 { println(string_from("FAIL: 2+3")); return 1; }
+    if 10 - 4 != 6 { println(string_from("FAIL: 10-4")); return 1; }
+    if 3 * 7 != 21 { println(string_from("FAIL: 3*7")); return 1; }
+    if 20 / 4 != 5 { println(string_from("FAIL: 20/4")); return 1; }
+    if 17 % 5 != 2 { println(string_from("FAIL: 17%5")); return 1; }
+    if 0 * 999 != 0 { println(string_from("FAIL: 0*999")); return 1; }
+    if 1 * 42 != 42 { println(string_from("FAIL: 1*42")); return 1; }
+    println(string_from("PASS: test_constant_arithmetic"));
+    0
+}
+
+fn test_string_literal_length() -> i64 {
+    // Property: string literal produces correct length
+    if string_len(string_from("")) != 0 { println(string_from("FAIL: empty string len")); return 1; }
+    if string_len(string_from("a")) != 1 { println(string_from("FAIL: single char len")); return 1; }
+    if string_len(string_from("hello")) != 5 { println(string_from("FAIL: hello len")); return 1; }
+    if string_len(string_from("hello world")) != 11 { println(string_from("FAIL: hello world len")); return 1; }
+    println(string_from("PASS: test_string_literal_length"));
+    0
+}
+
+fn test_boolean_operations() -> i64 {
+    // Property: boolean operations produce correct results
+    if (true && false) != false { println(string_from("FAIL: true && false")); return 1; }
+    if (true && true) != true { println(string_from("FAIL: true && true")); return 1; }
+    if (false && false) != false { println(string_from("FAIL: false && false")); return 1; }
+    if (true || false) != true { println(string_from("FAIL: true || false")); return 1; }
+    if (false || false) != false { println(string_from("FAIL: false || false")); return 1; }
+    if (!true) != false { println(string_from("FAIL: !true")); return 1; }
+    if (!false) != true { println(string_from("FAIL: !false")); return 1; }
+    println(string_from("PASS: test_boolean_operations"));
+    0
+}
+
+fn test_if_else_branch() -> i64 {
+    // Property: if/else takes correct branch
+    var r1: i64 = 0;
+    if true { r1 = 1; } else { r1 = 2; }
+    if r1 != 1 { println(string_from("FAIL: if true branch")); return 1; }
+
+    var r2: i64 = 0;
+    if false { r2 = 1; } else { r2 = 2; }
+    if r2 != 2 { println(string_from("FAIL: if false branch")); return 1; }
+
+    var r3: i64 = 0;
+    if 5 > 3 { r3 = 10; } else { r3 = 20; }
+    if r3 != 10 { println(string_from("FAIL: if comparison branch")); return 1; }
+
+    var r4: i64 = 0;
+    if 3 > 5 { r4 = 10; } else { r4 = 20; }
+    if r4 != 20 { println(string_from("FAIL: if false comparison branch")); return 1; }
+
+    println(string_from("PASS: test_if_else_branch"));
+    0
+}
+
+fn test_for_loop_count() -> i64 {
+    // Property: for loop executes correct count
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < 100 {
+        count = count + 1;
+        i = i + 1;
+    }
+    if count != 100 { println(string_from("FAIL: loop count 100")); return 1; }
+
+    var count2: i64 = 0;
+    var j: i64 = 0;
+    while j < 0 {
+        count2 = count2 + 1;
+        j = j + 1;
+    }
+    if count2 != 0 { println(string_from("FAIL: loop count 0")); return 1; }
+
+    println(string_from("PASS: test_for_loop_count"));
+    0
+}
+
+fn helper_add(a: i64, b: i64) -> i64 { a + b }
+fn helper_mul(a: i64, b: i64) -> i64 { a * b }
+fn helper_identity(x: i64) -> i64 { x }
+
+fn test_function_call_return() -> i64 {
+    // Property: function calls return correct values
+    if helper_add(3, 4) != 7 { println(string_from("FAIL: add(3,4)")); return 1; }
+    if helper_mul(5, 6) != 30 { println(string_from("FAIL: mul(5,6)")); return 1; }
+    if helper_identity(99) != 99 { println(string_from("FAIL: identity(99)")); return 1; }
+    if helper_add(0, 0) != 0 { println(string_from("FAIL: add(0,0)")); return 1; }
+    if helper_mul(1, 42) != 42 { println(string_from("FAIL: mul(1,42)")); return 1; }
+    // Nested calls
+    if helper_add(helper_mul(2, 3), helper_add(4, 5)) != 15 {
+        println(string_from("FAIL: nested calls"));
+        return 1;
+    }
+    println(string_from("PASS: test_function_call_return"));
+    0
+}
+
+fn test_variable_reassignment() -> i64 {
+    // Property: variable reassignment works correctly
+    var x: i64 = 10;
+    x = 20;
+    if x != 20 { println(string_from("FAIL: reassign to 20")); return 1; }
+    x = x + 5;
+    if x != 25 { println(string_from("FAIL: reassign add 5")); return 1; }
+    x = x * 2;
+    if x != 50 { println(string_from("FAIL: reassign mul 2")); return 1; }
+    println(string_from("PASS: test_variable_reassignment"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_constant_arithmetic();
+    failures = failures + test_string_literal_length();
+    failures = failures + test_boolean_operations();
+    failures = failures + test_if_else_branch();
+    failures = failures + test_for_loop_count();
+    failures = failures + test_function_call_return();
+    failures = failures + test_variable_reassignment();
+    failures
+}

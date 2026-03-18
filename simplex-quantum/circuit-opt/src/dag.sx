@@ -1,0 +1,274 @@
+// simplex-quantum::circuit-opt::dag - Circuit DAG Representation
+//
+// Directed acyclic graph for circuit analysis and reordering.
+// Each node is a gate; edges represent data dependencies (same qubit).
+//
+// DAG layout (vec):
+//   [0] n_qubits  [1] n_nodes  [2] nodes_vec  [3] adj_vec  [4] last_on_qubit_vec
+//
+// Node layout (vec per node in nodes_vec):
+//   [0] op  [1] q0  [2] q1  [3] theta_bits  [4] in_degree
+//
+// adj_vec: vec of vecs, adj_vec[i] = list of successor node indices
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+const INSTR_STRIDE: i64 = 4;
+
+// DAG vec offsets
+const DAG_NQUBITS: i64 = 0;
+const DAG_NNODES: i64 = 1;
+const DAG_NODES: i64 = 2;
+const DAG_ADJ: i64 = 3;
+const DAG_LAST: i64 = 4;
+
+// Node vec offsets
+const NODE_OP: i64 = 0;
+const NODE_Q0: i64 = 1;
+const NODE_Q1: i64 = 2;
+const NODE_THETA: i64 = 3;
+const NODE_INDEG: i64 = 4;
+
+fn dag_new(n_qubits: i64) -> i64 {
+    let dag: i64 = vec_new();
+    vec_push(dag, n_qubits);
+    vec_push(dag, 0);
+    vec_push(dag, vec_new());
+    vec_push(dag, vec_new());
+    let last: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_qubits {
+        vec_push(last, 0 - 1);
+        i = i + 1;
+    }
+    vec_push(dag, last);
+    dag
+}
+
+// Add a gate node to the DAG. Returns node index.
+fn dag_add_gate(dag: i64, op: i64, q0: i64, q1: i64, theta_bits: i64) -> i64 {
+    let nodes: i64 = vec_get(dag, DAG_NODES());
+    let adj: i64 = vec_get(dag, DAG_ADJ());
+    let last: i64 = vec_get(dag, DAG_LAST());
+    let idx: i64 = vec_get(dag, DAG_NNODES());
+
+    // Create node
+    let node: i64 = vec_new();
+    vec_push(node, op);
+    vec_push(node, q0);
+    vec_push(node, q1);
+    vec_push(node, theta_bits);
+    vec_push(node, 0);
+    vec_push(nodes, node);
+
+    // Create adjacency list for this node
+    vec_push(adj, vec_new());
+
+    // Add edges from last gate on each qubit
+    let prev_q0: i64 = vec_get(last, q0);
+    if prev_q0 >= 0 {
+        // Add edge: prev_q0 -> idx
+        let prev_adj: i64 = vec_get(adj, prev_q0);
+        // Check for duplicate edge
+        var dup: i64 = 0;
+        var d: i64 = 0;
+        while d < vec_len(prev_adj) {
+            if vec_get(prev_adj, d) == idx { dup = 1; }
+            d = d + 1;
+        }
+        if dup == 0 {
+            vec_push(prev_adj, idx);
+            let in_deg: i64 = vec_get(node, NODE_INDEG());
+            vec_set(node, NODE_INDEG(), in_deg + 1);
+        }
+    }
+
+    if q1 >= 0 {
+        let prev_q1: i64 = vec_get(last, q1);
+        if prev_q1 >= 0 {
+            if prev_q1 != prev_q0 {
+                let prev_adj1: i64 = vec_get(adj, prev_q1);
+                var dup1: i64 = 0;
+                var d1: i64 = 0;
+                while d1 < vec_len(prev_adj1) {
+                    if vec_get(prev_adj1, d1) == idx { dup1 = 1; }
+                    d1 = d1 + 1;
+                }
+                if dup1 == 0 {
+                    vec_push(prev_adj1, idx);
+                    let in_deg1: i64 = vec_get(node, NODE_INDEG());
+                    vec_set(node, NODE_INDEG(), in_deg1 + 1);
+                }
+            }
+        }
+        vec_set(last, q1, idx);
+    }
+
+    vec_set(last, q0, idx);
+    vec_set(dag, DAG_NNODES(), idx + 1);
+    idx
+}
+
+// Build a DAG from a flat instruction list
+fn dag_from_instructions(instrs: i64, n_qubits: i64) -> i64 {
+    let dag: i64 = dag_new(n_qubits);
+    let n: i64 = vec_len(instrs) / INSTR_STRIDE();
+    var i: i64 = 0;
+    while i < n {
+        let base: i64 = i * INSTR_STRIDE();
+        let op: i64 = vec_get(instrs, base);
+        let q0: i64 = vec_get(instrs, base + 1);
+        let q1: i64 = vec_get(instrs, base + 2);
+        let tb: i64 = vec_get(instrs, base + 3);
+        dag_add_gate(dag, op, q0, q1, tb);
+        i = i + 1;
+    }
+    dag
+}
+
+// Topological order via Kahn's algorithm.
+// Returns vec of node indices in topological order.
+fn dag_topological_order(dag: i64) -> i64 {
+    let n: i64 = vec_get(dag, DAG_NNODES());
+    let nodes: i64 = vec_get(dag, DAG_NODES());
+    let adj: i64 = vec_get(dag, DAG_ADJ());
+
+    // Copy in-degrees (don't modify originals)
+    let in_deg: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let node: i64 = vec_get(nodes, i);
+        vec_push(in_deg, vec_get(node, NODE_INDEG()));
+        i = i + 1;
+    }
+
+    // Initialize queue with zero in-degree nodes
+    let queue: i64 = vec_new();
+    i = 0;
+    while i < n {
+        if vec_get(in_deg, i) == 0 {
+            vec_push(queue, i);
+        }
+        i = i + 1;
+    }
+
+    let order: i64 = vec_new();
+    var front: i64 = 0;
+    while front < vec_len(queue) {
+        let node_idx: i64 = vec_get(queue, front);
+        vec_push(order, node_idx);
+        front = front + 1;
+
+        // Decrement in-degree of successors
+        let succs: i64 = vec_get(adj, node_idx);
+        var s: i64 = 0;
+        while s < vec_len(succs) {
+            let succ: i64 = vec_get(succs, s);
+            let deg: i64 = vec_get(in_deg, succ) - 1;
+            vec_set(in_deg, succ, deg);
+            if deg == 0 {
+                vec_push(queue, succ);
+            }
+            s = s + 1;
+        }
+    }
+    order
+}
+
+// Compute the critical path length (= circuit depth).
+// Uses longest-path on DAG via topological order.
+fn dag_critical_path(dag: i64) -> i64 {
+    let n: i64 = vec_get(dag, DAG_NNODES());
+    if n == 0 { return 0; }
+
+    let adj: i64 = vec_get(dag, DAG_ADJ());
+    let order: i64 = dag_topological_order(dag);
+
+    // dist[i] = longest path ending at node i
+    let dist: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(dist, 1);
+        i = i + 1;
+    }
+
+    // Process in topological order
+    i = 0;
+    while i < vec_len(order) {
+        let u: i64 = vec_get(order, i);
+        let succs: i64 = vec_get(adj, u);
+        var s: i64 = 0;
+        while s < vec_len(succs) {
+            let v: i64 = vec_get(succs, s);
+            let new_dist: i64 = vec_get(dist, u) + 1;
+            if new_dist > vec_get(dist, v) {
+                vec_set(dist, v, new_dist);
+            }
+            s = s + 1;
+        }
+        i = i + 1;
+    }
+
+    // Find maximum distance
+    var max_d: i64 = 0;
+    i = 0;
+    while i < n {
+        let d: i64 = vec_get(dist, i);
+        if d > max_d { max_d = d; }
+        i = i + 1;
+    }
+    max_d
+}
+
+// Convert DAG back to flat instruction list using given node order.
+fn dag_to_instructions(dag: i64, order: i64) -> i64 {
+    let nodes: i64 = vec_get(dag, DAG_NODES());
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < vec_len(order) {
+        let idx: i64 = vec_get(order, i);
+        let node: i64 = vec_get(nodes, idx);
+        vec_push(result, vec_get(node, NODE_OP()));
+        vec_push(result, vec_get(node, NODE_Q0()));
+        vec_push(result, vec_get(node, NODE_Q1()));
+        vec_push(result, vec_get(node, NODE_THETA()));
+        i = i + 1;
+    }
+    result
+}
+
+fn main() -> i64 {
+    // Test: build DAG from a small circuit
+    let instrs: i64 = vec_new();
+    // H on qubit 0
+    vec_push(instrs, 1); vec_push(instrs, 0); vec_push(instrs, 0 - 1); vec_push(instrs, 0);
+    // CNOT on 0,1
+    vec_push(instrs, 10); vec_push(instrs, 0); vec_push(instrs, 1); vec_push(instrs, 0);
+    // H on qubit 1
+    vec_push(instrs, 1); vec_push(instrs, 1); vec_push(instrs, 0 - 1); vec_push(instrs, 0);
+
+    let dag: i64 = dag_from_instructions(instrs, 2);
+    let order: i64 = dag_topological_order(dag);
+    let depth: i64 = dag_critical_path(dag);
+    println(string_concat(string_from("DAG nodes: "), int_to_string(vec_get(dag, DAG_NNODES()))));
+    println(string_concat(string_from("DAG depth: "), int_to_string(depth)));
+    println(string_concat(string_from("Topo order len: "), int_to_string(vec_len(order))));
+    println(string_from("circuit-opt/dag.sx OK"));
+    0
+}

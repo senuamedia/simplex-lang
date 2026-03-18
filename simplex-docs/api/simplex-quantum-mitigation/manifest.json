@@ -1,0 +1,37 @@
+{
+  "package": "simplex-quantum-mitigation",
+  "version": "0.15.0",
+  "description": "Quantum error mitigation strategies -- ZNE, PEC, readout mitigation",
+  "modules": [
+    {
+      "name": "mod",
+      "file": "mitigation/src/mod.sx",
+      "description": "MitigationResult, strategy type constants"
+    },
+    {
+      "name": "zne",
+      "file": "mitigation/src/zne.sx",
+      "description": "Zero-noise extrapolation engine (linear, polynomial, Richardson, exponential)"
+    },
+    {
+      "name": "scaling",
+      "file": "mitigation/src/scaling.sx",
+      "description": "Noise amplification via gate folding and pulse stretching"
+    },
+    {
+      "name": "extrapolation",
+      "file": "mitigation/src/extrapolation.sx",
+      "description": "Polynomial/exponential fitting, Gaussian elimination"
+    },
+    {
+      "name": "pec",
+      "file": "mitigation/src/pec.sx",
+      "description": "Probabilistic error cancellation with Monte Carlo sampling"
+    },
+    {
+      "name": "tomography",
+      "file": "mitigation/src/tomography.sx",
+      "description": "Gate set characterization and process fidelity"
+    }
+  ]
+}

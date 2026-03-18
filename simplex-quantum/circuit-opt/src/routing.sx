@@ -1,0 +1,261 @@
+// simplex-quantum::circuit-opt::routing - Qubit Routing
+//
+// Insert SWAP gates to satisfy hardware connectivity constraints.
+// For each two-qubit gate, check if qubits are adjacent in the topology.
+// If not, find shortest path via BFS and insert SWAPs along the path.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+const INSTR_STRIDE: i64 = 4;
+
+// Topology offsets
+const TOPO_NQUBITS: i64 = 0;
+const TOPO_EDGES: i64 = 1;
+
+fn push_instr(dst: i64, op: i64, q0: i64, q1: i64, theta_bits: i64) -> i64 {
+    vec_push(dst, op);
+    vec_push(dst, q0);
+    vec_push(dst, q1);
+    vec_push(dst, theta_bits);
+    0
+}
+
+// Route a circuit for a given hardware topology.
+// Inserts SWAP gates to bring non-adjacent qubits together.
+// Returns new instruction list with SWAPs inserted.
+fn route_circuit(instrs: i64, n_qubits: i64, topology: i64) -> i64 {
+    let n: i64 = vec_len(instrs) / INSTR_STRIDE();
+    let result: i64 = vec_new();
+
+    // Initialize logical-to-physical mapping: identity
+    let mapping: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_qubits {
+        vec_push(mapping, i);
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < n {
+        let base: i64 = i * INSTR_STRIDE();
+        let op: i64 = vec_get(instrs, base);
+        let q0_log: i64 = vec_get(instrs, base + 1);
+        let q1_log: i64 = vec_get(instrs, base + 2);
+        let tb: i64 = vec_get(instrs, base + 3);
+
+        if q1_log < 0 {
+            // Single-qubit gate: map logical to physical
+            let q0_phys: i64 = vec_get(mapping, q0_log);
+            push_instr(result, op, q0_phys, 0 - 1, tb);
+        } else {
+            // Two-qubit gate: check adjacency
+            let q0_phys: i64 = vec_get(mapping, q0_log);
+            let q1_phys: i64 = vec_get(mapping, q1_log);
+
+            if topology_is_adjacent(topology, q0_phys, q1_phys) != 0 {
+                // Adjacent: emit directly
+                push_instr(result, op, q0_phys, q1_phys, tb);
+            } else {
+                // Not adjacent: find shortest path and insert SWAPs
+                let path: i64 = shortest_path(topology, q0_phys, q1_phys);
+                let path_len: i64 = vec_len(path);
+
+                if path_len > 1 {
+                    // SWAP along the path to bring q0 next to q1
+                    var step: i64 = 0;
+                    while step < path_len - 2 {
+                        let from_q: i64 = vec_get(path, step);
+                        let to_q: i64 = vec_get(path, step + 1);
+                        // Insert SWAP as 3 CNOTs
+                        insert_swap(result, from_q, to_q);
+                        // Update mapping
+                        update_mapping(mapping, from_q, to_q);
+                        step = step + 1;
+                    }
+                    // Now q0 is at path[path_len-2], q1 is at path[path_len-1]
+                    let new_q0: i64 = vec_get(path, path_len - 2);
+                    let new_q1: i64 = vec_get(path, path_len - 1);
+                    push_instr(result, op, new_q0, new_q1, tb);
+                } else {
+                    // Fallback: just emit (shouldn't happen with valid topology)
+                    push_instr(result, op, q0_phys, q1_phys, tb);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// Insert a SWAP as 3 CNOT gates
+fn insert_swap(instrs: i64, q1: i64, q2: i64) -> i64 {
+    push_instr(instrs, OP_CNOT(), q1, q2, 0);
+    push_instr(instrs, OP_CNOT(), q2, q1, 0);
+    push_instr(instrs, OP_CNOT(), q1, q2, 0);
+    0
+}
+
+// BFS shortest path between two qubits in the topology.
+// Returns vec of qubit indices forming the path (inclusive of both endpoints).
+fn shortest_path(topology: i64, from: i64, to: i64) -> i64 {
+    if from == to {
+        let p: i64 = vec_new();
+        vec_push(p, from);
+        return p;
+    }
+
+    let n_qubits: i64 = vec_get(topology, TOPO_NQUBITS());
+
+    // BFS
+    let visited: i64 = vec_new();
+    let parent: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_qubits {
+        vec_push(visited, 0);
+        vec_push(parent, 0 - 1);
+        i = i + 1;
+    }
+
+    let queue: i64 = vec_new();
+    vec_push(queue, from);
+    vec_set(visited, from, 1);
+
+    var found: i64 = 0;
+    var front: i64 = 0;
+    while front < vec_len(queue) {
+        if found != 0 {
+            front = vec_len(queue);
+        } else {
+            let current: i64 = vec_get(queue, front);
+            front = front + 1;
+
+            if current == to {
+                found = 1;
+            } else {
+                // Get neighbors
+                let neighbors: i64 = topology_neighbors(topology, current);
+                var ni: i64 = 0;
+                while ni < vec_len(neighbors) {
+                    let nb: i64 = vec_get(neighbors, ni);
+                    if vec_get(visited, nb) == 0 {
+                        vec_set(visited, nb, 1);
+                        vec_set(parent, nb, current);
+                        vec_push(queue, nb);
+                    }
+                    ni = ni + 1;
+                }
+            }
+        }
+    }
+
+    // Reconstruct path
+    let path: i64 = vec_new();
+    if found != 0 {
+        // Trace back from 'to' to 'from'
+        let rev: i64 = vec_new();
+        var cur: i64 = to;
+        while cur >= 0 {
+            vec_push(rev, cur);
+            cur = vec_get(parent, cur);
+        }
+        // Reverse into path
+        i = vec_len(rev) - 1;
+        while i >= 0 {
+            vec_push(path, vec_get(rev, i));
+            i = i - 1;
+        }
+    }
+    path
+}
+
+// Update logical-to-physical mapping after a SWAP.
+// Find which logical qubits map to q1 and q2, and swap them.
+fn update_mapping(mapping: i64, q1: i64, q2: i64) -> i64 {
+    let n: i64 = vec_len(mapping);
+    var log1: i64 = 0 - 1;
+    var log2: i64 = 0 - 1;
+    var i: i64 = 0;
+    while i < n {
+        let phys: i64 = vec_get(mapping, i);
+        if phys == q1 { log1 = i; }
+        if phys == q2 { log2 = i; }
+        i = i + 1;
+    }
+    if log1 >= 0 {
+        if log2 >= 0 {
+            vec_set(mapping, log1, q2);
+            vec_set(mapping, log2, q1);
+        }
+    }
+    0
+}
+
+// Topology helpers (imported from topology.sx, duplicated for standalone use)
+fn topology_is_adjacent(topo: i64, q1: i64, q2: i64) -> i64 {
+    let edges: i64 = vec_get(topo, TOPO_EDGES());
+    let n: i64 = vec_len(edges) / 2;
+    var i: i64 = 0;
+    while i < n {
+        let a: i64 = vec_get(edges, i * 2);
+        let b: i64 = vec_get(edges, i * 2 + 1);
+        if a == q1 {
+            if b == q2 { return 1; }
+        }
+        if a == q2 {
+            if b == q1 { return 1; }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+fn topology_neighbors(topo: i64, qubit: i64) -> i64 {
+    let edges: i64 = vec_get(topo, TOPO_EDGES());
+    let n: i64 = vec_len(edges) / 2;
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let a: i64 = vec_get(edges, i * 2);
+        let b: i64 = vec_get(edges, i * 2 + 1);
+        if a == qubit { vec_push(result, b); }
+        if b == qubit { vec_push(result, a); }
+        i = i + 1;
+    }
+    result
+}
+
+fn main() -> i64 {
+    // Test: route a CNOT(0,2) on a linear topology 0-1-2
+    let topo: i64 = vec_new();
+    vec_push(topo, 3);
+    let edges: i64 = vec_new();
+    vec_push(edges, 0); vec_push(edges, 1);
+    vec_push(edges, 1); vec_push(edges, 2);
+    vec_push(topo, edges);
+
+    let instrs: i64 = vec_new();
+    // CNOT(0, 2) - not adjacent on linear topology
+    vec_push(instrs, 10); vec_push(instrs, 0); vec_push(instrs, 2); vec_push(instrs, 0);
+
+    let routed: i64 = route_circuit(instrs, 3, topo);
+    let routed_count: i64 = vec_len(routed) / INSTR_STRIDE();
+    println(string_concat(string_from("routed gates: "), int_to_string(routed_count)));
+    println(string_from("circuit-opt/routing.sx OK"));
+    0
+}

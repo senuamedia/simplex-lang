@@ -1,0 +1,103 @@
+// Readout Error Model
+// Models measurement bit-flip probabilities
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const CHANNEL_READOUT: i64 = 4;
+
+// Readout error: vec [type, p0_given_1_bits, p1_given_0_bits]
+fn readout_error_new(p0_given_1: f64, p1_given_0: f64) -> i64 {
+    let ch: i64 = vec_new();
+    vec_push(ch, CHANNEL_READOUT);
+    vec_push(ch, f64_to_bits(p0_given_1));
+    vec_push(ch, f64_to_bits(p1_given_0));
+    ch
+}
+
+fn readout_error_symmetric(p: f64) -> i64 {
+    readout_error_new(p, p)
+}
+
+fn readout_p0_given_1(error: i64) -> f64 {
+    bits_to_f64(vec_get(error, 1))
+}
+
+fn readout_p1_given_0(error: i64) -> f64 {
+    bits_to_f64(vec_get(error, 2))
+}
+
+// Apply readout error to measurement counts
+// counts_vec: vec of i64 counts per basis state
+// Returns: new counts vec with readout error applied
+fn readout_apply(counts_vec: i64, n_qubits: i64, error: i64) -> i64 {
+    let dim: i64 = 1 << n_qubits;
+    let p01: f64 = readout_p1_given_0(error);  // 0->1 flip
+    let p10: f64 = readout_p0_given_1(error);  // 1->0 flip
+    let result: i64 = vec_new();
+
+    var k: i64 = 0;
+    while k < dim {
+        let count: i64 = vec_get(counts_vec, k);
+        let count_f: f64 = count as f64;
+
+        // For each qubit, apply readout matrix
+        var new_count: f64 = count_f;
+        var q: i64 = 0;
+        while q < n_qubits {
+            let bit: i64 = (k >> q) % 2;
+            if bit == 0 {
+                // Probability this was correctly read as 0
+                new_count = new_count * (1.0 - p01);
+            } else {
+                new_count = new_count * (1.0 - p10);
+            }
+            q = q + 1;
+        }
+        vec_push(result, (new_count + 0.5) as i64);
+        k = k + 1;
+    }
+    result
+}
+
+// Build calibration matrix for readout error mitigation
+// Returns vec of [dim * dim] matrix entries (row-major)
+fn readout_calibration_matrix(error: i64, n_qubits: i64) -> i64 {
+    let dim: i64 = 1 << n_qubits;
+    let matrix: i64 = vec_new();
+    let p01: f64 = readout_p1_given_0(error);
+    let p10: f64 = readout_p0_given_1(error);
+
+    var i: i64 = 0;
+    while i < dim {
+        var j: i64 = 0;
+        while j < dim {
+            // P(measure i | true state j)
+            var prob: f64 = 1.0;
+            var q: i64 = 0;
+            while q < n_qubits {
+                let meas_bit: i64 = (i >> q) % 2;
+                let true_bit: i64 = (j >> q) % 2;
+                if true_bit == 0 && meas_bit == 0 {
+                    prob = prob * (1.0 - p01);
+                } else if true_bit == 0 && meas_bit == 1 {
+                    prob = prob * p01;
+                } else if true_bit == 1 && meas_bit == 0 {
+                    prob = prob * p10;
+                } else {
+                    prob = prob * (1.0 - p10);
+                }
+                q = q + 1;
+            }
+            vec_push(matrix, f64_to_bits(prob));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    matrix
+}
+
+fn main() -> i64 {
+    println(string_from("readout.sx OK"));
+    0
+}

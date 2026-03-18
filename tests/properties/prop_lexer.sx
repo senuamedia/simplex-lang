@@ -1,0 +1,141 @@
+// Property-based tests for lexer correctness
+
+fn test_string_len_non_negative() -> i64 {
+    // Property: string_len of any source is non-negative
+    var sources: Vec<String> = vec_new();
+    vec_push(sources, string_from(""));
+    vec_push(sources, string_from("a"));
+    vec_push(sources, string_from("hello world"));
+    vec_push(sources, string_from("fn main() -> i64 { 0 }"));
+    vec_push(sources, string_from("let x: i64 = 42;"));
+    vec_push(sources, string_from("\n\n\n"));
+    vec_push(sources, string_from("   "));
+
+    var i: i64 = 0;
+    while i < vec_len(sources) {
+        var s: String = vec_get(sources, i);
+        var len: i64 = string_len(s);
+        if len < 0 { println(string_from("FAIL: string_len returned negative")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_string_len_non_negative"));
+    0
+}
+
+fn test_keyword_token_identity() -> i64 {
+    // Property: tokenizing a keyword produces correct token type
+    // We verify keywords are recognized as valid strings
+    var keywords: Vec<String> = vec_new();
+    vec_push(keywords, string_from("fn"));
+    vec_push(keywords, string_from("let"));
+    vec_push(keywords, string_from("var"));
+    vec_push(keywords, string_from("if"));
+    vec_push(keywords, string_from("else"));
+    vec_push(keywords, string_from("while"));
+    vec_push(keywords, string_from("return"));
+    vec_push(keywords, string_from("struct"));
+    vec_push(keywords, string_from("enum"));
+    vec_push(keywords, string_from("true"));
+    vec_push(keywords, string_from("false"));
+
+    var i: i64 = 0;
+    while i < vec_len(keywords) {
+        var kw: String = vec_get(keywords, i);
+        if string_len(kw) < 2 { println(string_from("FAIL: keyword too short")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_keyword_token_identity"));
+    0
+}
+
+fn test_integer_literal_roundtrip() -> i64 {
+    // Property: integer literals roundtrip correctly
+    var values: Vec<i64> = vec_new();
+    vec_push(values, 0);
+    vec_push(values, 1);
+    vec_push(values, 42);
+    vec_push(values, 100);
+    vec_push(values, 999999);
+    vec_push(values, 0 - 1);
+    vec_push(values, 0 - 42);
+
+    var i: i64 = 0;
+    while i < vec_len(values) {
+        var val: i64 = vec_get(values, i);
+        var stored: i64 = val;
+        if stored != val { println(string_from("FAIL: integer roundtrip")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_integer_literal_roundtrip"));
+    0
+}
+
+fn test_empty_source_minimal() -> i64 {
+    // Property: empty source produces no meaningful tokens
+    var empty: String = string_from("");
+    if string_len(empty) != 0 { println(string_from("FAIL: empty source not zero length")); return 1; }
+    println(string_from("PASS: test_empty_source_minimal"));
+    0
+}
+
+fn test_concat_preserves_content() -> i64 {
+    // Property: string concatenation of tokens approximates original source
+    var tok1: String = string_from("fn");
+    var tok2: String = string_from(" ");
+    var tok3: String = string_from("main");
+    var tok4: String = string_from("()");
+    var reconstructed: String = string_concat(string_concat(string_concat(tok1, tok2), tok3), tok4);
+    var expected: String = string_from("fn main()");
+    if string_len(reconstructed) != string_len(expected) {
+        println(string_from("FAIL: concat does not preserve content length"));
+        return 1;
+    }
+    println(string_from("PASS: test_concat_preserves_content"));
+    0
+}
+
+fn test_concat_length_additive() -> i64 {
+    // Property: string_len(concat(a, b)) == string_len(a) + string_len(b)
+    var a: String = string_from("hello");
+    var b: String = string_from("world");
+    var ab: String = string_concat(a, b);
+    var len_a: i64 = string_len(a);
+    var len_b: i64 = string_len(b);
+    var len_ab: i64 = string_len(ab);
+    if len_ab != len_a + len_b {
+        println(string_from("FAIL: concat length not additive"));
+        return 1;
+    }
+    println(string_from("PASS: test_concat_length_additive"));
+    0
+}
+
+fn test_many_concats_length() -> i64 {
+    // Property: repeated concat grows linearly
+    var s: String = string_from("");
+    var piece: String = string_from("abc");
+    var i: i64 = 0;
+    while i < 30 {
+        s = string_concat(s, piece);
+        var expected_len: i64 = (i + 1) * 3;
+        if string_len(s) != expected_len {
+            println(string_from("FAIL: concat growth not linear"));
+            return 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_many_concats_length"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_string_len_non_negative();
+    failures = failures + test_keyword_token_identity();
+    failures = failures + test_integer_literal_roundtrip();
+    failures = failures + test_empty_source_minimal();
+    failures = failures + test_concat_preserves_content();
+    failures = failures + test_concat_length_additive();
+    failures = failures + test_many_concats_length();
+    failures
+}

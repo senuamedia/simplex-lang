@@ -1,0 +1,236 @@
+// 7-Qubit Steane Code [[7,1,3]]
+// CSS code based on classical [7,4,3] Hamming code
+// Corrects arbitrary single-qubit errors
+
+// Gate constants
+let GATE_CNOT: i64 = 1;
+let GATE_H: i64 = 2;
+let GATE_X: i64 = 3;
+let GATE_Z: i64 = 4;
+
+fn steane_make_instr(gate: i64, q1: i64, q2: i64) -> i64 {
+    let instr: i64 = vec_new();
+    vec_push(instr, gate);
+    vec_push(instr, q1);
+    vec_push(instr, q2);
+    return instr;
+}
+
+fn steane_make_1q(gate: i64, q: i64) -> i64 {
+    let instr: i64 = vec_new();
+    vec_push(instr, gate);
+    vec_push(instr, q);
+    vec_push(instr, -1);
+    return instr;
+}
+
+// Return the stabilizer generators for the Steane code
+// 3 X-type generators and 3 Z-type generators
+// Each generator is a vec of 7 Pauli indices (0=I, 1=X, 3=Z)
+// Returns vec of 6 generator vecs
+fn steane_generators() -> i64 {
+    let gens: i64 = vec_new();
+
+    // X-type stabilizers (from Hamming parity check matrix):
+    // g1_x = X on qubits {0,2,4,6} => IXXIXXI -> indices 0,2,4,6
+    // g2_x = X on qubits {1,2,5,6}
+    // g3_x = X on qubits {3,4,5,6}
+    let gx1: i64 = make_pauli_vec(1, 0, 1, 0, 1, 0, 1);
+    let gx2: i64 = make_pauli_vec(0, 1, 1, 0, 0, 1, 1);
+    let gx3: i64 = make_pauli_vec(0, 0, 0, 1, 1, 1, 1);
+    vec_push(gens, gx1);
+    vec_push(gens, gx2);
+    vec_push(gens, gx3);
+
+    // Z-type stabilizers (same support):
+    // g1_z = Z on qubits {0,2,4,6}
+    // g2_z = Z on qubits {1,2,5,6}
+    // g3_z = Z on qubits {3,4,5,6}
+    let gz1: i64 = make_pauli_z_vec(1, 0, 1, 0, 1, 0, 1);
+    let gz2: i64 = make_pauli_z_vec(0, 1, 1, 0, 0, 1, 1);
+    let gz3: i64 = make_pauli_z_vec(0, 0, 0, 1, 1, 1, 1);
+    vec_push(gens, gz1);
+    vec_push(gens, gz2);
+    vec_push(gens, gz3);
+
+    return gens;
+}
+
+// Helper: create a 7-element vec with X (1) or I (0) at each position
+fn make_pauli_vec(q0: i64, q1: i64, q2: i64, q3: i64, q4: i64, q5: i64, q6: i64) -> i64 {
+    let v: i64 = vec_new();
+    // 0=I, 1=X
+    vec_push(v, q0);
+    vec_push(v, q1);
+    vec_push(v, q2);
+    vec_push(v, q3);
+    vec_push(v, q4);
+    vec_push(v, q5);
+    vec_push(v, q6);
+    return v;
+}
+
+// Helper: create vec with Z (3) or I (0) at each position
+fn make_pauli_z_vec(q0: i64, q1: i64, q2: i64, q3: i64, q4: i64, q5: i64, q6: i64) -> i64 {
+    let v: i64 = vec_new();
+    // Map: 1 -> 3 (Z), 0 -> 0 (I)
+    if q0 == 1 { vec_push(v, 3); } else { vec_push(v, 0); }
+    if q1 == 1 { vec_push(v, 3); } else { vec_push(v, 0); }
+    if q2 == 1 { vec_push(v, 3); } else { vec_push(v, 0); }
+    if q3 == 1 { vec_push(v, 3); } else { vec_push(v, 0); }
+    if q4 == 1 { vec_push(v, 3); } else { vec_push(v, 0); }
+    if q5 == 1 { vec_push(v, 3); } else { vec_push(v, 0); }
+    if q6 == 1 { vec_push(v, 3); } else { vec_push(v, 0); }
+    return v;
+}
+
+// Encoding circuit for Steane code
+// Logical qubit on qubit 0, ancilla qubits 1-6 initialized to |0>
+fn steane_encode_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+
+    // Prepare superposition states using Hadamards and CNOTs
+    // Based on the [7,4,3] Hamming code encoding
+
+    // Step 1: Create GHZ-like entanglement
+    vec_push(instrs, steane_make_1q(GATE_H, 3));
+    vec_push(instrs, steane_make_1q(GATE_H, 5));
+    vec_push(instrs, steane_make_1q(GATE_H, 6));
+
+    // Step 2: CNOT cascade for code words
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 0, 1));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 0, 2));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 6, 0));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 6, 1));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 6, 4));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 5, 0));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 5, 2));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 5, 4));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 3, 1));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 3, 2));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 3, 4));
+
+    return instrs;
+}
+
+// X stabilizer measurement circuit
+// Uses 3 ancilla qubits (7, 8, 9)
+fn steane_syndrome_x_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+
+    // Ancilla 7: X-check on qubits {0,2,4,6}
+    vec_push(instrs, steane_make_1q(GATE_H, 7));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 7, 0));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 7, 2));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 7, 4));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 7, 6));
+    vec_push(instrs, steane_make_1q(GATE_H, 7));
+
+    // Ancilla 8: X-check on qubits {1,2,5,6}
+    vec_push(instrs, steane_make_1q(GATE_H, 8));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 8, 1));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 8, 2));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 8, 5));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 8, 6));
+    vec_push(instrs, steane_make_1q(GATE_H, 8));
+
+    // Ancilla 9: X-check on qubits {3,4,5,6}
+    vec_push(instrs, steane_make_1q(GATE_H, 9));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 9, 3));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 9, 4));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 9, 5));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 9, 6));
+    vec_push(instrs, steane_make_1q(GATE_H, 9));
+
+    return instrs;
+}
+
+// Z stabilizer measurement circuit
+// Uses 3 ancilla qubits (10, 11, 12)
+fn steane_syndrome_z_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+
+    // Ancilla 10: Z-check on qubits {0,2,4,6}
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 0, 10));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 2, 10));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 4, 10));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 6, 10));
+
+    // Ancilla 11: Z-check on qubits {1,2,5,6}
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 1, 11));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 2, 11));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 5, 11));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 6, 11));
+
+    // Ancilla 12: Z-check on qubits {3,4,5,6}
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 3, 12));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 4, 12));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 5, 12));
+    vec_push(instrs, steane_make_instr(GATE_CNOT, 6, 12));
+
+    return instrs;
+}
+
+// Determine correction from X and Z syndromes
+// sx: 3-bit X syndrome (from Z stabilizer measurements -> detects X errors)
+// sz: 3-bit Z syndrome (from X stabilizer measurements -> detects Z errors)
+// Returns vec [qubit, pauli_type]
+fn steane_correction(sx: i64, sz: i64) -> i64 {
+    let result: i64 = vec_new();
+
+    // The syndrome directly maps to error location via Hamming code
+    // Syndrome bits form the binary representation of the error qubit (1-indexed)
+    // sx tells us which qubit has an X error, sz tells us which has a Z error
+
+    let x_loc: i64 = sx;  // Binary: which qubit has X error (1-7, 0=none)
+    let z_loc: i64 = sz;  // Binary: which qubit has Z error (1-7, 0=none)
+
+    if x_loc == 0 {
+        if z_loc == 0 {
+            // No error
+            vec_push(result, -1);
+            vec_push(result, 0);
+            return result;
+        }
+    }
+
+    // If both X and Z errors on same qubit, it's a Y error
+    if x_loc > 0 {
+        if z_loc > 0 {
+            if x_loc == z_loc {
+                vec_push(result, x_loc - 1);  // Convert to 0-indexed
+                vec_push(result, 2);  // PAULI_Y
+                return result;
+            }
+        }
+    }
+
+    // X error only
+    if x_loc > 0 {
+        if z_loc == 0 {
+            vec_push(result, x_loc - 1);
+            vec_push(result, 1);  // PAULI_X
+            return result;
+        }
+    }
+
+    // Z error only
+    if z_loc > 0 {
+        if x_loc == 0 {
+            vec_push(result, z_loc - 1);
+            vec_push(result, 3);  // PAULI_Z
+            return result;
+        }
+    }
+
+    // Both errors on different qubits - apply both corrections
+    // Return the X correction; caller should also check Z
+    if x_loc > 0 {
+        vec_push(result, x_loc - 1);
+        vec_push(result, 1);
+    } else {
+        vec_push(result, z_loc - 1);
+        vec_push(result, 3);
+    }
+    return result;
+}

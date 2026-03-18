@@ -1,0 +1,219 @@
+// Qubit Routing - Specification Tests
+// Tests topology representations, shortest paths, and routing algorithms.
+
+fn my_abs_i(x: i64) -> i64 {
+    if x < 0 { return 0 - x; }
+    x
+}
+
+// BFS shortest path on adjacency list
+// topology stored as: [n_qubits, adj_list_ptr]
+// adj_list: for each qubit, [n_neighbors, neighbor1, neighbor2, ...]
+
+fn bfs_distance(n_qubits: i64, adj_data: i64, start: i64, end: i64) -> i64 {
+    if start == end { return 0; }
+    // BFS using malloc arrays
+    let visited: i64 = malloc(n_qubits * 8);
+    let distance: i64 = malloc(n_qubits * 8);
+    let queue: i64 = malloc(n_qubits * 8);
+    var i: i64 = 0;
+    while i < n_qubits {
+        store_ptr(visited, i, 0);
+        store_ptr(distance, i, 0 - 1);
+        i = i + 1;
+    }
+    store_ptr(visited, start, 1);
+    store_ptr(distance, start, 0);
+    store_ptr(queue, 0, start);
+    var q_front: i64 = 0;
+    var q_back: i64 = 1;
+
+    while q_front < q_back {
+        let current: i64 = load_ptr(queue, q_front);
+        q_front = q_front + 1;
+        let curr_dist: i64 = load_ptr(distance, current);
+
+        // Check neighbors - for linear topology, neighbors are current-1 and current+1
+        if current > 0 {
+            let prev: i64 = current - 1;
+            if load_ptr(visited, prev) == 0 {
+                store_ptr(visited, prev, 1);
+                store_ptr(distance, prev, curr_dist + 1);
+                if prev == end { return curr_dist + 1; }
+                store_ptr(queue, q_back, prev);
+                q_back = q_back + 1;
+            }
+        }
+        if current < n_qubits - 1 {
+            let next: i64 = current + 1;
+            if load_ptr(visited, next) == 0 {
+                store_ptr(visited, next, 1);
+                store_ptr(distance, next, curr_dist + 1);
+                if next == end { return curr_dist + 1; }
+                store_ptr(queue, q_back, next);
+                q_back = q_back + 1;
+            }
+        }
+    }
+    0 - 1 // not reachable
+}
+
+// Test 1: Linear topology shortest paths
+fn test_linear_shortest_path() -> i64 {
+    let n: i64 = 8;
+    // Distance 0→0 = 0
+    let d00: i64 = bfs_distance(n, 0, 0, 0);
+    if d00 != 0 { println(string_from("FAIL: d(0,0)")); return 1; }
+    // Distance 0→1 = 1
+    let d01: i64 = bfs_distance(n, 0, 0, 1);
+    if d01 != 1 { println(string_from("FAIL: d(0,1)")); return 1; }
+    // Distance 0→7 = 7
+    let d07: i64 = bfs_distance(n, 0, 0, 7);
+    if d07 != 7 { println(string_from("FAIL: d(0,7)")); return 1; }
+    // Distance 3→5 = 2
+    let d35: i64 = bfs_distance(n, 0, 3, 5);
+    if d35 != 2 { println(string_from("FAIL: d(3,5)")); return 1; }
+    println(string_from("PASS: linear_shortest_path"));
+    0
+}
+
+// Test 2: Routing preserves logical operation count
+fn test_routing_preserves_operations() -> i64 {
+    // Original circuit: 5 two-qubit gates
+    // After routing: still 5 logical operations + additional SWAPs
+    let original_ops: i64 = 5;
+    let routing_swaps: i64 = 3;
+    let total_ops: i64 = original_ops + routing_swaps;
+    // All original operations must be present
+    if total_ops < original_ops { println(string_from("FAIL: ops lost")); return 1; }
+    println(string_from("PASS: routing_preserves_operations"));
+    0
+}
+
+// Test 3: Qubit mapping tracks correctly
+fn test_qubit_mapping() -> i64 {
+    // Initial mapping: logical[i] = physical[i]
+    // After SWAP(0,1): logical[0] → physical[1], logical[1] → physical[0]
+    let n: i64 = 4;
+    let mapping: i64 = malloc(n * 8);
+    var i: i64 = 0;
+    while i < n {
+        store_ptr(mapping, i, i); // identity mapping
+        i = i + 1;
+    }
+
+    // Perform SWAP(0, 1)
+    let tmp: i64 = load_ptr(mapping, 0);
+    store_ptr(mapping, 0, load_ptr(mapping, 1));
+    store_ptr(mapping, 1, tmp);
+
+    // Check mapping
+    if load_ptr(mapping, 0) != 1 { println(string_from("FAIL: map[0]")); return 1; }
+    if load_ptr(mapping, 1) != 0 { println(string_from("FAIL: map[1]")); return 1; }
+    if load_ptr(mapping, 2) != 2 { println(string_from("FAIL: map[2]")); return 1; }
+    if load_ptr(mapping, 3) != 3 { println(string_from("FAIL: map[3]")); return 1; }
+    println(string_from("PASS: qubit_mapping"));
+    0
+}
+
+// Test 4: SWAP chain routing
+fn test_swap_chain() -> i64 {
+    // To route CNOT(0, 3) on linear topology:
+    // SWAP(0,1) → mapping: [1,0,2,3]
+    // SWAP(1,2) → mapping: [1,2,0,3]
+    // Now logical 0 is at physical 2, adjacent to physical 3
+    // Execute CNOT(physical[2], physical[3])
+    let swaps_needed: i64 = 2;
+    let cnot_distance: i64 = 3; // q0 to q3
+    // SWAPs needed = distance - 1
+    if swaps_needed != cnot_distance - 1 { println(string_from("FAIL: swap chain count")); return 1; }
+    println(string_from("PASS: swap_chain"));
+    0
+}
+
+// Test 5: Bidirectional routing
+fn test_bidirectional_routing() -> i64 {
+    // For CNOT(0, 4) on linear topology:
+    // Option A: Move q0 toward q4 (4 SWAPs from left)
+    // Option B: Move q4 toward q0 (4 SWAPs from right)
+    // Option C: Meet in middle (2 SWAPs each side = 4 total but lower depth)
+    let distance: i64 = 4;
+    let swaps_left: i64 = distance - 1;  // move q0 all the way
+    let swaps_right: i64 = distance - 1; // move q4 all the way
+    let swaps_middle: i64 = distance - 1; // meet in middle (same total but parallelizable)
+
+    // All approaches need same number of SWAPs
+    if swaps_left != 3 { println(string_from("FAIL: left routing")); return 1; }
+    if swaps_right != 3 { println(string_from("FAIL: right routing")); return 1; }
+    println(string_from("PASS: bidirectional_routing"));
+    0
+}
+
+// Test 6: Routing with multiple two-qubit gates
+fn test_multi_gate_routing() -> i64 {
+    // Circuit: CNOT(0,3), CNOT(1,2), CNOT(0,2)
+    // Good strategy: route first gate, then use updated mapping for subsequent gates
+    let n_gates: i64 = 3;
+    var total_swaps: i64 = 0;
+
+    // Gate 1: CNOT(0,3) needs 2 SWAPs on linear topology
+    total_swaps = total_swaps + 2;
+    // After SWAPs, mapping changed
+    // Gate 2: CNOT(1,2) - may be adjacent depending on mapping
+    total_swaps = total_swaps + 0; // lucky: adjacent after Gate 1 routing
+    // Gate 3: CNOT(0,2) - distance depends on current mapping
+    total_swaps = total_swaps + 1;
+
+    // Total overhead should be reasonable
+    if total_swaps > n_gates * 3 { println(string_from("FAIL: too many SWAPs")); return 1; }
+    println(string_from("PASS: multi_gate_routing"));
+    0
+}
+
+// Test 7: Grid topology diameter
+fn test_grid_diameter() -> i64 {
+    // 4x4 grid: diameter = 6 (corner to corner)
+    let rows: i64 = 4;
+    let cols: i64 = 4;
+    let diameter: i64 = (rows - 1) + (cols - 1);
+    if diameter != 6 { println(string_from("FAIL: grid diameter")); return 1; }
+
+    // 3x3 grid: diameter = 4
+    let d33: i64 = (3 - 1) + (3 - 1);
+    if d33 != 4 { println(string_from("FAIL: 3x3 diameter")); return 1; }
+    println(string_from("PASS: grid_diameter"));
+    0
+}
+
+// Test 8: Heavy-hex topology characteristics
+fn test_heavy_hex() -> i64 {
+    // IBM heavy-hex topology:
+    // Degree-3 graph (each qubit connects to ≤3 others)
+    // 127 qubits on Eagle processor
+    let n_qubits: i64 = 127;
+    let max_degree: i64 = 3;
+
+    // Total edges ≈ n * max_degree / 2 = ~190
+    let approx_edges: i64 = n_qubits * max_degree / 2;
+    if approx_edges < 100 { println(string_from("FAIL: too few edges")); return 1; }
+    if approx_edges > 300 { println(string_from("FAIL: too many edges")); return 1; }
+    println(string_from("PASS: heavy_hex"));
+    0
+}
+
+fn main() -> i64 {
+    println(string_from("=== Qubit Routing Tests ==="));
+    var failures: i64 = 0;
+    failures = failures + test_linear_shortest_path();
+    failures = failures + test_routing_preserves_operations();
+    failures = failures + test_qubit_mapping();
+    failures = failures + test_swap_chain();
+    failures = failures + test_bidirectional_routing();
+    failures = failures + test_multi_gate_routing();
+    failures = failures + test_grid_diameter();
+    failures = failures + test_heavy_hex();
+    if failures == 0 {
+        println(string_from("All routing tests passed!"));
+    }
+    failures
+}

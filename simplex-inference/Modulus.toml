@@ -1,6 +1,6 @@
 [package]
 name = "simplex-inference"
-version = "0.14.0"
+version = "0.15.0"
 description = "High-performance inference optimization runtime for Simplex SLM applications"
 authors = ["Simplex Team"]
 license = "Apache-2.0"

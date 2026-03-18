@@ -61,12 +61,13 @@ By the end of this tutorial, you'll understand:
 |---------|-------|-------------------|
 | [11](11-capstone.md) | Capstone Project | Build a complete AI-powered document processor |
 
-### Part 5: Advanced Topics (v0.13.0)
+### Part 5: Advanced Topics
 
 | Chapter | Topic | What You'll Learn |
 |---------|-------|-------------------|
 | [13](13-dual-numbers.md) | Dual Numbers | Automatic differentiation, exact derivatives, gradients |
 | [14](14-self-learning-annealing.md) | Self-Learning Annealing | Meta-gradients, adaptive temperature schedules, neurosymbolic transition |
+| [15](15-quantum-error-mitigation.md) | Quantum Error Mitigation | Noise models, ZNE, error correction, circuit optimization |
 
 ---
 

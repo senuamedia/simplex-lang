@@ -1,0 +1,149 @@
+// Syndrome Utilities
+// Extract, compare, and map syndromes for error correction
+
+// Extract syndrome bits from ancilla measurement results
+// ancilla_results: vec of measurement outcomes (0 or 1)
+// n_ancilla: number of ancilla qubits
+// Returns syndrome as a single integer (bit-packed)
+fn syndrome_from_measurements(ancilla_results: i64, n_ancilla: i64) -> i64 {
+    let syndrome: i64 = 0;
+    let bit_value: i64 = 1;
+    let i: i64 = 0;
+    while i < n_ancilla {
+        let measurement: i64 = vec_get(ancilla_results, i);
+        if measurement != 0 {
+            syndrome = syndrome + bit_value;
+        }
+        bit_value = bit_value * 2;
+        i = i + 1;
+    }
+    return syndrome;
+}
+
+// Map syndrome to error qubit location for a given code type
+// CODE_BITFLIP=1, CODE_PHASEFLIP=2, CODE_SHOR=3, CODE_STEANE=4
+// Returns qubit index where error occurred (-1 if no error)
+fn syndrome_to_error_location(syndrome: i64, code_type: i64) -> i64 {
+    if syndrome == 0 {
+        return -1;
+    }
+
+    // Bit-flip and phase-flip codes: 2-bit syndrome
+    if code_type == 1 {
+        // Bit-flip code
+        if syndrome == 1 {
+            return 0;
+        }
+        if syndrome == 2 {
+            return 2;
+        }
+        if syndrome == 3 {
+            return 1;
+        }
+        return -1;
+    }
+
+    if code_type == 2 {
+        // Phase-flip code (same syndrome table)
+        if syndrome == 1 {
+            return 0;
+        }
+        if syndrome == 2 {
+            return 2;
+        }
+        if syndrome == 3 {
+            return 1;
+        }
+        return -1;
+    }
+
+    if code_type == 4 {
+        // Steane code: syndrome directly gives qubit number (1-indexed from Hamming)
+        if syndrome > 0 {
+            if syndrome <= 7 {
+                return syndrome - 1;  // Convert to 0-indexed
+            }
+        }
+        return -1;
+    }
+
+    // Shor code: handled by shor_correction directly
+    if code_type == 3 {
+        // Extract bit-flip syndrome from lower 6 bits
+        let bf: i64 = syndrome % 64;
+        let bf0: i64 = bf % 4;
+        let bf1: i64 = (bf / 4) % 4;
+        let bf2: i64 = (bf / 16) % 4;
+
+        if bf0 == 1 { return 0; }
+        if bf0 == 2 { return 2; }
+        if bf0 == 3 { return 1; }
+        if bf1 == 1 { return 3; }
+        if bf1 == 2 { return 5; }
+        if bf1 == 3 { return 4; }
+        if bf2 == 1 { return 6; }
+        if bf2 == 2 { return 8; }
+        if bf2 == 3 { return 7; }
+
+        // Check phase-flip syndrome
+        let pf: i64 = (syndrome / 64) % 4;
+        if pf == 1 { return 0; }
+        if pf == 2 { return 6; }
+        if pf == 3 { return 3; }
+
+        return -1;
+    }
+
+    return -1;
+}
+
+// Check if syndrome changed between two rounds
+// Returns 1 if changed, 0 if same
+fn syndrome_changed(s1: i64, s2: i64) -> i64 {
+    if s1 != s2 {
+        return 1;
+    }
+    return 0;
+}
+
+// Count number of set bits in syndrome (number of triggered stabilizers)
+fn syndrome_weight(syndrome: i64) -> i64 {
+    let count: i64 = 0;
+    let s: i64 = syndrome;
+    while s > 0 {
+        if s % 2 == 1 {
+            count = count + 1;
+        }
+        s = s / 2;
+    }
+    return count;
+}
+
+// XOR two syndromes (useful for tracking changes)
+fn syndrome_xor(s1: i64, s2: i64) -> i64 {
+    // Bit-by-bit XOR using arithmetic
+    let result: i64 = 0;
+    let bit: i64 = 1;
+    let a: i64 = s1;
+    let b: i64 = s2;
+    while a > 0 {
+        let a_bit: i64 = a % 2;
+        let b_bit: i64 = b % 2;
+        if a_bit != b_bit {
+            result = result + bit;
+        }
+        a = a / 2;
+        b = b / 2;
+        bit = bit * 2;
+    }
+    // Handle remaining bits in b
+    while b > 0 {
+        let b_bit: i64 = b % 2;
+        if b_bit == 1 {
+            result = result + bit;
+        }
+        b = b / 2;
+        bit = bit * 2;
+    }
+    return result;
+}

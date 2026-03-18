@@ -1,0 +1,273 @@
+// Zero-Noise Extrapolation (ZNE) Engine
+// Extrapolates expectation values to the zero-noise limit
+
+// Extrapolation method constants
+let EXTRAP_LINEAR: i64 = 1;
+let EXTRAP_POLYNOMIAL: i64 = 2;
+let EXTRAP_EXPONENTIAL: i64 = 3;
+let EXTRAP_RICHARDSON: i64 = 4;
+
+// Create a new ZNE configuration
+// Returns vec handle: [extrap_method, scale_factors_vec]
+fn zne_new() -> i64 {
+    let zne: i64 = vec_new();
+    vec_push(zne, EXTRAP_LINEAR);
+    let default_factors: i64 = vec_new();
+    vec_push(default_factors, f64_to_bits(1.0));
+    vec_push(default_factors, f64_to_bits(2.0));
+    vec_push(default_factors, f64_to_bits(3.0));
+    vec_push(zne, default_factors);
+    return zne;
+}
+
+// Set the scale factors for noise amplification
+fn zne_set_scale_factors(zne: i64, factors_vec: i64) -> i64 {
+    vec_set(zne, 1, factors_vec);
+    return 0;
+}
+
+// Set the extrapolation method
+fn zne_set_extrapolation(zne: i64, method: i64) -> i64 {
+    vec_set(zne, 0, method);
+    return 0;
+}
+
+// Execute ZNE: given expectation values at each scale factor, extrapolate to zero noise
+fn zne_execute(zne: i64, expectation_values_vec: i64) -> f64 {
+    let method: i64 = vec_get(zne, 0);
+    let factors_vec: i64 = vec_get(zne, 1);
+    let n: i64 = vec_len(factors_vec);
+
+    if method == EXTRAP_LINEAR {
+        return linear_extrapolate(factors_vec, expectation_values_vec);
+    }
+    if method == EXTRAP_EXPONENTIAL {
+        return exponential_extrapolate(factors_vec, expectation_values_vec);
+    }
+    if method == EXTRAP_RICHARDSON {
+        return richardson_extrapolate(factors_vec, expectation_values_vec);
+    }
+    // Default to linear
+    return linear_extrapolate(factors_vec, expectation_values_vec);
+}
+
+// Linear extrapolation via least-squares fit, evaluate at x=0
+// x_vals and y_vals are vecs of f64_bits
+fn linear_extrapolate(x_vals: i64, y_vals: i64) -> f64 {
+    let n: i64 = vec_len(x_vals);
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return bits_to_f64(vec_get(y_vals, 0));
+    }
+
+    // Compute sums for least-squares: y = a + b*x
+    let sum_x: f64 = 0.0;
+    let sum_y: f64 = 0.0;
+    let sum_xx: f64 = 0.0;
+    let sum_xy: f64 = 0.0;
+    let nf: f64 = 0.0;
+
+    let i: i64 = 0;
+    while i < n {
+        let x: f64 = bits_to_f64(vec_get(x_vals, i));
+        let y: f64 = bits_to_f64(vec_get(y_vals, i));
+        sum_x = sum_x + x;
+        sum_y = sum_y + y;
+        sum_xx = sum_xx + x * x;
+        sum_xy = sum_xy + x * y;
+        nf = nf + 1.0;
+        i = i + 1;
+    }
+
+    // Solve normal equations
+    let denom: f64 = nf * sum_xx - sum_x * sum_x;
+    if denom < 0.000000001 {
+        if denom > -0.000000001 {
+            return sum_y / nf;
+        }
+    }
+
+    let a: f64 = (sum_y * sum_xx - sum_x * sum_xy) / denom;
+    // a is the y-intercept, which is the value at x=0
+    return a;
+}
+
+// Richardson extrapolation at x=0 using Lagrange interpolation
+fn richardson_extrapolate(x_vals: i64, y_vals: i64) -> f64 {
+    let n: i64 = vec_len(x_vals);
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return bits_to_f64(vec_get(y_vals, 0));
+    }
+
+    // Lagrange interpolation evaluated at x=0
+    let result: f64 = 0.0;
+    let i: i64 = 0;
+    while i < n {
+        let xi: f64 = bits_to_f64(vec_get(x_vals, i));
+        let yi: f64 = bits_to_f64(vec_get(y_vals, i));
+
+        // Compute Lagrange basis polynomial L_i(0)
+        let basis: f64 = 1.0;
+        let j: i64 = 0;
+        while j < n {
+            if j != i {
+                let xj: f64 = bits_to_f64(vec_get(x_vals, j));
+                // L_i(0) *= (0 - xj) / (xi - xj)
+                let num: f64 = 0.0 - xj;
+                let den: f64 = xi - xj;
+                basis = basis * (num / den);
+            }
+            j = j + 1;
+        }
+
+        result = result + yi * basis;
+        i = i + 1;
+    }
+
+    return result;
+}
+
+// Exponential extrapolation: fit A*exp(-B*x) + C, evaluate at x=0
+// Uses ratio method for two points, extended heuristic for more
+fn exponential_extrapolate(x_vals: i64, y_vals: i64) -> f64 {
+    let n: i64 = vec_len(x_vals);
+    if n == 0 {
+        return 0.0;
+    }
+    if n == 1 {
+        return bits_to_f64(vec_get(y_vals, 0));
+    }
+
+    // For two points: y = A*exp(-B*x), so at x=0 we get A
+    // A = y1 * exp(B*x1), B = ln(y1/y2)/(x2-x1)
+    if n == 2 {
+        let x1: f64 = bits_to_f64(vec_get(x_vals, 0));
+        let x2: f64 = bits_to_f64(vec_get(x_vals, 1));
+        let y1: f64 = bits_to_f64(vec_get(y_vals, 0));
+        let y2: f64 = bits_to_f64(vec_get(y_vals, 1));
+
+        // Avoid log of non-positive
+        if y1 <= 0.0 {
+            return linear_extrapolate(x_vals, y_vals);
+        }
+        if y2 <= 0.0 {
+            return linear_extrapolate(x_vals, y_vals);
+        }
+
+        let ratio: f64 = y1 / y2;
+        let dx: f64 = x2 - x1;
+        if dx < 0.000000001 {
+            if dx > -0.000000001 {
+                return y1;
+            }
+        }
+
+        // ln(ratio) via Taylor approx: ln(r) ~ sum of series for |r-1| < 1
+        // Use iterative Newton method: given ratio, compute ln
+        let ln_ratio: f64 = ln_approx(ratio);
+        let b_val: f64 = ln_ratio / dx;
+
+        // A = y1 * exp(B * x1)
+        let a_val: f64 = y1 * exp_approx(b_val * x1);
+        return a_val;
+    }
+
+    // For 3+ points: use first and last pair for exponential estimate
+    // then average with Richardson for robustness
+    let x1: f64 = bits_to_f64(vec_get(x_vals, 0));
+    let x_last: f64 = bits_to_f64(vec_get(x_vals, n - 1));
+    let y1: f64 = bits_to_f64(vec_get(y_vals, 0));
+    let y_last: f64 = bits_to_f64(vec_get(y_vals, n - 1));
+
+    if y1 <= 0.0 {
+        return richardson_extrapolate(x_vals, y_vals);
+    }
+    if y_last <= 0.0 {
+        return richardson_extrapolate(x_vals, y_vals);
+    }
+
+    let ratio: f64 = y1 / y_last;
+    let dx: f64 = x_last - x1;
+    if dx < 0.000000001 {
+        if dx > -0.000000001 {
+            return y1;
+        }
+    }
+
+    let ln_ratio: f64 = ln_approx(ratio);
+    let b_val: f64 = ln_ratio / dx;
+    let a_val: f64 = y1 * exp_approx(b_val * x1);
+    return a_val;
+}
+
+// Natural log approximation using Newton's method on exp(x) = target
+fn ln_approx(target: f64) -> f64 {
+    if target <= 0.0 {
+        return 0.0;
+    }
+    // Initial guess
+    let x: f64 = target - 1.0;
+    if x > 2.0 {
+        x = 2.0;
+    }
+    if x < -2.0 {
+        x = -2.0;
+    }
+
+    // Newton iterations: x_{n+1} = x_n - (exp(x_n) - target) / exp(x_n)
+    let iter: i64 = 0;
+    while iter < 20 {
+        let ex: f64 = exp_approx(x);
+        if ex < 0.000000001 {
+            ex = 0.000000001;
+        }
+        let correction: f64 = (ex - target) / ex;
+        x = x - correction;
+        // Check convergence
+        if correction < 0.0000001 {
+            if correction > -0.0000001 {
+                return x;
+            }
+        }
+        iter = iter + 1;
+    }
+    return x;
+}
+
+// Exponential approximation using Taylor series: e^x = sum x^k/k!
+fn exp_approx(x: f64) -> f64 {
+    let result: f64 = 1.0;
+    let term: f64 = 1.0;
+    let k: i64 = 1;
+    while k <= 20 {
+        let kf: f64 = bits_to_f64(f64_to_bits(1.0));
+        // term = term * x / k
+        let k_as_f64: f64 = 0.0;
+        let ki: i64 = 0;
+        while ki < k {
+            k_as_f64 = k_as_f64 + 1.0;
+            ki = ki + 1;
+        }
+        term = term * x / k_as_f64;
+        result = result + term;
+        // Early termination for small terms
+        if term < 0.0 {
+            let neg_term: f64 = 0.0 - term;
+            if neg_term < 0.0000000001 {
+                return result;
+            }
+        }
+        if term > 0.0 {
+            if term < 0.0000000001 {
+                return result;
+            }
+        }
+        k = k + 1;
+    }
+    return result;
+}

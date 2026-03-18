@@ -1,0 +1,14 @@
+# Simplex Quantum Noise Models
+# Phase 1 of quantum error mitigation: noise channels and noisy simulation
+
+[package]
+name = "simplex-quantum-noise"
+version = "0.15.0"
+description = "Quantum noise models and noisy simulation for NISQ devices"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
+
+[dependencies]
+simplex-std = { path = "../../simplex-std" }
+simplex-quantum = { path = ".." }
+simplex-quantum-backend = { path = "../backend" }

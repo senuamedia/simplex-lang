@@ -1,6 +1,6 @@
 # Simplex Compiler Toolchain
 
-**Version 0.14.0**
+**Version 0.15.0**
 
 This document describes the Simplex compiler toolchain, which is **self-hosted** and compiles to native binaries via LLVM.
 
@@ -12,13 +12,13 @@ The Simplex toolchain consists of the following components:
 
 | Component | Binary | Version | Description |
 |-----------|--------|---------|-------------|
-| **sxc** | `sxc` | v0.14.0 | Simplex Compiler - compiles `.sx` source to native executables |
-| **sxpm** | `sxpm` | v0.14.0 | Package manager with dependency resolution |
-| **cursus** | `cursus` | v0.14.0 | Bytecode VM with garbage collection |
-| **sxdoc** | `sxdoc` | v0.14.0 | Documentation generator |
-| **sxlsp** | `sxlsp` | v0.14.0 | Language Server Protocol implementation |
-| **sxfmt** | `sxfmt` | v0.14.0 | Code formatter with configurable styles |
-| **sxlint** | `sxlint` | v0.14.0 | Static linter with extensible rules |
+| **sxc** | `sxc` | v0.15.0 | Simplex Compiler - compiles `.sx` source to native executables |
+| **sxpm** | `sxpm` | v0.15.0 | Package manager with dependency resolution |
+| **cursus** | `cursus` | v0.15.0 | Bytecode VM with garbage collection |
+| **sxdoc** | `sxdoc` | v0.15.0 | Documentation generator |
+| **sxlsp** | `sxlsp` | v0.15.0 | Language Server Protocol implementation |
+| **sxfmt** | `sxfmt` | v0.15.0 | Code formatter with configurable styles |
+| **sxlint** | `sxlint` | v0.15.0 | Static linter with extensible rules |
 
 All components are written in **Simplex** and compile to native binaries.
 
@@ -514,6 +514,7 @@ tests/
 | 0.12.0 | 2026-03 | Cross-module function imports, automatic LLVM declaration generation, expanded runtime (actors, supervisors, hive, resilience) |
 | 0.13.0 | 2026-03 | Completion & Foundations: 5 compiler bug fixes, complex numbers, matrix algebra, dual number extensions, HTTP client, JSON parser, training pipeline |
 | 0.14.0 | 2026-03 | Quantum Bridge: quantum computing primitives, backend abstraction, variational algorithms, cost-aware dispatch, quantum-enhanced optimization |
+| 0.15.0 | 2026-03 | Production Hardening & Quantum Maturity: noise models, ZNE, PEC, error correction, circuit optimization, collection iteration, keyword methods, where clauses, fuzzing, property testing, sanitizers, formal invariants |
 
 ---
 

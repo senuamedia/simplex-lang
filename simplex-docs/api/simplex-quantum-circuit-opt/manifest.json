@@ -1,0 +1,62 @@
+{
+  "package": "simplex-quantum-circuit-opt",
+  "version": "0.15.0",
+  "description": "Quantum circuit optimization passes -- fusion, commutation, routing, native gates",
+  "modules": [
+    {
+      "name": "mod",
+      "file": "circuit-opt/src/mod.sx",
+      "description": "Optimizer pipeline, pass type constants"
+    },
+    {
+      "name": "fusion",
+      "file": "circuit-opt/src/fusion.sx",
+      "description": "Identity elimination, rotation merging, single-qubit fusion"
+    },
+    {
+      "name": "commutation",
+      "file": "circuit-opt/src/commutation.sx",
+      "description": "Gate commutation rules and non-adjacent cancellation"
+    },
+    {
+      "name": "dag",
+      "file": "circuit-opt/src/dag.sx",
+      "description": "Circuit DAG representation and topological sort"
+    },
+    {
+      "name": "reorder",
+      "file": "circuit-opt/src/reorder.sx",
+      "description": "Gate reordering for cancellation and depth"
+    },
+    {
+      "name": "depth",
+      "file": "circuit-opt/src/depth.sx",
+      "description": "Depth reduction and ASAP layer assignment"
+    },
+    {
+      "name": "routing",
+      "file": "circuit-opt/src/routing.sx",
+      "description": "Qubit routing with SWAP insertion"
+    },
+    {
+      "name": "topology",
+      "file": "circuit-opt/src/topology.sx",
+      "description": "Hardware connectivity graphs (linear, grid, all-to-all)"
+    },
+    {
+      "name": "pipeline",
+      "file": "circuit-opt/src/pipeline.sx",
+      "description": "Multi-pass optimization with convergence detection"
+    },
+    {
+      "name": "cost",
+      "file": "circuit-opt/src/cost.sx",
+      "description": "Cost functions: gate count, depth, two-qubit count"
+    },
+    {
+      "name": "native",
+      "file": "circuit-opt/src/native.sx",
+      "description": "Native gate set decomposition (IBM, Clifford+T, CX+Rz)"
+    }
+  ]
+}

@@ -3,7 +3,7 @@
 #
 # Copyright (c) 2025-2026 Rod Higgins
 # Licensed under AGPL-3.0 - see LICENSE file
-# https://github.com/senuamedia/simplex-lang
+# https://github.com/senuamedia/simplex
 
 set -e
 
@@ -18,16 +18,13 @@ MODULES=(
     "sql:simplex-sql/src"
     "toml:simplex-toml/src"
     "uuid:simplex-uuid/src"
-    "http:simplex-http/src"
     "s3:simplex-s3/src"
     "ses:simplex-ses/src"
     "inference:simplex-inference/src"
     "learning:simplex-learning/src"
-    "training:simplex-training/src"
     "edge-hive:edge-hive/src"
     "nexus:nexus/src"
     "lib:lib"
-    "tools:tools"
 )
 
 echo "=== Building Simplex API Documentation ==="
@@ -52,21 +49,15 @@ fi
 
 echo "Using compiler: $SXC"
 
-# Detect linker flags
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    OPENSSL_PREFIX=$(brew --prefix openssl@3 2>/dev/null || echo "/usr/local/opt/openssl")
-    LINK_FLAGS="-lm -lssl -lcrypto -L$OPENSSL_PREFIX/lib -I$OPENSSL_PREFIX/include"
-else
-    LINK_FLAGS="-lm -lssl -lcrypto -lpthread"
-fi
-
 # Build sxdoc if not exists
 SXDOC="$ROOT/sxdoc"
 if [[ ! -x "$SXDOC" ]]; then
     echo "Building sxdoc..."
     "$SXC" "$ROOT/sxdoc.sx" -o "$ROOT/sxdoc.ll"
     clang -O2 "$ROOT/sxdoc.ll" "$ROOT/runtime/standalone_runtime.c" \
-        -o "$SXDOC" $LINK_FLAGS 2>/dev/null || {
+        -o "$SXDOC" -lm -lssl -lcrypto -lsqlite3 -lpthread 2>/dev/null || \
+    clang -O2 "$ROOT/sxdoc.ll" "$ROOT/runtime/standalone_runtime.c" \
+        -o "$SXDOC" -lm -lpthread 2>/dev/null || {
             echo "Warning: Could not build sxdoc binary"
         }
 fi
@@ -77,7 +68,9 @@ if [[ ! -x "$SXDOC_INDEX" ]]; then
     echo "Building sxdoc-index..."
     "$SXC" "$ROOT/sxdoc-index.sx" -o "$ROOT/sxdoc-index.ll"
     clang -O2 "$ROOT/sxdoc-index.ll" "$ROOT/runtime/standalone_runtime.c" \
-        -o "$SXDOC_INDEX" $LINK_FLAGS 2>/dev/null || {
+        -o "$SXDOC_INDEX" -lm -lssl -lcrypto -lsqlite3 -lpthread 2>/dev/null || \
+    clang -O2 "$ROOT/sxdoc-index.ll" "$ROOT/runtime/standalone_runtime.c" \
+        -o "$SXDOC_INDEX" -lm -lpthread 2>/dev/null || {
             echo "Warning: Could not build sxdoc-index binary"
         }
 fi
@@ -111,6 +104,7 @@ for entry in "${MODULES[@]}"; do
     echo "Generating $category..."
 
     if [[ -x "$SXDOC" ]]; then
+        # Use compiled sxdoc
         "$SXDOC" --manifest --category "$category" -o "$outdir" $files 2>&1 || true
     else
         echo "  (sxdoc not available, skipping)"
@@ -129,12 +123,12 @@ fi
 
 # Ensure assets are in place
 echo ""
-echo "=== Checking Assets ==="
+echo "=== Copying Assets ==="
 
-if [[ -f "$API_DIR/assets/docs.css" ]]; then
+if [[ -f "$ROOT/simplex-docs/api/assets/docs.css" ]]; then
     echo "Assets already in place"
 else
-    echo "Warning: assets not found at $API_DIR/assets/"
+    echo "Warning: assets not found at $ROOT/simplex-docs/api/assets/"
 fi
 
 # Summary

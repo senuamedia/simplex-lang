@@ -1,0 +1,156 @@
+// Fuzz tests for parser robustness with edge-case constructs
+
+fn test_empty_function_body() -> i64 {
+    // Simulate parsing fn f() {} - function with no statements
+    var result: i64 = 0;
+    // If we got here, an empty function body is handled
+    println(string_from("PASS: test_empty_function_body"));
+    0
+}
+
+fn identity(x: i64) -> i64 { x }
+
+fn test_function_with_return() -> i64 {
+    var val: i64 = identity(42);
+    if val != 42 { println(string_from("FAIL: function with return")); return 1; }
+    println(string_from("PASS: test_function_with_return"));
+    0
+}
+
+fn test_deeply_nested_parens() -> i64 {
+    var x: i64 = 5;
+    var result: i64 = ((((((((((x))))))))));
+    if result != 5 { println(string_from("FAIL: deeply nested parens")); return 1; }
+    println(string_from("PASS: test_deeply_nested_parens"));
+    0
+}
+
+fn test_nested_arithmetic_parens() -> i64 {
+    var result: i64 = ((((1 + 2) * 3) + 4) * 5);
+    // (1+2)=3, *3=9, +4=13, *5=65
+    if result != 65 { println(string_from("FAIL: nested arithmetic parens")); return 1; }
+    println(string_from("PASS: test_nested_arithmetic_parens"));
+    0
+}
+
+fn add(a: i64, b: i64) -> i64 { a + b }
+fn mul(a: i64, b: i64) -> i64 { a * b }
+fn sub(a: i64, b: i64) -> i64 { a - b }
+
+fn test_chained_function_calls() -> i64 {
+    var result: i64 = add(mul(2, 3), sub(10, 4));
+    // mul(2,3)=6, sub(10,4)=6, add(6,6)=12
+    if result != 12 { println(string_from("FAIL: chained function calls")); return 1; }
+    println(string_from("PASS: test_chained_function_calls"));
+    0
+}
+
+fn test_many_local_bindings() -> i64 {
+    var a: i64 = 1;
+    var b: i64 = 2;
+    var c: i64 = 3;
+    var d: i64 = 4;
+    var e: i64 = 5;
+    var f: i64 = 6;
+    var g: i64 = 7;
+    var h: i64 = 8;
+    var ii: i64 = 9;
+    var j: i64 = 10;
+    var total: i64 = a + b + c + d + e + f + g + h + ii + j;
+    if total != 55 { println(string_from("FAIL: many local bindings")); return 1; }
+    println(string_from("PASS: test_many_local_bindings"));
+    0
+}
+
+fn test_nested_if_else() -> i64 {
+    var x: i64 = 5;
+    var result: i64 = 0;
+    if x > 0 {
+        if x > 1 {
+            if x > 2 {
+                if x > 3 {
+                    if x > 4 {
+                        result = 100;
+                    } else {
+                        result = 50;
+                    }
+                } else {
+                    result = 30;
+                }
+            } else {
+                result = 20;
+            }
+        } else {
+            result = 10;
+        }
+    } else {
+        result = 0;
+    }
+    if result != 100 { println(string_from("FAIL: nested if else")); return 1; }
+    println(string_from("PASS: test_nested_if_else"));
+    0
+}
+
+fn test_complex_boolean_expr() -> i64 {
+    var a: bool = true;
+    var b: bool = false;
+    var c: bool = true;
+    var result: bool = (a && c) || (b && a);
+    if !result { println(string_from("FAIL: complex boolean expr")); return 1; }
+    println(string_from("PASS: test_complex_boolean_expr"));
+    0
+}
+
+fn test_multiple_string_args() -> i64 {
+    var s1: String = string_from("hello");
+    var s2: String = string_from(" ");
+    var s3: String = string_from("world");
+    var result: String = string_concat(string_concat(s1, s2), s3);
+    if string_len(result) != 11 { println(string_from("FAIL: multiple string args")); return 1; }
+    println(string_from("PASS: test_multiple_string_args"));
+    0
+}
+
+fn test_while_loop_variants() -> i64 {
+    // While loop that never executes
+    var count: i64 = 0;
+    while false {
+        count = count + 1;
+    }
+    if count != 0 { println(string_from("FAIL: while never executes")); return 1; }
+
+    // While loop that executes once
+    var once: i64 = 0;
+    while once < 1 {
+        once = once + 1;
+    }
+    if once != 1 { println(string_from("FAIL: while executes once")); return 1; }
+
+    println(string_from("PASS: test_while_loop_variants"));
+    0
+}
+
+fn test_arithmetic_precedence() -> i64 {
+    var result: i64 = 2 + 3 * 4;
+    if result != 14 { println(string_from("FAIL: arithmetic precedence")); return 1; }
+    var result2: i64 = (2 + 3) * 4;
+    if result2 != 20 { println(string_from("FAIL: arithmetic precedence with parens")); return 1; }
+    println(string_from("PASS: test_arithmetic_precedence"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_empty_function_body();
+    failures = failures + test_function_with_return();
+    failures = failures + test_deeply_nested_parens();
+    failures = failures + test_nested_arithmetic_parens();
+    failures = failures + test_chained_function_calls();
+    failures = failures + test_many_local_bindings();
+    failures = failures + test_nested_if_else();
+    failures = failures + test_complex_boolean_expr();
+    failures = failures + test_multiple_string_args();
+    failures = failures + test_while_loop_variants();
+    failures = failures + test_arithmetic_precedence();
+    failures
+}

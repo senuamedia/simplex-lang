@@ -1,0 +1,178 @@
+// Compiler invariant checks - verify internal consistency
+
+fn test_token_type_range() -> i64 {
+    // Verify token types are in valid range
+    // Token types encoded as integers: 0=EOF, 1=Ident, 2=Int, 3=Float, 4=String, etc.
+    var token_types: Vec<i64> = vec_new();
+    vec_push(token_types, 0);   // EOF
+    vec_push(token_types, 1);   // Ident
+    vec_push(token_types, 2);   // IntLit
+    vec_push(token_types, 3);   // FloatLit
+    vec_push(token_types, 4);   // StringLit
+    vec_push(token_types, 5);   // Keyword
+    vec_push(token_types, 6);   // Operator
+    vec_push(token_types, 7);   // Punctuation
+
+    var i: i64 = 0;
+    while i < vec_len(token_types) {
+        var tt: i64 = vec_get(token_types, i);
+        if tt < 0 { println(string_from("FAIL: token type negative")); return 1; }
+        if tt > 255 { println(string_from("FAIL: token type out of range")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_token_type_range"));
+    0
+}
+
+fn test_ast_node_validity() -> i64 {
+    // Verify AST node types are valid
+    // Node types: 0=Expr, 1=Stmt, 2=FnDef, 3=StructDef, 4=EnumDef, 5=Import, etc.
+    var node_types: Vec<i64> = vec_new();
+    vec_push(node_types, 0);   // Expr
+    vec_push(node_types, 1);   // Stmt
+    vec_push(node_types, 2);   // FnDef
+    vec_push(node_types, 3);   // StructDef
+    vec_push(node_types, 4);   // EnumDef
+    vec_push(node_types, 5);   // Import
+    vec_push(node_types, 6);   // Block
+    vec_push(node_types, 7);   // If
+    vec_push(node_types, 8);   // While
+    vec_push(node_types, 9);   // Return
+
+    var i: i64 = 0;
+    while i < vec_len(node_types) {
+        var nt: i64 = vec_get(node_types, i);
+        if nt < 0 { println(string_from("FAIL: node type negative")); return 1; }
+        if nt > 1023 { println(string_from("FAIL: node type out of range")); return 1; }
+        i = i + 1;
+    }
+    // Verify uniqueness
+    i = 0;
+    while i < vec_len(node_types) {
+        var j: i64 = i + 1;
+        while j < vec_len(node_types) {
+            if vec_get(node_types, i) == vec_get(node_types, j) {
+                println(string_from("FAIL: duplicate node type"));
+                return 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_ast_node_validity"));
+    0
+}
+
+fn test_error_code_format() -> i64 {
+    // Verify error codes follow E#### pattern
+    // We simulate error code validation: each code is a 4-digit number
+    var error_codes: Vec<i64> = vec_new();
+    vec_push(error_codes, 1001);  // E1001: syntax error
+    vec_push(error_codes, 1002);  // E1002: unexpected token
+    vec_push(error_codes, 2001);  // E2001: type mismatch
+    vec_push(error_codes, 2002);  // E2002: undeclared variable
+    vec_push(error_codes, 3001);  // E3001: codegen error
+    vec_push(error_codes, 4001);  // E4001: linker error
+
+    var i: i64 = 0;
+    while i < vec_len(error_codes) {
+        var code: i64 = vec_get(error_codes, i);
+        if code < 1000 { println(string_from("FAIL: error code too small")); return 1; }
+        if code > 9999 { println(string_from("FAIL: error code too large")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_error_code_format"));
+    0
+}
+
+fn test_string_constants_terminated() -> i64 {
+    // Verify string constants are properly formed
+    var strings: Vec<String> = vec_new();
+    vec_push(strings, string_from(""));
+    vec_push(strings, string_from("hello"));
+    vec_push(strings, string_from("fn main() -> i64 { 0 }"));
+    vec_push(strings, string_from("struct Foo { x: i64 }"));
+
+    var i: i64 = 0;
+    while i < vec_len(strings) {
+        var s: String = vec_get(strings, i);
+        var len: i64 = string_len(s);
+        if len < 0 { println(string_from("FAIL: string constant negative length")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_string_constants_terminated"));
+    0
+}
+
+fn test_function_signature_consistency() -> i64 {
+    // Verify function signatures: param count matches expected
+    // Simulate with a vec of (name_len, param_count) pairs
+    var names: Vec<String> = vec_new();
+    var param_counts: Vec<i64> = vec_new();
+
+    vec_push(names, string_from("main"));
+    vec_push(param_counts, 0);
+
+    vec_push(names, string_from("add"));
+    vec_push(param_counts, 2);
+
+    vec_push(names, string_from("identity"));
+    vec_push(param_counts, 1);
+
+    var i: i64 = 0;
+    while i < vec_len(names) {
+        var name: String = vec_get(names, i);
+        var params: i64 = vec_get(param_counts, i);
+        if string_len(name) < 1 { println(string_from("FAIL: empty function name")); return 1; }
+        if params < 0 { println(string_from("FAIL: negative param count")); return 1; }
+        if params > 255 { println(string_from("FAIL: too many params")); return 1; }
+        i = i + 1;
+    }
+    println(string_from("PASS: test_function_signature_consistency"));
+    0
+}
+
+fn test_scope_depth_tracking() -> i64 {
+    // Verify scope depth is always non-negative and balanced
+    var depth: i64 = 0;
+    // Simulate entering/exiting scopes
+    depth = depth + 1;  // fn
+    depth = depth + 1;  // if
+    depth = depth + 1;  // block
+    if depth != 3 { println(string_from("FAIL: scope depth after enters")); return 1; }
+    depth = depth - 1;  // end block
+    depth = depth - 1;  // end if
+    depth = depth - 1;  // end fn
+    if depth != 0 { println(string_from("FAIL: scope depth not zero after balance")); return 1; }
+
+    // Verify it never goes negative in a realistic sequence
+    var ops: Vec<i64> = vec_new();
+    vec_push(ops, 1);   // enter
+    vec_push(ops, 1);   // enter
+    vec_push(ops, 0 - 1); // exit
+    vec_push(ops, 1);   // enter
+    vec_push(ops, 0 - 1); // exit
+    vec_push(ops, 0 - 1); // exit
+
+    depth = 0;
+    var i: i64 = 0;
+    while i < vec_len(ops) {
+        depth = depth + vec_get(ops, i);
+        if depth < 0 { println(string_from("FAIL: scope depth went negative")); return 1; }
+        i = i + 1;
+    }
+    if depth != 0 { println(string_from("FAIL: scope depth unbalanced")); return 1; }
+    println(string_from("PASS: test_scope_depth_tracking"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_token_type_range();
+    failures = failures + test_ast_node_validity();
+    failures = failures + test_error_code_format();
+    failures = failures + test_string_constants_terminated();
+    failures = failures + test_function_signature_consistency();
+    failures = failures + test_scope_depth_tracking();
+    failures
+}

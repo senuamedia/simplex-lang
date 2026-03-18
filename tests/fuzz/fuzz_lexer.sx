@@ -1,0 +1,142 @@
+// Fuzz tests for lexer robustness with malformed and edge-case inputs
+
+fn test_empty_string() -> i64 {
+    var s: String = string_from("");
+    var len: i64 = string_len(s);
+    if len != 0 { println(string_from("FAIL: empty string should have length 0")); return 1; }
+    println(string_from("PASS: test_empty_string"));
+    0
+}
+
+fn test_long_identifier() -> i64 {
+    var s: String = string_from("");
+    var i: i64 = 0;
+    while i < 1000 {
+        s = string_concat(s, string_from("a"));
+        i = i + 1;
+    }
+    var len: i64 = string_len(s);
+    if len != 1000 { println(string_from("FAIL: long identifier should have length 1000")); return 1; }
+    println(string_from("PASS: test_long_identifier"));
+    0
+}
+
+fn test_special_chars_newline() -> i64 {
+    var s: String = string_from("hello\nworld");
+    var len: i64 = string_len(s);
+    if len < 10 { println(string_from("FAIL: newline string too short")); return 1; }
+    println(string_from("PASS: test_special_chars_newline"));
+    0
+}
+
+fn test_special_chars_tab() -> i64 {
+    var s: String = string_from("hello\tworld");
+    var len: i64 = string_len(s);
+    if len < 10 { println(string_from("FAIL: tab string too short")); return 1; }
+    println(string_from("PASS: test_special_chars_tab"));
+    0
+}
+
+fn test_special_chars_mixed() -> i64 {
+    var s: String = string_from("line1\nline2\ttab\nline3");
+    var len: i64 = string_len(s);
+    if len < 15 { println(string_from("FAIL: mixed special chars string too short")); return 1; }
+    println(string_from("PASS: test_special_chars_mixed"));
+    0
+}
+
+fn test_numeric_zero() -> i64 {
+    var x: i64 = 0;
+    if x != 0 { println(string_from("FAIL: zero literal")); return 1; }
+    println(string_from("PASS: test_numeric_zero"));
+    0
+}
+
+fn test_numeric_leading_zeros_value() -> i64 {
+    var x: i64 = 007;
+    if x != 7 { println(string_from("FAIL: leading zeros value")); return 1; }
+    println(string_from("PASS: test_numeric_leading_zeros_value"));
+    0
+}
+
+fn test_numeric_large() -> i64 {
+    var x: i64 = 999999999;
+    if x < 999999998 { println(string_from("FAIL: large number")); return 1; }
+    println(string_from("PASS: test_numeric_large"));
+    0
+}
+
+fn test_numeric_negative() -> i64 {
+    var x: i64 = 0 - 42;
+    if x != 0 - 42 { println(string_from("FAIL: negative number")); return 1; }
+    println(string_from("PASS: test_numeric_negative"));
+    0
+}
+
+fn test_string_with_quotes_content() -> i64 {
+    var s: String = string_from("hello world");
+    var len: i64 = string_len(s);
+    if len != 11 { println(string_from("FAIL: quoted string content")); return 1; }
+    println(string_from("PASS: test_string_with_quotes_content"));
+    0
+}
+
+fn test_comment_like_string() -> i64 {
+    var s: String = string_from("// this is not a comment");
+    var len: i64 = string_len(s);
+    if len < 20 { println(string_from("FAIL: comment-like string")); return 1; }
+    println(string_from("PASS: test_comment_like_string"));
+    0
+}
+
+fn test_repeated_concat() -> i64 {
+    var s: String = string_from("");
+    var i: i64 = 0;
+    while i < 100 {
+        s = string_concat(s, string_from("x"));
+        i = i + 1;
+    }
+    var len: i64 = string_len(s);
+    if len != 100 { println(string_from("FAIL: repeated concat length")); return 1; }
+    println(string_from("PASS: test_repeated_concat"));
+    0
+}
+
+fn test_single_char_strings() -> i64 {
+    var a: String = string_from("a");
+    var b: String = string_from("z");
+    var c: String = string_from("0");
+    var d: String = string_from("_");
+    if string_len(a) != 1 { println(string_from("FAIL: single char a")); return 1; }
+    if string_len(b) != 1 { println(string_from("FAIL: single char z")); return 1; }
+    if string_len(c) != 1 { println(string_from("FAIL: single char 0")); return 1; }
+    if string_len(d) != 1 { println(string_from("FAIL: single char _")); return 1; }
+    println(string_from("PASS: test_single_char_strings"));
+    0
+}
+
+fn test_whitespace_only() -> i64 {
+    var s: String = string_from("   ");
+    if string_len(s) != 3 { println(string_from("FAIL: whitespace only")); return 1; }
+    println(string_from("PASS: test_whitespace_only"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_empty_string();
+    failures = failures + test_long_identifier();
+    failures = failures + test_special_chars_newline();
+    failures = failures + test_special_chars_tab();
+    failures = failures + test_special_chars_mixed();
+    failures = failures + test_numeric_zero();
+    failures = failures + test_numeric_leading_zeros_value();
+    failures = failures + test_numeric_large();
+    failures = failures + test_numeric_negative();
+    failures = failures + test_string_with_quotes_content();
+    failures = failures + test_comment_like_string();
+    failures = failures + test_repeated_concat();
+    failures = failures + test_single_char_strings();
+    failures = failures + test_whitespace_only();
+    failures
+}

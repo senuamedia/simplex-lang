@@ -6,7 +6,8 @@
 #
 # Categories:
 #   all, language, types, neural, stdlib, runtime, ai, integration,
-#   toolchain, basics, async, actors, learning, quantum, observability
+#   toolchain, basics, async, actors, learning, quantum, observability,
+#   training, contracts, math, fuzz, properties, safety, formal
 #
 # Types (based on naming convention):
 #   all   - Run all test types
@@ -378,6 +379,36 @@ run_all_tests() {
     echo -e "${YELLOW}Integration${NC}"
     run_category "$SCRIPT_DIR/integration" "" "  "
     echo ""
+
+    # Contracts Tests
+    echo -e "${YELLOW}Contracts${NC}"
+    run_category "$SCRIPT_DIR/contracts" "" "  "
+    echo ""
+
+    # Math Tests
+    echo -e "${YELLOW}Math${NC}"
+    run_category "$SCRIPT_DIR/math" "" "  "
+    echo ""
+
+    # Fuzz Tests
+    echo -e "${YELLOW}Fuzz Testing${NC}"
+    run_category "$SCRIPT_DIR/fuzz" "" "  "
+    echo ""
+
+    # Property-Based Tests
+    echo -e "${YELLOW}Property-Based Tests${NC}"
+    run_category "$SCRIPT_DIR/properties" "" "  "
+    echo ""
+
+    # Safety Tests
+    echo -e "${YELLOW}Safety / Sanitizer Tests${NC}"
+    run_category "$SCRIPT_DIR/safety" "" "  "
+    echo ""
+
+    # Formal Invariant Tests
+    echo -e "${YELLOW}Formal Invariants${NC}"
+    run_category "$SCRIPT_DIR/formal" "" "  "
+    echo ""
 }
 
 # Validate test type
@@ -481,6 +512,34 @@ case "$CATEGORY" in
     observability)
         echo -e "${YELLOW}Observability${NC}"
         run_category "$SCRIPT_DIR/observability" "" "  "
+        ;;
+    training)
+        echo -e "${YELLOW}Training${NC}"
+        run_category "$SCRIPT_DIR/training" "" "  "
+        ;;
+    contracts)
+        echo -e "${YELLOW}Contracts${NC}"
+        run_category "$SCRIPT_DIR/contracts" "" "  "
+        ;;
+    math)
+        echo -e "${YELLOW}Math${NC}"
+        run_category "$SCRIPT_DIR/math" "" "  "
+        ;;
+    fuzz)
+        echo -e "${YELLOW}Fuzz Testing${NC}"
+        run_category "$SCRIPT_DIR/fuzz" "" "  "
+        ;;
+    properties)
+        echo -e "${YELLOW}Property-Based Tests${NC}"
+        run_category "$SCRIPT_DIR/properties" "" "  "
+        ;;
+    safety)
+        echo -e "${YELLOW}Safety / Sanitizer Tests${NC}"
+        run_category "$SCRIPT_DIR/safety" "" "  "
+        ;;
+    formal)
+        echo -e "${YELLOW}Formal Invariants${NC}"
+        run_category "$SCRIPT_DIR/formal" "" "  "
         ;;
     *)
         echo -e "${RED}Unknown category: $CATEGORY${NC}"

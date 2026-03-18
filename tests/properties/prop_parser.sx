@@ -1,0 +1,123 @@
+// Property-based tests for parser correctness
+
+fn test_valid_program_structure() -> i64 {
+    // Property: simple valid programs parse without error
+    // We verify by executing valid constructs and checking results
+    var x: i64 = 42;
+    var y: i64 = x + 1;
+    if y != 43 { println(string_from("FAIL: simple assignment and add")); return 1; }
+
+    var a: bool = true;
+    var b: bool = false;
+    if a == false { println(string_from("FAIL: bool literal true")); return 1; }
+    if b == true { println(string_from("FAIL: bool literal false")); return 1; }
+
+    var s: String = string_from("test");
+    if string_len(s) != 4 { println(string_from("FAIL: string literal")); return 1; }
+
+    println(string_from("PASS: test_valid_program_structure"));
+    0
+}
+
+fn test_operator_precedence_mul_add() -> i64 {
+    // Property: multiplication before addition
+    var r1: i64 = 2 + 3 * 4;
+    if r1 != 14 { println(string_from("FAIL: mul before add")); return 1; }
+
+    var r2: i64 = 3 * 4 + 2;
+    if r2 != 14 { println(string_from("FAIL: mul before add reversed")); return 1; }
+
+    var r3: i64 = 1 + 2 * 3 + 4;
+    if r3 != 11 { println(string_from("FAIL: mul in middle")); return 1; }
+
+    // With parentheses overriding
+    var r4: i64 = (2 + 3) * 4;
+    if r4 != 20 { println(string_from("FAIL: parens override precedence")); return 1; }
+
+    println(string_from("PASS: test_operator_precedence_mul_add"));
+    0
+}
+
+fn test_left_associativity() -> i64 {
+    // Property: left associativity of arithmetic
+    // (10 - 3) - 2 = 5, not 10 - (3 - 2) = 9
+    var r1: i64 = 10 - 3 - 2;
+    if r1 != 5 { println(string_from("FAIL: subtraction left assoc")); return 1; }
+
+    // (20 / 4) / 2 = 2 (assuming integer division, though let's use multiplication to verify)
+    var r2: i64 = 100 - 20 - 30 - 10;
+    if r2 != 40 { println(string_from("FAIL: chained subtraction")); return 1; }
+
+    println(string_from("PASS: test_left_associativity"));
+    0
+}
+
+fn param_fn_1(a: i64) -> i64 { a }
+fn param_fn_2(a: i64, b: i64) -> i64 { a + b }
+fn param_fn_3(a: i64, b: i64, c: i64) -> i64 { a + b + c }
+fn param_fn_5(a: i64, b: i64, c: i64, d: i64, e: i64) -> i64 { a + b + c + d + e }
+
+fn test_function_parameters() -> i64 {
+    // Property: function parameters parse correctly for various arities
+    if param_fn_1(10) != 10 { println(string_from("FAIL: 1 param")); return 1; }
+    if param_fn_2(10, 20) != 30 { println(string_from("FAIL: 2 params")); return 1; }
+    if param_fn_3(10, 20, 30) != 60 { println(string_from("FAIL: 3 params")); return 1; }
+    if param_fn_5(1, 2, 3, 4, 5) != 15 { println(string_from("FAIL: 5 params")); return 1; }
+    println(string_from("PASS: test_function_parameters"));
+    0
+}
+
+fn test_nested_expressions() -> i64 {
+    // Property: nested expressions evaluate correctly
+    var r: i64 = (1 + (2 * (3 + (4 * 5))));
+    // 4*5=20, 3+20=23, 2*23=46, 1+46=47
+    if r != 47 { println(string_from("FAIL: nested expressions")); return 1; }
+    println(string_from("PASS: test_nested_expressions"));
+    0
+}
+
+fn test_comparison_operators() -> i64 {
+    if !(1 < 2) { println(string_from("FAIL: 1 < 2")); return 1; }
+    if !(2 > 1) { println(string_from("FAIL: 2 > 1")); return 1; }
+    if !(1 <= 1) { println(string_from("FAIL: 1 <= 1")); return 1; }
+    if !(1 >= 1) { println(string_from("FAIL: 1 >= 1")); return 1; }
+    if !(1 == 1) { println(string_from("FAIL: 1 == 1")); return 1; }
+    if !(1 != 2) { println(string_from("FAIL: 1 != 2")); return 1; }
+    println(string_from("PASS: test_comparison_operators"));
+    0
+}
+
+fn test_boolean_operators() -> i64 {
+    if !(true && true) { println(string_from("FAIL: true && true")); return 1; }
+    if (true && false) { println(string_from("FAIL: true && false")); return 1; }
+    if !(true || false) { println(string_from("FAIL: true || false")); return 1; }
+    if (false || false) { println(string_from("FAIL: false || false")); return 1; }
+    if !(!false) { println(string_from("FAIL: !false")); return 1; }
+    println(string_from("PASS: test_boolean_operators"));
+    0
+}
+
+fn test_while_loop_parsing() -> i64 {
+    var sum: i64 = 0;
+    var i: i64 = 1;
+    while i <= 10 {
+        sum = sum + i;
+        i = i + 1;
+    }
+    if sum != 55 { println(string_from("FAIL: while loop sum")); return 1; }
+    println(string_from("PASS: test_while_loop_parsing"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_valid_program_structure();
+    failures = failures + test_operator_precedence_mul_add();
+    failures = failures + test_left_associativity();
+    failures = failures + test_function_parameters();
+    failures = failures + test_nested_expressions();
+    failures = failures + test_comparison_operators();
+    failures = failures + test_boolean_operators();
+    failures = failures + test_while_loop_parsing();
+    failures
+}

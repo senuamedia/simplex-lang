@@ -1,0 +1,42 @@
+{
+  "package": "simplex-quantum-ecc",
+  "version": "0.15.0",
+  "description": "Quantum error correction codes -- bit-flip, Shor, Steane, surface code",
+  "modules": [
+    {
+      "name": "mod",
+      "file": "ecc/src/mod.sx",
+      "description": "Code types, parameters, correction capability"
+    },
+    {
+      "name": "repetition",
+      "file": "ecc/src/repetition.sx",
+      "description": "3-qubit bit-flip and phase-flip repetition codes"
+    },
+    {
+      "name": "shor",
+      "file": "ecc/src/shor.sx",
+      "description": "9-qubit Shor [[9,1,3]] code"
+    },
+    {
+      "name": "steane",
+      "file": "ecc/src/steane.sx",
+      "description": "7-qubit Steane [[7,1,3]] CSS code"
+    },
+    {
+      "name": "surface",
+      "file": "ecc/src/surface.sx",
+      "description": "Rotated surface code (arbitrary distance)"
+    },
+    {
+      "name": "syndrome",
+      "file": "ecc/src/syndrome.sx",
+      "description": "Syndrome extraction and error mapping"
+    },
+    {
+      "name": "decoder",
+      "file": "ecc/src/decoder.sx",
+      "description": "Lookup table and MWPM decoders"
+    }
+  ]
+}

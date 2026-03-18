@@ -1,0 +1,37 @@
+{
+  "package": "simplex-quantum-noise",
+  "version": "0.15.0",
+  "description": "Quantum noise models and noisy simulation for NISQ devices",
+  "modules": [
+    {
+      "name": "mod",
+      "file": "noise/src/mod.sx",
+      "description": "NoiseModel container, channel type constants"
+    },
+    {
+      "name": "depolarizing",
+      "file": "noise/src/depolarizing.sx",
+      "description": "Depolarizing noise channels (single/two-qubit)"
+    },
+    {
+      "name": "damping",
+      "file": "noise/src/damping.sx",
+      "description": "Amplitude damping (T1) and phase damping (T2) channels"
+    },
+    {
+      "name": "readout",
+      "file": "noise/src/readout.sx",
+      "description": "Readout error model and calibration matrix"
+    },
+    {
+      "name": "kraus",
+      "file": "noise/src/kraus.sx",
+      "description": "Custom Kraus operator channels with completeness validation"
+    },
+    {
+      "name": "simulator",
+      "file": "noise/src/simulator.sx",
+      "description": "Noisy simulation engine with per-gate noise injection"
+    }
+  ]
+}
