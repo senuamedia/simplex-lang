@@ -154,7 +154,8 @@ echo ""
 echo "Step 3: Linking sxc compiler..."
 
 # Build with warnings as errors for production
-clang -O2 -Wall -Wextra -Wformat-security -Werror -Wno-format \
+clang -O2 -Wall -Wextra -Wformat-security -Werror \
+    -Wno-format -Wno-override-module \
     $INCLUDES \
     compiler/bootstrap/sxc_combined.ll \
     runtime/standalone_runtime.c \
