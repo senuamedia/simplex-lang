@@ -21,7 +21,7 @@
 // - Align struct fields
 
 // Version constant (synced with simplex-core/src/version.sx — use simplex_core::version when module compilation supports it)
-fn VERSION() -> i64 { string_from("0.14.0") }
+fn VERSION() -> i64 { string_from("0.15.0") }
 fn INDENT_WIDTH() -> i64 { 4 }
 fn MAX_LINE_LENGTH() -> i64 { 100 }
 

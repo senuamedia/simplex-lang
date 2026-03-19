@@ -1,0 +1,169 @@
+// Gate Characterization via Quantum Process Tomography
+// Provides fidelity metrics and tomographic input generation
+
+// Compute process fidelity from ideal and measured chi matrices
+// Both channels represented as vec of d^2 * d^2 f64_bits (flattened chi matrix)
+// F = Tr(chi_ideal^dag * chi_measured) / d
+fn process_fidelity(ideal_channel: i64, measured_channel: i64) -> f64 {
+    let size: i64 = vec_len(ideal_channel);
+    // d^2 * d^2 = size, so d^2 = sqrt(size)
+    // For typical cases: d=2 -> size=16, d=4 -> size=256
+    let d_sq: i64 = isqrt(size);
+    let d: i64 = isqrt(d_sq);
+    if d < 1 {
+        d = 1;
+    }
+
+    // Tr(A^dag * B) = sum_ij conj(A_ij) * B_ij
+    // For real matrices: Tr(A^T * B) = sum_ij A_ij * B_ij
+    let trace_sum: f64 = 0.0;
+    let i: i64 = 0;
+    while i < size {
+        let a_val: f64 = bits_to_f64(vec_get(ideal_channel, i));
+        let b_val: f64 = bits_to_f64(vec_get(measured_channel, i));
+        trace_sum = trace_sum + a_val * b_val;
+        i = i + 1;
+    }
+
+    // Normalize by dimension
+    let d_f: f64 = i64_to_f64(d);
+    let fidelity: f64 = trace_sum / d_f;
+    return fidelity;
+}
+
+// Compute average gate fidelity from process fidelity
+// F_avg = (d * F_process + 1) / (d + 1)
+fn avg_gate_fidelity(proc_fidelity: f64, dimension: i64) -> f64 {
+    let d: f64 = i64_to_f64(dimension);
+    let numerator: f64 = d * proc_fidelity + 1.0;
+    let denominator: f64 = d + 1.0;
+    return numerator / denominator;
+}
+
+// Upper bound on diamond norm distance from average gate fidelity
+// epsilon_diamond <= d * sqrt((d+1)(1 - F_avg) / d)
+// Simplified bound: epsilon_diamond <= d * sqrt(1 - F_avg) * sqrt((d+1)/d)
+fn diamond_distance_bound(fidelity: f64) -> f64 {
+    // Use simpler bound: 1 - F_avg gives infidelity
+    // Diamond distance <= sqrt(d(d+1)(1-F))
+    // For qubit (d=2): <= sqrt(6*(1-F))
+    let infidelity: f64 = 1.0 - fidelity;
+    if infidelity < 0.0 {
+        return 0.0;
+    }
+    // Approximate for qubit case
+    let bound: f64 = sqrt_approx(6.0 * infidelity);
+    if bound > 2.0 {
+        bound = 2.0;
+    }
+    return bound;
+}
+
+// Generate tomographic input state indices for n qubits
+// Returns vec of 4^n state indices (Pauli basis: I, X, Y, Z preparations)
+fn tomography_input_states(n_qubits: i64) -> i64 {
+    let n_states: i64 = pow_i64(4, n_qubits);
+    let states: i64 = vec_new();
+
+    let i: i64 = 0;
+    while i < n_states {
+        vec_push(states, i);
+        i = i + 1;
+    }
+    return states;
+}
+
+// Extract chi matrix element from measurement data
+// i, j: row and column indices of the chi matrix
+// measurements: vec of measurement outcomes (f64_bits)
+// chi_ij = sum_k P_i_k * m_k * P_j_k / N
+fn chi_matrix_element(i: i64, j: i64, measurements: i64) -> f64 {
+    let n: i64 = vec_len(measurements);
+    if n == 0 {
+        return 0.0;
+    }
+
+    // For Pauli transfer matrix reconstruction:
+    // chi_ij = (1/d) * sum_k Tr(P_i rho_k) * Tr(P_j rho_k)
+    // Simplified: use measurement data directly indexed by Pauli basis
+    // The measurement at index (i*d^2 + j) gives chi_ij directly
+    let idx: i64 = i * isqrt(n) + j;
+    if idx >= n {
+        return 0.0;
+    }
+    let val: f64 = bits_to_f64(vec_get(measurements, idx));
+    return val;
+}
+
+// Integer square root (floor)
+fn isqrt(n: i64) -> i64 {
+    if n <= 0 {
+        return 0;
+    }
+    if n == 1 {
+        return 1;
+    }
+    let x: i64 = n;
+    let y: i64 = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    return x;
+}
+
+// Integer power: base^exp
+fn pow_i64(base: i64, exp: i64) -> i64 {
+    let result: i64 = 1;
+    let i: i64 = 0;
+    while i < exp {
+        result = result * base;
+        i = i + 1;
+    }
+    return result;
+}
+
+// Convert i64 to f64
+fn i64_to_f64(n: i64) -> f64 {
+    let result: f64 = 0.0;
+    let i: i64 = 0;
+    let neg: i64 = 0;
+    let val: i64 = n;
+    if val < 0 {
+        neg = 1;
+        val = 0 - val;
+    }
+    while i < val {
+        result = result + 1.0;
+        i = i + 1;
+    }
+    if neg == 1 {
+        return 0.0 - result;
+    }
+    return result;
+}
+
+// Square root approximation via Newton's method
+fn sqrt_approx(x: f64) -> f64 {
+    if x <= 0.0 {
+        return 0.0;
+    }
+    let guess: f64 = x / 2.0;
+    if guess < 0.001 {
+        guess = 0.001;
+    }
+    let iter: i64 = 0;
+    while iter < 30 {
+        let next: f64 = (guess + x / guess) / 2.0;
+        let diff: f64 = next - guess;
+        if diff < 0.0 {
+            diff = 0.0 - diff;
+        }
+        if diff < 0.0000000001 {
+            return next;
+        }
+        guess = next;
+        iter = iter + 1;
+    }
+    return guess;
+}

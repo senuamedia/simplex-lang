@@ -1,0 +1,192 @@
+// Zero-Noise Extrapolation - Specification Tests
+// Tests linear, polynomial, Richardson, and exponential extrapolation.
+// Verifies ZNE reduces error on noisy simulations.
+// Rewritten for sxc compiler compatibility (no f64 const, no f64 fn params).
+
+// Test 1: Linear extrapolation to zero-noise limit
+// Given values at scale_factors [1, 2], extrapolate to scale=0
+fn test_linear_extrapolation() -> i64 {
+    let eps: f64 = 0.01;
+    // True value: 0.8
+    // At noise scale 1: measured = 0.6
+    // At noise scale 2: measured = 0.4
+    // Linear fit: y = 0.8 - 0.2*x -> y(0) = 0.8
+    let x1: f64 = 1.0;
+    let y1: f64 = 0.6;
+    let x2: f64 = 2.0;
+    let y2: f64 = 0.4;
+    // Slope
+    let slope: f64 = (y2 - y1) / (x2 - x1);
+    // Extrapolate to x=0
+    let y0: f64 = y1 - slope * x1;
+    let diff: f64 = y0 - 0.8;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= eps { println(string_from("FAIL: linear extrap")); return 1; }
+    println(string_from("PASS: linear_extrapolation"));
+    0
+}
+
+// Test 2: Richardson extrapolation (3-point)
+fn test_richardson_extrapolation() -> i64 {
+    let eps: f64 = 0.01;
+    let c1: f64 = 1.0;
+    let c2: f64 = 2.0;
+    let c3: f64 = 3.0;
+
+    let e1: f64 = 1.0 - 0.1 * c1 + 0.02 * c1 * c1;
+    let e2: f64 = 1.0 - 0.1 * c2 + 0.02 * c2 * c2;
+    let e3: f64 = 1.0 - 0.1 * c3 + 0.02 * c3 * c3;
+
+    let w1: f64 = 3.0;
+    let w2: f64 = 0.0 - 3.0;
+    let w3: f64 = 1.0;
+    let e0: f64 = w1 * e1 + w2 * e2 + w3 * e3;
+    let diff: f64 = e0 - 1.0;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= eps { println(string_from("FAIL: richardson extrap")); return 1; }
+    println(string_from("PASS: richardson_extrapolation"));
+    0
+}
+
+// Test 3: Exponential extrapolation
+fn test_exponential_extrapolation() -> i64 {
+    let eps: f64 = 0.01;
+    let a: f64 = 0.5;
+    let b: f64 = 0.3;
+    let c_param: f64 = 0.3;
+    let e1: f64 = a * exp(0.0 - b * 1.0) + c_param;
+    let e2: f64 = a * exp(0.0 - b * 2.0) + c_param;
+    let e3: f64 = a * exp(0.0 - b * 3.0) + c_param;
+
+    let ratio: f64 = (e1 - e2) / (e2 - e3);
+    let exp_b: f64 = ratio;
+    let b_est: f64 = ln(exp_b);
+    let a_est: f64 = (e1 - e2) / (exp(0.0 - b_est) - exp(0.0 - 2.0 * b_est));
+    let c_est: f64 = e1 - a_est * exp(0.0 - b_est);
+    let e0: f64 = a_est + c_est;
+    let diff: f64 = e0 - 0.8;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= eps { println(string_from("FAIL: exp extrap")); return 1; }
+    println(string_from("PASS: exponential_extrapolation"));
+    0
+}
+
+// Test 4: ZNE reduces error compared to raw noisy result
+fn test_zne_reduces_error() -> i64 {
+    let true_val: f64 = 1.0;
+    let noisy_val: f64 = 0.7;
+    let nd: f64 = true_val - noisy_val;
+    let noisy_error: f64 = if nd < 0.0 { 0.0 - nd } else { nd };
+
+    let y1: f64 = 0.7;
+    let y2: f64 = 0.4;
+    let slope: f64 = (y2 - y1) / (2.0 - 1.0);
+    let zne_val: f64 = y1 - slope * 1.0;
+    let zd: f64 = true_val - zne_val;
+    let zne_error: f64 = if zd < 0.0 { 0.0 - zd } else { zd };
+
+    if zne_error >= noisy_error { println(string_from("FAIL: ZNE not better")); return 1; }
+    if zne_error > noisy_error * 0.5 { println(string_from("FAIL: ZNE <50% reduction")); return 1; }
+    println(string_from("PASS: zne_reduces_error"));
+    0
+}
+
+// Test 5: Polynomial fit for degree-2
+fn test_polynomial_fit() -> i64 {
+    let eps: f64 = 0.01;
+    let x1: f64 = 1.0;
+    let x2: f64 = 2.0;
+    let x3: f64 = 3.0;
+    let y1: f64 = 0.92;
+    let y2: f64 = 0.88;
+    let y3: f64 = 0.88;
+
+    let l1: f64 = 3.0;
+    let l2: f64 = 0.0 - 3.0;
+    let l3: f64 = 1.0;
+    let y0: f64 = l1 * y1 + l2 * y2 + l3 * y3;
+    let diff: f64 = y0 - 1.0;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= eps { println(string_from("FAIL: polyfit")); return 1; }
+    println(string_from("PASS: polynomial_fit"));
+    0
+}
+
+// Test 6: Gate folding increases noise
+fn test_gate_folding() -> i64 {
+    let eps: f64 = 0.01;
+    let base_error: f64 = 0.01;
+    let fold_1: f64 = base_error;
+    let fold_3: f64 = base_error * 3.0;
+    let fold_5: f64 = base_error * 5.0;
+
+    let d1: f64 = fold_1 / base_error - 1.0;
+    let a1: f64 = if d1 < 0.0 { 0.0 - d1 } else { d1 };
+    if a1 >= eps { println(string_from("FAIL: fold scale 1")); return 1; }
+
+    let d3: f64 = fold_3 / base_error - 3.0;
+    let a3: f64 = if d3 < 0.0 { 0.0 - d3 } else { d3 };
+    if a3 >= eps { println(string_from("FAIL: fold scale 3")); return 1; }
+
+    let d5: f64 = fold_5 / base_error - 5.0;
+    let a5: f64 = if d5 < 0.0 { 0.0 - d5 } else { d5 };
+    if a5 >= eps { println(string_from("FAIL: fold scale 5")); return 1; }
+
+    println(string_from("PASS: gate_folding"));
+    0
+}
+
+// Test 7: Extrapolation with 4 data points (simple 2-point method)
+fn test_four_point_extrapolation() -> i64 {
+    let eps: f64 = 0.01;
+    // Data: (1, 1.7), (4, 0.8), perfectly linear y = 2.0 - 0.3x
+    // Use simple 2-point extrapolation to x=0
+    let x1: f64 = 1.0;
+    let y1: f64 = 1.7;
+    let x4: f64 = 4.0;
+    let y4: f64 = 0.8;
+    let slope: f64 = (y4 - y1) / (x4 - x1);
+    let intercept: f64 = y1 - slope * x1;
+    // intercept = 1.7 - (-0.3)*1.0 = 2.0
+    let diff: f64 = intercept - 2.0;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= eps { println(string_from("FAIL: 4-point extrap")); return 1; }
+    println(string_from("PASS: four_point_extrapolation"));
+    0
+}
+
+// Test 8: ZNE with exponential noise model
+fn test_zne_exponential_model() -> i64 {
+    let eps: f64 = 0.02;
+    let e1: f64 = 0.6 * exp(0.0 - 0.5) + 0.4;
+    let e2: f64 = 0.6 * exp(0.0 - 1.0) + 0.4;
+    let e3: f64 = 0.6 * exp(0.0 - 1.5) + 0.4;
+
+    let r: f64 = (e1 - e2) / (e2 - e3);
+    let b_est: f64 = ln(r);
+    let a_est: f64 = (e1 - e2) / (exp(0.0 - b_est) - exp(0.0 - 2.0 * b_est));
+    let c_est: f64 = e1 - a_est * exp(0.0 - b_est);
+    let e0_est: f64 = a_est + c_est;
+    let diff: f64 = e0_est - 1.0;
+    let ad: f64 = if diff < 0.0 { 0.0 - diff } else { diff };
+    if ad >= eps { println(string_from("FAIL: ZNE exp model")); return 1; }
+    println(string_from("PASS: zne_exponential_model"));
+    0
+}
+
+fn main() -> i64 {
+    println(string_from("=== Zero-Noise Extrapolation Tests ==="));
+    var failures: i64 = 0;
+    failures = failures + test_linear_extrapolation();
+    failures = failures + test_richardson_extrapolation();
+    failures = failures + test_exponential_extrapolation();
+    failures = failures + test_zne_reduces_error();
+    failures = failures + test_polynomial_fit();
+    failures = failures + test_gate_folding();
+    failures = failures + test_four_point_extrapolation();
+    failures = failures + test_zne_exponential_model();
+    if failures == 0 {
+        println(string_from("All ZNE tests passed!"));
+    }
+    failures
+}

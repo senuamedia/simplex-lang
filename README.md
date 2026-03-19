@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.14.0**
+**Version 0.15.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -14,6 +14,8 @@ Simplex is a modern systems programming language designed for AI-native applicat
 - **Real-Time Learning**: Online training during inference without retraining (v0.7.0)
 - **Dual Numbers**: Native forward-mode automatic differentiation (v0.8.0)
 - **Self-Learning Annealing**: Optimization schedules that learn themselves (v0.9.0)
+- **Quantum Computing**: Full quantum framework with error mitigation and circuit optimization (v0.14.0-0.15.0)
+- **Production Hardening**: Fuzzing, property testing, sanitizers, formal invariants (v0.15.0)
 - **Self-Hosted**: Compiler written in Simplex itself (bootstrapped from Python)
 - **LLVM Backend**: Compiles to optimized native code via LLVM IR
 - **Rust-Inspired Syntax**: Familiar syntax with enums, traits, and pattern matching
@@ -261,7 +263,11 @@ simplex-lang/
 │   └── tests/              # Protocol tests
 ├── simplex-quantum/        # Quantum computing framework
 │   ├── src/                # Core types, gates, circuits, measurement
-│   └── backend/            # Multi-provider backend abstraction
+│   ├── backend/            # Multi-provider backend abstraction
+│   ├── noise/              # Noise models (v0.15.0)
+│   ├── mitigation/         # Error mitigation: ZNE, PEC (v0.15.0)
+│   ├── ecc/                # Error correction codes (v0.15.0)
+│   └── circuit-opt/        # Circuit optimization passes (v0.15.0)
 ├── simplex-training/       # Self-optimizing training pipelines
 │   ├── src/schedules/      # Learnable schedules (LR, distillation)
 │   ├── src/research/       # Epistemic data refinement
@@ -270,16 +276,21 @@ simplex-lang/
 │   ├── version.sx          # Centralized version management
 │   ├── platform.sx         # Cross-platform utilities
 │   └── safety.sx           # Runtime safety primitives
-├── tests/                  # 154 tests, 100% pass rate
+├── tests/                  # 197 tests passing, 100% pass rate
 │   ├── language/           # Core language features (42)
 │   ├── types/              # Type system tests (12)
 │   ├── neural/             # Neural IR and gates (16)
 │   ├── stdlib/             # Standard library (27)
 │   ├── ai/                 # AI/Cognitive tests (18)
-│   ├── toolchain/          # Toolchain tests (11)
+│   ├── quantum/            # Quantum computing tests (18)
+│   ├── toolchain/          # Toolchain tests (14+)
 │   ├── runtime/            # Runtime systems (8)
 │   ├── integration/        # End-to-end tests (7)
 │   ├── training/           # Training pipeline (8)
+│   ├── fuzz/               # Compiler fuzz tests (4)
+│   ├── properties/         # Property-based tests (4)
+│   ├── safety/             # Sanitizer tests (3)
+│   ├── formal/             # Formal invariants (3)
 │   ├── basics/             # Basic language (6)
 │   ├── async/              # Async/await (3)
 │   ├── learning/           # Automatic differentiation (4)
@@ -297,15 +308,62 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.14.0 | Simplex Compiler with Neural IR, Dual Numbers, Module System, and Quantum Bridge |
-| **sxpm** | 0.14.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.14.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.14.0 | Documentation Generator |
-| **sxlsp** | 0.14.0 | Language Server Protocol |
-| **sxfmt** | 0.14.0 | Code Formatter |
-| **sxlint** | 0.14.0 | Static Linter |
+| **sxc** | 0.15.0 | Simplex Compiler — collection iteration, keyword methods, where clauses, circuit optimization |
+| **sxpm** | 0.15.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.15.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.15.0 | Documentation Generator |
+| **sxlsp** | 0.15.0 | Language Server Protocol |
+| **sxfmt** | 0.15.0 | Code Formatter |
+| **sxlint** | 0.15.0 | Static Linter |
 
 ## Release History
+
+### v0.15.0 (2026-03-19) - Production Hardening & Quantum Maturity
+
+**Quantum Error Mitigation & Circuit Optimization:**
+- Noise models: depolarizing, amplitude/phase damping, readout error, custom Kraus
+- Zero-noise extrapolation (ZNE): Richardson, linear, polynomial, exponential
+- Probabilistic error cancellation (PEC) with Monte Carlo sampling
+- Error correction codes: bit-flip, Shor [[9,1,3]], Steane [[7,1,3]], surface code (d=3)
+- Circuit optimization: gate fusion, commutation cancellation, depth reduction
+- Qubit routing for linear, grid, all-to-all topologies
+- Native gate decomposition: IBM, Clifford+T, CX+Rz
+
+**Compiler Improvements:**
+- Collection iteration: `for x in collection { }` and `for x in &collection { }`
+- Keywords as method names: `.send()`, `.match()` now work after dot
+- Where clauses: `where T: Trait` in generic functions
+- Nested generics: `Arc<Mutex<T>>`, `Vec<Option<T>>`
+- Match exhaustiveness warnings
+
+**Production Hardening:**
+- Compiler fuzzing (lexer, parser, codegen, grammar-aware)
+- Property-based testing (lexer, parser, codegen, types)
+- Runtime safety: ASan, UBSan, TSan integration
+- Formal invariant verification
+- CI hardening workflow
+
+See [RELEASE-0.15.0.md](simplex-docs/RELEASE-0.15.0.md) for details.
+
+### v0.14.0 (2026-03-17) - Quantum Bridge
+
+**Quantum Computing Framework:**
+- Core types, gates, circuits, measurement with statevector simulation
+- Backend abstraction: Amazon Braket, IBM Quantum, Azure Quantum, local simulator
+- Variational algorithms: VQE, QAOA, parameter-shift gradients
+- Cost-aware dispatch with budget tracking
+- Quantum optimization: MaxCut, molecular VQE, Grover search, hybrid annealing
+
+See [RELEASE-0.14.0.md](simplex-docs/RELEASE-0.14.0.md) for details.
+
+### v0.13.0 (2026-03-16) - Completion & Foundations
+
+**Mathematical Foundations:**
+- Complex numbers, matrices, linear algebra
+- HTTP client, JSON parser
+- Multi-dimensional dual numbers, second-order AD
+
+See [RELEASE-0.13.0.md](simplex-docs/RELEASE-0.13.0.md) for details.
 
 ### v0.12.0 (2026-01-19) - Module System
 
@@ -633,8 +691,13 @@ sxpm model install <name> # Install a model
 - HiveMnemonic shared consciousness
 - Per-hive SLM provisioning
 
+- Collection iteration (`for x in collection {}`)
+- Where clauses (`where T: Trait`)
+- Nested generics (`Arc<Mutex<T>>`)
+- Keywords as method names (`.send()`, `.match()`)
+
 ### In Development
-- Full trait bounds and where clauses
+- Full borrow checking
 - Module system improvements
 - GPU acceleration for SLMs
 - Distributed hive clustering
@@ -642,7 +705,7 @@ sxpm model install <name> # Install a model
 ## Running Tests
 
 ```bash
-# Run all tests (156 tests across 13 categories)
+# Run all tests (197 tests across 21 categories)
 ./tests/run_tests.sh
 
 # Run specific category
@@ -670,6 +733,9 @@ sxc run tests/learning/unit_dual_numbers.sx
 - [Tutorial](simplex-docs/tutorial/)
 - [Testing Documentation](simplex-docs/testing/)
 - [Getting Started Guide](simplex-docs/guides/getting-started.md)
+- [Release Notes v0.15.0](simplex-docs/RELEASE-0.15.0.md) - Production Hardening & Quantum Maturity
+- [Release Notes v0.14.0](simplex-docs/RELEASE-0.14.0.md) - Quantum Bridge
+- [Release Notes v0.13.0](simplex-docs/RELEASE-0.13.0.md) - Completion & Foundations
 - [Release Notes v0.12.0](simplex-docs/RELEASE-0.12.0.md) - Module System
 - [Release Notes v0.10.0](simplex-docs/RELEASE-0.10.0.md) - Developer Experience
 - [Release Notes v0.9.9](simplex-docs/RELEASE-0.9.9.md) - Runtime Stability

@@ -1,0 +1,129 @@
+// simplex-quantum::circuit-opt::cost - Cost Functions
+//
+// Evaluate circuit quality via gate count, two-qubit gate count,
+// circuit depth, and weighted cost metrics.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+const INSTR_STRIDE: i64 = 4;
+
+// Total gate count
+fn cost_gate_count(instrs: i64) -> i64 {
+    vec_len(instrs) / INSTR_STRIDE()
+}
+
+// Check if opcode is a two-qubit gate
+fn is_two_qubit_gate(op: i64) -> i64 {
+    if op == OP_CNOT() { return 1; }
+    if op == OP_CZ() { return 1; }
+    if op == OP_SWAP() { return 1; }
+    if op == OP_CRZ() { return 1; }
+    0
+}
+
+// Count two-qubit gates (CNOT, CZ, SWAP, CRZ)
+fn cost_two_qubit_count(instrs: i64) -> i64 {
+    let n: i64 = vec_len(instrs) / INSTR_STRIDE();
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let op: i64 = vec_get(instrs, i * INSTR_STRIDE());
+        if is_two_qubit_gate(op) != 0 {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+// Circuit depth: maximum number of time steps
+fn cost_depth(instrs: i64, n_qubits: i64) -> i64 {
+    let n: i64 = vec_len(instrs) / INSTR_STRIDE();
+    if n == 0 { return 0; }
+
+    let depths: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_qubits {
+        vec_push(depths, 0);
+        i = i + 1;
+    }
+
+    i = 0;
+    while i < n {
+        let base: i64 = i * INSTR_STRIDE();
+        let q0: i64 = vec_get(instrs, base + 1);
+        let q1: i64 = vec_get(instrs, base + 2);
+
+        if q1 >= 0 {
+            let d0: i64 = vec_get(depths, q0);
+            let d1: i64 = vec_get(depths, q1);
+            var nd: i64 = d0 + 1;
+            if d1 + 1 > nd { nd = d1 + 1; }
+            vec_set(depths, q0, nd);
+            vec_set(depths, q1, nd);
+        } else {
+            let d: i64 = vec_get(depths, q0);
+            vec_set(depths, q0, d + 1);
+        }
+        i = i + 1;
+    }
+
+    var max_d: i64 = 0;
+    i = 0;
+    while i < n_qubits {
+        let d: i64 = vec_get(depths, i);
+        if d > max_d { max_d = d; }
+        i = i + 1;
+    }
+    max_d
+}
+
+// Weighted cost function combining gate count, depth, and two-qubit count.
+// cost = w_gates * gate_count + w_depth * depth + w_twoq * two_qubit_count
+// Weights are passed as f64.
+fn cost_weighted(instrs: i64, n_qubits: i64, w_gates: f64, w_depth: f64, w_twoq: f64) -> f64 {
+    let gates: f64 = cost_gate_count(instrs) as f64;
+    let depth: f64 = cost_depth(instrs, n_qubits) as f64;
+    let twoq: f64 = cost_two_qubit_count(instrs) as f64;
+    w_gates * gates + w_depth * depth + w_twoq * twoq
+}
+
+fn main() -> i64 {
+    // Test: build a small circuit
+    let instrs: i64 = vec_new();
+    // H(0)
+    vec_push(instrs, 1); vec_push(instrs, 0); vec_push(instrs, 0 - 1); vec_push(instrs, 0);
+    // CNOT(0,1)
+    vec_push(instrs, 10); vec_push(instrs, 0); vec_push(instrs, 1); vec_push(instrs, 0);
+    // Rz(1, pi/4)
+    vec_push(instrs, 9); vec_push(instrs, 1); vec_push(instrs, 0 - 1); vec_push(instrs, 0);
+    // SWAP(0,1)
+    vec_push(instrs, 12); vec_push(instrs, 0); vec_push(instrs, 1); vec_push(instrs, 0);
+
+    println(string_concat(string_from("gate count: "), int_to_string(cost_gate_count(instrs))));
+    println(string_concat(string_from("two-qubit count: "), int_to_string(cost_two_qubit_count(instrs))));
+    println(string_concat(string_from("depth: "), int_to_string(cost_depth(instrs, 2))));
+
+    let w_cost: f64 = cost_weighted(instrs, 2, 1.0, 2.0, 5.0);
+    let w_cost_int: i64 = w_cost as i64;
+    println(string_concat(string_from("weighted cost: "), int_to_string(w_cost_int)));
+
+    println(string_from("circuit-opt/cost.sx OK"));
+    0
+}

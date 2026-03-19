@@ -1,0 +1,72 @@
+// simplex-quantum-noise - Quantum Noise Models
+// Provides depolarizing, amplitude damping, phase damping, readout error,
+// custom Kraus channels, and noisy simulation.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const CHANNEL_DEPOLARIZING: i64 = 1;
+const CHANNEL_AMPLITUDE_DAMPING: i64 = 2;
+const CHANNEL_PHASE_DAMPING: i64 = 3;
+const CHANNEL_READOUT: i64 = 4;
+const CHANNEL_CUSTOM: i64 = 5;
+
+// NoiseModel: vec of [n_single_channels, n_two_channels, readout_error_bits,
+//                      single_channel_vec, two_channel_vec]
+fn noise_model_new() -> i64 {
+    let model: i64 = vec_new();
+    vec_push(model, 0);  // n_single_channels
+    vec_push(model, 0);  // n_two_channels
+    vec_push(model, f64_to_bits(0.0));  // readout error rate
+    let singles: i64 = vec_new();
+    vec_push(model, singles);
+    let twos: i64 = vec_new();
+    vec_push(model, twos);
+    model
+}
+
+fn noise_model_add_single_qubit(model: i64, channel: i64) -> i64 {
+    let n: i64 = vec_get(model, 0);
+    vec_set(model, 0, n + 1);
+    let singles: i64 = vec_get(model, 3);
+    vec_push(singles, channel);
+    model
+}
+
+fn noise_model_add_two_qubit(model: i64, channel: i64) -> i64 {
+    let n: i64 = vec_get(model, 1);
+    vec_set(model, 1, n + 1);
+    let twos: i64 = vec_get(model, 4);
+    vec_push(twos, channel);
+    model
+}
+
+fn noise_model_add_readout(model: i64, error_rate: f64) -> i64 {
+    vec_set(model, 2, f64_to_bits(error_rate));
+    model
+}
+
+fn noise_model_single_channels(model: i64) -> i64 {
+    vec_get(model, 3)
+}
+
+fn noise_model_two_channels(model: i64) -> i64 {
+    vec_get(model, 4)
+}
+
+fn noise_model_readout_rate(model: i64) -> f64 {
+    bits_to_f64(vec_get(model, 2))
+}
+
+fn noise_model_n_single(model: i64) -> i64 {
+    vec_get(model, 0)
+}
+
+fn noise_model_n_two(model: i64) -> i64 {
+    vec_get(model, 1)
+}
+
+fn main() -> i64 {
+    println(string_from("simplex-quantum-noise module"));
+    0
+}

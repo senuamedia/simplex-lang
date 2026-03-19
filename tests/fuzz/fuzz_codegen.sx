@@ -1,0 +1,166 @@
+// Fuzz tests for codegen edge cases
+
+fn empty_fn() -> i64 { 0 }
+
+fn test_function_zero_statements() -> i64 {
+    var result: i64 = empty_fn();
+    if result != 0 { println(string_from("FAIL: function zero statements")); return 1; }
+    println(string_from("PASS: test_function_zero_statements"));
+    0
+}
+
+fn constant_42() -> i64 { 42 }
+fn constant_neg() -> i64 { 0 - 99 }
+fn constant_zero() -> i64 { 0 }
+
+fn test_function_returning_constant() -> i64 {
+    if constant_42() != 42 { println(string_from("FAIL: constant 42")); return 1; }
+    if constant_neg() != 0 - 99 { println(string_from("FAIL: constant neg")); return 1; }
+    if constant_zero() != 0 { println(string_from("FAIL: constant zero")); return 1; }
+    println(string_from("PASS: test_function_returning_constant"));
+    0
+}
+
+fn test_deeply_nested_if_else() -> i64 {
+    var x: i64 = 10;
+    var r: i64 = 0;
+    if x > 0 {
+        if x > 1 {
+            if x > 2 {
+                if x > 3 {
+                    if x > 4 {
+                        if x > 5 {
+                            if x > 6 {
+                                if x > 7 {
+                                    if x > 8 {
+                                        if x > 9 {
+                                            r = 10;
+                                        } else { r = 9; }
+                                    } else { r = 8; }
+                                } else { r = 7; }
+                            } else { r = 6; }
+                        } else { r = 5; }
+                    } else { r = 4; }
+                } else { r = 3; }
+            } else { r = 2; }
+        } else { r = 1; }
+    } else { r = 0; }
+    if r != 10 { println(string_from("FAIL: deeply nested if else")); return 1; }
+    println(string_from("PASS: test_deeply_nested_if_else"));
+    0
+}
+
+fn test_many_let_bindings() -> i64 {
+    var v0: i64 = 0;
+    var v1: i64 = 1;
+    var v2: i64 = 2;
+    var v3: i64 = 3;
+    var v4: i64 = 4;
+    var v5: i64 = 5;
+    var v6: i64 = 6;
+    var v7: i64 = 7;
+    var v8: i64 = 8;
+    var v9: i64 = 9;
+    var v10: i64 = 10;
+    var v11: i64 = 11;
+    var v12: i64 = 12;
+    var v13: i64 = 13;
+    var v14: i64 = 14;
+    var v15: i64 = 15;
+    var v16: i64 = 16;
+    var v17: i64 = 17;
+    var v18: i64 = 18;
+    var v19: i64 = 19;
+    var v20: i64 = 20;
+    var v21: i64 = 21;
+    var v22: i64 = 22;
+    var v23: i64 = 23;
+    var v24: i64 = 24;
+    var v25: i64 = 25;
+    var v26: i64 = 26;
+    var v27: i64 = 27;
+    var v28: i64 = 28;
+    var v29: i64 = 29;
+    var v30: i64 = 30;
+    var v31: i64 = 31;
+    var v32: i64 = 32;
+    var v33: i64 = 33;
+    var v34: i64 = 34;
+    var v35: i64 = 35;
+    var v36: i64 = 36;
+    var v37: i64 = 37;
+    var v38: i64 = 38;
+    var v39: i64 = 39;
+    var v40: i64 = 40;
+    var v41: i64 = 41;
+    var v42: i64 = 42;
+    var v43: i64 = 43;
+    var v44: i64 = 44;
+    var v45: i64 = 45;
+    var v46: i64 = 46;
+    var v47: i64 = 47;
+    var v48: i64 = 48;
+    var v49: i64 = 49;
+    // Sum of 0..49 = 49*50/2 = 1225
+    var total: i64 = v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7 + v8 + v9;
+    total = total + v10 + v11 + v12 + v13 + v14 + v15 + v16 + v17 + v18 + v19;
+    total = total + v20 + v21 + v22 + v23 + v24 + v25 + v26 + v27 + v28 + v29;
+    total = total + v30 + v31 + v32 + v33 + v34 + v35 + v36 + v37 + v38 + v39;
+    total = total + v40 + v41 + v42 + v43 + v44 + v45 + v46 + v47 + v48 + v49;
+    if total != 1225 { println(string_from("FAIL: many let bindings sum")); return 1; }
+    println(string_from("PASS: test_many_let_bindings"));
+    0
+}
+
+fn test_large_vec_operations() -> i64 {
+    var v: Vec<i64> = vec_new();
+    var i: i64 = 0;
+    while i < 200 {
+        vec_push(v, i * 2);
+        i = i + 1;
+    }
+    if vec_len(v) != 200 { println(string_from("FAIL: large vec length")); return 1; }
+    var val0: i64 = vec_get(v, 0);
+    var val99: i64 = vec_get(v, 99);
+    var val199: i64 = vec_get(v, 199);
+    if val0 != 0 { println(string_from("FAIL: large vec first element")); return 1; }
+    if val99 != 198 { println(string_from("FAIL: large vec middle element")); return 1; }
+    if val199 != 398 { println(string_from("FAIL: large vec last element")); return 1; }
+    println(string_from("PASS: test_large_vec_operations"));
+    0
+}
+
+fn test_string_escape_sequences() -> i64 {
+    var s1: String = string_from("hello\nworld");
+    var s2: String = string_from("tab\there");
+    var s3: String = string_from("quote");
+    if string_len(s1) < 5 { println(string_from("FAIL: newline escape")); return 1; }
+    if string_len(s2) < 5 { println(string_from("FAIL: tab escape")); return 1; }
+    if string_len(s3) < 5 { println(string_from("FAIL: quote string")); return 1; }
+    println(string_from("PASS: test_string_escape_sequences"));
+    0
+}
+
+fn test_chained_string_concat() -> i64 {
+    var s: String = string_from("");
+    var i: i64 = 0;
+    while i < 50 {
+        s = string_concat(s, string_from("ab"));
+        i = i + 1;
+    }
+    if string_len(s) != 100 { println(string_from("FAIL: chained string concat")); return 1; }
+    println(string_from("PASS: test_chained_string_concat"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_function_zero_statements();
+    failures = failures + test_function_returning_constant();
+    failures = failures + test_deeply_nested_if_else();
+    failures = failures + test_many_let_bindings();
+    failures = failures + test_large_vec_operations();
+    failures = failures + test_string_escape_sequences();
+    failures = failures + test_chained_string_concat();
+    failures
+}

@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.14.0**
+**Version 0.15.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -30,6 +30,9 @@ Simplex (Latin for "simple") is a programming language designed for the AI era. 
 | [Edge Hive](spec/16-edge-hive.md) | Lightweight autonomous hive for edge devices |
 | [Formal Semantics](spec/17-formal-semantics.md) | Formal Semantics - SAM Model |
 | [HTTP Server](spec/18-http-server.md) | HTTP server specification |
+| [Quantum Error Mitigation](spec/19-quantum-error-mitigation.md) | Noise models, ZNE, PEC, error correction codes |
+| [Circuit Optimization](spec/20-circuit-optimization.md) | Gate fusion, commutation, routing, native decomposition |
+| [Production Hardening](spec/21-production-hardening.md) | Fuzzing, property testing, sanitizers, formal invariants |
 
 ### Tutorial
 
@@ -51,6 +54,7 @@ A step-by-step learning path for the Simplex language.
 | [12](tutorial/12-cognitive-hives.md) | Cognitive Hives | Building SLM swarms with CHAI |
 | [13](tutorial/13-dual-numbers.md) | Dual Numbers & Forward-Mode AD | Native dual type for automatic differentiation |
 | [14](tutorial/14-self-learning-annealing.md) | Self-Learning Annealing | Learnable optimization schedules via meta-gradients |
+| [15](tutorial/15-quantum-error-mitigation.md) | Quantum Error Mitigation | Noise models, ZNE, error correction, circuit optimization |
 
 Start the tutorial: [Tutorial Index](tutorial/README.md)
 
@@ -82,7 +86,7 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 ## Quick Links
 
 - **New to Simplex?** Start with the [Tutorial](tutorial/README.md) or [Overview](spec/01-overview.md)
-- **Learning the language?** Follow the [14-chapter tutorial](tutorial/README.md)
+- **Learning the language?** Follow the [15-chapter tutorial](tutorial/README.md)
 - **Want syntax reference?** Jump to [Language Syntax](spec/04-language-syntax.md)
 - **Building AI agents?** See [The Anima](spec/12-anima.md) and [Cognitive Hive AI](spec/09-cognitive-hive.md)
 - **Edge deployment?** Check [Edge Hive](spec/16-edge-hive.md) for device-side intelligence
@@ -91,6 +95,9 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 - **Building the VM?** Read [Virtual Machine](spec/05-virtual-machine.md)
 - **Self-hosting compiler?** See [Compiler Toolchain](spec/10-compiler-toolchain.md)
 - **Standard library API?** Check [Standard Library](spec/11-standard-library.md)
+- **Quantum error mitigation?** See [Quantum Error Mitigation](spec/19-quantum-error-mitigation.md)
+- **Circuit optimization?** See [Circuit Optimization](spec/20-circuit-optimization.md)
+- **Production hardening?** See [Production Hardening](spec/21-production-hardening.md)
 - **Running or writing tests?** See [Testing Documentation](testing/README.md)
 
 ---
@@ -107,11 +114,43 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.14.0)
+## Key Features (v0.15.0)
 
-### NEW in v0.14.0: Quantum Bridge
+### NEW in v0.15.0: Production Hardening & Quantum Maturity
 
-**Hybrid classical-quantum computation** built on the mathematical foundations from v0.13.0 (complex numbers, matrices, eigendecomposition). Simplex now provides a complete quantum computing framework.
+**Quantum error mitigation, circuit optimization, and production hardening** complete the quantum computing framework for real hardware use.
+
+```simplex
+use simplex_quantum::noise::{noise_model_new, depolarizing_new};
+use simplex_quantum::mitigation::{zne_new, zne_execute};
+use simplex_quantum::circuit_opt::{pipeline_default, pipeline_run};
+
+// Build a noise model for realistic simulation
+let noise = noise_model_new();
+noise_model_add_single_qubit(noise, depolarizing_new(0.001));
+
+// Optimize circuit for hardware
+let pipe = pipeline_default();
+let optimized = pipeline_run(pipe, circuit, n_qubits, 10);
+
+// Mitigate remaining noise via zero-noise extrapolation
+let zne = zne_new();
+let mitigated = zne_execute(zne, noisy_values);
+```
+
+- **Noise models**: Depolarizing, amplitude/phase damping, readout error, custom Kraus
+- **Error mitigation**: ZNE (4 methods), PEC with Monte Carlo sampling
+- **Error correction**: Bit-flip, Shor [[9,1,3]], Steane [[7,1,3]], surface code (d=3)
+- **Circuit optimization**: Gate fusion, commutation cancellation, qubit routing
+- **Native decomposition**: IBM, Clifford+T, CX+Rz gate sets
+- **Compiler**: Collection iteration, keyword methods, where clauses, nested generics
+- **Hardening**: Fuzzing, property tests, ASan/UBSan/TSan, formal invariants, CI gates
+
+See [RELEASE-0.15.0.md](RELEASE-0.15.0.md) for complete release notes.
+
+### v0.14.0: Quantum Bridge
+
+**Hybrid classical-quantum computation** built on the mathematical foundations from v0.13.0 (complex numbers, matrices, eigendecomposition).
 
 ```simplex
 use simplex_quantum::{Qubit, Circuit, Hadamard, CNOT, measure};
@@ -138,7 +177,7 @@ let result = backend.run(circuit, shots: 1000);
 
 See [RELEASE-0.14.0.md](RELEASE-0.14.0.md) for complete release notes.
 
-### NEW in v0.9.0: Edge Hive
+### v0.9.0: Edge Hive
 
 **Run intelligence on every device**: The Edge Hive brings autonomous cognitive capabilities to edge devices, from smartwatches to desktops.
 
@@ -164,7 +203,7 @@ hive_set_preference(hive, "theme", 1)
 
 See [Edge Hive Specification](spec/16-edge-hive.md) for details.
 
-### NEW in v0.9.0: Self-Learning Annealing
+### v0.9.0: Self-Learning Annealing
 
 **The headline feature**: Optimization schedules that learn themselves through meta-gradients.
 
@@ -366,6 +405,26 @@ See [RELEASE-0.5.0.md](RELEASE-0.5.0.md) for complete release notes.
 - Quantum optimization: MaxCut (QAOA), molecular simulation (VQE), Grover search, hybrid annealing
 - Ecosystem bridges: quantum neural gates, epistemic quantum beliefs, gradient bridge to dual numbers
 
+### Quantum Maturity (v0.15.0)
+- Noise models: depolarizing, amplitude/phase damping, readout error, custom Kraus channels
+- Noisy simulator with per-gate noise injection and stochastic sampling
+- Zero-noise extrapolation (ZNE): Richardson, linear, polynomial, exponential
+- Probabilistic error cancellation (PEC) with Monte Carlo sampling
+- Error correction codes: bit-flip, phase-flip, Shor [[9,1,3]], Steane [[7,1,3]], surface code (d=3)
+- MWPM syndrome decoder for surface codes
+- Circuit optimization: identity elimination, rotation merging, single-qubit fusion
+- Commutation analysis and non-adjacent gate cancellation
+- Qubit routing for linear, grid, all-to-all topologies with SWAP insertion
+- Native gate set decomposition (IBM, Clifford+T, CX+Rz)
+- Multi-pass optimization pipeline with convergence detection
+
+### Production Hardening (v0.15.0)
+- Compiler fuzzing: lexer, parser, codegen, grammar-aware fuzz harnesses
+- Property-based testing for lexer, parser, codegen, and type system
+- Runtime safety: AddressSanitizer, UBSan, ThreadSanitizer integration
+- Formal invariant verification for compiler, runtime, and protocol
+- CI hardening workflow with fuzz regression and sanitizer gates
+
 ### Observability
 - Metrics (counter, gauge, histogram)
 - Distributed tracing
@@ -442,6 +501,7 @@ Simplex uses the following terminology for its module system:
 | 0.12.0 | 2026-01-19 | Module System: Cross-module function imports via `use`, automatic LLVM declaration generation |
 | 0.13.0 | 2026-03-16 | Completion & Foundations: compiler stability, complex numbers, matrices, dual number extensions, training pipeline, HTTP client, JSON parser |
 | 0.14.0 | 2026-03-17 | Quantum Bridge: quantum computing primitives, backend abstraction, variational algorithms, cost-aware dispatch, quantum-enhanced optimization |
+| 0.15.0 | 2026-03-19 | Production Hardening & Quantum Maturity: noise models, ZNE, PEC, error correction codes, circuit optimization, qubit routing, compiler improvements, fuzzing, property testing, sanitizers, formal invariants |
 
 ---
 

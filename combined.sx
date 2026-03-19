@@ -7985,7 +7985,7 @@ fn emit_intrinsic_ptr_ptr_ptr_ptr(cg: i64, name: i64, arg1: i64, arg2: i64, arg3
 // Self-hosted compiler CLI with build, run, check, repl, and fmt commands
 
 // Version
-fn VERSION() -> i64 { string_from("0.14.0") }
+fn VERSION() -> i64 { string_from("0.15.0") }
 
 // CLI argument parsing result
 // Layout: command(0), input_files(1), output_file(2), emit_type(3), verbose(4), force(5), show_deps(6), auto_deps(7)

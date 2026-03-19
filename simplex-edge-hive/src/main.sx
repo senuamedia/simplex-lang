@@ -37,7 +37,7 @@ fn CMD_MODEL() -> i64 { 11 }
 fn main() -> i64 {
     println(string_from(""));
     println(string_from("╔══════════════════════════════════════════════════════════════╗"));
-    println(string_from("║              SIMPLEX EDGE HIVE v0.14.0                        ║"));
+    println(string_from("║              SIMPLEX EDGE HIVE v0.15.0                        ║"));
     println(string_from("║         Local-First Cognitive Intelligence                    ║"));
     println(string_from("╚══════════════════════════════════════════════════════════════╝"));
     println(string_from(""));

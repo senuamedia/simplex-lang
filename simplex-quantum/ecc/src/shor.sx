@@ -1,0 +1,193 @@
+// 9-Qubit Shor Code [[9,1,3]]
+// Corrects arbitrary single-qubit errors (X, Y, Z)
+// Structure: 3 blocks of 3 qubits each
+// Block bit-flip within each triplet, phase-flip across blocks
+
+// Gate constants
+let GATE_CNOT: i64 = 1;
+let GATE_H: i64 = 2;
+let GATE_X: i64 = 3;
+let GATE_Z: i64 = 4;
+
+fn shor_make_instr(gate: i64, q1: i64, q2: i64) -> i64 {
+    let instr: i64 = vec_new();
+    vec_push(instr, gate);
+    vec_push(instr, q1);
+    vec_push(instr, q2);
+    return instr;
+}
+
+fn shor_make_1q(gate: i64, q: i64) -> i64 {
+    let instr: i64 = vec_new();
+    vec_push(instr, gate);
+    vec_push(instr, q);
+    vec_push(instr, -1);
+    return instr;
+}
+
+// Encoding circuit for Shor code
+// Data qubits: 0-8, logical qubit starts on qubit 0
+// Step 1: Phase-flip encoding across blocks (qubits 0, 3, 6)
+// Step 2: Bit-flip encoding within each block
+fn shor_encode_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+
+    // Phase-flip part: spread qubit 0 to blocks at 3 and 6
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 0, 3));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 0, 6));
+
+    // Hadamard on block leaders to enter +/- basis
+    vec_push(instrs, shor_make_1q(GATE_H, 0));
+    vec_push(instrs, shor_make_1q(GATE_H, 3));
+    vec_push(instrs, shor_make_1q(GATE_H, 6));
+
+    // Bit-flip encoding within block 0: qubits 0,1,2
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 0, 1));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 0, 2));
+
+    // Bit-flip encoding within block 1: qubits 3,4,5
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 3, 4));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 3, 5));
+
+    // Bit-flip encoding within block 2: qubits 6,7,8
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 6, 7));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 6, 8));
+
+    return instrs;
+}
+
+// Syndrome extraction circuit
+// Uses 8 ancilla qubits (9-16) for syndrome measurement
+// Ancillas 9-14: bit-flip syndromes (2 per block)
+// Ancillas 15-16: phase-flip syndromes (between blocks)
+fn shor_syndrome_extract_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+
+    // Block 0 bit-flip syndromes: ancilla 9 = q0 xor q1, ancilla 10 = q1 xor q2
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 0, 9));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 1, 9));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 1, 10));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 2, 10));
+
+    // Block 1 bit-flip syndromes: ancilla 11 = q3 xor q4, ancilla 12 = q4 xor q5
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 3, 11));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 4, 11));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 4, 12));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 5, 12));
+
+    // Block 2 bit-flip syndromes: ancilla 13 = q6 xor q7, ancilla 14 = q7 xor q8
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 6, 13));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 7, 13));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 7, 14));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 8, 14));
+
+    // Phase-flip syndromes: measure in X basis across blocks
+    // Hadamard on all data qubits in each block
+    let q: i64 = 0;
+    while q < 9 {
+        vec_push(instrs, shor_make_1q(GATE_H, q));
+        q = q + 1;
+    }
+
+    // Ancilla 15: parity of block 0 vs block 1
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 0, 15));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 3, 15));
+
+    // Ancilla 16: parity of block 1 vs block 2
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 3, 16));
+    vec_push(instrs, shor_make_instr(GATE_CNOT, 6, 16));
+
+    // Undo Hadamards
+    let q2: i64 = 0;
+    while q2 < 9 {
+        vec_push(instrs, shor_make_1q(GATE_H, q2));
+        q2 = q2 + 1;
+    }
+
+    return instrs;
+}
+
+// Determine correction from syndrome
+// syndrome: 8-bit value from ancilla measurements
+// Bits 0-1: block 0 bit-flip syndrome
+// Bits 2-3: block 1 bit-flip syndrome
+// Bits 4-5: block 2 bit-flip syndrome
+// Bits 6-7: phase-flip syndrome
+// Returns vec [qubit, pauli_type] for correction
+fn shor_correction(syndrome: i64) -> i64 {
+    let result: i64 = vec_new();
+
+    // Extract bit-flip syndromes for each block
+    let bf0: i64 = syndrome % 4;
+    let bf1: i64 = (syndrome / 4) % 4;
+    let bf2: i64 = (syndrome / 16) % 4;
+    let pf: i64 = (syndrome / 64) % 4;
+
+    // Check for bit-flip errors first
+    let bf_qubit: i64 = -1;
+
+    // Block 0 bit-flip correction
+    if bf0 == 1 {
+        bf_qubit = 0;
+    }
+    if bf0 == 2 {
+        bf_qubit = 2;
+    }
+    if bf0 == 3 {
+        bf_qubit = 1;
+    }
+
+    // Block 1 bit-flip correction
+    if bf1 == 1 {
+        bf_qubit = 3;
+    }
+    if bf1 == 2 {
+        bf_qubit = 5;
+    }
+    if bf1 == 3 {
+        bf_qubit = 4;
+    }
+
+    // Block 2 bit-flip correction
+    if bf2 == 1 {
+        bf_qubit = 6;
+    }
+    if bf2 == 2 {
+        bf_qubit = 8;
+    }
+    if bf2 == 3 {
+        bf_qubit = 7;
+    }
+
+    // If bit-flip error found, apply X correction
+    if bf_qubit >= 0 {
+        vec_push(result, bf_qubit);
+        vec_push(result, 1);  // PAULI_X
+        return result;
+    }
+
+    // Check phase-flip syndrome
+    let pf_block: i64 = -1;
+    if pf == 1 {
+        pf_block = 0;  // Phase error on block 0
+    }
+    if pf == 2 {
+        pf_block = 2;  // Phase error on block 2
+    }
+    if pf == 3 {
+        pf_block = 1;  // Phase error on block 1
+    }
+
+    if pf_block >= 0 {
+        // Apply Z on the first qubit of the affected block
+        let target: i64 = pf_block * 3;
+        vec_push(result, target);
+        vec_push(result, 3);  // PAULI_Z
+        return result;
+    }
+
+    // No error detected
+    vec_push(result, -1);
+    vec_push(result, 0);  // PAULI_I
+    return result;
+}

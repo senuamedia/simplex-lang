@@ -1,0 +1,171 @@
+// simplex-quantum::circuit-opt::pipeline - Multi-Pass Optimization Pipeline
+//
+// Configurable pipeline that runs optimization passes repeatedly
+// until convergence (gate count stabilizes).
+//
+// Pipeline layout (vec):
+//   [0] n_passes  [1] passes_vec
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// Gate opcodes
+const OP_H: i64 = 1;
+const OP_X: i64 = 2;
+const OP_Y: i64 = 3;
+const OP_Z: i64 = 4;
+const OP_S: i64 = 5;
+const OP_T: i64 = 6;
+const OP_RX: i64 = 7;
+const OP_RY: i64 = 8;
+const OP_RZ: i64 = 9;
+const OP_CNOT: i64 = 10;
+const OP_CZ: i64 = 11;
+const OP_SWAP: i64 = 12;
+const OP_CRZ: i64 = 13;
+
+const INSTR_STRIDE: i64 = 4;
+
+// Pass type constants
+const PASS_IDENTITY_ELIM: i64 = 1;
+const PASS_ROTATION_MERGE: i64 = 2;
+const PASS_SINGLE_QUBIT_FUSION: i64 = 3;
+const PASS_COMMUTATION_CANCEL: i64 = 4;
+const PASS_DEPTH_REDUCE: i64 = 5;
+
+// Create a new empty pipeline
+fn pipeline_new() -> i64 {
+    let pipe: i64 = vec_new();
+    vec_push(pipe, 0);
+    vec_push(pipe, vec_new());
+    pipe
+}
+
+// Add a pass to the pipeline
+fn pipeline_add(pipe: i64, pass_type: i64) -> i64 {
+    let passes: i64 = vec_get(pipe, 1);
+    vec_push(passes, pass_type);
+    let n: i64 = vec_get(pipe, 0);
+    vec_set(pipe, 0, n + 1);
+    0
+}
+
+// Run the pipeline until convergence or max iterations.
+// Returns optimized instruction list.
+fn pipeline_run(pipe: i64, instrs: i64, n_qubits: i64, max_iters: i64) -> i64 {
+    let passes: i64 = vec_get(pipe, 1);
+    let n_passes: i64 = vec_get(pipe, 0);
+    var current: i64 = instrs;
+    var iter: i64 = 0;
+
+    while iter < max_iters {
+        let before_count: i64 = vec_len(current) / INSTR_STRIDE();
+
+        // Run all passes in sequence
+        var p: i64 = 0;
+        while p < n_passes {
+            let pass_type: i64 = vec_get(passes, p);
+            current = run_pass(current, n_qubits, pass_type);
+            p = p + 1;
+        }
+
+        let after_count: i64 = vec_len(current) / INSTR_STRIDE();
+
+        // Check convergence: no change in gate count
+        if after_count == before_count {
+            iter = max_iters;
+        }
+        iter = iter + 1;
+    }
+    current
+}
+
+// Run a single optimization pass
+fn run_pass(instrs: i64, n_qubits: i64, pass_type: i64) -> i64 {
+    if pass_type == PASS_IDENTITY_ELIM() {
+        return identity_elimination(instrs);
+    }
+    if pass_type == PASS_ROTATION_MERGE() {
+        return rotation_merge(instrs);
+    }
+    if pass_type == PASS_SINGLE_QUBIT_FUSION() {
+        return single_qubit_fusion(instrs);
+    }
+    if pass_type == PASS_COMMUTATION_CANCEL() {
+        return commutation_cancel(instrs);
+    }
+    if pass_type == PASS_DEPTH_REDUCE() {
+        return depth_reduce(instrs, n_qubits);
+    }
+    instrs
+}
+
+// Default pipeline: identity elimination + rotation merge + commutation cancel
+fn pipeline_default() -> i64 {
+    let pipe: i64 = pipeline_new();
+    pipeline_add(pipe, PASS_IDENTITY_ELIM());
+    pipeline_add(pipe, PASS_ROTATION_MERGE());
+    pipeline_add(pipe, PASS_COMMUTATION_CANCEL());
+    pipe
+}
+
+// Aggressive pipeline: adds single-qubit fusion and depth reduction
+fn pipeline_aggressive() -> i64 {
+    let pipe: i64 = pipeline_new();
+    pipeline_add(pipe, PASS_IDENTITY_ELIM());
+    pipeline_add(pipe, PASS_ROTATION_MERGE());
+    pipeline_add(pipe, PASS_SINGLE_QUBIT_FUSION());
+    pipeline_add(pipe, PASS_COMMUTATION_CANCEL());
+    pipeline_add(pipe, PASS_DEPTH_REDUCE());
+    pipe
+}
+
+// Generate an optimization report as a stats vec.
+// Returns vec [gates_before, gates_after, depth_before, depth_after]
+fn optimization_report(before_count: i64, after_count: i64, before_depth: i64, after_depth: i64) -> i64 {
+    let report: i64 = vec_new();
+    vec_push(report, before_count);
+    vec_push(report, after_count);
+    vec_push(report, before_depth);
+    vec_push(report, after_depth);
+    report
+}
+
+// Print a report summary
+fn print_report(report: i64) -> i64 {
+    let gb: i64 = vec_get(report, 0);
+    let ga: i64 = vec_get(report, 1);
+    let db: i64 = vec_get(report, 2);
+    let da: i64 = vec_get(report, 3);
+
+    println(string_concat(string_from("gates:  "),
+        string_concat(int_to_string(gb),
+            string_concat(string_from(" -> "), int_to_string(ga)))));
+    println(string_concat(string_from("depth:  "),
+        string_concat(int_to_string(db),
+            string_concat(string_from(" -> "), int_to_string(da)))));
+
+    // Compute gate reduction percentage (integer approximation)
+    if gb > 0 {
+        let reduction: i64 = ((gb - ga) * 100) / gb;
+        println(string_concat(string_from("gate reduction: "),
+            string_concat(int_to_string(reduction), string_from("%"))));
+    }
+    0
+}
+
+fn main() -> i64 {
+    let pipe: i64 = pipeline_default();
+    let n: i64 = vec_get(pipe, 0);
+    println(string_concat(string_from("default pipeline passes: "), int_to_string(n)));
+
+    let agg: i64 = pipeline_aggressive();
+    let na: i64 = vec_get(agg, 0);
+    println(string_concat(string_from("aggressive pipeline passes: "), int_to_string(na)));
+
+    let report: i64 = optimization_report(20, 12, 10, 7);
+    print_report(report);
+
+    println(string_from("circuit-opt/pipeline.sx OK"));
+    0
+}

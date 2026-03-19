@@ -9,7 +9,7 @@
 // cross-file imports work for standalone-compiled tools. The canonical source of
 // truth is simplex-core/src/version.sx SXDOC_VERSION().
 // Version constant (inlined for standalone compilation — see simplex-core/src/version.sx)
-fn VERSION() -> i64 { string_from("0.14.0") }
+fn VERSION() -> i64 { string_from("0.15.0") }
 
 // Inline platform detection
 // Synced with simplex-core/src/platform.sx — use simplex_core::platform when module compilation supports it

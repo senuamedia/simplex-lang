@@ -1,0 +1,178 @@
+// 3-Qubit Repetition Codes
+// Implements bit-flip and phase-flip repetition codes
+
+// Gate constants (must match mod.sx)
+let GATE_CNOT: i64 = 1;
+let GATE_H: i64 = 2;
+let GATE_X: i64 = 3;
+let GATE_Z: i64 = 4;
+
+// Create an instruction: [gate_type, qubit1, qubit2]
+fn make_instr(gate: i64, q1: i64, q2: i64) -> i64 {
+    let instr: i64 = vec_new();
+    vec_push(instr, gate);
+    vec_push(instr, q1);
+    vec_push(instr, q2);
+    return instr;
+}
+
+// Create a single-qubit instruction: [gate_type, qubit, -1]
+fn make_instr_1q(gate: i64, q: i64) -> i64 {
+    let instr: i64 = vec_new();
+    vec_push(instr, gate);
+    vec_push(instr, q);
+    vec_push(instr, -1);
+    return instr;
+}
+
+// ============================================================
+// Bit-flip code [[3,1,1]]
+// Encodes |psi> = a|0> + b|1> as a|000> + b|111>
+// ============================================================
+
+// Encoding circuit: CNOT(0,1), CNOT(0,2)
+// Qubits 0,1,2 are the code qubits
+fn bitflip_encode_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+    vec_push(instrs, make_instr(GATE_CNOT, 0, 1));
+    vec_push(instrs, make_instr(GATE_CNOT, 0, 2));
+    return instrs;
+}
+
+// Syndrome extraction circuit using ancilla qubits 3,4
+// Measures parity of (q0,q1) into ancilla 3 and (q1,q2) into ancilla 4
+fn bitflip_syndrome_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+    // Parity of q0 and q1 -> ancilla 3
+    vec_push(instrs, make_instr(GATE_CNOT, 0, 3));
+    vec_push(instrs, make_instr(GATE_CNOT, 1, 3));
+    // Parity of q1 and q2 -> ancilla 4
+    vec_push(instrs, make_instr(GATE_CNOT, 1, 4));
+    vec_push(instrs, make_instr(GATE_CNOT, 2, 4));
+    return instrs;
+}
+
+// Bit-flip correction lookup table
+// syndrome is a 2-bit value: bit0 = ancilla3 measurement, bit1 = ancilla4 measurement
+// Returns qubit index to apply X correction, or -1 if no error
+fn bitflip_correction(syndrome: i64) -> i64 {
+    // syndrome=0 (00): no error
+    if syndrome == 0 {
+        return -1;
+    }
+    // syndrome=1 (01): error on qubit 0
+    // ancilla3=1 means q0 xor q1 differ, ancilla4=0 means q1 xor q2 agree
+    // So q0 is the odd one out
+    if syndrome == 1 {
+        return 0;
+    }
+    // syndrome=2 (10): error on qubit 2
+    // ancilla3=0 means q0,q1 agree, ancilla4=1 means q1,q2 differ
+    // So q2 is the odd one out
+    if syndrome == 2 {
+        return 2;
+    }
+    // syndrome=3 (11): error on qubit 1
+    // Both parities disagree, q1 is shared between both checks
+    if syndrome == 3 {
+        return 1;
+    }
+    return -1;
+}
+
+// ============================================================
+// Phase-flip code [[3,1,1]]
+// Encodes |psi> in Hadamard basis: H on each qubit, then CNOT spread
+// Protects against single Z errors (phase flips)
+// ============================================================
+
+// Encoding circuit for phase-flip code:
+// First apply CNOT to spread in computational basis, then H on all
+fn phaseflip_encode_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+    // Spread in computational basis first
+    vec_push(instrs, make_instr(GATE_CNOT, 0, 1));
+    vec_push(instrs, make_instr(GATE_CNOT, 0, 2));
+    // Rotate to Hadamard basis
+    vec_push(instrs, make_instr_1q(GATE_H, 0));
+    vec_push(instrs, make_instr_1q(GATE_H, 1));
+    vec_push(instrs, make_instr_1q(GATE_H, 2));
+    return instrs;
+}
+
+// Phase-flip syndrome extraction
+// Measure in X basis: apply H, then use CNOT parity checks, then H
+fn phaseflip_syndrome_instructions() -> i64 {
+    let instrs: i64 = vec_new();
+    // Transform to computational basis
+    vec_push(instrs, make_instr_1q(GATE_H, 0));
+    vec_push(instrs, make_instr_1q(GATE_H, 1));
+    vec_push(instrs, make_instr_1q(GATE_H, 2));
+    // Standard parity checks
+    vec_push(instrs, make_instr(GATE_CNOT, 0, 3));
+    vec_push(instrs, make_instr(GATE_CNOT, 1, 3));
+    vec_push(instrs, make_instr(GATE_CNOT, 1, 4));
+    vec_push(instrs, make_instr(GATE_CNOT, 2, 4));
+    // Transform back
+    vec_push(instrs, make_instr_1q(GATE_H, 0));
+    vec_push(instrs, make_instr_1q(GATE_H, 1));
+    vec_push(instrs, make_instr_1q(GATE_H, 2));
+    return instrs;
+}
+
+// Phase-flip correction lookup
+// Same syndrome table as bit-flip, but apply Z instead of X
+// Returns qubit index to apply Z correction, or -1 if no error
+fn phaseflip_correction(syndrome: i64) -> i64 {
+    // Same logic as bit-flip but correction is Z gate
+    if syndrome == 0 {
+        return -1;
+    }
+    if syndrome == 1 {
+        return 0;
+    }
+    if syndrome == 2 {
+        return 2;
+    }
+    if syndrome == 3 {
+        return 1;
+    }
+    return -1;
+}
+
+// Apply correction gate for bit-flip code
+// Returns instruction vec with the correction gate
+fn bitflip_apply_correction(syndrome: i64) -> i64 {
+    let instrs: i64 = vec_new();
+    let qubit: i64 = bitflip_correction(syndrome);
+    if qubit >= 0 {
+        vec_push(instrs, make_instr_1q(GATE_X, qubit));
+    }
+    return instrs;
+}
+
+// Apply correction gate for phase-flip code
+// Returns instruction vec with the correction gate
+fn phaseflip_apply_correction(syndrome: i64) -> i64 {
+    let instrs: i64 = vec_new();
+    let qubit: i64 = phaseflip_correction(syndrome);
+    if qubit >= 0 {
+        vec_push(instrs, make_instr_1q(GATE_Z, qubit));
+    }
+    return instrs;
+}
+
+// Full bit-flip error correction round
+// Returns combined instruction vec: syndrome extraction + conditional correction
+fn bitflip_full_round() -> i64 {
+    let instrs: i64 = vec_new();
+    // Syndrome extraction
+    let syn_instrs: i64 = bitflip_syndrome_instructions();
+    let n: i64 = vec_len(syn_instrs);
+    let i: i64 = 0;
+    while i < n {
+        vec_push(instrs, vec_get(syn_instrs, i));
+        i = i + 1;
+    }
+    return instrs;
+}

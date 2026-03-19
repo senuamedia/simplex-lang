@@ -1,0 +1,151 @@
+// Noise Scaling Methods for Zero-Noise Extrapolation
+// Implements gate folding and pulse stretching strategies
+
+// Scaling method constants
+let SCALING_GATE_FOLDING: i64 = 1;
+let SCALING_PULSE_STRETCH: i64 = 2;
+
+// Instruction type constants
+let INSTR_GATE: i64 = 1;
+let INSTR_ADJOINT: i64 = 2;
+
+// Compute number of gate folds needed for a given scale factor
+// scale_factor must be odd integer: effective noise = scale_factor * base_noise
+// n_folds = (scale_factor - 1) / 2
+fn gate_fold_count(circuit_instrs: i64, scale_factor: f64) -> i64 {
+    // Round scale factor to nearest odd integer
+    let sf_int: i64 = f64_to_i64(scale_factor);
+    // Make odd if even
+    if sf_int < 1 {
+        sf_int = 1;
+    }
+    // Check if even: sf_int / 2 * 2 == sf_int means even
+    let half: i64 = sf_int / 2;
+    if half * 2 == sf_int {
+        sf_int = sf_int + 1;
+    }
+    let n_folds: i64 = (sf_int - 1) / 2;
+    return n_folds;
+}
+
+// Convert f64 to i64 (truncation)
+fn f64_to_i64(val: f64) -> i64 {
+    // Approximate by accumulation
+    let result: i64 = 0;
+    let remaining: f64 = val;
+    if remaining < 0.0 {
+        while remaining < -0.5 {
+            result = result - 1;
+            remaining = remaining + 1.0;
+        }
+        return result;
+    }
+    while remaining > 0.5 {
+        result = result + 1;
+        remaining = remaining - 1.0;
+    }
+    return result;
+}
+
+// Create a folded version of the circuit: for each gate G, produce G·G†·G (n_folds times)
+// circuit_instrs: vec of [gate_id, qubit1, qubit2, ...] entries
+// Each entry is itself a vec handle
+// Returns a new instruction vec with folded gates
+fn fold_circuit(circuit_instrs: i64, n_folds: i64) -> i64 {
+    let n_gates: i64 = vec_len(circuit_instrs);
+    let folded: i64 = vec_new();
+
+    // First pass: original circuit
+    let i: i64 = 0;
+    while i < n_gates {
+        let instr: i64 = vec_get(circuit_instrs, i);
+        vec_push(folded, instr);
+        i = i + 1;
+    }
+
+    // For each fold: append G†·G (reverse then forward)
+    let fold: i64 = 0;
+    while fold < n_folds {
+        // Append adjoint (reverse order)
+        let j: i64 = n_gates - 1;
+        while j >= 0 {
+            let instr: i64 = vec_get(circuit_instrs, j);
+            let adj_instr: i64 = make_adjoint(instr);
+            vec_push(folded, adj_instr);
+            j = j - 1;
+        }
+        // Append original again
+        let k: i64 = 0;
+        while k < n_gates {
+            let instr: i64 = vec_get(circuit_instrs, k);
+            vec_push(folded, instr);
+            k = k + 1;
+        }
+        fold = fold + 1;
+    }
+
+    return folded;
+}
+
+// Create adjoint version of an instruction
+// Adjoint flips the type flag
+fn make_adjoint(instr: i64) -> i64 {
+    let adj: i64 = vec_new();
+    let gate_id: i64 = vec_get(instr, 0);
+    let n_fields: i64 = vec_len(instr);
+
+    // Negate gate_id to indicate adjoint (convention: negative = adjoint)
+    vec_push(adj, 0 - gate_id);
+
+    // Copy remaining fields (qubit indices)
+    let f: i64 = 1;
+    while f < n_fields {
+        vec_push(adj, vec_get(instr, f));
+        f = f + 1;
+    }
+    return adj;
+}
+
+// Create noise-scaled instruction list using the specified method
+// Returns new instruction vec
+fn scaled_circuit_instructions(instrs: i64, scale: f64, method: i64) -> i64 {
+    if method == SCALING_GATE_FOLDING {
+        let n_folds: i64 = gate_fold_count(instrs, scale);
+        return fold_circuit(instrs, n_folds);
+    }
+
+    if method == SCALING_PULSE_STRETCH {
+        // Pulse stretching: tag each instruction with a stretch factor
+        return pulse_stretch_circuit(instrs, scale);
+    }
+
+    // Default: gate folding
+    let n_folds: i64 = gate_fold_count(instrs, scale);
+    return fold_circuit(instrs, n_folds);
+}
+
+// Pulse stretching: create instructions tagged with stretch factor
+fn pulse_stretch_circuit(instrs: i64, scale: f64) -> i64 {
+    let n: i64 = vec_len(instrs);
+    let stretched: i64 = vec_new();
+    let scale_bits: i64 = f64_to_bits(scale);
+
+    let i: i64 = 0;
+    while i < n {
+        let orig: i64 = vec_get(instrs, i);
+        let new_instr: i64 = vec_new();
+        let n_fields: i64 = vec_len(orig);
+
+        // Copy all fields
+        let f: i64 = 0;
+        while f < n_fields {
+            vec_push(new_instr, vec_get(orig, f));
+            f = f + 1;
+        }
+        // Append scale factor as extra field
+        vec_push(new_instr, scale_bits);
+        vec_push(stretched, new_instr);
+        i = i + 1;
+    }
+    return stretched;
+}

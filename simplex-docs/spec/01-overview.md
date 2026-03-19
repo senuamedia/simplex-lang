@@ -1,12 +1,47 @@
 # Simplex Overview and Philosophy
 
-**Version 0.14.0**
+**Version 0.15.0**
 
 ---
 
 ## Vision
 
 Simplex is built on a singular premise: modern software runs on distributed, ephemeral infrastructure and increasingly relies on AI capabilities. The language should embrace these realities as first-class concerns, not afterthoughts.
+
+---
+
+## What's New in v0.15.0
+
+### Production Hardening & Quantum Maturity
+
+v0.15.0 completes the quantum computing framework for real hardware and adds comprehensive production hardening.
+
+**Quantum Error Mitigation:**
+- Noise models (depolarizing, amplitude/phase damping, readout error, custom Kraus)
+- Zero-noise extrapolation (ZNE) with 4 extrapolation methods
+- Probabilistic error cancellation (PEC) with Monte Carlo sampling
+- Error correction codes: bit-flip, Shor [[9,1,3]], Steane [[7,1,3]], surface code (d=3)
+
+**Circuit Optimization:**
+- Gate fusion (identity elimination, rotation merging, ZYZ decomposition)
+- Commutation analysis and non-adjacent gate cancellation
+- Qubit routing for linear, grid, all-to-all topologies
+- Native gate decomposition (IBM, Clifford+T, CX+Rz)
+
+**Compiler Improvements:**
+- Collection iteration: `for x in collection { }` and `for x in &collection { }`
+- Keywords as method names: `.send()`, `.match()` now work
+- Where clauses: `where T: Trait`
+- Nested generics: `Arc<Mutex<T>>`
+
+**Production Hardening:**
+- Compiler fuzzing (lexer, parser, codegen, grammar-aware)
+- Property-based testing, sanitizer integration (ASan/UBSan/TSan)
+- Formal invariant verification, CI hardening workflow
+
+**Test suite:** 197/197 tests passing (100%) across 21 categories.
+
+See [RELEASE-0.15.0.md](../RELEASE-0.15.0.md) for complete release notes.
 
 ---
 

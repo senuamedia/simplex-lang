@@ -6,7 +6,7 @@
 
 [package]
 name = "simplex-quantum"
-version = "0.14.0"
+version = "0.15.0"
 description = "Quantum computing primitives for Simplex -- types, gates, circuits, measurement"
 authors = ["Rod Higgins"]
 license = "AGPL-3.0"

@@ -1,0 +1,229 @@
+// Surface Code Implementation
+// Implements a distance-d surface code on a d x d lattice
+
+// Create a new surface code configuration
+// Returns vec: [distance, n_data, n_x_ancilla, n_z_ancilla]
+fn surface_code_new(distance: i64) -> i64 {
+    let code: i64 = vec_new();
+    let n_data: i64 = distance * distance;
+    // X-type ancillae: (d-1)*d/2 plaquettes for odd/even rows
+    // Z-type ancillae: same count
+    // For a standard rotated surface code:
+    // n_x_ancilla = (d*d - 1) / 2 for d odd
+    // Simplified: (d-1)*(d-1)/2 + (d-1)/2 patterns
+    let n_x: i64 = (distance * distance - 1) / 2;
+    let n_z: i64 = (distance * distance - 1) / 2;
+    vec_push(code, distance);
+    vec_push(code, n_data);
+    vec_push(code, n_x);
+    vec_push(code, n_z);
+    return code;
+}
+
+// Number of data qubits: d^2
+fn surface_data_qubits(code: i64) -> i64 {
+    let d: i64 = vec_get(code, 0);
+    return d * d;
+}
+
+// Total number of ancilla qubits
+fn surface_ancilla_qubits(code: i64) -> i64 {
+    let n_x: i64 = vec_get(code, 2);
+    let n_z: i64 = vec_get(code, 3);
+    return n_x + n_z;
+}
+
+// Generate one round of stabilizer measurement circuit
+// Returns vec of instructions for measuring all stabilizers
+fn surface_stabilizer_circuit(code: i64) -> i64 {
+    let instrs: i64 = vec_new();
+    let d: i64 = vec_get(code, 0);
+    let n_data: i64 = vec_get(code, 1);
+    let n_x: i64 = vec_get(code, 2);
+
+    // X-stabilizer measurements (plaquette operators)
+    let x_stabs: i64 = surface_x_stabilizers(code);
+    let n_x_stabs: i64 = vec_len(x_stabs);
+    let xi: i64 = 0;
+    while xi < n_x_stabs {
+        let group: i64 = vec_get(x_stabs, xi);
+        let ancilla: i64 = n_data + xi;
+        let n_qubits: i64 = vec_len(group);
+
+        // H on ancilla to prepare |+>
+        let h_instr: i64 = vec_new();
+        vec_push(h_instr, 2);  // GATE_H
+        vec_push(h_instr, ancilla);
+        vec_push(h_instr, -1);
+        vec_push(instrs, h_instr);
+
+        // CNOT from ancilla to each data qubit in group
+        let qi: i64 = 0;
+        while qi < n_qubits {
+            let data_q: i64 = vec_get(group, qi);
+            let cx_instr: i64 = vec_new();
+            vec_push(cx_instr, 1);  // GATE_CNOT
+            vec_push(cx_instr, ancilla);
+            vec_push(cx_instr, data_q);
+            vec_push(instrs, cx_instr);
+            qi = qi + 1;
+        }
+
+        // H on ancilla before measurement
+        let h2_instr: i64 = vec_new();
+        vec_push(h2_instr, 2);
+        vec_push(h2_instr, ancilla);
+        vec_push(h2_instr, -1);
+        vec_push(instrs, h2_instr);
+
+        xi = xi + 1;
+    }
+
+    // Z-stabilizer measurements (vertex operators)
+    let z_stabs: i64 = surface_z_stabilizers(code);
+    let n_z_stabs: i64 = vec_len(z_stabs);
+    let zi: i64 = 0;
+    while zi < n_z_stabs {
+        let group: i64 = vec_get(z_stabs, zi);
+        let ancilla: i64 = n_data + n_x + zi;
+        let n_qubits: i64 = vec_len(group);
+
+        // CNOT from each data qubit to ancilla
+        let qi: i64 = 0;
+        while qi < n_qubits {
+            let data_q: i64 = vec_get(group, qi);
+            let cx_instr: i64 = vec_new();
+            vec_push(cx_instr, 1);  // GATE_CNOT
+            vec_push(cx_instr, data_q);
+            vec_push(cx_instr, ancilla);
+            vec_push(instrs, cx_instr);
+            qi = qi + 1;
+        }
+
+        zi = zi + 1;
+    }
+
+    return instrs;
+}
+
+// Generate X-type stabilizer groups (plaquette operators)
+// Each stabilizer acts on data qubits around a plaquette
+// Returns vec of groups, each group is a vec of data qubit indices
+fn surface_x_stabilizers(code: i64) -> i64 {
+    let d: i64 = vec_get(code, 0);
+    let stabs: i64 = vec_new();
+
+    // X stabilizers on faces of the lattice
+    // For a d x d grid, faces are at positions (r, c) where r+c is odd
+    let r: i64 = 0;
+    while r < d {
+        let c: i64 = 0;
+        while c < d {
+            let parity: i64 = (r + c) % 2;
+            if parity == 1 {
+                let group: i64 = vec_new();
+                // Neighboring data qubits (up, down, left, right)
+                // Data qubit at (row, col) has index row*d + col
+                // Up: (r-1, c)
+                if r > 0 {
+                    vec_push(group, (r - 1) * d + c);
+                }
+                // Down: (r+1, c)
+                if r < d - 1 {
+                    vec_push(group, (r + 1) * d + c);
+                }
+                // Left: (r, c-1)
+                if c > 0 {
+                    vec_push(group, r * d + (c - 1));
+                }
+                // Right: (r, c+1)
+                if c < d - 1 {
+                    vec_push(group, r * d + (c + 1));
+                }
+
+                let glen: i64 = vec_len(group);
+                if glen > 0 {
+                    vec_push(stabs, group);
+                }
+            }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    return stabs;
+}
+
+// Generate Z-type stabilizer groups (vertex operators)
+// Each stabilizer acts on data qubits around a vertex
+// Returns vec of groups, each group is a vec of data qubit indices
+fn surface_z_stabilizers(code: i64) -> i64 {
+    let d: i64 = vec_get(code, 0);
+    let stabs: i64 = vec_new();
+
+    // Z stabilizers on vertices where r+c is even
+    let r: i64 = 0;
+    while r < d {
+        let c: i64 = 0;
+        while c < d {
+            let parity: i64 = (r + c) % 2;
+            if parity == 0 {
+                // Skip corners to avoid trivial stabilizers
+                let group: i64 = vec_new();
+
+                if r > 0 {
+                    vec_push(group, (r - 1) * d + c);
+                }
+                if r < d - 1 {
+                    vec_push(group, (r + 1) * d + c);
+                }
+                if c > 0 {
+                    vec_push(group, r * d + (c - 1));
+                }
+                if c < d - 1 {
+                    vec_push(group, r * d + (c + 1));
+                }
+
+                let glen: i64 = vec_len(group);
+                if glen > 0 {
+                    vec_push(stabs, group);
+                }
+            }
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    return stabs;
+}
+
+// Get the code distance
+fn surface_distance(code: i64) -> i64 {
+    return vec_get(code, 0);
+}
+
+// Logical X operator: chain of X along one edge
+fn surface_logical_x(code: i64) -> i64 {
+    let d: i64 = vec_get(code, 0);
+    let chain: i64 = vec_new();
+    // Horizontal chain along row 0
+    let c: i64 = 0;
+    while c < d {
+        vec_push(chain, c);  // qubit indices along top row
+        c = c + 1;
+    }
+    return chain;
+}
+
+// Logical Z operator: chain of Z along one edge
+fn surface_logical_z(code: i64) -> i64 {
+    let d: i64 = vec_get(code, 0);
+    let chain: i64 = vec_new();
+    // Vertical chain along column 0
+    let r: i64 = 0;
+    while r < d {
+        vec_push(chain, r * d);  // qubit indices along left column
+        r = r + 1;
+    }
+    return chain;
+}

@@ -1,0 +1,161 @@
+// Kraus Operator Representation
+// A quantum channel E(rho) = sum_k K_k rho K_k dagger
+// Each operator is a 2x2 complex matrix stored as 8 f64_bits values
+// [re00, im00, re01, im01, re10, im10, re11, im11]
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+const CHANNEL_CUSTOM: i64 = 5;
+
+fn kraus_channel_new() -> i64 {
+    let ch: i64 = vec_new();
+    vec_push(ch, CHANNEL_CUSTOM);
+    vec_push(ch, 0);  // n_operators
+    ch
+}
+
+// Add a 2x2 Kraus operator to channel
+// matrix: vec of 8 f64_bits [re00, im00, re01, im01, re10, im10, re11, im11]
+fn kraus_add_operator(channel: i64, matrix: i64) -> i64 {
+    let n: i64 = vec_get(channel, 1);
+    vec_set(channel, 1, n + 1);
+    vec_push(channel, matrix);  // store handle to matrix vec
+    channel
+}
+
+fn kraus_n_operators(channel: i64) -> i64 {
+    vec_get(channel, 1)
+}
+
+fn kraus_get_operator(channel: i64, index: i64) -> i64 {
+    vec_get(channel, 2 + index)
+}
+
+// Create a 2x2 operator matrix
+fn kraus_matrix(re00: f64, im00: f64, re01: f64, im01: f64,
+                re10: f64, im10: f64, re11: f64, im11: f64) -> i64 {
+    let m: i64 = vec_new();
+    vec_push(m, f64_to_bits(re00));
+    vec_push(m, f64_to_bits(im00));
+    vec_push(m, f64_to_bits(re01));
+    vec_push(m, f64_to_bits(im01));
+    vec_push(m, f64_to_bits(re10));
+    vec_push(m, f64_to_bits(im10));
+    vec_push(m, f64_to_bits(re11));
+    vec_push(m, f64_to_bits(im11));
+    m
+}
+
+// Validate completeness: sum K dagger K = I
+fn kraus_validate(channel: i64) -> i64 {
+    let n_ops: i64 = kraus_n_operators(channel);
+    // Compute sum K dagger K and check it equals identity
+    var sum_00_re: f64 = 0.0;
+    var sum_00_im: f64 = 0.0;
+    var sum_01_re: f64 = 0.0;
+    var sum_01_im: f64 = 0.0;
+    var sum_10_re: f64 = 0.0;
+    var sum_10_im: f64 = 0.0;
+    var sum_11_re: f64 = 0.0;
+    var sum_11_im: f64 = 0.0;
+
+    var k: i64 = 0;
+    while k < n_ops {
+        let m: i64 = kraus_get_operator(channel, k);
+        let a00_re: f64 = bits_to_f64(vec_get(m, 0));
+        let a00_im: f64 = bits_to_f64(vec_get(m, 1));
+        let a01_re: f64 = bits_to_f64(vec_get(m, 2));
+        let a01_im: f64 = bits_to_f64(vec_get(m, 3));
+        let a10_re: f64 = bits_to_f64(vec_get(m, 4));
+        let a10_im: f64 = bits_to_f64(vec_get(m, 5));
+        let a11_re: f64 = bits_to_f64(vec_get(m, 6));
+        let a11_im: f64 = bits_to_f64(vec_get(m, 7));
+
+        // K dagger K: (K dagger)_ij = conj(K_ji)
+        // (K dagger K)_00 = conj(K_00)*K_00 + conj(K_10)*K_10
+        sum_00_re = sum_00_re + (a00_re*a00_re + a00_im*a00_im) + (a10_re*a10_re + a10_im*a10_im);
+        // (K dagger K)_11 = conj(K_01)*K_01 + conj(K_11)*K_11
+        sum_11_re = sum_11_re + (a01_re*a01_re + a01_im*a01_im) + (a11_re*a11_re + a11_im*a11_im);
+        // Off-diagonal (K dagger K)_01 = conj(K_00)*K_01 + conj(K_10)*K_11
+        sum_01_re = sum_01_re + (a00_re*a01_re + a00_im*a01_im) + (a10_re*a11_re + a10_im*a11_im);
+        sum_01_im = sum_01_im + (a00_re*a01_im - a00_im*a01_re) + (a10_re*a11_im - a10_im*a11_re);
+
+        k = k + 1;
+    }
+
+    let eps: f64 = 0.0001;
+    // Check diagonals approx 1
+    if (sum_00_re - 1.0) > eps || (sum_00_re - 1.0) < 0.0 - eps { return 0; }
+    if (sum_11_re - 1.0) > eps || (sum_11_re - 1.0) < 0.0 - eps { return 0; }
+    // Check off-diagonals approx 0
+    if sum_01_re > eps || sum_01_re < 0.0 - eps { return 0; }
+    if sum_01_im > eps || sum_01_im < 0.0 - eps { return 0; }
+    1  // valid
+}
+
+// Apply Kraus channel to a single qubit in statevector
+fn kraus_apply(state_re: i64, state_im: i64, dim: i64, qubit: i64, channel: i64) -> i64 {
+    let n_ops: i64 = kraus_n_operators(channel);
+    let stride: i64 = 1 << qubit;
+
+    // Allocate temporary buffers for result
+    let new_re: i64 = malloc(dim * 8);
+    let new_im: i64 = malloc(dim * 8);
+    var d: i64 = 0;
+    while d < dim {
+        store_ptr(new_re, d, f64_to_bits(0.0));
+        store_ptr(new_im, d, f64_to_bits(0.0));
+        d = d + 1;
+    }
+
+    // For statevector, apply first Kraus operator as unitary approximation
+    var i: i64 = 0;
+    while i < dim {
+        if (i >> qubit) % 2 == 0 {
+            let j: i64 = i + stride;
+            let a_re: f64 = bits_to_f64(load_ptr(state_re, i));
+            let a_im: f64 = bits_to_f64(load_ptr(state_im, i));
+            let b_re: f64 = bits_to_f64(load_ptr(state_re, j));
+            let b_im: f64 = bits_to_f64(load_ptr(state_im, j));
+
+            // Apply first Kraus operator for amplitude update
+            let m: i64 = kraus_get_operator(channel, 0);
+            let k00_re: f64 = bits_to_f64(vec_get(m, 0));
+            let k00_im: f64 = bits_to_f64(vec_get(m, 1));
+            let k01_re: f64 = bits_to_f64(vec_get(m, 2));
+            let k01_im: f64 = bits_to_f64(vec_get(m, 3));
+            let k10_re: f64 = bits_to_f64(vec_get(m, 4));
+            let k10_im: f64 = bits_to_f64(vec_get(m, 5));
+            let k11_re: f64 = bits_to_f64(vec_get(m, 6));
+            let k11_im: f64 = bits_to_f64(vec_get(m, 7));
+
+            // new_a = K00*a + K01*b
+            let na_re: f64 = (k00_re*a_re - k00_im*a_im) + (k01_re*b_re - k01_im*b_im);
+            let na_im: f64 = (k00_re*a_im + k00_im*a_re) + (k01_re*b_im + k01_im*b_re);
+            // new_b = K10*a + K11*b
+            let nb_re: f64 = (k10_re*a_re - k10_im*a_im) + (k11_re*b_re - k11_im*b_im);
+            let nb_im: f64 = (k10_re*a_im + k10_im*a_re) + (k11_re*b_im + k11_im*b_re);
+
+            store_ptr(new_re, i, f64_to_bits(na_re));
+            store_ptr(new_im, i, f64_to_bits(na_im));
+            store_ptr(new_re, j, f64_to_bits(nb_re));
+            store_ptr(new_im, j, f64_to_bits(nb_im));
+        }
+        i = i + 1;
+    }
+
+    // Copy result back
+    d = 0;
+    while d < dim {
+        store_ptr(state_re, d, load_ptr(new_re, d));
+        store_ptr(state_im, d, load_ptr(new_im, d));
+        d = d + 1;
+    }
+    0
+}
+
+fn main() -> i64 {
+    println(string_from("kraus.sx OK"));
+    0
+}

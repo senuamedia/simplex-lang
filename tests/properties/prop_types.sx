@@ -1,0 +1,107 @@
+// Property-based tests for type system correctness
+
+fn test_integer_operations_type() -> i64 {
+    // Property: integer operations result is integer
+    var a: i64 = 10;
+    var b: i64 = 3;
+    var r_add: i64 = a + b;
+    var r_sub: i64 = a - b;
+    var r_mul: i64 = a * b;
+    var r_div: i64 = a / b;
+    var r_mod: i64 = a % b;
+    if r_add != 13 { println(string_from("FAIL: int add")); return 1; }
+    if r_sub != 7 { println(string_from("FAIL: int sub")); return 1; }
+    if r_mul != 30 { println(string_from("FAIL: int mul")); return 1; }
+    if r_div != 3 { println(string_from("FAIL: int div")); return 1; }
+    if r_mod != 1 { println(string_from("FAIL: int mod")); return 1; }
+    println(string_from("PASS: test_integer_operations_type"));
+    0
+}
+
+fn test_float_operations_type() -> i64 {
+    // Property: float operations result is float
+    var a: f64 = 10.5;
+    var b: f64 = 3.0;
+    var r_add: f64 = a + b;
+    var r_sub: f64 = a - b;
+    var r_mul: f64 = a * b;
+    // Verify results are approximately correct
+    var d_add: f64 = r_add - 13.5;
+    var diff_add: f64 = if d_add < 0.0 { 0.0 - d_add } else { d_add };
+    var d_sub: f64 = r_sub - 7.5;
+    var diff_sub: f64 = if d_sub < 0.0 { 0.0 - d_sub } else { d_sub };
+    var d_mul: f64 = r_mul - 31.5;
+    var diff_mul: f64 = if d_mul < 0.0 { 0.0 - d_mul } else { d_mul };
+    if diff_add > 0.001 { println(string_from("FAIL: float add")); return 1; }
+    if diff_sub > 0.001 { println(string_from("FAIL: float sub")); return 1; }
+    if diff_mul > 0.001 { println(string_from("FAIL: float mul")); return 1; }
+    println(string_from("PASS: test_float_operations_type"));
+    0
+}
+
+fn test_boolean_operations_type() -> i64 {
+    // Property: boolean operations result is boolean
+    var a: bool = true;
+    var b: bool = false;
+    var r_and: bool = a && b;
+    var r_or: bool = a || b;
+    var r_not: bool = !a;
+    if r_and != false { println(string_from("FAIL: bool and")); return 1; }
+    if r_or != true { println(string_from("FAIL: bool or")); return 1; }
+    if r_not != false { println(string_from("FAIL: bool not")); return 1; }
+    println(string_from("PASS: test_boolean_operations_type"));
+    0
+}
+
+fn test_vec_push_get_roundtrip() -> i64 {
+    // Property: vec push then get returns same value
+    var v: Vec<i64> = vec_new();
+    vec_push(v, 42);
+    vec_push(v, 99);
+    vec_push(v, 0 - 7);
+    if vec_get(v, 0) != 42 { println(string_from("FAIL: vec get 0")); return 1; }
+    if vec_get(v, 1) != 99 { println(string_from("FAIL: vec get 1")); return 1; }
+    if vec_get(v, 2) != 0 - 7 { println(string_from("FAIL: vec get 2")); return 1; }
+    println(string_from("PASS: test_vec_push_get_roundtrip"));
+    0
+}
+
+fn test_vec_set_get_roundtrip() -> i64 {
+    // Property: vec set then get returns set value
+    var v: Vec<i64> = vec_new();
+    vec_push(v, 0);
+    vec_push(v, 0);
+    vec_push(v, 0);
+    vec_set(v, 0, 100);
+    vec_set(v, 1, 200);
+    vec_set(v, 2, 300);
+    if vec_get(v, 0) != 100 { println(string_from("FAIL: vec set/get 0")); return 1; }
+    if vec_get(v, 1) != 200 { println(string_from("FAIL: vec set/get 1")); return 1; }
+    if vec_get(v, 2) != 300 { println(string_from("FAIL: vec set/get 2")); return 1; }
+    println(string_from("PASS: test_vec_set_get_roundtrip"));
+    0
+}
+
+fn test_string_vec_roundtrip() -> i64 {
+    // Property: vec of strings preserves values
+    var v: Vec<String> = vec_new();
+    vec_push(v, string_from("alpha"));
+    vec_push(v, string_from("beta"));
+    vec_push(v, string_from("gamma"));
+    if string_len(vec_get(v, 0)) != 5 { println(string_from("FAIL: string vec 0")); return 1; }
+    if string_len(vec_get(v, 1)) != 4 { println(string_from("FAIL: string vec 1")); return 1; }
+    if string_len(vec_get(v, 2)) != 5 { println(string_from("FAIL: string vec 2")); return 1; }
+    println(string_from("PASS: test_string_vec_roundtrip"));
+    0
+}
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+    failures = failures + test_integer_operations_type();
+    failures = failures + test_float_operations_type();
+    failures = failures + test_boolean_operations_type();
+    failures = failures + test_vec_push_get_roundtrip();
+    failures = failures + test_vec_set_get_roundtrip();
+    failures = failures + test_string_vec_roundtrip();
+    failures
+}
