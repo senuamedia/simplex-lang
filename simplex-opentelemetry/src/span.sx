@@ -1,0 +1,469 @@
+// simplex-opentelemetry::span - Span Creation and Management
+//
+// Spans represent a unit of work or operation in a distributed system.
+// Each span records timing, attributes, events, and status.
+//
+// # Span Vec Layout
+//   [0] = trace_id (i64, high bits of 128-bit trace ID)
+//   [1] = trace_id_low (i64, low bits of 128-bit trace ID)
+//   [2] = span_id (i64, 64-bit span ID)
+//   [3] = parent_span_id (i64, 0 if root span)
+//   [4] = name (string handle)
+//   [5] = start_time_ms (i64, milliseconds since epoch)
+//   [6] = end_time_ms (i64, 0 if not ended)
+//   [7] = status (i64, 0=UNSET, 1=OK, 2=ERROR)
+//   [8] = status_message (string handle, empty if no message)
+//   [9] = attributes_vec (vec of [key, value, key, value, ...])
+//   [10] = events_vec (vec of event vecs: [[name, timestamp, attrs], ...])
+//   [11] = span_kind (i64, 0=INTERNAL, 1=SERVER, 2=CLIENT, 3=PRODUCER, 4=CONSUMER)
+//   [12] = ended flag (i64, 0=active, 1=ended)
+//
+// # Example
+//
+// ```simplex
+// let span = otel_start_span("handle-request", trace_id_hi, trace_id_lo, 0);
+// otel_set_attribute(span, "http.method", "GET");
+// otel_add_event(span, "auth-check-passed");
+// otel_set_status(span, 1);  // OK
+// otel_end_span(span);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn time_now_ms() -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+// =============================================================================
+// Span Creation
+// =============================================================================
+
+/// Start a new span.
+///
+/// Creates a span with the given name, trace ID, and optional parent.
+/// The start time is recorded automatically.
+///
+/// # Arguments
+/// - `name`: Span name (string handle)
+/// - `trace_id_hi`: High 64 bits of 128-bit trace ID
+/// - `trace_id_lo`: Low 64 bits of 128-bit trace ID
+/// - `parent_span_id`: Parent span ID (0 for root span)
+///
+/// # Returns
+/// Span vec handle (i64)
+pub fn otel_start_span(name: i64, trace_id_hi: i64, trace_id_lo: i64, parent_span_id: i64) -> i64 {
+    let span: i64 = vec_new();
+    vec_push(span, trace_id_hi);         // [0] = trace_id high
+    vec_push(span, trace_id_lo);         // [1] = trace_id low
+    let sid: i64 = generate_span_id_simple(trace_id_lo, name);
+    vec_push(span, sid);                 // [2] = span_id
+    vec_push(span, parent_span_id);      // [3] = parent_span_id
+    vec_push(span, name);                // [4] = name
+    let now: i64 = time_now_ms();
+    vec_push(span, now);                 // [5] = start_time_ms
+    vec_push(span, 0);                   // [6] = end_time_ms (not ended)
+    vec_push(span, 0);                   // [7] = status (UNSET)
+    vec_push(span, "");                  // [8] = status_message
+    let attrs: i64 = vec_new();
+    vec_push(span, attrs);              // [9] = attributes
+    let events: i64 = vec_new();
+    vec_push(span, events);             // [10] = events
+    vec_push(span, 0);                   // [11] = span_kind (INTERNAL)
+    vec_push(span, 0);                   // [12] = ended flag
+    span
+}
+
+/// Start a new root span (no parent).
+///
+/// Convenience function for creating a root span.
+///
+/// # Arguments
+/// - `name`: Span name (string handle)
+/// - `trace_id_hi`: High 64 bits of trace ID
+/// - `trace_id_lo`: Low 64 bits of trace ID
+///
+/// # Returns
+/// Span vec handle (i64)
+pub fn otel_start_root_span(name: i64, trace_id_hi: i64, trace_id_lo: i64) -> i64 {
+    otel_start_span(name, trace_id_hi, trace_id_lo, 0)
+}
+
+/// Start a child span from a parent span.
+///
+/// The child inherits the parent's trace ID and uses the parent's
+/// span ID as its parent span ID.
+///
+/// # Arguments
+/// - `name`: Span name (string handle)
+/// - `parent`: Parent span vec handle
+///
+/// # Returns
+/// Child span vec handle (i64)
+pub fn otel_start_child_span(name: i64, parent: i64) -> i64 {
+    let trace_hi: i64 = vec_get(parent, 0);
+    let trace_lo: i64 = vec_get(parent, 1);
+    let parent_sid: i64 = vec_get(parent, 2);
+    otel_start_span(name, trace_hi, trace_lo, parent_sid)
+}
+
+// =============================================================================
+// Span Lifecycle
+// =============================================================================
+
+/// End a span, recording the end time.
+///
+/// A span can only be ended once. Subsequent calls are ignored.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+pub fn otel_end_span(span: i64) -> i64 {
+    let ended: i64 = vec_get(span, 12);
+    if ended == 1 {
+        return 0;
+    }
+    let now: i64 = time_now_ms();
+    vec_set(span, 6, now);    // Set end time
+    vec_set(span, 12, 1);     // Mark as ended
+    0
+}
+
+/// Check if a span has ended.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+///
+/// # Returns
+/// 1 if ended, 0 if still active
+pub fn otel_is_ended(span: i64) -> i64 {
+    vec_get(span, 12)
+}
+
+/// Get the duration of a span in milliseconds.
+///
+/// Returns 0 if the span has not been ended.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+///
+/// # Returns
+/// Duration in milliseconds (i64)
+pub fn otel_span_duration_ms(span: i64) -> i64 {
+    let ended: i64 = vec_get(span, 12);
+    if ended == 0 {
+        return 0;
+    }
+    let start: i64 = vec_get(span, 5);
+    let end: i64 = vec_get(span, 6);
+    end - start
+}
+
+// =============================================================================
+// Span Attributes
+// =============================================================================
+
+/// Set an attribute on a span.
+///
+/// Attributes are key-value pairs stored as a flat vec.
+/// If the key already exists, the value is updated.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `key`: Attribute key (string handle)
+/// - `value`: Attribute value (string handle)
+pub fn otel_set_attribute(span: i64, key: i64, value: i64) -> i64 {
+    let ended: i64 = vec_get(span, 12);
+    if ended == 1 {
+        return 0;
+    }
+    let attrs: i64 = vec_get(span, 9);
+
+    // Check if key already exists, update if so
+    let n: i64 = vec_len(attrs);
+    let i: i64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        let existing_key: i64 = vec_get(attrs, i);
+        if intrinsic_string_eq(existing_key, key) == 1 {
+            vec_set(attrs, i + 1, value);
+            return 0;
+        }
+        let i: i64 = i + 2;
+    }
+
+    // Key not found, append
+    vec_push(attrs, key);
+    vec_push(attrs, value);
+    0
+}
+
+/// Set an integer attribute on a span.
+///
+/// Converts the integer to a string for storage.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `key`: Attribute key (string handle)
+/// - `value`: Attribute value (i64)
+pub fn otel_set_attribute_i64(span: i64, key: i64, value: i64) -> i64 {
+    let str_val: i64 = i64_to_string(value);
+    otel_set_attribute(span, key, str_val)
+}
+
+/// Get an attribute value from a span.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `key`: Attribute key (string handle)
+///
+/// # Returns
+/// Attribute value (string handle), or 0 if not found
+pub fn otel_get_attribute(span: i64, key: i64) -> i64 {
+    let attrs: i64 = vec_get(span, 9);
+    let n: i64 = vec_len(attrs);
+    let i: i64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        let existing_key: i64 = vec_get(attrs, i);
+        if intrinsic_string_eq(existing_key, key) == 1 {
+            return vec_get(attrs, i + 1);
+        }
+        let i: i64 = i + 2;
+    }
+    0
+}
+
+/// Get the number of attributes on a span.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+///
+/// # Returns
+/// Number of attribute pairs (i64)
+pub fn otel_attribute_count(span: i64) -> i64 {
+    let attrs: i64 = vec_get(span, 9);
+    vec_len(attrs) / 2
+}
+
+// =============================================================================
+// Span Events
+// =============================================================================
+
+/// Add an event to a span.
+///
+/// Events are timestamped, named occurrences within a span.
+/// Each event is stored as a vec: [name, timestamp_ms, attributes_vec]
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `event_name`: Event name (string handle)
+pub fn otel_add_event(span: i64, event_name: i64) -> i64 {
+    let ended: i64 = vec_get(span, 12);
+    if ended == 1 {
+        return 0;
+    }
+    let events: i64 = vec_get(span, 10);
+    let event: i64 = vec_new();
+    vec_push(event, event_name);         // [0] = name
+    let now: i64 = time_now_ms();
+    vec_push(event, now);                // [1] = timestamp
+    let attrs: i64 = vec_new();
+    vec_push(event, attrs);              // [2] = event attributes
+    vec_push(events, event);
+    0
+}
+
+/// Add an event with attributes to a span.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `event_name`: Event name (string handle)
+/// - `attrs`: Flat vec of [key, value] attribute pairs
+pub fn otel_add_event_with_attrs(span: i64, event_name: i64, attrs: i64) -> i64 {
+    let ended: i64 = vec_get(span, 12);
+    if ended == 1 {
+        return 0;
+    }
+    let events: i64 = vec_get(span, 10);
+    let event: i64 = vec_new();
+    vec_push(event, event_name);
+    let now: i64 = time_now_ms();
+    vec_push(event, now);
+    vec_push(event, attrs);
+    vec_push(events, event);
+    0
+}
+
+/// Get the number of events on a span.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+///
+/// # Returns
+/// Number of events (i64)
+pub fn otel_event_count(span: i64) -> i64 {
+    let events: i64 = vec_get(span, 10);
+    vec_len(events)
+}
+
+/// Get an event by index.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `idx`: Event index
+///
+/// # Returns
+/// Event vec handle [name, timestamp, attrs], or 0 if out of bounds
+pub fn otel_get_event(span: i64, idx: i64) -> i64 {
+    let events: i64 = vec_get(span, 10);
+    let n: i64 = vec_len(events);
+    if idx < 0 {
+        return 0;
+    }
+    if idx >= n {
+        return 0;
+    }
+    vec_get(events, idx)
+}
+
+// =============================================================================
+// Span Status
+// =============================================================================
+
+/// Set the status of a span.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `status`: Status code (0=UNSET, 1=OK, 2=ERROR)
+pub fn otel_set_status(span: i64, status: i64) -> i64 {
+    vec_set(span, 7, status);
+    0
+}
+
+/// Set the status with a message.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `status`: Status code
+/// - `message`: Status message (string handle)
+pub fn otel_set_status_message(span: i64, status: i64, message: i64) -> i64 {
+    vec_set(span, 7, status);
+    vec_set(span, 8, message);
+    0
+}
+
+/// Get the status code of a span.
+pub fn otel_get_status(span: i64) -> i64 {
+    vec_get(span, 7)
+}
+
+/// Get the status message of a span.
+pub fn otel_get_status_message(span: i64) -> i64 {
+    vec_get(span, 8)
+}
+
+// =============================================================================
+// Span Kind
+// =============================================================================
+
+/// Set the span kind.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `kind`: Span kind (0=INTERNAL, 1=SERVER, 2=CLIENT, 3=PRODUCER, 4=CONSUMER)
+pub fn otel_set_span_kind(span: i64, kind: i64) -> i64 {
+    vec_set(span, 11, kind);
+    0
+}
+
+/// Get the span kind.
+pub fn otel_get_span_kind(span: i64) -> i64 {
+    vec_get(span, 11)
+}
+
+// =============================================================================
+// Span Field Accessors
+// =============================================================================
+
+/// Get the trace ID (high bits) from a span.
+pub fn otel_span_trace_id_hi(span: i64) -> i64 {
+    vec_get(span, 0)
+}
+
+/// Get the trace ID (low bits) from a span.
+pub fn otel_span_trace_id_lo(span: i64) -> i64 {
+    vec_get(span, 1)
+}
+
+/// Get the span ID.
+pub fn otel_span_id(span: i64) -> i64 {
+    vec_get(span, 2)
+}
+
+/// Get the parent span ID (0 for root spans).
+pub fn otel_span_parent_id(span: i64) -> i64 {
+    vec_get(span, 3)
+}
+
+/// Get the span name.
+pub fn otel_span_name(span: i64) -> i64 {
+    vec_get(span, 4)
+}
+
+/// Get the start time in milliseconds.
+pub fn otel_span_start_time(span: i64) -> i64 {
+    vec_get(span, 5)
+}
+
+/// Get the end time in milliseconds (0 if not ended).
+pub fn otel_span_end_time(span: i64) -> i64 {
+    vec_get(span, 6)
+}
+
+/// Get the attributes vec from a span.
+pub fn otel_span_attributes(span: i64) -> i64 {
+    vec_get(span, 9)
+}
+
+/// Get the events vec from a span.
+pub fn otel_span_events(span: i64) -> i64 {
+    vec_get(span, 10)
+}
+
+// =============================================================================
+// Internal: Simple Span ID Generation
+// =============================================================================
+
+/// Generate a simple span ID from trace context.
+///
+/// Uses a hash of the trace_id and name to produce a unique-ish span ID.
+/// For production use, see trace_id module for proper ID generation.
+///
+/// # Arguments
+/// - `seed`: Seed value (typically trace_id_lo)
+/// - `name`: Span name for additional entropy
+///
+/// # Returns
+/// A 64-bit span ID
+fn generate_span_id_simple(seed: i64, name: i64) -> i64 {
+    let now: i64 = time_now_ms();
+    // Simple hash: xor and multiply
+    let h: i64 = seed ^ (now * 2654435761);
+    let h: i64 = h ^ (h / 65536);
+    let h: i64 = h * 2246822519;
+    // Ensure positive
+    if h < 0 {
+        let h: i64 = 0 - h;
+    }
+    h
+}

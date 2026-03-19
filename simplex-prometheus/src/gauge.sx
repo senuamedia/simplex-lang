@@ -1,0 +1,247 @@
+// simplex-prometheus::gauge - Prometheus Gauge Metric
+//
+// A gauge is a metric that represents a single numerical value that can
+// arbitrarily go up and down. Gauges are typically used for measured values
+// like temperatures, current memory usage, or number of concurrent requests.
+//
+// # Vec Layout
+//   [0] = METRIC_GAUGE (2)
+//   [1] = name (string handle)
+//   [2] = help_text (string handle)
+//   [3] = labels_vec (vec of [key, value, key, value, ...])
+//   [4] = value (i64)
+//
+// # Example
+//
+// ```simplex
+// let g = prom_gauge_new("temperature_celsius", "Current temperature");
+// prom_gauge_set(g, 23);
+// prom_gauge_inc(g);    // 24
+// prom_gauge_dec(g);    // 23
+// prom_gauge_add(g, 5); // 28
+// prom_gauge_sub(g, 3); // 25
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn time_now() -> i64;
+
+// =============================================================================
+// Gauge Creation
+// =============================================================================
+
+/// Create a new gauge metric.
+///
+/// Returns a vec handle representing the gauge.
+/// The gauge starts at 0.
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+///
+/// # Returns
+/// Gauge vec handle (i64)
+pub fn prom_gauge_new(name: i64, help: i64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, 2);             // [0] = METRIC_GAUGE
+    vec_push(g, name);          // [1] = name
+    vec_push(g, help);          // [2] = help text
+    let labels: i64 = vec_new();
+    vec_push(g, labels);        // [3] = empty labels vec
+    vec_push(g, 0);             // [4] = value (starts at 0)
+    g
+}
+
+/// Create a gauge with a single label pair.
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+/// - `label_key`: Label key (string handle)
+/// - `label_val`: Label value (string handle)
+///
+/// # Returns
+/// Gauge vec handle (i64)
+pub fn prom_gauge_new_labeled(name: i64, help: i64, label_key: i64, label_val: i64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, 2);             // [0] = METRIC_GAUGE
+    vec_push(g, name);          // [1] = name
+    vec_push(g, help);          // [2] = help text
+    let labels: i64 = vec_new();
+    vec_push(labels, label_key);
+    vec_push(labels, label_val);
+    vec_push(g, labels);        // [3] = labels vec
+    vec_push(g, 0);             // [4] = value
+    g
+}
+
+/// Create a gauge with multiple label pairs.
+///
+/// Labels are passed as a flat vec: [key1, val1, key2, val2, ...]
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+/// - `labels`: Flat vec of [key, value] pairs
+///
+/// # Returns
+/// Gauge vec handle (i64)
+pub fn prom_gauge_new_labels(name: i64, help: i64, labels: i64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, 2);             // [0] = METRIC_GAUGE
+    vec_push(g, name);          // [1] = name
+    vec_push(g, help);          // [2] = help text
+    vec_push(g, labels);        // [3] = labels vec
+    vec_push(g, 0);             // [4] = value
+    g
+}
+
+// =============================================================================
+// Gauge Operations
+// =============================================================================
+
+/// Set the gauge to a specific value.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+/// - `val`: New value
+pub fn prom_gauge_set(g: i64, val: i64) -> i64 {
+    vec_set(g, 4, val);
+    0
+}
+
+/// Increment gauge by 1.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+pub fn prom_gauge_inc(g: i64) -> i64 {
+    let val: i64 = vec_get(g, 4);
+    vec_set(g, 4, val + 1);
+    0
+}
+
+/// Decrement gauge by 1.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+pub fn prom_gauge_dec(g: i64) -> i64 {
+    let val: i64 = vec_get(g, 4);
+    vec_set(g, 4, val - 1);
+    0
+}
+
+/// Add a value to the gauge.
+///
+/// Unlike counters, gauges accept negative values.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+/// - `n`: Value to add (can be negative)
+pub fn prom_gauge_add(g: i64, n: i64) -> i64 {
+    let val: i64 = vec_get(g, 4);
+    vec_set(g, 4, val + n);
+    0
+}
+
+/// Subtract a value from the gauge.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+/// - `n`: Value to subtract
+pub fn prom_gauge_sub(g: i64, n: i64) -> i64 {
+    let val: i64 = vec_get(g, 4);
+    vec_set(g, 4, val - n);
+    0
+}
+
+/// Set gauge to current timestamp (seconds since epoch).
+///
+/// Useful for "last updated" type gauges.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+pub fn prom_gauge_set_to_current_time(g: i64) -> i64 {
+    let now: i64 = time_now();
+    vec_set(g, 4, now);
+    0
+}
+
+/// Get the current value of a gauge.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+///
+/// # Returns
+/// Current gauge value (i64)
+pub fn prom_gauge_get(g: i64) -> i64 {
+    vec_get(g, 4)
+}
+
+// =============================================================================
+// Gauge Label Operations
+// =============================================================================
+
+/// Add a label pair to an existing gauge.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+/// - `key`: Label key (string handle)
+/// - `val`: Label value (string handle)
+pub fn prom_gauge_add_label(g: i64, key: i64, val: i64) -> i64 {
+    let labels: i64 = vec_get(g, 3);
+    vec_push(labels, key);
+    vec_push(labels, val);
+    0
+}
+
+/// Get the name of a gauge.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+///
+/// # Returns
+/// Name string handle (i64)
+pub fn prom_gauge_name(g: i64) -> i64 {
+    vec_get(g, 1)
+}
+
+/// Get the help text of a gauge.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+///
+/// # Returns
+/// Help text string handle (i64)
+pub fn prom_gauge_help(g: i64) -> i64 {
+    vec_get(g, 2)
+}
+
+/// Get the labels vec of a gauge.
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+///
+/// # Returns
+/// Labels vec handle (i64)
+pub fn prom_gauge_labels(g: i64) -> i64 {
+    vec_get(g, 3)
+}
+
+/// Get the metric type of a gauge (always 2).
+///
+/// # Arguments
+/// - `g`: Gauge vec handle
+///
+/// # Returns
+/// Metric type tag (2 for gauge)
+pub fn prom_gauge_type(g: i64) -> i64 {
+    vec_get(g, 0)
+}

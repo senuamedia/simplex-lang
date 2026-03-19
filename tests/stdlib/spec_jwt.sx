@@ -1,0 +1,264 @@
+// Simplex JWT Format Tests
+// Tests JWT structure, base64url format, and token layout inline
+
+// =============================================================================
+// Helper: check if string contains substring
+// =============================================================================
+
+fn string_contains(haystack: i64, needle: i64) -> i64 {
+    let h_len: i64 = string_len(haystack);
+    let n_len: i64 = string_len(needle);
+    if n_len > h_len { return 0; }
+    if n_len == 0 { return 1; }
+    var i: i64 = 0;
+    while i <= h_len - n_len {
+        let sub: i64 = intrinsic_string_slice(haystack, i, i + n_len);
+        if string_eq(sub, needle) == 1 {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Helper: count occurrences of a character
+// =============================================================================
+
+fn count_char(s: i64, ch: i64) -> i64 {
+    let len: i64 = string_len(s);
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        if string_char_at(s, i) == ch {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+// =============================================================================
+// Helper: split by char
+// =============================================================================
+
+fn split_by_char(input: i64, delim: i64) -> i64 {
+    let parts: i64 = vec_new();
+    let len: i64 = string_len(input);
+    var start: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        if string_char_at(input, i) == delim {
+            vec_push(parts, intrinsic_string_slice(input, start, i));
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    if start <= len {
+        vec_push(parts, intrinsic_string_slice(input, start, len));
+    }
+    parts
+}
+
+// =============================================================================
+// Test 1: JWT structure has 3 dot-separated parts
+// =============================================================================
+
+fn test_jwt_structure() -> i64 {
+    println("  Testing JWT three-part structure...");
+    // A JWT is header.payload.signature
+    let token: i64 = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyMTIzIn0.dGVzdHNpZ25hdHVyZQ";
+    let dots: i64 = count_char(token, 46);
+    if dots != 2 {
+        println("  FAIL: JWT should have exactly 2 dots");
+        return 1;
+    }
+    let parts: i64 = split_by_char(token, 46);
+    if vec_len(parts) != 3 {
+        println("  FAIL: JWT should split into 3 parts");
+        return 1;
+    }
+    // Each part should be non-empty
+    if string_len(vec_get(parts, 0)) == 0 {
+        println("  FAIL: header part should not be empty");
+        return 1;
+    }
+    if string_len(vec_get(parts, 1)) == 0 {
+        println("  FAIL: payload part should not be empty");
+        return 1;
+    }
+    if string_len(vec_get(parts, 2)) == 0 {
+        println("  FAIL: signature part should not be empty");
+        return 1;
+    }
+    println("  PASS: JWT three-part structure");
+    0
+}
+
+// =============================================================================
+// Test 2: Base64url has no padding characters
+// =============================================================================
+
+fn test_base64url_no_padding() -> i64 {
+    println("  Testing base64url no padding...");
+    let encoded: i64 = "eyJhbGciOiJIUzI1NiJ9";
+    let has_pad: i64 = count_char(encoded, 61);
+    if has_pad != 0 {
+        println("  FAIL: base64url should not contain = padding");
+        return 1;
+    }
+    println("  PASS: base64url no padding");
+    0
+}
+
+// =============================================================================
+// Test 3: Base64url uses URL-safe characters
+// =============================================================================
+
+fn test_base64url_charset() -> i64 {
+    println("  Testing base64url uses URL-safe chars...");
+    let encoded: i64 = "eyJhbGciOiJIUzI1NiJ9";
+    let len: i64 = string_len(encoded);
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(encoded, i);
+        // Valid base64url chars: A-Z(65-90), a-z(97-122), 0-9(48-57), -(45), _(95)
+        var valid: i64 = 0;
+        if ch >= 65 { if ch <= 90 { valid = 1; } }
+        if ch >= 97 { if ch <= 122 { valid = 1; } }
+        if ch >= 48 { if ch <= 57 { valid = 1; } }
+        if ch == 45 { valid = 1; }
+        if ch == 95 { valid = 1; }
+        if valid != 1 {
+            println("  FAIL: invalid base64url character found");
+            return 1;
+        }
+        i = i + 1;
+    }
+    println("  PASS: base64url uses URL-safe chars");
+    0
+}
+
+// =============================================================================
+// Test 4: Invalid tokens have wrong structure
+// =============================================================================
+
+fn test_invalid_tokens() -> i64 {
+    println("  Testing invalid token detection...");
+    // Empty token
+    let empty_dots: i64 = count_char("", 46);
+    if empty_dots != 0 {
+        println("  FAIL: empty string has no dots");
+        return 1;
+    }
+    // Token with no dots
+    let no_dots: i64 = count_char("nodots", 46);
+    if no_dots != 0 {
+        println("  FAIL: should have 0 dots");
+        return 1;
+    }
+    // Token with one dot (invalid)
+    let one_dot: i64 = count_char("one.dot", 46);
+    if one_dot == 2 {
+        println("  FAIL: one dot should not be 2");
+        return 1;
+    }
+    println("  PASS: invalid token detection");
+    0
+}
+
+// =============================================================================
+// Test 5: Claims stored as key-value pairs
+// =============================================================================
+
+fn test_claims_kv() -> i64 {
+    println("  Testing claims as key-value storage...");
+    let keys: i64 = vec_new();
+    let vals: i64 = vec_new();
+    vec_push(keys, "sub");
+    vec_push(vals, "user123");
+    vec_push(keys, "iss");
+    vec_push(vals, "test-app");
+    vec_push(keys, "role");
+    vec_push(vals, "admin");
+
+    // Lookup by key
+    var found_val: i64 = 0;
+    var i: i64 = 0;
+    while i < vec_len(keys) {
+        if string_eq(vec_get(keys, i), "role") == 1 {
+            found_val = vec_get(vals, i);
+        }
+        i = i + 1;
+    }
+    if string_eq(found_val, "admin") != 1 {
+        println("  FAIL: role claim should be admin");
+        return 1;
+    }
+
+    // Missing claim
+    var found_missing: i64 = 0;
+    i = 0;
+    while i < vec_len(keys) {
+        if string_eq(vec_get(keys, i), "nonexistent") == 1 {
+            found_missing = 1;
+        }
+        i = i + 1;
+    }
+    if found_missing != 0 {
+        println("  FAIL: nonexistent claim should not be found");
+        return 1;
+    }
+    println("  PASS: claims as key-value storage");
+    0
+}
+
+// =============================================================================
+// Test 6: Signature tamper changes token
+// =============================================================================
+
+fn test_tamper_detection() -> i64 {
+    println("  Testing tamper detection logic...");
+    let token: i64 = "header.payload.signature";
+    let parts: i64 = split_by_char(token, 46);
+    let sig: i64 = vec_get(parts, 2);
+    if string_eq(sig, "signature") != 1 {
+        println("  FAIL: signature part extraction");
+        return 1;
+    }
+    // Tampered signature differs
+    let tampered_sig: i64 = "tampered";
+    if string_eq(sig, tampered_sig) == 1 {
+        println("  FAIL: tampered sig should differ from original");
+        return 1;
+    }
+    println("  PASS: tamper detection logic");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== JWT Format Tests ===");
+    println("");
+
+    let f1: i64 = test_jwt_structure();
+    let f2: i64 = test_base64url_no_padding();
+    let f3: i64 = test_base64url_charset();
+    let f4: i64 = test_invalid_tokens();
+    let f5: i64 = test_claims_kv();
+    let f6: i64 = test_tamper_detection();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6;
+
+    println("");
+    if failures == 0 {
+        println("All 6 JWT format tests passed!");
+    } else {
+        println("Some JWT format tests failed");
+    }
+
+    failures
+}

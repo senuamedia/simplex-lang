@@ -1,0 +1,383 @@
+// simplex-nats/connection - NATS Connection Management
+//
+// Handles TCP connection establishment, INFO/CONNECT handshake,
+// and connection lifecycle.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn tcp_connect(host: i64, port: i64) -> i64;
+extern fn tcp_send(conn: i64, data: i64) -> i64;
+extern fn tcp_recv(conn: i64, max_len: i64) -> i64;
+extern fn tcp_close(conn: i64) -> i64;
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, byte: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_to_bytes(s: i64) -> i64;
+extern fn bytes_to_string(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+
+// =============================================================================
+// Connection State Constants
+// =============================================================================
+
+fn CONN_STATE_INIT() -> i64 { 0 }
+fn CONN_STATE_CONNECTED() -> i64 { 1 }
+fn CONN_STATE_DRAINING() -> i64 { 2 }
+fn CONN_STATE_CLOSED() -> i64 { 3 }
+
+// =============================================================================
+// Connection Descriptor
+// =============================================================================
+//
+// A NATS connection packs:
+//   bits 0-31:  TCP handle
+//   bits 32-33: state
+//   bits 34-47: next subscription ID
+//   bits 48-63: max payload (in KB)
+
+/// Create a NATS connection descriptor
+fn nats_conn_new(tcp_handle: i64, state: i64, next_sid: i64, max_payload_kb: i64) -> i64 {
+    let result: i64 = tcp_handle;
+    result = result + state * 4294967296;
+    result = result + next_sid * 17179869184;
+    result = result + max_payload_kb * 281474976710656;
+    result
+}
+
+/// Extract TCP handle from connection
+fn nats_conn_tcp(conn: i64) -> i64 {
+    conn % 4294967296
+}
+
+/// Extract state from connection
+fn nats_conn_state(conn: i64) -> i64 {
+    (conn / 4294967296) % 4
+}
+
+/// Extract next subscription ID
+fn nats_conn_next_sid(conn: i64) -> i64 {
+    (conn / 17179869184) % 16384
+}
+
+/// Extract max payload in KB
+fn nats_conn_max_payload_kb(conn: i64) -> i64 {
+    (conn / 281474976710656) % 65536
+}
+
+/// Update state in connection descriptor
+fn nats_conn_set_state(conn: i64, new_state: i64) -> i64 {
+    let tcp: i64 = nats_conn_tcp(conn);
+    let sid: i64 = nats_conn_next_sid(conn);
+    let max_kb: i64 = nats_conn_max_payload_kb(conn);
+    nats_conn_new(tcp, new_state, sid, max_kb)
+}
+
+/// Increment and return next subscription ID
+fn nats_conn_alloc_sid(conn: i64) -> i64 {
+    nats_conn_next_sid(conn)
+}
+
+/// Create connection with incremented SID
+fn nats_conn_inc_sid(conn: i64) -> i64 {
+    let tcp: i64 = nats_conn_tcp(conn);
+    let state: i64 = nats_conn_state(conn);
+    let sid: i64 = nats_conn_next_sid(conn) + 1;
+    let max_kb: i64 = nats_conn_max_payload_kb(conn);
+    nats_conn_new(tcp, state, sid, max_kb)
+}
+
+// =============================================================================
+// CONNECT Message Building
+// =============================================================================
+
+/// Build a CONNECT protocol message.
+///
+/// CONNECT message format: CONNECT {json_options}\r\n
+///
+/// # Arguments
+/// * `verbose`   - 1 for verbose mode (+OK for each command)
+/// * `pedantic`  - 1 for pedantic mode (strict checking)
+/// * `name`      - Client name string handle (or 0 for none)
+/// * `lang`      - Client language (e.g., "simplex")
+/// * `version`   - Client version string
+///
+/// # Returns
+/// String handle of the CONNECT message
+fn nats_build_connect_msg(verbose: i64, pedantic: i64, name: i64, lang: i64, version: i64) -> i64 {
+    let msg: i64 = "CONNECT {";
+
+    let msg: i64 = string_concat(msg, "\"verbose\":");
+    if verbose == 1 {
+        msg = string_concat(msg, "true");
+    } else {
+        msg = string_concat(msg, "false");
+    }
+
+    let msg: i64 = string_concat(msg, ",\"pedantic\":");
+    if pedantic == 1 {
+        msg = string_concat(msg, "true");
+    } else {
+        msg = string_concat(msg, "false");
+    }
+
+    let msg: i64 = string_concat(msg, ",\"lang\":\"");
+    let msg: i64 = string_concat(msg, lang);
+    let msg: i64 = string_concat(msg, "\"");
+
+    let msg: i64 = string_concat(msg, ",\"version\":\"");
+    let msg: i64 = string_concat(msg, version);
+    let msg: i64 = string_concat(msg, "\"");
+
+    if name != 0 {
+        let msg: i64 = string_concat(msg, ",\"name\":\"");
+        let msg: i64 = string_concat(msg, name);
+        let msg: i64 = string_concat(msg, "\"");
+    }
+
+    let msg: i64 = string_concat(msg, ",\"protocol\":");
+    let msg: i64 = string_concat(msg, "1");
+
+    let msg: i64 = string_concat(msg, "}\r\n");
+    msg
+}
+
+/// Build a minimal CONNECT message with defaults
+fn nats_build_connect_default() -> i64 {
+    nats_build_connect_msg(0, 0, 0, "simplex", "0.16.0")
+}
+
+// =============================================================================
+// INFO Message Parsing
+// =============================================================================
+
+/// Parse the server INFO message to extract max_payload.
+///
+/// INFO format: INFO {json}\r\n
+///
+/// # Arguments
+/// * `info_msg` - Raw INFO message string
+///
+/// # Returns
+/// Max payload size in bytes, or 1048576 (1MB default)
+fn nats_parse_info_max_payload(info_msg: i64) -> i64 {
+    // Look for "max_payload": in the JSON
+    let search: i64 = "max_payload\":";
+    let info_bytes: i64 = string_to_bytes(info_msg);
+    let search_bytes: i64 = string_to_bytes(search);
+    let info_len: i64 = vec_len(info_bytes);
+    let search_len: i64 = vec_len(search_bytes);
+
+    var i: i64 = 0;
+    while i < info_len - search_len {
+        var match: i64 = 1;
+        var j: i64 = 0;
+        while j < search_len {
+            if vec_get(info_bytes, i + j) != vec_get(search_bytes, j) {
+                match = 0;
+                j = search_len;
+            }
+            j = j + 1;
+        }
+
+        if match == 1 {
+            // Found it - extract the number
+            let num_start: i64 = i + search_len;
+            var num_end: i64 = num_start;
+            while num_end < info_len {
+                let ch: i64 = vec_get(info_bytes, num_end);
+                // Digits are 48-57 in ASCII
+                if ch >= 48 {
+                    if ch <= 57 {
+                        num_end = num_end + 1;
+                    } else {
+                        num_end = info_len + 1; // break
+                    }
+                } else {
+                    num_end = info_len + 1; // break
+                }
+            }
+            // Re-scan for actual end
+            var actual_end: i64 = num_start;
+            while actual_end < info_len {
+                let ch: i64 = vec_get(info_bytes, actual_end);
+                if ch < 48 { return nats_parse_number_bytes(info_bytes, num_start, actual_end); }
+                if ch > 57 { return nats_parse_number_bytes(info_bytes, num_start, actual_end); }
+                actual_end = actual_end + 1;
+            }
+            return nats_parse_number_bytes(info_bytes, num_start, info_len);
+        }
+        i = i + 1;
+    }
+
+    // Default 1MB
+    1048576
+}
+
+/// Parse digits from a byte vec between start and end positions
+fn nats_parse_number_bytes(data: i64, start: i64, end: i64) -> i64 {
+    var result: i64 = 0;
+    var pos: i64 = start;
+    while pos < end {
+        let digit: i64 = vec_get(data, pos) - 48;
+        if digit >= 0 {
+            if digit <= 9 {
+                result = result * 10 + digit;
+            }
+        }
+        pos = pos + 1;
+    }
+    result
+}
+
+/// Check if an INFO message indicates TLS is required
+fn nats_info_tls_required(info_msg: i64) -> i64 {
+    let search: i64 = "tls_required\":true";
+    let info_bytes: i64 = string_to_bytes(info_msg);
+    let search_bytes: i64 = string_to_bytes(search);
+    let info_len: i64 = vec_len(info_bytes);
+    let search_len: i64 = vec_len(search_bytes);
+
+    var i: i64 = 0;
+    while i < info_len - search_len {
+        var match: i64 = 1;
+        var j: i64 = 0;
+        while j < search_len {
+            if vec_get(info_bytes, i + j) != vec_get(search_bytes, j) {
+                match = 0;
+                j = search_len;
+            }
+            j = j + 1;
+        }
+        if match == 1 { return 1; }
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Connection Lifecycle
+// =============================================================================
+
+/// Connect to a NATS server.
+///
+/// Establishes TCP connection, receives INFO, sends CONNECT.
+///
+/// # Arguments
+/// * `host` - Server hostname string
+/// * `port` - Server port (typically 4222)
+///
+/// # Returns
+/// Connection descriptor, or 0 on failure
+fn nats_connect(host: i64, port: i64) -> i64 {
+    // Establish TCP connection
+    let tcp: i64 = tcp_connect(host, port);
+    if tcp == 0 {
+        return 0;
+    }
+
+    // Receive INFO message
+    let info_data: i64 = tcp_recv(tcp, 4096);
+    if info_data == 0 {
+        tcp_close(tcp);
+        return 0;
+    }
+
+    let info_str: i64 = bytes_to_string(info_data);
+
+    // Verify it starts with "INFO"
+    let prefix: i64 = string_substring(info_str, 0, 4);
+    if intrinsic_string_eq(prefix, "INFO") != 1 {
+        tcp_close(tcp);
+        return 0;
+    }
+
+    // Parse max_payload
+    let max_payload: i64 = nats_parse_info_max_payload(info_str);
+    let max_payload_kb: i64 = max_payload / 1024;
+
+    // Send CONNECT message
+    let connect_msg: i64 = nats_build_connect_default();
+    let connect_bytes: i64 = string_to_bytes(connect_msg);
+    tcp_send(tcp, connect_bytes);
+
+    // Build connection descriptor
+    nats_conn_new(tcp, CONN_STATE_CONNECTED(), 1, max_payload_kb)
+}
+
+/// Connect with authentication (user/password).
+fn nats_connect_auth(host: i64, port: i64, user: i64, pass: i64) -> i64 {
+    let tcp: i64 = tcp_connect(host, port);
+    if tcp == 0 {
+        return 0;
+    }
+
+    // Receive INFO
+    let info_data: i64 = tcp_recv(tcp, 4096);
+    if info_data == 0 {
+        tcp_close(tcp);
+        return 0;
+    }
+
+    let info_str: i64 = bytes_to_string(info_data);
+    let prefix: i64 = string_substring(info_str, 0, 4);
+    if intrinsic_string_eq(prefix, "INFO") != 1 {
+        tcp_close(tcp);
+        return 0;
+    }
+
+    let max_payload: i64 = nats_parse_info_max_payload(info_str);
+    let max_payload_kb: i64 = max_payload / 1024;
+
+    // Build CONNECT with auth
+    let msg: i64 = "CONNECT {";
+    let msg: i64 = string_concat(msg, "\"verbose\":false");
+    let msg: i64 = string_concat(msg, ",\"pedantic\":false");
+    let msg: i64 = string_concat(msg, ",\"user\":\"");
+    let msg: i64 = string_concat(msg, user);
+    let msg: i64 = string_concat(msg, "\",\"pass\":\"");
+    let msg: i64 = string_concat(msg, pass);
+    let msg: i64 = string_concat(msg, "\",\"lang\":\"simplex\"");
+    let msg: i64 = string_concat(msg, ",\"version\":\"0.16.0\"");
+    let msg: i64 = string_concat(msg, ",\"protocol\":1");
+    let msg: i64 = string_concat(msg, "}\r\n");
+
+    let connect_bytes: i64 = string_to_bytes(msg);
+    tcp_send(tcp, connect_bytes);
+
+    nats_conn_new(tcp, CONN_STATE_CONNECTED(), 1, max_payload_kb)
+}
+
+/// Close a NATS connection gracefully.
+fn nats_close(conn: i64) -> i64 {
+    let tcp: i64 = nats_conn_tcp(conn);
+    tcp_close(tcp);
+    nats_conn_set_state(conn, CONN_STATE_CLOSED())
+}
+
+/// Send a PING to the server (keepalive).
+fn nats_ping(conn: i64) -> i64 {
+    let tcp: i64 = nats_conn_tcp(conn);
+    let ping: i64 = string_to_bytes("PING\r\n");
+    tcp_send(tcp, ping)
+}
+
+/// Send a PONG to the server (in response to server PING).
+fn nats_pong(conn: i64) -> i64 {
+    let tcp: i64 = nats_conn_tcp(conn);
+    let pong: i64 = string_to_bytes("PONG\r\n");
+    tcp_send(tcp, pong)
+}
+
+/// Check if connection is in connected state
+fn nats_is_connected(conn: i64) -> i64 {
+    if nats_conn_state(conn) == CONN_STATE_CONNECTED() { 1 } else { 0 }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "simplex-rag"
+version = "0.16.0"
+description = "Retrieval-Augmented Generation pipeline for Simplex hive intelligence"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+simplex-vectordb = { path = "../simplex-vectordb" }
+
+[features]
+default = ["full"]
+full = ["chunking", "embedding", "context"]
+chunking = []     # Text chunking strategies
+embedding = []    # Simple character n-gram hashing embeddings
+context = []      # Context building from retrieved chunks

@@ -1,0 +1,1660 @@
+// Simplex WebSocket Library (RFC 6455)
+// Full WebSocket client/server with frame encoding, masking, handshake,
+// control frames, and fragmentation support.
+//
+// All data is represented as i64 vec handles. The WebSocket protocol
+// operates over TCP connections from simplex_std::net.
+//
+// # Usage
+//
+// ```simplex
+// use simplex_std::websocket::*;
+//
+// // Client
+// let conn = ws_connect("ws://localhost:8080/chat", 0);
+// ws_send_text(conn, "Hello, server!");
+// let msg = ws_receive(conn);
+// ws_close(conn, 1000, "goodbye");
+//
+// // Server
+// let server = ws_serve("0.0.0.0", 8080);
+// let client = ws_accept(server);
+// let msg = ws_receive(client);
+// ws_send_text(client, "Echo back");
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+/// TCP connect to host:port, returns connection handle
+extern fn tcp_connect(host: i64, port: i64) -> i64;
+
+/// TCP listen on addr:port, returns listener handle
+extern fn tcp_listen(addr: i64, port: i64) -> i64;
+
+/// TCP accept connection from listener, returns connection handle
+extern fn tcp_accept(listener: i64) -> i64;
+
+/// TCP send data (vec handle), returns bytes sent
+extern fn tcp_send(conn: i64, data: i64) -> i64;
+
+/// TCP receive data, returns vec handle
+extern fn tcp_recv(conn: i64, max_len: i64) -> i64;
+
+/// TCP close connection
+extern fn tcp_close(conn: i64) -> i64;
+
+/// Create a new byte vec, returns handle
+extern fn vec_new() -> i64;
+
+/// Push a byte onto a vec
+extern fn vec_push(v: i64, byte: i64) -> i64;
+
+/// Get byte at index from vec
+extern fn vec_get(v: i64, idx: i64) -> i64;
+
+/// Get length of vec
+extern fn vec_len(v: i64) -> i64;
+
+/// Concatenate two vecs
+extern fn vec_concat(a: i64, b: i64) -> i64;
+
+/// Slice a vec from start to end (exclusive)
+extern fn vec_slice(v: i64, start: i64, end: i64) -> i64;
+
+/// String to bytes vec
+extern fn string_to_bytes(s: i64) -> i64;
+
+/// Bytes vec to string
+extern fn bytes_to_string(v: i64) -> i64;
+
+/// String concatenation
+extern fn string_concat(a: i64, b: i64) -> i64;
+
+/// String length
+extern fn string_length(s: i64) -> i64;
+
+/// String equality check
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+/// Get substring
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+
+/// SHA-1 hash (needed for WebSocket handshake accept key)
+extern fn sha1_hash(data: i64) -> i64;
+
+/// Base64 encode bytes
+extern fn base64_encode(data: i64) -> i64;
+
+/// Base64 decode string to bytes
+extern fn base64_decode(s: i64) -> i64;
+
+/// Generate random bytes, returns vec handle
+extern fn random_bytes(count: i64) -> i64;
+
+/// Convert i64 to string
+extern fn i64_to_string(n: i64) -> i64;
+
+/// Result wrapping
+extern fn result_ok(val: i64) -> i64;
+extern fn result_err(val: i64) -> i64;
+extern fn result_is_ok(r: i64) -> i64;
+extern fn result_unwrap(r: i64) -> i64;
+
+// =============================================================================
+// WebSocket Opcode Constants
+// =============================================================================
+
+/// Continuation frame (fragmentation)
+fn WS_OPCODE_CONTINUATION() -> i64 { 0 }
+
+/// Text data frame
+fn WS_OPCODE_TEXT() -> i64 { 1 }
+
+/// Binary data frame
+fn WS_OPCODE_BINARY() -> i64 { 2 }
+
+/// Connection close control frame
+fn WS_OPCODE_CLOSE() -> i64 { 8 }
+
+/// Ping control frame
+fn WS_OPCODE_PING() -> i64 { 9 }
+
+/// Pong control frame
+fn WS_OPCODE_PONG() -> i64 { 10 }
+
+// =============================================================================
+// WebSocket Close Code Constants
+// =============================================================================
+
+/// Normal closure
+fn WS_CLOSE_NORMAL() -> i64 { 1000 }
+
+/// Going away (server shutdown, browser navigating)
+fn WS_CLOSE_GOING_AWAY() -> i64 { 1001 }
+
+/// Protocol error
+fn WS_CLOSE_PROTOCOL_ERROR() -> i64 { 1002 }
+
+/// Unsupported data type
+fn WS_CLOSE_UNSUPPORTED() -> i64 { 1003 }
+
+/// No status code present (reserved, must not be sent in frame)
+fn WS_CLOSE_NO_STATUS() -> i64 { 1005 }
+
+/// Abnormal closure (reserved, must not be sent in frame)
+fn WS_CLOSE_ABNORMAL() -> i64 { 1006 }
+
+/// Invalid payload data (e.g. non-UTF8 in text frame)
+fn WS_CLOSE_INVALID_DATA() -> i64 { 1007 }
+
+/// Policy violation
+fn WS_CLOSE_POLICY() -> i64 { 1008 }
+
+/// Message too big
+fn WS_CLOSE_TOO_BIG() -> i64 { 1009 }
+
+/// Missing expected extension
+fn WS_CLOSE_MISSING_EXT() -> i64 { 1010 }
+
+/// Internal server error
+fn WS_CLOSE_INTERNAL_ERROR() -> i64 { 1011 }
+
+// =============================================================================
+// WebSocket Connection State Constants
+// =============================================================================
+
+/// Connection is in connecting state (handshake not complete)
+fn WS_STATE_CONNECTING() -> i64 { 0 }
+
+/// Connection is open and ready
+fn WS_STATE_OPEN() -> i64 { 1 }
+
+/// Close frame has been sent, waiting for peer close
+fn WS_STATE_CLOSING() -> i64 { 2 }
+
+/// Connection is closed
+fn WS_STATE_CLOSED() -> i64 { 3 }
+
+// =============================================================================
+// WebSocket Message Type Constants
+// =============================================================================
+
+/// Message is text
+fn WS_MSG_TEXT() -> i64 { 1 }
+
+/// Message is binary
+fn WS_MSG_BINARY() -> i64 { 2 }
+
+/// Message is a close frame
+fn WS_MSG_CLOSE() -> i64 { 8 }
+
+/// Message is a ping
+fn WS_MSG_PING() -> i64 { 9 }
+
+/// Message is a pong
+fn WS_MSG_PONG() -> i64 { 10 }
+
+// =============================================================================
+// WebSocket Connection Structure
+// =============================================================================
+//
+// A WebSocket connection handle packs:
+//   bits 0-31:  TCP connection handle
+//   bits 32-33: state (CONNECTING/OPEN/CLOSING/CLOSED)
+//   bit 34:     is_client (1=client, 0=server)
+//   bit 35:     is_masked (client frames must be masked)
+//
+// We store these packed into an i64. Auxiliary state (fragment buffers,
+// pending close code) is tracked via separate vec handles.
+
+/// Create a WebSocket connection descriptor
+fn ws_conn_new(tcp_handle: i64, state: i64, is_client: i64) -> i64 {
+    let result: i64 = tcp_handle;
+    result = result + state * 4294967296;       // bits 32-33
+    if is_client == 1 {
+        result = result + 17179869184;          // bit 34
+    }
+    if is_client == 1 {
+        result = result + 34359738368;          // bit 35 (masked)
+    }
+    result
+}
+
+/// Extract TCP handle from connection descriptor
+fn ws_conn_tcp(conn: i64) -> i64 {
+    conn % 4294967296
+}
+
+/// Extract state from connection descriptor
+fn ws_conn_state(conn: i64) -> i64 {
+    (conn / 4294967296) % 4
+}
+
+/// Extract is_client flag from connection descriptor
+fn ws_conn_is_client(conn: i64) -> i64 {
+    (conn / 17179869184) % 2
+}
+
+/// Extract is_masked flag from connection descriptor
+fn ws_conn_is_masked(conn: i64) -> i64 {
+    (conn / 34359738368) % 2
+}
+
+/// Update the state in a connection descriptor
+fn ws_conn_set_state(conn: i64, new_state: i64) -> i64 {
+    let tcp: i64 = ws_conn_tcp(conn);
+    let is_client: i64 = ws_conn_is_client(conn);
+    ws_conn_new(tcp, new_state, is_client)
+}
+
+// =============================================================================
+// WebSocket GUID (used in handshake)
+// =============================================================================
+
+/// The magic GUID from RFC 6455 section 4.2.2
+fn WS_GUID() -> i64 { "258EAFA5-E914-47DA-95CA-C5AB0DC85B11" }
+
+// =============================================================================
+// Frame Encoding
+// =============================================================================
+
+/// Encode a WebSocket frame header.
+///
+/// Returns a vec handle containing the encoded frame bytes.
+///
+/// # Arguments
+/// * `fin`     - 1 if this is the final fragment, 0 otherwise
+/// * `opcode`  - Frame opcode (0=continuation, 1=text, 2=binary, 8=close, 9=ping, 10=pong)
+/// * `masked`  - 1 if the payload is masked (required client->server)
+/// * `payload` - Vec handle containing payload bytes
+///
+/// # Returns
+/// Vec handle containing the complete frame (header + masked/unmasked payload)
+fn ws_encode_frame(fin: i64, opcode: i64, masked: i64, payload: i64) -> i64 {
+    let frame: i64 = vec_new();
+    let payload_len: i64 = vec_len(payload);
+
+    // First byte: FIN bit (7) + opcode (bits 0-3)
+    let byte0: i64 = opcode;
+    if fin == 1 {
+        byte0 = byte0 + 128;  // Set FIN bit
+    }
+    vec_push(frame, byte0);
+
+    // Second byte: MASK bit (7) + payload length
+    let mask_bit: i64 = 0;
+    if masked == 1 {
+        mask_bit = 128;
+    }
+
+    if payload_len < 126 {
+        vec_push(frame, mask_bit + payload_len);
+    } else if payload_len < 65536 {
+        // 16-bit extended length
+        vec_push(frame, mask_bit + 126);
+        vec_push(frame, (payload_len / 256) % 256);
+        vec_push(frame, payload_len % 256);
+    } else {
+        // 64-bit extended length
+        vec_push(frame, mask_bit + 127);
+        vec_push(frame, (payload_len / 72057594037927936) % 256);
+        vec_push(frame, (payload_len / 281474976710656) % 256);
+        vec_push(frame, (payload_len / 1099511627776) % 256);
+        vec_push(frame, (payload_len / 4294967296) % 256);
+        vec_push(frame, (payload_len / 16777216) % 256);
+        vec_push(frame, (payload_len / 65536) % 256);
+        vec_push(frame, (payload_len / 256) % 256);
+        vec_push(frame, payload_len % 256);
+    }
+
+    // Masking key (4 bytes) if masked
+    if masked == 1 {
+        let mask_key: i64 = random_bytes(4);
+        let mk0: i64 = vec_get(mask_key, 0);
+        let mk1: i64 = vec_get(mask_key, 1);
+        let mk2: i64 = vec_get(mask_key, 2);
+        let mk3: i64 = vec_get(mask_key, 3);
+        vec_push(frame, mk0);
+        vec_push(frame, mk1);
+        vec_push(frame, mk2);
+        vec_push(frame, mk3);
+
+        // XOR payload with mask key
+        var i: i64 = 0;
+        while i < payload_len {
+            let b: i64 = vec_get(payload, i);
+            let mask_byte: i64 = 0;
+            let mod_idx: i64 = i % 4;
+            if mod_idx == 0 { mask_byte = mk0; }
+            if mod_idx == 1 { mask_byte = mk1; }
+            if mod_idx == 2 { mask_byte = mk2; }
+            if mod_idx == 3 { mask_byte = mk3; }
+            // XOR using bitwise: a ^ b = (a + b) - 2 * (a & b)
+            // Since we don't have bitwise XOR, use the vec_xor_byte approach
+            let xored: i64 = ws_xor_byte(b, mask_byte);
+            vec_push(frame, xored);
+            i = i + 1;
+        }
+    } else {
+        // Unmasked: append payload directly
+        var i: i64 = 0;
+        while i < payload_len {
+            vec_push(frame, vec_get(payload, i));
+            i = i + 1;
+        }
+    }
+
+    frame
+}
+
+/// XOR two bytes together (bitwise XOR without native operator)
+/// Uses bit-by-bit decomposition: extract each bit, XOR, reassemble
+fn ws_xor_byte(a: i64, b: i64) -> i64 {
+    var result: i64 = 0;
+    var bit: i64 = 0;
+    var power: i64 = 1;
+
+    while bit < 8 {
+        let a_bit: i64 = (a / power) % 2;
+        let b_bit: i64 = (b / power) % 2;
+        // XOR: 1 if bits differ
+        if a_bit != b_bit {
+            result = result + power;
+        }
+        power = power * 2;
+        bit = bit + 1;
+    }
+
+    result
+}
+
+/// XOR two i64 values byte-by-byte (for masking key operations)
+fn ws_xor_bytes(data: i64, mask_key: i64, offset: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+
+    while i < data_len {
+        let b: i64 = vec_get(data, i);
+        let mk: i64 = vec_get(mask_key, (i + offset) % 4);
+        vec_push(result, ws_xor_byte(b, mk));
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Frame Decoding
+// =============================================================================
+
+/// Decoded frame structure packed into a vec handle:
+///   [fin, opcode, masked, payload_handle, mask_key_handle, total_frame_len]
+///
+/// Returns 0 if insufficient data for a complete frame.
+
+/// Decode a WebSocket frame from raw bytes.
+///
+/// # Arguments
+/// * `data` - Vec handle containing raw bytes
+///
+/// # Returns
+/// Vec handle: [fin, opcode, payload_handle, bytes_consumed]
+/// Returns 0 if data is incomplete
+fn ws_decode_frame(data: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+
+    // Need at least 2 bytes for the header
+    if data_len < 2 {
+        return 0;
+    }
+
+    let byte0: i64 = vec_get(data, 0);
+    let byte1: i64 = vec_get(data, 1);
+
+    // Parse first byte
+    let fin: i64 = byte0 / 128;           // FIN is bit 7
+    let opcode: i64 = byte0 % 16;         // Opcode is bits 0-3
+
+    // Parse second byte
+    let is_masked: i64 = byte1 / 128;     // MASK is bit 7
+    let payload_len_initial: i64 = byte1 % 128;
+
+    var header_len: i64 = 2;
+    var payload_len: i64 = payload_len_initial;
+
+    // Extended payload length
+    if payload_len_initial == 126 {
+        if data_len < 4 {
+            return 0;
+        }
+        payload_len = vec_get(data, 2) * 256 + vec_get(data, 3);
+        header_len = 4;
+    } else if payload_len_initial == 127 {
+        if data_len < 10 {
+            return 0;
+        }
+        payload_len = 0;
+        payload_len = payload_len + vec_get(data, 2) * 72057594037927936;
+        payload_len = payload_len + vec_get(data, 3) * 281474976710656;
+        payload_len = payload_len + vec_get(data, 4) * 1099511627776;
+        payload_len = payload_len + vec_get(data, 5) * 4294967296;
+        payload_len = payload_len + vec_get(data, 6) * 16777216;
+        payload_len = payload_len + vec_get(data, 7) * 65536;
+        payload_len = payload_len + vec_get(data, 8) * 256;
+        payload_len = payload_len + vec_get(data, 9);
+        header_len = 10;
+    }
+
+    // Masking key (4 bytes if masked)
+    var mask_offset: i64 = header_len;
+    if is_masked == 1 {
+        header_len = header_len + 4;
+    }
+
+    // Check if we have enough data
+    let total_len: i64 = header_len + payload_len;
+    if data_len < total_len {
+        return 0;
+    }
+
+    // Extract payload
+    let payload: i64 = vec_new();
+    var i: i64 = 0;
+
+    if is_masked == 1 {
+        // Extract and apply mask
+        let mk0: i64 = vec_get(data, mask_offset);
+        let mk1: i64 = vec_get(data, mask_offset + 1);
+        let mk2: i64 = vec_get(data, mask_offset + 2);
+        let mk3: i64 = vec_get(data, mask_offset + 3);
+
+        while i < payload_len {
+            let b: i64 = vec_get(data, header_len + i);
+            let mask_byte: i64 = 0;
+            let mod_idx: i64 = i % 4;
+            if mod_idx == 0 { mask_byte = mk0; }
+            if mod_idx == 1 { mask_byte = mk1; }
+            if mod_idx == 2 { mask_byte = mk2; }
+            if mod_idx == 3 { mask_byte = mk3; }
+            vec_push(payload, ws_xor_byte(b, mask_byte));
+            i = i + 1;
+        }
+    } else {
+        while i < payload_len {
+            vec_push(payload, vec_get(data, header_len + i));
+            i = i + 1;
+        }
+    }
+
+    // Build result vec: [fin, opcode, payload_handle, bytes_consumed]
+    let result: i64 = vec_new();
+    vec_push(result, fin);
+    vec_push(result, opcode);
+    vec_push(result, payload);
+    vec_push(result, total_len);
+
+    result
+}
+
+/// Get the FIN flag from a decoded frame result
+fn ws_frame_fin(frame_result: i64) -> i64 {
+    vec_get(frame_result, 0)
+}
+
+/// Get the opcode from a decoded frame result
+fn ws_frame_opcode(frame_result: i64) -> i64 {
+    vec_get(frame_result, 1)
+}
+
+/// Get the payload handle from a decoded frame result
+fn ws_frame_payload(frame_result: i64) -> i64 {
+    vec_get(frame_result, 2)
+}
+
+/// Get bytes consumed from a decoded frame result
+fn ws_frame_consumed(frame_result: i64) -> i64 {
+    vec_get(frame_result, 3)
+}
+
+// =============================================================================
+// Masking Operations
+// =============================================================================
+
+/// Apply masking to payload bytes (XOR with 4-byte rotating mask key)
+///
+/// # Arguments
+/// * `payload` - Vec handle with payload bytes
+/// * `mask_key` - Vec handle with exactly 4 mask key bytes
+///
+/// # Returns
+/// Vec handle with masked/unmasked payload (XOR is its own inverse)
+fn ws_mask_payload(payload: i64, mask_key: i64) -> i64 {
+    let len: i64 = vec_len(payload);
+    let result: i64 = vec_new();
+    let mk0: i64 = vec_get(mask_key, 0);
+    let mk1: i64 = vec_get(mask_key, 1);
+    let mk2: i64 = vec_get(mask_key, 2);
+    let mk3: i64 = vec_get(mask_key, 3);
+
+    var i: i64 = 0;
+    while i < len {
+        let b: i64 = vec_get(payload, i);
+        let mask_byte: i64 = 0;
+        let mod_idx: i64 = i % 4;
+        if mod_idx == 0 { mask_byte = mk0; }
+        if mod_idx == 1 { mask_byte = mk1; }
+        if mod_idx == 2 { mask_byte = mk2; }
+        if mod_idx == 3 { mask_byte = mk3; }
+        vec_push(result, ws_xor_byte(b, mask_byte));
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Generate a new 4-byte masking key
+fn ws_generate_mask_key() -> i64 {
+    random_bytes(4)
+}
+
+// =============================================================================
+// HTTP Upgrade Handshake (Client)
+// =============================================================================
+
+/// Generate a random 16-byte key, base64 encoded, for Sec-WebSocket-Key
+fn ws_generate_key() -> i64 {
+    let raw: i64 = random_bytes(16);
+    base64_encode(raw)
+}
+
+/// Build the HTTP upgrade request for WebSocket client handshake.
+///
+/// # Arguments
+/// * `host` - Host header value (e.g., "example.com")
+/// * `path` - Resource path (e.g., "/chat")
+/// * `key`  - Base64-encoded Sec-WebSocket-Key
+/// * `extra_headers` - Vec handle of header strings, or 0 for none
+///
+/// # Returns
+/// String handle containing the full HTTP request
+fn ws_build_upgrade_request(host: i64, path: i64, key: i64, extra_headers: i64) -> i64 {
+    let crlf: i64 = "\r\n";
+
+    let req: i64 = string_concat("GET ", path);
+    let req: i64 = string_concat(req, " HTTP/1.1");
+    let req: i64 = string_concat(req, crlf);
+
+    let req: i64 = string_concat(req, "Host: ");
+    let req: i64 = string_concat(req, host);
+    let req: i64 = string_concat(req, crlf);
+
+    let req: i64 = string_concat(req, "Upgrade: websocket");
+    let req: i64 = string_concat(req, crlf);
+
+    let req: i64 = string_concat(req, "Connection: Upgrade");
+    let req: i64 = string_concat(req, crlf);
+
+    let req: i64 = string_concat(req, "Sec-WebSocket-Key: ");
+    let req: i64 = string_concat(req, key);
+    let req: i64 = string_concat(req, crlf);
+
+    let req: i64 = string_concat(req, "Sec-WebSocket-Version: 13");
+    let req: i64 = string_concat(req, crlf);
+
+    // Append extra headers if provided
+    if extra_headers != 0 {
+        let hdr_count: i64 = vec_len(extra_headers);
+        var i: i64 = 0;
+        while i < hdr_count {
+            let hdr: i64 = vec_get(extra_headers, i);
+            let req: i64 = string_concat(req, hdr);
+            let req: i64 = string_concat(req, crlf);
+            i = i + 1;
+        }
+    }
+
+    // Final empty line to end headers
+    let req: i64 = string_concat(req, crlf);
+
+    req
+}
+
+/// Compute the expected Sec-WebSocket-Accept value from a key.
+///
+/// Per RFC 6455: Base64(SHA-1(key + GUID))
+///
+/// # Arguments
+/// * `key` - The Sec-WebSocket-Key from the client request
+///
+/// # Returns
+/// String handle with the expected Accept value
+fn ws_compute_accept_key(key: i64) -> i64 {
+    let combined: i64 = string_concat(key, WS_GUID());
+    let hash: i64 = sha1_hash(combined);
+    base64_encode(hash)
+}
+
+// =============================================================================
+// HTTP Upgrade Handshake (Server)
+// =============================================================================
+
+/// Build the HTTP 101 Switching Protocols response for server handshake.
+///
+/// # Arguments
+/// * `accept_key` - The computed Sec-WebSocket-Accept value
+///
+/// # Returns
+/// String handle containing the full HTTP response
+fn ws_build_upgrade_response(accept_key: i64) -> i64 {
+    let crlf: i64 = "\r\n";
+
+    let resp: i64 = "HTTP/1.1 101 Switching Protocols";
+    let resp: i64 = string_concat(resp, crlf);
+
+    let resp: i64 = string_concat(resp, "Upgrade: websocket");
+    let resp: i64 = string_concat(resp, crlf);
+
+    let resp: i64 = string_concat(resp, "Connection: Upgrade");
+    let resp: i64 = string_concat(resp, crlf);
+
+    let resp: i64 = string_concat(resp, "Sec-WebSocket-Accept: ");
+    let resp: i64 = string_concat(resp, accept_key);
+    let resp: i64 = string_concat(resp, crlf);
+
+    // Final empty line
+    let resp: i64 = string_concat(resp, crlf);
+
+    resp
+}
+
+/// Parse client WebSocket key from an HTTP upgrade request.
+///
+/// Searches for the Sec-WebSocket-Key header line.
+///
+/// # Arguments
+/// * `request` - The raw HTTP request string handle
+///
+/// # Returns
+/// String handle of the key value, or 0 if not found
+fn ws_parse_client_key(request: i64) -> i64 {
+    let req_bytes: i64 = string_to_bytes(request);
+    let req_len: i64 = vec_len(req_bytes);
+    let header_name: i64 = "Sec-WebSocket-Key: ";
+    let header_bytes: i64 = string_to_bytes(header_name);
+    let header_len: i64 = vec_len(header_bytes);
+
+    var i: i64 = 0;
+    while i < req_len - header_len {
+        // Check if this position matches the header name
+        var match: i64 = 1;
+        var j: i64 = 0;
+        while j < header_len {
+            if vec_get(req_bytes, i + j) != vec_get(header_bytes, j) {
+                match = 0;
+                j = header_len; // break
+            }
+            j = j + 1;
+        }
+
+        if match == 1 {
+            // Found header, extract value until CR or LF
+            let value_start: i64 = i + header_len;
+            var value_end: i64 = value_start;
+            while value_end < req_len {
+                let ch: i64 = vec_get(req_bytes, value_end);
+                if ch == 13 {  // CR
+                    value_end = req_len; // break
+                } else if ch == 10 {  // LF
+                    value_end = req_len; // break
+                } else {
+                    value_end = value_end + 1;
+                }
+            }
+            // Adjust value_end back if we broke out
+            var actual_end: i64 = value_start;
+            while actual_end < req_len {
+                let ch: i64 = vec_get(req_bytes, actual_end);
+                if ch == 13 { return bytes_to_string(vec_slice(req_bytes, value_start, actual_end)); }
+                if ch == 10 { return bytes_to_string(vec_slice(req_bytes, value_start, actual_end)); }
+                actual_end = actual_end + 1;
+            }
+            return bytes_to_string(vec_slice(req_bytes, value_start, req_len));
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Client Connection
+// =============================================================================
+
+/// Connect to a WebSocket server.
+///
+/// Parses the URL, establishes TCP, performs HTTP upgrade handshake.
+///
+/// # Arguments
+/// * `url`     - WebSocket URL (e.g., "ws://host:port/path")
+/// * `headers` - Vec handle of extra header strings, or 0 for none
+///
+/// # Returns
+/// Connection descriptor (packed i64), or 0 on failure
+fn ws_connect(url: i64, headers: i64) -> i64 {
+    // Parse URL: extract host, port, path
+    let parsed: i64 = ws_parse_url(url);
+    if parsed == 0 {
+        return 0;
+    }
+
+    let host: i64 = vec_get(parsed, 0);
+    let port: i64 = vec_get(parsed, 1);
+    let path: i64 = vec_get(parsed, 2);
+
+    // Establish TCP connection
+    let tcp: i64 = tcp_connect(host, port);
+    if tcp == 0 {
+        return 0;
+    }
+
+    // Generate WebSocket key
+    let key: i64 = ws_generate_key();
+
+    // Build and send upgrade request
+    let request: i64 = ws_build_upgrade_request(host, path, key, headers);
+    let req_bytes: i64 = string_to_bytes(request);
+    tcp_send(tcp, req_bytes);
+
+    // Receive response
+    let response: i64 = tcp_recv(tcp, 4096);
+    if response == 0 {
+        tcp_close(tcp);
+        return 0;
+    }
+
+    // Validate 101 status (simplified check)
+    let resp_str: i64 = bytes_to_string(response);
+    let status_check: i64 = string_substring(resp_str, 9, 3);
+    if intrinsic_string_eq(status_check, "101") != 1 {
+        tcp_close(tcp);
+        return 0;
+    }
+
+    // Connection established
+    ws_conn_new(tcp, WS_STATE_OPEN(), 1)
+}
+
+/// Parse a WebSocket URL into [host, port, path]
+///
+/// Supports ws:// and wss:// schemes.
+///
+/// # Returns
+/// Vec handle [host_str, port_i64, path_str] or 0 on failure
+fn ws_parse_url(url: i64) -> i64 {
+    let url_len: i64 = string_length(url);
+    var offset: i64 = 0;
+    var default_port: i64 = 80;
+
+    // Check scheme
+    let ws_prefix: i64 = string_substring(url, 0, 5);
+    if intrinsic_string_eq(ws_prefix, "ws://") == 1 {
+        offset = 5;
+        default_port = 80;
+    } else {
+        let wss_prefix: i64 = string_substring(url, 0, 6);
+        if intrinsic_string_eq(wss_prefix, "wss://") == 1 {
+            offset = 6;
+            default_port = 443;
+        } else {
+            return 0;
+        }
+    }
+
+    // Find host end (look for : or / or end)
+    var host_end: i64 = offset;
+    var found_colon: i64 = 0;
+    var found_slash: i64 = 0;
+    while host_end < url_len {
+        let ch: i64 = string_substring(url, host_end, 1);
+        if intrinsic_string_eq(ch, ":") == 1 {
+            found_colon = 1;
+            host_end = url_len; // break
+        } else if intrinsic_string_eq(ch, "/") == 1 {
+            found_slash = 1;
+            host_end = url_len; // break
+        }
+        host_end = host_end + 1;
+    }
+
+    // Re-scan to find actual position
+    var pos: i64 = offset;
+    var host_stop: i64 = url_len;
+    while pos < url_len {
+        let ch: i64 = string_substring(url, pos, 1);
+        if intrinsic_string_eq(ch, ":") == 1 {
+            host_stop = pos;
+            pos = url_len; // break
+        } else if intrinsic_string_eq(ch, "/") == 1 {
+            host_stop = pos;
+            pos = url_len; // break
+        }
+        pos = pos + 1;
+    }
+
+    let host: i64 = string_substring(url, offset, host_stop - offset);
+
+    // Parse port if present
+    var port: i64 = default_port;
+    var path_start: i64 = host_stop;
+
+    if found_colon == 1 {
+        let after_colon: i64 = host_stop + 1;
+        var port_end: i64 = after_colon;
+        while port_end < url_len {
+            let ch: i64 = string_substring(url, port_end, 1);
+            if intrinsic_string_eq(ch, "/") == 1 {
+                port_end = url_len; // break
+            }
+            port_end = port_end + 1;
+        }
+        // Re-scan for actual port_end
+        var pe: i64 = after_colon;
+        var actual_pe: i64 = url_len;
+        while pe < url_len {
+            let ch: i64 = string_substring(url, pe, 1);
+            if intrinsic_string_eq(ch, "/") == 1 {
+                actual_pe = pe;
+                pe = url_len; // break
+            }
+            pe = pe + 1;
+        }
+        let port_str: i64 = string_substring(url, after_colon, actual_pe - after_colon);
+        port = ws_parse_port(port_str);
+        path_start = actual_pe;
+    }
+
+    // Extract path (default to "/" if none)
+    var path: i64 = "/";
+    if path_start < url_len {
+        path = string_substring(url, path_start, url_len - path_start);
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, host);
+    vec_push(result, port);
+    vec_push(result, path);
+
+    result
+}
+
+/// Parse a port number string to i64 (simple decimal parser)
+fn ws_parse_port(s: i64) -> i64 {
+    let len: i64 = string_length(s);
+    var result: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_substring(s, i, 1);
+        let digit: i64 = ws_char_to_digit(ch);
+        if digit >= 0 {
+            result = result * 10 + digit;
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Convert a single-character string to digit value (0-9), returns -1 if not digit
+fn ws_char_to_digit(ch: i64) -> i64 {
+    if intrinsic_string_eq(ch, "0") == 1 { return 0; }
+    if intrinsic_string_eq(ch, "1") == 1 { return 1; }
+    if intrinsic_string_eq(ch, "2") == 1 { return 2; }
+    if intrinsic_string_eq(ch, "3") == 1 { return 3; }
+    if intrinsic_string_eq(ch, "4") == 1 { return 4; }
+    if intrinsic_string_eq(ch, "5") == 1 { return 5; }
+    if intrinsic_string_eq(ch, "6") == 1 { return 6; }
+    if intrinsic_string_eq(ch, "7") == 1 { return 7; }
+    if intrinsic_string_eq(ch, "8") == 1 { return 8; }
+    if intrinsic_string_eq(ch, "9") == 1 { return 9; }
+    -1
+}
+
+// =============================================================================
+// Server
+// =============================================================================
+
+/// Start a WebSocket server listening on addr:port.
+///
+/// # Arguments
+/// * `addr` - Bind address string (e.g., "0.0.0.0")
+/// * `port` - Port number
+///
+/// # Returns
+/// Server handle (TCP listener handle)
+fn ws_serve(addr: i64, port: i64) -> i64 {
+    tcp_listen(addr, port)
+}
+
+/// Accept a new WebSocket client connection.
+///
+/// Accepts TCP connection and performs server-side handshake.
+///
+/// # Arguments
+/// * `server` - Server handle from ws_serve
+///
+/// # Returns
+/// Connection descriptor, or 0 on failure
+fn ws_accept(server: i64) -> i64 {
+    let tcp: i64 = tcp_accept(server);
+    if tcp == 0 {
+        return 0;
+    }
+
+    // Receive client handshake
+    let request_data: i64 = tcp_recv(tcp, 4096);
+    if request_data == 0 {
+        tcp_close(tcp);
+        return 0;
+    }
+
+    let request_str: i64 = bytes_to_string(request_data);
+
+    // Extract client key
+    let client_key: i64 = ws_parse_client_key(request_str);
+    if client_key == 0 {
+        tcp_close(tcp);
+        return 0;
+    }
+
+    // Compute accept key
+    let accept_key: i64 = ws_compute_accept_key(client_key);
+
+    // Send 101 response
+    let response: i64 = ws_build_upgrade_response(accept_key);
+    let resp_bytes: i64 = string_to_bytes(response);
+    tcp_send(tcp, resp_bytes);
+
+    // Connection established (server side, is_client=0)
+    ws_conn_new(tcp, WS_STATE_OPEN(), 0)
+}
+
+// =============================================================================
+// Sending Messages
+// =============================================================================
+
+/// Send a text message over a WebSocket connection.
+///
+/// # Arguments
+/// * `conn`    - Connection descriptor
+/// * `message` - String handle of the text message
+///
+/// # Returns
+/// Bytes sent, or 0 on error
+fn ws_send_text(conn: i64, message: i64) -> i64 {
+    if ws_conn_state(conn) != WS_STATE_OPEN() {
+        return 0;
+    }
+
+    let payload: i64 = string_to_bytes(message);
+    let masked: i64 = ws_conn_is_client(conn);
+    let frame: i64 = ws_encode_frame(1, WS_OPCODE_TEXT(), masked, payload);
+
+    let tcp: i64 = ws_conn_tcp(conn);
+    tcp_send(tcp, frame)
+}
+
+/// Send a binary message over a WebSocket connection.
+///
+/// # Arguments
+/// * `conn` - Connection descriptor
+/// * `data` - Vec handle of binary data
+///
+/// # Returns
+/// Bytes sent, or 0 on error
+fn ws_send_binary(conn: i64, data: i64) -> i64 {
+    if ws_conn_state(conn) != WS_STATE_OPEN() {
+        return 0;
+    }
+
+    let masked: i64 = ws_conn_is_client(conn);
+    let frame: i64 = ws_encode_frame(1, WS_OPCODE_BINARY(), masked, data);
+
+    let tcp: i64 = ws_conn_tcp(conn);
+    tcp_send(tcp, frame)
+}
+
+/// Send a text message as multiple fragments.
+///
+/// # Arguments
+/// * `conn`      - Connection descriptor
+/// * `message`   - String handle of text message
+/// * `chunk_size` - Maximum payload size per fragment
+///
+/// # Returns
+/// Total bytes sent, or 0 on error
+fn ws_send_fragmented(conn: i64, message: i64, chunk_size: i64) -> i64 {
+    if ws_conn_state(conn) != WS_STATE_OPEN() {
+        return 0;
+    }
+
+    let payload: i64 = string_to_bytes(message);
+    let total_len: i64 = vec_len(payload);
+    let masked: i64 = ws_conn_is_client(conn);
+    let tcp: i64 = ws_conn_tcp(conn);
+
+    var offset: i64 = 0;
+    var total_sent: i64 = 0;
+    var first_frame: i64 = 1;
+
+    while offset < total_len {
+        var end: i64 = offset + chunk_size;
+        if end > total_len {
+            end = total_len;
+        }
+
+        let chunk: i64 = vec_slice(payload, offset, end);
+        let is_final: i64 = 0;
+        if end == total_len {
+            is_final = 1;
+        }
+
+        var opcode: i64 = WS_OPCODE_CONTINUATION();
+        if first_frame == 1 {
+            opcode = WS_OPCODE_TEXT();
+            first_frame = 0;
+        }
+
+        let frame: i64 = ws_encode_frame(is_final, opcode, masked, chunk);
+        let sent: i64 = tcp_send(tcp, frame);
+        total_sent = total_sent + sent;
+        offset = end;
+    }
+
+    total_sent
+}
+
+// =============================================================================
+// Receiving Messages
+// =============================================================================
+
+/// Receive the next message from a WebSocket connection.
+///
+/// Handles fragmentation by reassembling continuation frames.
+/// Handles control frames (ping/pong/close) automatically.
+///
+/// # Arguments
+/// * `conn` - Connection descriptor
+///
+/// # Returns
+/// Vec handle [message_type, payload_handle], or 0 on error/close
+fn ws_receive(conn: i64) -> i64 {
+    if ws_conn_state(conn) != WS_STATE_OPEN() {
+        return 0;
+    }
+
+    let tcp: i64 = ws_conn_tcp(conn);
+
+    // Buffer for assembling fragmented messages
+    let message_buf: i64 = vec_new();
+    var message_type: i64 = 0;
+    var complete: i64 = 0;
+
+    while complete == 0 {
+        // Receive data from TCP
+        let data: i64 = tcp_recv(tcp, 65536);
+        if data == 0 {
+            return 0;
+        }
+
+        // Decode frame
+        let frame: i64 = ws_decode_frame(data);
+        if frame == 0 {
+            return 0;
+        }
+
+        let fin: i64 = ws_frame_fin(frame);
+        let opcode: i64 = ws_frame_opcode(frame);
+        let payload: i64 = ws_frame_payload(frame);
+
+        // Handle control frames
+        if opcode == WS_OPCODE_PING() {
+            // Auto-respond with pong
+            ws_send_pong(conn, payload);
+        } else if opcode == WS_OPCODE_PONG() {
+            // Pong received, ignore
+        } else if opcode == WS_OPCODE_CLOSE() {
+            // Close received
+            let close_result: i64 = vec_new();
+            vec_push(close_result, WS_MSG_CLOSE());
+            vec_push(close_result, payload);
+            return close_result;
+        } else {
+            // Data frame (text, binary, or continuation)
+            if opcode != WS_OPCODE_CONTINUATION() {
+                message_type = opcode;
+            }
+
+            // Append payload to message buffer
+            let payload_len: i64 = vec_len(payload);
+            var i: i64 = 0;
+            while i < payload_len {
+                vec_push(message_buf, vec_get(payload, i));
+                i = i + 1;
+            }
+
+            if fin == 1 {
+                complete = 1;
+            }
+        }
+    }
+
+    // Build result
+    let result: i64 = vec_new();
+    vec_push(result, message_type);
+    vec_push(result, message_buf);
+
+    result
+}
+
+/// Get the message type from a received message result
+fn ws_msg_type(msg: i64) -> i64 {
+    vec_get(msg, 0)
+}
+
+/// Get the payload from a received message result
+fn ws_msg_payload(msg: i64) -> i64 {
+    vec_get(msg, 1)
+}
+
+/// Get the payload as a string (for text messages)
+fn ws_msg_text(msg: i64) -> i64 {
+    let payload: i64 = vec_get(msg, 1);
+    bytes_to_string(payload)
+}
+
+// =============================================================================
+// Control Frames
+// =============================================================================
+
+/// Send a ping frame.
+///
+/// # Arguments
+/// * `conn`    - Connection descriptor
+/// * `payload` - Optional payload vec (max 125 bytes), or 0 for empty
+///
+/// # Returns
+/// Bytes sent, or 0 on error
+fn ws_send_ping(conn: i64, payload: i64) -> i64 {
+    if ws_conn_state(conn) != WS_STATE_OPEN() {
+        return 0;
+    }
+
+    let ping_payload: i64 = payload;
+    if ping_payload == 0 {
+        ping_payload = vec_new();
+    }
+
+    // Control frames must not exceed 125 bytes payload
+    if vec_len(ping_payload) > 125 {
+        return 0;
+    }
+
+    let masked: i64 = ws_conn_is_client(conn);
+    let frame: i64 = ws_encode_frame(1, WS_OPCODE_PING(), masked, ping_payload);
+    let tcp: i64 = ws_conn_tcp(conn);
+    tcp_send(tcp, frame)
+}
+
+/// Send a pong frame (usually in response to ping).
+///
+/// # Arguments
+/// * `conn`    - Connection descriptor
+/// * `payload` - Payload to echo back (from the ping frame)
+///
+/// # Returns
+/// Bytes sent, or 0 on error
+fn ws_send_pong(conn: i64, payload: i64) -> i64 {
+    let pong_payload: i64 = payload;
+    if pong_payload == 0 {
+        pong_payload = vec_new();
+    }
+
+    if vec_len(pong_payload) > 125 {
+        return 0;
+    }
+
+    let masked: i64 = ws_conn_is_client(conn);
+    let frame: i64 = ws_encode_frame(1, WS_OPCODE_PONG(), masked, pong_payload);
+    let tcp: i64 = ws_conn_tcp(conn);
+    tcp_send(tcp, frame)
+}
+
+// =============================================================================
+// Close Connection
+// =============================================================================
+
+/// Close a WebSocket connection with a status code and reason.
+///
+/// Sends a close frame with the given code and reason string.
+///
+/// # Arguments
+/// * `conn`   - Connection descriptor
+/// * `code`   - Close status code (e.g., 1000 for normal)
+/// * `reason` - Reason string handle (can be 0 for no reason)
+///
+/// # Returns
+/// Updated connection descriptor in CLOSING state, or 0 on error
+fn ws_close(conn: i64, code: i64, reason: i64) -> i64 {
+    let state: i64 = ws_conn_state(conn);
+    if state == WS_STATE_CLOSED() {
+        return 0;
+    }
+
+    // Build close payload: 2-byte status code + optional reason
+    let close_payload: i64 = vec_new();
+    vec_push(close_payload, (code / 256) % 256);  // High byte
+    vec_push(close_payload, code % 256);           // Low byte
+
+    if reason != 0 {
+        let reason_bytes: i64 = string_to_bytes(reason);
+        let reason_len: i64 = vec_len(reason_bytes);
+        var i: i64 = 0;
+        while i < reason_len {
+            vec_push(close_payload, vec_get(reason_bytes, i));
+            i = i + 1;
+        }
+    }
+
+    let masked: i64 = ws_conn_is_client(conn);
+    let frame: i64 = ws_encode_frame(1, WS_OPCODE_CLOSE(), masked, close_payload);
+    let tcp: i64 = ws_conn_tcp(conn);
+    tcp_send(tcp, frame);
+
+    // Update state
+    ws_conn_set_state(conn, WS_STATE_CLOSING())
+}
+
+/// Parse close code from a close frame payload
+///
+/// # Arguments
+/// * `payload` - Close frame payload vec handle
+///
+/// # Returns
+/// Close status code, or 1005 (no status) if payload is too short
+fn ws_parse_close_code(payload: i64) -> i64 {
+    if vec_len(payload) < 2 {
+        return WS_CLOSE_NO_STATUS();
+    }
+    vec_get(payload, 0) * 256 + vec_get(payload, 1)
+}
+
+/// Parse close reason from a close frame payload
+///
+/// # Arguments
+/// * `payload` - Close frame payload vec handle
+///
+/// # Returns
+/// String handle of reason, or 0 if no reason present
+fn ws_parse_close_reason(payload: i64) -> i64 {
+    let len: i64 = vec_len(payload);
+    if len <= 2 {
+        return 0;
+    }
+    let reason_bytes: i64 = vec_slice(payload, 2, len);
+    bytes_to_string(reason_bytes)
+}
+
+/// Forcefully close the TCP connection without sending close frame
+fn ws_force_close(conn: i64) -> i64 {
+    let tcp: i64 = ws_conn_tcp(conn);
+    tcp_close(tcp);
+    ws_conn_set_state(conn, WS_STATE_CLOSED())
+}
+
+// =============================================================================
+// Frame Building Helpers
+// =============================================================================
+
+/// Build a text frame (convenience wrapper)
+fn ws_build_text_frame(message: i64, masked: i64) -> i64 {
+    let payload: i64 = string_to_bytes(message);
+    ws_encode_frame(1, WS_OPCODE_TEXT(), masked, payload)
+}
+
+/// Build a binary frame (convenience wrapper)
+fn ws_build_binary_frame(data: i64, masked: i64) -> i64 {
+    ws_encode_frame(1, WS_OPCODE_BINARY(), masked, data)
+}
+
+/// Build a close frame (convenience wrapper)
+fn ws_build_close_frame(code: i64, reason: i64, masked: i64) -> i64 {
+    let payload: i64 = vec_new();
+    vec_push(payload, (code / 256) % 256);
+    vec_push(payload, code % 256);
+    if reason != 0 {
+        let reason_bytes: i64 = string_to_bytes(reason);
+        let rlen: i64 = vec_len(reason_bytes);
+        var i: i64 = 0;
+        while i < rlen {
+            vec_push(payload, vec_get(reason_bytes, i));
+            i = i + 1;
+        }
+    }
+    ws_encode_frame(1, WS_OPCODE_CLOSE(), masked, payload)
+}
+
+/// Build a ping frame (convenience wrapper)
+fn ws_build_ping_frame(payload: i64, masked: i64) -> i64 {
+    let p: i64 = payload;
+    if p == 0 {
+        p = vec_new();
+    }
+    ws_encode_frame(1, WS_OPCODE_PING(), masked, p)
+}
+
+/// Build a pong frame (convenience wrapper)
+fn ws_build_pong_frame(payload: i64, masked: i64) -> i64 {
+    let p: i64 = payload;
+    if p == 0 {
+        p = vec_new();
+    }
+    ws_encode_frame(1, WS_OPCODE_PONG(), masked, p)
+}
+
+// =============================================================================
+// Fragmentation Helpers
+// =============================================================================
+
+/// Build a first fragment frame (sets the opcode, FIN=0)
+fn ws_build_first_fragment(opcode: i64, payload: i64, masked: i64) -> i64 {
+    ws_encode_frame(0, opcode, masked, payload)
+}
+
+/// Build a continuation fragment frame (opcode=0, FIN=0)
+fn ws_build_continuation_fragment(payload: i64, masked: i64) -> i64 {
+    ws_encode_frame(0, WS_OPCODE_CONTINUATION(), masked, payload)
+}
+
+/// Build a final fragment frame (opcode=0, FIN=1)
+fn ws_build_final_fragment(payload: i64, masked: i64) -> i64 {
+    ws_encode_frame(1, WS_OPCODE_CONTINUATION(), masked, payload)
+}
+
+// =============================================================================
+// Validation Helpers
+// =============================================================================
+
+/// Check if an opcode is valid per RFC 6455
+fn ws_is_valid_opcode(opcode: i64) -> i64 {
+    if opcode == 0 { return 1; }  // Continuation
+    if opcode == 1 { return 1; }  // Text
+    if opcode == 2 { return 1; }  // Binary
+    if opcode == 8 { return 1; }  // Close
+    if opcode == 9 { return 1; }  // Ping
+    if opcode == 10 { return 1; } // Pong
+    0
+}
+
+/// Check if an opcode is a control frame
+fn ws_is_control_opcode(opcode: i64) -> i64 {
+    if opcode >= 8 { 1 } else { 0 }
+}
+
+/// Check if an opcode is a data frame
+fn ws_is_data_opcode(opcode: i64) -> i64 {
+    if opcode == 0 { return 1; }
+    if opcode == 1 { return 1; }
+    if opcode == 2 { return 1; }
+    0
+}
+
+/// Check if a close code is valid per RFC 6455
+fn ws_is_valid_close_code(code: i64) -> i64 {
+    if code == 1000 { return 1; }  // Normal
+    if code == 1001 { return 1; }  // Going Away
+    if code == 1002 { return 1; }  // Protocol Error
+    if code == 1003 { return 1; }  // Unsupported
+    if code == 1007 { return 1; }  // Invalid Data
+    if code == 1008 { return 1; }  // Policy Violation
+    if code == 1009 { return 1; }  // Too Big
+    if code == 1010 { return 1; }  // Missing Extension
+    if code == 1011 { return 1; }  // Internal Error
+    // Application-defined codes 3000-4999
+    if code >= 3000 {
+        if code <= 4999 { return 1; }
+    }
+    0
+}
+
+// =============================================================================
+// Frame Size Calculations
+// =============================================================================
+
+/// Calculate the header size for a frame given payload length and mask flag
+fn ws_frame_header_size(payload_len: i64, masked: i64) -> i64 {
+    var size: i64 = 2;  // Base header
+
+    if payload_len >= 126 {
+        if payload_len < 65536 {
+            size = size + 2;   // 16-bit extended
+        } else {
+            size = size + 8;   // 64-bit extended
+        }
+    }
+
+    if masked == 1 {
+        size = size + 4;  // Mask key
+    }
+
+    size
+}
+
+/// Calculate total frame size for a given payload
+fn ws_frame_total_size(payload_len: i64, masked: i64) -> i64 {
+    ws_frame_header_size(payload_len, masked) + payload_len
+}
+
+// =============================================================================
+// Utility: Encode Close Code to Bytes
+// =============================================================================
+
+/// Encode a close code as two big-endian bytes in a vec
+fn ws_encode_close_code(code: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, (code / 256) % 256);
+    vec_push(v, code % 256);
+    v
+}
+
+/// Decode a close code from two big-endian bytes
+fn ws_decode_close_code(high: i64, low: i64) -> i64 {
+    high * 256 + low
+}
+
+// =============================================================================
+// Protocol Version Info
+// =============================================================================
+
+/// Get WebSocket protocol version (always 13 per RFC 6455)
+fn ws_protocol_version() -> i64 { 13 }
+
+/// Get the maximum control frame payload size (125 bytes per RFC 6455)
+fn ws_max_control_payload() -> i64 { 125 }
+
+// =============================================================================
+// Byte Packing Utilities
+// =============================================================================
+
+/// Pack two bytes into a 16-bit big-endian value
+fn ws_pack_u16(high: i64, low: i64) -> i64 {
+    high * 256 + low
+}
+
+/// Unpack 16-bit big-endian value to high byte
+fn ws_unpack_u16_high(val: i64) -> i64 {
+    (val / 256) % 256
+}
+
+/// Unpack 16-bit big-endian value to low byte
+fn ws_unpack_u16_low(val: i64) -> i64 {
+    val % 256
+}
+
+/// Pack four bytes into a 32-bit big-endian value
+fn ws_pack_u32(b3: i64, b2: i64, b1: i64, b0: i64) -> i64 {
+    b3 * 16777216 + b2 * 65536 + b1 * 256 + b0
+}
+
+// =============================================================================
+// Handshake Header Parsing
+// =============================================================================
+
+/// Check if an HTTP response contains the "Upgrade: websocket" header
+fn ws_has_upgrade_header(response: i64) -> i64 {
+    let resp_bytes: i64 = string_to_bytes(response);
+    let resp_len: i64 = vec_len(resp_bytes);
+    let target: i64 = "Upgrade: websocket";
+    let target_bytes: i64 = string_to_bytes(target);
+    let target_len: i64 = vec_len(target_bytes);
+
+    var i: i64 = 0;
+    while i < resp_len - target_len {
+        var match: i64 = 1;
+        var j: i64 = 0;
+        while j < target_len {
+            if vec_get(resp_bytes, i + j) != vec_get(target_bytes, j) {
+                match = 0;
+                j = target_len;
+            }
+            j = j + 1;
+        }
+        if match == 1 {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Check if an HTTP response contains "Connection: Upgrade" header
+fn ws_has_connection_upgrade(response: i64) -> i64 {
+    let resp_bytes: i64 = string_to_bytes(response);
+    let resp_len: i64 = vec_len(resp_bytes);
+    let target: i64 = "Connection: Upgrade";
+    let target_bytes: i64 = string_to_bytes(target);
+    let target_len: i64 = vec_len(target_bytes);
+
+    var i: i64 = 0;
+    while i < resp_len - target_len {
+        var match: i64 = 1;
+        var j: i64 = 0;
+        while j < target_len {
+            if vec_get(resp_bytes, i + j) != vec_get(target_bytes, j) {
+                match = 0;
+                j = target_len;
+            }
+            j = j + 1;
+        }
+        if match == 1 {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Extract the Sec-WebSocket-Accept value from an HTTP response
+fn ws_parse_accept_key(response: i64) -> i64 {
+    let req_bytes: i64 = string_to_bytes(response);
+    let req_len: i64 = vec_len(req_bytes);
+    let header_name: i64 = "Sec-WebSocket-Accept: ";
+    let header_bytes: i64 = string_to_bytes(header_name);
+    let header_len: i64 = vec_len(header_bytes);
+
+    var i: i64 = 0;
+    while i < req_len - header_len {
+        var match: i64 = 1;
+        var j: i64 = 0;
+        while j < header_len {
+            if vec_get(req_bytes, i + j) != vec_get(header_bytes, j) {
+                match = 0;
+                j = header_len;
+            }
+            j = j + 1;
+        }
+
+        if match == 1 {
+            let value_start: i64 = i + header_len;
+            var actual_end: i64 = value_start;
+            while actual_end < req_len {
+                let ch: i64 = vec_get(req_bytes, actual_end);
+                if ch == 13 { return bytes_to_string(vec_slice(req_bytes, value_start, actual_end)); }
+                if ch == 10 { return bytes_to_string(vec_slice(req_bytes, value_start, actual_end)); }
+                actual_end = actual_end + 1;
+            }
+            return bytes_to_string(vec_slice(req_bytes, value_start, req_len));
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Message Builder (high-level convenience)
+// =============================================================================
+
+/// Create a text message for sending (wraps into frame bytes)
+fn ws_message_text(text: i64) -> i64 {
+    let payload: i64 = string_to_bytes(text);
+    let result: i64 = vec_new();
+    vec_push(result, WS_MSG_TEXT());
+    vec_push(result, payload);
+    result
+}
+
+/// Create a binary message for sending
+fn ws_message_binary(data: i64) -> i64 {
+    let result: i64 = vec_new();
+    vec_push(result, WS_MSG_BINARY());
+    vec_push(result, data);
+    result
+}
+
+// =============================================================================
+// Statistics / Diagnostics
+// =============================================================================
+
+/// Frame statistics structure (packed i64):
+///   bits 0-15:  frames sent count
+///   bits 16-31: frames received count
+///   bits 32-47: bytes sent (in KB)
+///   bits 48-63: bytes received (in KB)
+
+fn ws_stats_new() -> i64 { 0 }
+
+fn ws_stats_add_sent(stats: i64, frame_count: i64, byte_count: i64) -> i64 {
+    let sent_frames: i64 = (stats % 65536) + frame_count;
+    let recv_frames: i64 = (stats / 65536) % 65536;
+    let sent_kb: i64 = (stats / 4294967296) % 65536 + byte_count / 1024;
+    let recv_kb: i64 = (stats / 281474976710656) % 65536;
+    sent_frames + recv_frames * 65536 + sent_kb * 4294967296 + recv_kb * 281474976710656
+}
+
+fn ws_stats_add_recv(stats: i64, frame_count: i64, byte_count: i64) -> i64 {
+    let sent_frames: i64 = stats % 65536;
+    let recv_frames: i64 = (stats / 65536) % 65536 + frame_count;
+    let sent_kb: i64 = (stats / 4294967296) % 65536;
+    let recv_kb: i64 = (stats / 281474976710656) % 65536 + byte_count / 1024;
+    sent_frames + recv_frames * 65536 + sent_kb * 4294967296 + recv_kb * 281474976710656
+}
+
+fn ws_stats_sent_frames(stats: i64) -> i64 { stats % 65536 }
+fn ws_stats_recv_frames(stats: i64) -> i64 { (stats / 65536) % 65536 }
+fn ws_stats_sent_kb(stats: i64) -> i64 { (stats / 4294967296) % 65536 }
+fn ws_stats_recv_kb(stats: i64) -> i64 { (stats / 281474976710656) % 65536 }

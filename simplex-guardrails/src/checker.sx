@@ -1,0 +1,296 @@
+// simplex-guardrails::checker - Guardrail Checking Engine
+//
+// Checks output against a set of rules and returns results.
+//
+// Check result layout (vec of i64):
+//   [0] passed      - 1 if all rules passed, 0 if any failed
+//   [1] failures    - handle to vec of failure descriptions
+//   [2] n_rules     - total number of rules checked
+//   [3] n_passed    - number of rules that passed
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Main Check Function
+// =============================================================================
+
+/// Check output against a set of guardrail rules.
+///
+/// Arguments:
+///   output    - output text to check (string handle)
+///   rules_vec - handle to vec of rule handles
+///
+/// Returns: handle to check result vec [passed, failures_vec, n_rules, n_passed]
+fn guardrail_check(output: i64, rules_vec: i64) -> i64 {
+    let n_rules: i64 = vec_len(rules_vec);
+    let failures = vec_new();
+    var n_passed: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n_rules {
+        let rule: i64 = vec_get(rules_vec, i);
+        let check_ok: i64 = check_single_rule(output, rule);
+
+        if check_ok == 1 {
+            n_passed = n_passed + 1;
+        } else {
+            // Record failure
+            let failure = vec_new();
+            let rule_type: i64 = vec_get(rule, RULE_TYPE());
+            let rule_msg: i64 = vec_get(rule, RULE_MSG());
+            let rule_action: i64 = vec_get(rule, RULE_ACTION());
+            vec_push(failure, rule_type);
+            vec_push(failure, rule_msg);
+            vec_push(failure, rule_action);
+            vec_push(failure, i);  // rule index
+            vec_push(failures, failure);
+        }
+
+        i = i + 1;
+    }
+
+    let all_passed: i64 = 0;
+    if n_passed == n_rules {
+        all_passed = 1;
+    }
+
+    let result = vec_new();
+    vec_push(result, all_passed);     // [0] passed
+    vec_push(result, failures);       // [1] failures_vec
+    vec_push(result, n_rules);        // [2] n_rules
+    vec_push(result, n_passed);       // [3] n_passed
+    result
+}
+
+// =============================================================================
+// Single Rule Check
+// =============================================================================
+
+/// Check output against a single rule.
+///
+/// Returns: 1 if passes, 0 if fails
+fn check_single_rule(output: i64, rule: i64) -> i64 {
+    let rule_type: i64 = vec_get(rule, RULE_TYPE());
+    let param: i64 = vec_get(rule, RULE_PARAM());
+
+    if rule_type == RULE_MAX_LENGTH() {
+        return check_max_length(output, param);
+    }
+
+    if rule_type == RULE_MIN_LENGTH() {
+        return check_min_length(output, param);
+    }
+
+    if rule_type == RULE_MUST_CONTAIN() {
+        return check_must_contain(output, param);
+    }
+
+    if rule_type == RULE_MUST_NOT_CONTAIN() {
+        return check_must_not_contain(output, param);
+    }
+
+    if rule_type == RULE_JSON_VALID() {
+        return check_json_valid(output);
+    }
+
+    if rule_type == RULE_NO_PII() {
+        return check_no_pii(output);
+    }
+
+    // Unknown rule type - pass by default
+    1
+}
+
+// =============================================================================
+// Rule Implementations
+// =============================================================================
+
+/// Check maximum length rule.
+fn check_max_length(output: i64, max: i64) -> i64 {
+    let len: i64 = string_len(output);
+    if len <= max { return 1; }
+    0
+}
+
+/// Check minimum length rule.
+fn check_min_length(output: i64, min: i64) -> i64 {
+    let len: i64 = string_len(output);
+    if len >= min { return 1; }
+    0
+}
+
+/// Check must-contain rule (output must contain at least one term).
+fn check_must_contain(output: i64, terms: i64) -> i64 {
+    let n_terms: i64 = vec_len(terms);
+    if n_terms == 0 { return 1; }  // no terms = pass
+
+    var i: i64 = 0;
+    while i < n_terms {
+        let term: i64 = vec_get(terms, i);
+        let found: i64 = string_contains(output, term);
+        if found == 1 { return 1; }
+        i = i + 1;
+    }
+
+    0
+}
+
+/// Check must-not-contain rule (output must not contain any term).
+fn check_must_not_contain(output: i64, terms: i64) -> i64 {
+    let n_terms: i64 = vec_len(terms);
+    if n_terms == 0 { return 1; }
+
+    var i: i64 = 0;
+    while i < n_terms {
+        let term: i64 = vec_get(terms, i);
+        let found: i64 = string_contains(output, term);
+        if found == 1 { return 0; }  // found prohibited term
+        i = i + 1;
+    }
+
+    1
+}
+
+/// Check JSON validity (basic structural check).
+///
+/// Verifies:
+///   - Starts with { or [
+///   - Balanced braces and brackets
+///   - Properly paired quotes
+fn check_json_valid(output: i64) -> i64 {
+    let len: i64 = string_len(output);
+    if len < 2 { return 0; }
+
+    // Skip leading whitespace
+    var start: i64 = 0;
+    while start < len {
+        let ch: i64 = string_char_at(output, start);
+        if ch == 32 { start = start + 1; }
+        else if ch == 10 { start = start + 1; }
+        else if ch == 9 { start = start + 1; }
+        else if ch == 13 { start = start + 1; }
+        else { start = len + 1; }  // break
+    }
+    if start > len { start = 0; }
+    // re-find first non-ws
+    start = 0;
+    while start < len {
+        let ch: i64 = string_char_at(output, start);
+        if ch == 32 { start = start + 1; }
+        else if ch == 10 { start = start + 1; }
+        else if ch == 9 { start = start + 1; }
+        else if ch == 13 { start = start + 1; }
+        else {
+            // Found first non-whitespace
+            let first: i64 = ch;
+            if first != 123 {  // '{'
+                if first != 91 {  // '['
+                    return 0;  // Must start with { or [
+                }
+            }
+            start = len + 1;  // break
+        }
+    }
+
+    // Count balanced braces and brackets
+    var brace_depth: i64 = 0;
+    var bracket_depth: i64 = 0;
+    var in_string: i64 = 0;
+    var escaped: i64 = 0;
+
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(output, i);
+
+        if escaped == 1 {
+            escaped = 0;
+        } else if ch == 92 {  // backslash
+            if in_string == 1 {
+                escaped = 1;
+            }
+        } else if ch == 34 {  // double quote
+            if in_string == 1 { in_string = 0; }
+            else { in_string = 1; }
+        } else if in_string == 0 {
+            if ch == 123 { brace_depth = brace_depth + 1; }       // '{'
+            else if ch == 125 { brace_depth = brace_depth - 1; }  // '}'
+            else if ch == 91 { bracket_depth = bracket_depth + 1; }   // '['
+            else if ch == 93 { bracket_depth = bracket_depth - 1; }   // ']'
+
+            if brace_depth < 0 { return 0; }
+            if bracket_depth < 0 { return 0; }
+        }
+
+        i = i + 1;
+    }
+
+    if brace_depth != 0 { return 0; }
+    if bracket_depth != 0 { return 0; }
+    if in_string != 0 { return 0; }
+
+    1
+}
+
+/// Check no-PII rule.
+fn check_no_pii(output: i64) -> i64 {
+    // Check for email patterns
+    let has_email: i64 = contains_email_pattern(output);
+    if has_email == 1 { return 0; }
+
+    // Check for phone patterns
+    let has_phone: i64 = contains_phone_pattern(output);
+    if has_phone == 1 { return 0; }
+
+    1
+}
+
+// =============================================================================
+// Batch Check
+// =============================================================================
+
+/// Check multiple outputs against the same rules.
+///
+/// Arguments:
+///   outputs   - handle to vec of output string handles
+///   rules_vec - handle to vec of rule handles
+///
+/// Returns: handle to vec of check result handles
+fn guardrail_check_batch(outputs: i64, rules_vec: i64) -> i64 {
+    let results = vec_new();
+    let n: i64 = vec_len(outputs);
+
+    var i: i64 = 0;
+    while i < n {
+        let output: i64 = vec_get(outputs, i);
+        let result: i64 = guardrail_check(output, rules_vec);
+        vec_push(results, result);
+        i = i + 1;
+    }
+
+    results
+}
+
+// =============================================================================
+// Result Accessors
+// =============================================================================
+
+/// Check if a result passed all rules.
+fn check_passed(result: i64) -> i64 {
+    vec_get(result, CHECK_PASSED())
+}
+
+/// Get the failures vec from a result.
+fn check_failures(result: i64) -> i64 {
+    vec_get(result, CHECK_FAILURES())
+}
+
+/// Get the number of rules checked.
+fn check_total_rules(result: i64) -> i64 {
+    vec_get(result, CHECK_N_RULES())
+}
+
+/// Get the number of rules that passed.
+fn check_passed_count(result: i64) -> i64 {
+    vec_get(result, CHECK_N_PASSED())
+}

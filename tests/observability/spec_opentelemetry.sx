@@ -1,0 +1,377 @@
+// OpenTelemetry Observability Tests
+// Tests span creation, trace context propagation, and W3C format
+// Self-contained: no extern fn, no const, no f64 params
+
+// =============================================================================
+// Hex helpers
+// =============================================================================
+
+fn nibble_to_hex(n: i64) -> i64 {
+    if n == 0 { return "0"; }
+    if n == 1 { return "1"; }
+    if n == 2 { return "2"; }
+    if n == 3 { return "3"; }
+    if n == 4 { return "4"; }
+    if n == 5 { return "5"; }
+    if n == 6 { return "6"; }
+    if n == 7 { return "7"; }
+    if n == 8 { return "8"; }
+    if n == 9 { return "9"; }
+    if n == 10 { return "a"; }
+    if n == 11 { return "b"; }
+    if n == 12 { return "c"; }
+    if n == 13 { return "d"; }
+    if n == 14 { return "e"; }
+    if n == 15 { return "f"; }
+    "0"
+}
+
+fn i64_to_hex16(value: i64) -> i64 {
+    var v: i64 = value;
+    if v < 0 { v = 0 - v; }
+    let digits: i64 = vec_new();
+    var i: i64 = 0;
+    while i < 16 {
+        let nibble: i64 = v - (v / 16) * 16;
+        vec_push(digits, nibble);
+        v = v / 16;
+        i = i + 1;
+    }
+    var result: i64 = "";
+    i = 15;
+    while i >= 0 {
+        let nibble: i64 = vec_get(digits, i);
+        result = string_concat(result, nibble_to_hex(nibble));
+        i = i - 1;
+    }
+    result
+}
+
+fn hex_char_to_int(ch: i64) -> i64 {
+    if ch >= 48 { if ch <= 57 { return ch - 48; } }
+    if ch >= 97 { if ch <= 102 { return ch - 87; } }
+    if ch >= 65 { if ch <= 70 { return ch - 55; } }
+    0 - 1
+}
+
+fn hex_to_i64(s: i64, start: i64, len: i64) -> i64 {
+    var result: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(s, start + i);
+        let digit: i64 = hex_char_to_int(ch);
+        if digit < 0 { return 0; }
+        result = result * 16 + digit;
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Span helpers
+// =============================================================================
+
+fn create_span(name: i64, trace_hi: i64, trace_lo: i64, parent_id: i64) -> i64 {
+    let span: i64 = vec_new();
+    vec_push(span, trace_hi);       // 0
+    vec_push(span, trace_lo);       // 1
+    let now: i64 = get_time_ms();
+    var sid: i64 = now + trace_lo * 31 + trace_hi * 17;
+    if sid < 0 { sid = 0 - sid; }
+    vec_push(span, sid);            // 2 span_id
+    vec_push(span, parent_id);      // 3
+    vec_push(span, name);           // 4
+    vec_push(span, now);            // 5 start_time
+    vec_push(span, 0);              // 6 end_time
+    vec_push(span, 0);              // 7 status
+    vec_push(span, "");             // 8 status_msg
+    let attrs: i64 = vec_new();
+    vec_push(span, attrs);          // 9
+    let events: i64 = vec_new();
+    vec_push(span, events);         // 10
+    vec_push(span, 0);              // 11 unused
+    vec_push(span, 0);              // 12 ended flag
+    span
+}
+
+fn end_span(span: i64) -> i64 {
+    let ended: i64 = vec_get(span, 12);
+    if ended == 1 { return 0; }
+    let now: i64 = get_time_ms();
+    vec_set(span, 6, now);
+    vec_set(span, 12, 1);
+    0
+}
+
+fn set_attr(span: i64, key: i64, value: i64) -> i64 {
+    let attrs: i64 = vec_get(span, 9);
+    vec_push(attrs, key);
+    vec_push(attrs, value);
+    0
+}
+
+fn add_event(span: i64, event_name: i64) -> i64 {
+    let events: i64 = vec_get(span, 10);
+    let event: i64 = vec_new();
+    vec_push(event, event_name);
+    let now: i64 = get_time_ms();
+    vec_push(event, now);
+    let attrs: i64 = vec_new();
+    vec_push(event, attrs);
+    vec_push(events, event);
+    0
+}
+
+// =============================================================================
+// Test 1: Span creation and lifecycle
+// =============================================================================
+
+fn test_span_creation() -> i64 {
+    println("  Testing span creation...");
+
+    let span: i64 = create_span("test-operation", 12345, 67890, 0);
+
+    let trace_hi: i64 = vec_get(span, 0);
+    if trace_hi != 12345 {
+        println("  FAIL: trace_id_hi should be 12345");
+        return 1;
+    }
+
+    let trace_lo: i64 = vec_get(span, 1);
+    if trace_lo != 67890 {
+        println("  FAIL: trace_id_lo should be 67890");
+        return 1;
+    }
+
+    let parent: i64 = vec_get(span, 3);
+    if parent != 0 {
+        println("  FAIL: root span parent should be 0");
+        return 1;
+    }
+
+    let name: i64 = vec_get(span, 4);
+    if string_eq(name, "test-operation") != 1 {
+        println("  FAIL: span name mismatch");
+        return 1;
+    }
+
+    let ended: i64 = vec_get(span, 12);
+    if ended != 0 {
+        println("  FAIL: span should not be ended yet");
+        return 1;
+    }
+
+    end_span(span);
+    let ended2: i64 = vec_get(span, 12);
+    if ended2 != 1 {
+        println("  FAIL: span should be ended");
+        return 1;
+    }
+
+    println("  PASS: span creation");
+    0
+}
+
+// =============================================================================
+// Test 2: Span attributes and events
+// =============================================================================
+
+fn test_span_attributes() -> i64 {
+    println("  Testing span attributes and events...");
+
+    let span: i64 = create_span("http-handler", 111, 222, 0);
+
+    set_attr(span, "http.method", "GET");
+    set_attr(span, "http.target", "/api/users");
+
+    let attrs: i64 = vec_get(span, 9);
+    let n: i64 = vec_len(attrs);
+    if n != 4 {
+        println("  FAIL: should have 4 attr entries (2 pairs)");
+        return 1;
+    }
+
+    let key0: i64 = vec_get(attrs, 0);
+    if string_eq(key0, "http.method") != 1 {
+        println("  FAIL: first attr key should be http.method");
+        return 1;
+    }
+
+    let val0: i64 = vec_get(attrs, 1);
+    if string_eq(val0, "GET") != 1 {
+        println("  FAIL: first attr value should be GET");
+        return 1;
+    }
+
+    add_event(span, "auth-check");
+    add_event(span, "db-query");
+
+    let events: i64 = vec_get(span, 10);
+    let n_events: i64 = vec_len(events);
+    if n_events != 2 {
+        println("  FAIL: should have 2 events");
+        return 1;
+    }
+
+    let ev0: i64 = vec_get(events, 0);
+    let ev0_name: i64 = vec_get(ev0, 0);
+    if string_eq(ev0_name, "auth-check") != 1 {
+        println("  FAIL: first event name should be auth-check");
+        return 1;
+    }
+
+    end_span(span);
+
+    println("  PASS: span attributes and events");
+    0
+}
+
+// =============================================================================
+// Test 3: W3C traceparent format
+// =============================================================================
+
+fn test_traceparent_format() -> i64 {
+    println("  Testing W3C traceparent format...");
+
+    let span: i64 = create_span("inject-test", 255, 65535, 0);
+
+    let trace_hi: i64 = vec_get(span, 0);
+    let trace_lo: i64 = vec_get(span, 1);
+    let span_id: i64 = vec_get(span, 2);
+
+    // Build: "00-" + hex(trace_hi,16) + hex(trace_lo,16) + "-" + hex(span_id,16) + "-01"
+    var header: i64 = "00-";
+    header = string_concat(header, i64_to_hex16(trace_hi));
+    header = string_concat(header, i64_to_hex16(trace_lo));
+    header = string_concat(header, "-");
+    header = string_concat(header, i64_to_hex16(span_id));
+    header = string_concat(header, "-01");
+
+    // Length: 3 + 32 + 1 + 16 + 3 = 55
+    let len: i64 = string_len(header);
+    if len != 55 {
+        println("  FAIL: traceparent should be 55 chars");
+        return 1;
+    }
+
+    // Check starts with "00-"
+    if string_starts_with(header, "00-") != 1 {
+        println("  FAIL: traceparent should start with 00-");
+        return 1;
+    }
+
+    // Check ends with "-01"
+    if string_ends_with(header, "-01") != 1 {
+        println("  FAIL: traceparent should end with -01");
+        return 1;
+    }
+
+    println("  PASS: W3C traceparent format");
+    0
+}
+
+// =============================================================================
+// Test 4: traceparent extraction
+// =============================================================================
+
+fn test_traceparent_extract() -> i64 {
+    println("  Testing W3C traceparent extraction...");
+
+    // Known: 00-00000000000000ff000000000000ffff-0000000000001234-01
+    let header: i64 = "00-00000000000000ff000000000000ffff-0000000000001234-01";
+
+    let len: i64 = string_len(header);
+    if len != 55 {
+        println("  FAIL: test header should be 55 chars");
+        return 1;
+    }
+
+    let trace_hi: i64 = hex_to_i64(header, 3, 16);
+    if trace_hi != 255 {
+        println("  FAIL: trace_hi should be 255");
+        return 1;
+    }
+
+    let trace_lo: i64 = hex_to_i64(header, 19, 16);
+    if trace_lo != 65535 {
+        println("  FAIL: trace_lo should be 65535");
+        return 1;
+    }
+
+    let span_id: i64 = hex_to_i64(header, 36, 16);
+    if span_id != 4660 {
+        println("  FAIL: span_id should be 4660 (0x1234)");
+        return 1;
+    }
+
+    let flags: i64 = hex_to_i64(header, 53, 2);
+    if flags != 1 {
+        println("  FAIL: flags should be 1 (sampled)");
+        return 1;
+    }
+
+    println("  PASS: W3C traceparent extraction");
+    0
+}
+
+// =============================================================================
+// Test 5: Child span propagation
+// =============================================================================
+
+fn test_child_span() -> i64 {
+    println("  Testing child span propagation...");
+
+    let parent: i64 = create_span("parent-op", 9999, 8888, 0);
+    let parent_sid: i64 = vec_get(parent, 2);
+
+    let child: i64 = create_span("child-op", 9999, 8888, parent_sid);
+
+    let child_trace_hi: i64 = vec_get(child, 0);
+    if child_trace_hi != 9999 {
+        println("  FAIL: child trace_hi should match parent");
+        return 1;
+    }
+
+    let child_trace_lo: i64 = vec_get(child, 1);
+    if child_trace_lo != 8888 {
+        println("  FAIL: child trace_lo should match parent");
+        return 1;
+    }
+
+    let child_parent: i64 = vec_get(child, 3);
+    if child_parent != parent_sid {
+        println("  FAIL: child parent_span_id should be parent's span_id");
+        return 1;
+    }
+
+    end_span(child);
+    end_span(parent);
+
+    println("  PASS: child span propagation");
+    0
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== OpenTelemetry Observability Tests ===");
+    println("");
+
+    var failures: i64 = 0;
+    failures = failures + test_span_creation();
+    failures = failures + test_span_attributes();
+    failures = failures + test_traceparent_format();
+    failures = failures + test_traceparent_extract();
+    failures = failures + test_child_span();
+
+    println("");
+    if failures == 0 {
+        println("All 5 OpenTelemetry tests passed!");
+    } else {
+        println("Some OpenTelemetry tests failed");
+    }
+
+    failures
+}

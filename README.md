@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.15.0**
+**Version 0.16.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -268,6 +268,17 @@ simplex-lang/
 │   ├── mitigation/         # Error mitigation: ZNE, PEC (v0.15.0)
 │   ├── ecc/                # Error correction codes (v0.15.0)
 │   └── circuit-opt/        # Circuit optimization passes (v0.15.0)
+├── simplex-db/             # Unified database connectivity (v0.16.0)
+│   ├── src/                # Common API: connect, query, execute, pool
+│   └── drivers/            # postgres, mysql, redis, sqlite
+├── simplex-vectordb/       # Vector similarity search (v0.16.0)
+├── simplex-rag/            # Retrieval-Augmented Generation (v0.16.0)
+├── simplex-guardrails/     # Output validation and safety (v0.16.0)
+├── simplex-eval/           # Model evaluation framework (v0.16.0)
+├── simplex-prometheus/     # Prometheus metrics (v0.16.0)
+├── simplex-opentelemetry/  # Distributed tracing (v0.16.0)
+├── simplex-protobuf/       # Protocol Buffers (v0.16.0)
+├── simplex-nats/           # NATS messaging (v0.16.0)
 ├── simplex-training/       # Self-optimizing training pipelines
 │   ├── src/schedules/      # Learnable schedules (LR, distillation)
 │   ├── src/research/       # Epistemic data refinement
@@ -276,12 +287,12 @@ simplex-lang/
 │   ├── version.sx          # Centralized version management
 │   ├── platform.sx         # Cross-platform utilities
 │   └── safety.sx           # Runtime safety primitives
-├── tests/                  # 197 tests passing, 100% pass rate
+├── tests/                  # 215 tests passing, 100% pass rate
 │   ├── language/           # Core language features (42)
 │   ├── types/              # Type system tests (12)
 │   ├── neural/             # Neural IR and gates (16)
-│   ├── stdlib/             # Standard library (27)
-│   ├── ai/                 # AI/Cognitive tests (18)
+│   ├── stdlib/             # Standard library (41)
+│   ├── ai/                 # AI/Cognitive tests (25)
 │   ├── quantum/            # Quantum computing tests (18)
 │   ├── toolchain/          # Toolchain tests (14+)
 │   ├── runtime/            # Runtime systems (8)
@@ -295,7 +306,7 @@ simplex-lang/
 │   ├── async/              # Async/await (3)
 │   ├── learning/           # Automatic differentiation (4)
 │   ├── actors/             # Actor model (1)
-│   └── observability/      # Metrics and tracing (1)
+│   └── observability/      # Metrics and tracing (3)
 ├── simplex-docs/
 │   ├── spec/               # Language specification
 │   ├── tutorial/           # Learning tutorial
@@ -308,15 +319,27 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.15.0 | Simplex Compiler — collection iteration, keyword methods, where clauses, circuit optimization |
-| **sxpm** | 0.15.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.15.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.15.0 | Documentation Generator |
-| **sxlsp** | 0.15.0 | Language Server Protocol |
-| **sxfmt** | 0.15.0 | Code Formatter |
-| **sxlint** | 0.15.0 | Static Linter |
+| **sxc** | 0.16.0 | Simplex Compiler — collection iteration, keyword methods, where clauses, circuit optimization |
+| **sxpm** | 0.16.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.16.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.16.0 | Documentation Generator |
+| **sxlsp** | 0.16.0 | Language Server Protocol |
+| **sxfmt** | 0.16.0 | Code Formatter |
+| **sxlint** | 0.16.0 | Static Linter |
 
 ## Release History
+
+### v0.16.0 (2026-03-19) - Enterprise Libraries & Hive Intelligence
+
+**New Libraries:**
+- Data formats: CSV, YAML, XML parsers in simplex-std
+- Unified `simplex-db`: PostgreSQL, MySQL, SQLite, Redis with common API
+- WebSocket (RFC 6455), Protocol Buffers, NATS messaging
+- JWT, OAuth 2.0 (PKCE), dotenv
+- Prometheus metrics, OpenTelemetry tracing
+- VectorDB, RAG pipeline, Guardrails, Eval suite
+
+See [RELEASE-0.16.0.md](simplex-docs/RELEASE-0.16.0.md) for details.
 
 ### v0.15.0 (2026-03-19) - Production Hardening & Quantum Maturity
 
@@ -705,7 +728,7 @@ sxpm model install <name> # Install a model
 ## Running Tests
 
 ```bash
-# Run all tests (197 tests across 21 categories)
+# Run all tests (215 tests across 21 categories)
 ./tests/run_tests.sh
 
 # Run specific category
@@ -733,6 +756,7 @@ sxc run tests/learning/unit_dual_numbers.sx
 - [Tutorial](simplex-docs/tutorial/)
 - [Testing Documentation](simplex-docs/testing/)
 - [Getting Started Guide](simplex-docs/guides/getting-started.md)
+- [Release Notes v0.16.0](simplex-docs/RELEASE-0.16.0.md) - Enterprise Libraries & Hive Intelligence
 - [Release Notes v0.15.0](simplex-docs/RELEASE-0.15.0.md) - Production Hardening & Quantum Maturity
 - [Release Notes v0.14.0](simplex-docs/RELEASE-0.14.0.md) - Quantum Bridge
 - [Release Notes v0.13.0](simplex-docs/RELEASE-0.13.0.md) - Completion & Foundations

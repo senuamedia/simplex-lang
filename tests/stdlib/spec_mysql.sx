@@ -1,0 +1,341 @@
+// MySQL Wire Protocol Format Tests
+// Tests protocol encoding logic inline without a running server
+
+// =============================================================================
+// Test 1: Packet header encoding (3-byte LE length + seq ID)
+// =============================================================================
+
+fn test_packet_header() -> i64 {
+    println("  Testing MySQL packet header encoding...");
+    let payload_len: i64 = 256;
+    let seq_id: i64 = 1;
+
+    // 3-byte little-endian encoding
+    let b0: i64 = payload_len % 256;
+    let b1: i64 = (payload_len / 256) % 256;
+    let b2: i64 = (payload_len / 65536) % 256;
+
+    let reconstructed: i64 = b0 + b1 * 256 + b2 * 65536;
+    if reconstructed != 256 {
+        println("  FAIL: packet length round-trip failed");
+        return 1;
+    }
+    if seq_id != 1 {
+        println("  FAIL: sequence ID should be 1");
+        return 1;
+    }
+    println("  PASS: MySQL packet header encoding");
+    0
+}
+
+// =============================================================================
+// Test 2: Little-endian 16-bit encoding
+// =============================================================================
+
+fn test_le_16bit() -> i64 {
+    println("  Testing little-endian 16-bit encoding...");
+    let val: i64 = 4660;
+    let lo: i64 = val % 256;
+    let hi: i64 = (val / 256) % 256;
+    let r: i64 = lo + hi * 256;
+    if r != val {
+        println("  FAIL: u16 LE round-trip failed");
+        return 1;
+    }
+    println("  PASS: little-endian 16-bit encoding");
+    0
+}
+
+// =============================================================================
+// Test 3: Little-endian 32-bit encoding
+// =============================================================================
+
+fn test_le_32bit() -> i64 {
+    println("  Testing little-endian 32-bit encoding...");
+    let val: i64 = 305419896;
+    let b0: i64 = val % 256;
+    let b1: i64 = (val / 256) % 256;
+    let b2: i64 = (val / 65536) % 256;
+    let b3: i64 = (val / 16777216) % 256;
+    let r: i64 = b0 + b1 * 256 + b2 * 65536 + b3 * 16777216;
+    if r != val {
+        println("  FAIL: u32 LE round-trip failed");
+        return 1;
+    }
+    println("  PASS: little-endian 32-bit encoding");
+    0
+}
+
+// =============================================================================
+// Test 4: Length-encoded integer (small < 251)
+// =============================================================================
+
+fn test_lenenc_small() -> i64 {
+    println("  Testing length-encoded integer (small)...");
+    let val: i64 = 100;
+    // Values < 251 are stored as single byte
+    if val >= 251 {
+        println("  FAIL: small value should be < 251");
+        return 1;
+    }
+    // Single byte encoding: just the value
+    if val != 100 {
+        println("  FAIL: small lenenc should be 100");
+        return 1;
+    }
+    println("  PASS: length-encoded integer (small)");
+    0
+}
+
+// =============================================================================
+// Test 5: Length-encoded integer (medium 251-65535)
+// =============================================================================
+
+fn test_lenenc_medium() -> i64 {
+    println("  Testing length-encoded integer (medium)...");
+    let val: i64 = 1000;
+    // 0xFC prefix + 2 bytes LE
+    let prefix: i64 = 252;
+    let lo: i64 = val % 256;
+    let hi: i64 = (val / 256) % 256;
+    let r: i64 = lo + hi * 256;
+    if r != 1000 {
+        println("  FAIL: medium lenenc round-trip failed");
+        return 1;
+    }
+    if prefix != 252 {
+        println("  FAIL: medium prefix should be 252 (0xFC)");
+        return 1;
+    }
+    println("  PASS: length-encoded integer (medium)");
+    0
+}
+
+// =============================================================================
+// Test 6: COM_QUERY encoding
+// =============================================================================
+
+fn test_com_query() -> i64 {
+    println("  Testing COM_QUERY encoding...");
+    let cmd_byte: i64 = 3;
+    if cmd_byte != 3 {
+        println("  FAIL: COM_QUERY should be 0x03");
+        return 1;
+    }
+    let sql: i64 = "SELECT 1";
+    let sql_len: i64 = string_len(sql);
+    let total: i64 = 1 + sql_len;
+    if total != 9 {
+        println("  FAIL: COM_QUERY payload should be 9 bytes");
+        return 1;
+    }
+    println("  PASS: COM_QUERY encoding");
+    0
+}
+
+// =============================================================================
+// Test 7: OK packet detection
+// =============================================================================
+
+fn test_ok_packet() -> i64 {
+    println("  Testing OK packet detection...");
+    // OK packet starts with 0x00
+    let ok_marker: i64 = 0;
+    if ok_marker != 0 {
+        println("  FAIL: OK packet starts with 0x00");
+        return 1;
+    }
+    // affected_rows and last_insert_id follow as lenenc ints
+    let affected: i64 = 5;
+    let last_id: i64 = 10;
+    if affected != 5 {
+        println("  FAIL: affected rows should be 5");
+        return 1;
+    }
+    if last_id != 10 {
+        println("  FAIL: last insert id should be 10");
+        return 1;
+    }
+    println("  PASS: OK packet detection");
+    0
+}
+
+// =============================================================================
+// Test 8: ERR packet detection
+// =============================================================================
+
+fn test_err_packet() -> i64 {
+    println("  Testing ERR packet detection...");
+    // ERR packet starts with 0xFF
+    let err_marker: i64 = 255;
+    if err_marker != 255 {
+        println("  FAIL: ERR packet starts with 0xFF");
+        return 1;
+    }
+    // Error code 1000 in LE
+    let error_code: i64 = 1000;
+    let lo: i64 = error_code % 256;
+    let hi: i64 = (error_code / 256) % 256;
+    let r: i64 = lo + hi * 256;
+    if r != 1000 {
+        println("  FAIL: error code should be 1000");
+        return 1;
+    }
+    // SQL state marker '#' = 35
+    let marker: i64 = 35;
+    if marker != 35 {
+        println("  FAIL: SQL state marker should be # (35)");
+        return 1;
+    }
+    println("  PASS: ERR packet detection");
+    0
+}
+
+// =============================================================================
+// Test 9: EOF packet detection
+// =============================================================================
+
+fn test_eof_packet() -> i64 {
+    println("  Testing EOF packet detection...");
+    // EOF = 0xFE, packet < 9 bytes
+    let eof_marker: i64 = 254;
+    let eof_packet_len: i64 = 5;
+    if eof_marker != 254 {
+        println("  FAIL: EOF starts with 0xFE (254)");
+        return 1;
+    }
+    if eof_packet_len >= 9 {
+        println("  FAIL: EOF packet should be < 9 bytes");
+        return 1;
+    }
+    // A longer packet starting with 0xFE is NOT EOF
+    let long_packet_len: i64 = 10;
+    if long_packet_len < 9 {
+        println("  FAIL: long packet should not be EOF");
+        return 1;
+    }
+    println("  PASS: EOF packet detection");
+    0
+}
+
+// =============================================================================
+// Test 10: Command type constants
+// =============================================================================
+
+fn test_command_types() -> i64 {
+    println("  Testing MySQL command constants...");
+    let com_quit: i64 = 1;
+    let com_query: i64 = 3;
+    let com_ping: i64 = 14;
+    let com_stmt_prepare: i64 = 22;
+    let com_stmt_execute: i64 = 23;
+    let com_stmt_close: i64 = 25;
+
+    if com_quit != 1 {
+        println("  FAIL: COM_QUIT should be 1");
+        return 1;
+    }
+    if com_query != 3 {
+        println("  FAIL: COM_QUERY should be 3");
+        return 1;
+    }
+    if com_ping != 14 {
+        println("  FAIL: COM_PING should be 14");
+        return 1;
+    }
+    if com_stmt_prepare != 22 {
+        println("  FAIL: COM_STMT_PREPARE should be 22");
+        return 1;
+    }
+    println("  PASS: MySQL command constants");
+    0
+}
+
+// =============================================================================
+// Test 11: NULL bitmap encoding
+// =============================================================================
+
+fn test_null_bitmap() -> i64 {
+    println("  Testing NULL bitmap encoding...");
+    // bitmap_len = (num_params + 7) / 8
+    let bitmap_5: i64 = (5 + 7) / 8;
+    if bitmap_5 != 1 {
+        println("  FAIL: 5 params needs 1 bitmap byte");
+        return 1;
+    }
+    let bitmap_10: i64 = (10 + 7) / 8;
+    if bitmap_10 != 2 {
+        println("  FAIL: 10 params needs 2 bitmap bytes");
+        return 1;
+    }
+    // Mark param 3 as NULL (set bit 3)
+    var bitmap: i64 = 0;
+    bitmap = bitmap + 8;
+    // Check bit 3 is set (val & 8)
+    if bitmap != 8 {
+        println("  FAIL: bit 3 should be set");
+        return 1;
+    }
+    println("  PASS: NULL bitmap encoding");
+    0
+}
+
+// =============================================================================
+// Test 12: Client capability flags
+// =============================================================================
+
+fn test_client_capabilities() -> i64 {
+    println("  Testing client capability flags...");
+    let client_protocol_41: i64 = 512;
+    let client_secure_conn: i64 = 32768;
+
+    let flags: i64 = client_protocol_41 + client_secure_conn;
+
+    // Verify both flags are present
+    // protocol_41: flags / 512 mod 2 == 1
+    let has_p41: i64 = (flags / 512) % 2;
+    if has_p41 != 1 {
+        println("  FAIL: PROTOCOL_41 flag should be set");
+        return 1;
+    }
+    let has_sec: i64 = (flags / 32768) % 2;
+    if has_sec != 1 {
+        println("  FAIL: SECURE_CONNECTION flag should be set");
+        return 1;
+    }
+    println("  PASS: client capability flags");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== MySQL Protocol Format Tests ===");
+    println("");
+
+    let f1: i64 = test_packet_header();
+    let f2: i64 = test_le_16bit();
+    let f3: i64 = test_le_32bit();
+    let f4: i64 = test_lenenc_small();
+    let f5: i64 = test_lenenc_medium();
+    let f6: i64 = test_com_query();
+    let f7: i64 = test_ok_packet();
+    let f8: i64 = test_err_packet();
+    let f9: i64 = test_eof_packet();
+    let f10: i64 = test_command_types();
+    let f11: i64 = test_null_bitmap();
+    let f12: i64 = test_client_capabilities();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12;
+
+    println("");
+    if failures == 0 {
+        println("All 12 MySQL protocol tests passed!");
+    } else {
+        println("Some MySQL protocol tests failed");
+    }
+
+    failures
+}

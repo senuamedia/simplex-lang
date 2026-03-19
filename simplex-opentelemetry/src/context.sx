@@ -1,0 +1,320 @@
+// simplex-opentelemetry::context - W3C Trace Context Propagation
+//
+// Implements W3C Trace Context propagation for distributed tracing.
+// Supports the `traceparent` header format:
+//
+//   traceparent: 00-{trace_id}-{span_id}-{flags}
+//
+// Where:
+//   - version: 2 hex digits (always "00")
+//   - trace_id: 32 hex digits (128-bit)
+//   - span_id: 16 hex digits (64-bit)
+//   - flags: 2 hex digits (01 = sampled)
+//
+// # Example
+//
+// ```simplex
+// // Inject: create traceparent header from a span
+// let header = otel_inject(span);
+// // Result: "00-abcdef0123456789abcdef0123456789-0123456789abcdef-01"
+//
+// // Extract: parse traceparent header into context
+// let ctx = otel_extract("00-abcdef0123456789abcdef0123456789-0123456789abcdef-01");
+// let trace_hi = otel_ctx_trace_id_hi(ctx);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+// =============================================================================
+// Trace Context Vec Layout
+// =============================================================================
+//
+// Extracted context stored as a vec:
+//   [0] = trace_id_hi (i64, high 64 bits)
+//   [1] = trace_id_lo (i64, low 64 bits)
+//   [2] = span_id (i64)
+//   [3] = flags (i64, 01 = sampled)
+//   [4] = valid flag (1 = valid, 0 = invalid)
+
+// =============================================================================
+// Hex Conversion Helpers
+// =============================================================================
+
+/// Convert a single hex character to its integer value.
+///
+/// # Arguments
+/// - `ch`: Character code (i64, ASCII value)
+///
+/// # Returns
+/// Integer value 0-15, or -1 if not a valid hex character
+fn hex_char_to_int(ch: i64) -> i64 {
+    // '0' = 48, '9' = 57
+    if ch >= 48 {
+        if ch <= 57 {
+            return ch - 48;
+        }
+    }
+    // 'a' = 97, 'f' = 102
+    if ch >= 97 {
+        if ch <= 102 {
+            return ch - 87;
+        }
+    }
+    // 'A' = 65, 'F' = 70
+    if ch >= 65 {
+        if ch <= 70 {
+            return ch - 55;
+        }
+    }
+    -1
+}
+
+/// Convert a nibble (0-15) to a hex character string.
+///
+/// # Arguments
+/// - `n`: Value 0-15
+///
+/// # Returns
+/// Single hex character as string handle
+fn nibble_to_hex(n: i64) -> i64 {
+    if n == 0 { return "0"; }
+    if n == 1 { return "1"; }
+    if n == 2 { return "2"; }
+    if n == 3 { return "3"; }
+    if n == 4 { return "4"; }
+    if n == 5 { return "5"; }
+    if n == 6 { return "6"; }
+    if n == 7 { return "7"; }
+    if n == 8 { return "8"; }
+    if n == 9 { return "9"; }
+    if n == 10 { return "a"; }
+    if n == 11 { return "b"; }
+    if n == 12 { return "c"; }
+    if n == 13 { return "d"; }
+    if n == 14 { return "e"; }
+    if n == 15 { return "f"; }
+    "0"
+}
+
+/// Convert an i64 value to a hex string of a given width.
+///
+/// # Arguments
+/// - `value`: Integer value to convert
+/// - `width`: Number of hex digits (e.g., 16 for span_id)
+///
+/// # Returns
+/// Hex string handle, zero-padded to width
+fn i64_to_hex(value: i64, width: i64) -> i64 {
+    let result: i64 = "";
+    let v: i64 = value;
+
+    // Make positive for hex conversion
+    if v < 0 {
+        let v: i64 = 0 - v;
+    }
+
+    // Build hex string in reverse
+    let digits: i64 = vec_new();
+    let i: i64 = 0;
+    loop {
+        if i >= width {
+            break;
+        }
+        let nibble: i64 = v % 16;
+        vec_push(digits, nibble);
+        let v: i64 = v / 16;
+        let i: i64 = i + 1;
+    }
+
+    // Reverse to get correct order
+    let i: i64 = width - 1;
+    loop {
+        if i < 0 {
+            break;
+        }
+        let nibble: i64 = vec_get(digits, i);
+        let result: i64 = string_concat(result, nibble_to_hex(nibble));
+        let i: i64 = i - 1;
+    }
+
+    result
+}
+
+/// Parse a hex string into an i64 value.
+///
+/// # Arguments
+/// - `s`: Hex string handle
+/// - `start`: Start position in string
+/// - `len`: Number of hex characters to parse
+///
+/// # Returns
+/// Parsed integer value
+fn hex_to_i64(s: i64, start: i64, len: i64) -> i64 {
+    let result: i64 = 0;
+    let i: i64 = 0;
+    loop {
+        if i >= len {
+            break;
+        }
+        let ch: i64 = string_char_at(s, start + i);
+        let digit: i64 = hex_char_to_int(ch);
+        if digit < 0 {
+            return 0;
+        }
+        let result: i64 = result * 16 + digit;
+        let i: i64 = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Inject: Span -> traceparent Header
+// =============================================================================
+
+/// Create a W3C traceparent header from a span.
+///
+/// Format: 00-{trace_id_32hex}-{span_id_16hex}-01
+///
+/// # Arguments
+/// - `span`: Span vec handle
+///
+/// # Returns
+/// traceparent header string handle
+pub fn otel_inject(span: i64) -> i64 {
+    let trace_hi: i64 = vec_get(span, 0);
+    let trace_lo: i64 = vec_get(span, 1);
+    let span_id: i64 = vec_get(span, 2);
+
+    // Build: "00-" + trace_id_hi(16hex) + trace_id_lo(16hex) + "-" + span_id(16hex) + "-01"
+    let header: i64 = "00-";
+    let header: i64 = string_concat(header, i64_to_hex(trace_hi, 16));
+    let header: i64 = string_concat(header, i64_to_hex(trace_lo, 16));
+    let header: i64 = string_concat(header, "-");
+    let header: i64 = string_concat(header, i64_to_hex(span_id, 16));
+    let header: i64 = string_concat(header, "-01");
+    header
+}
+
+/// Create a W3C traceparent header from explicit IDs.
+///
+/// # Arguments
+/// - `trace_id_hi`: High 64 bits of trace ID
+/// - `trace_id_lo`: Low 64 bits of trace ID
+/// - `span_id`: 64-bit span ID
+/// - `flags`: Trace flags (typically 1 for sampled)
+///
+/// # Returns
+/// traceparent header string handle
+pub fn otel_inject_ids(trace_id_hi: i64, trace_id_lo: i64, span_id: i64, flags: i64) -> i64 {
+    let header: i64 = "00-";
+    let header: i64 = string_concat(header, i64_to_hex(trace_id_hi, 16));
+    let header: i64 = string_concat(header, i64_to_hex(trace_id_lo, 16));
+    let header: i64 = string_concat(header, "-");
+    let header: i64 = string_concat(header, i64_to_hex(span_id, 16));
+    let header: i64 = string_concat(header, "-");
+    let header: i64 = string_concat(header, i64_to_hex(flags, 2));
+    header
+}
+
+// =============================================================================
+// Extract: traceparent Header -> Context
+// =============================================================================
+
+/// Parse a W3C traceparent header into a trace context.
+///
+/// Expected format: "00-{32hex}-{16hex}-{2hex}"
+/// Total length: 55 characters
+///
+/// # Arguments
+/// - `header`: traceparent header string handle
+///
+/// # Returns
+/// Context vec handle [trace_id_hi, trace_id_lo, span_id, flags, valid]
+pub fn otel_extract(header: i64) -> i64 {
+    let ctx: i64 = vec_new();
+    let len: i64 = string_length(header);
+
+    // Validate length: "00-" + 32 + "-" + 16 + "-" + 2 = 55
+    if len != 55 {
+        vec_push(ctx, 0);     // trace_id_hi
+        vec_push(ctx, 0);     // trace_id_lo
+        vec_push(ctx, 0);     // span_id
+        vec_push(ctx, 0);     // flags
+        vec_push(ctx, 0);     // invalid
+        return ctx;
+    }
+
+    // Parse trace_id high bits: positions 3-18 (16 hex chars)
+    let trace_hi: i64 = hex_to_i64(header, 3, 16);
+
+    // Parse trace_id low bits: positions 19-34 (16 hex chars)
+    let trace_lo: i64 = hex_to_i64(header, 19, 16);
+
+    // Parse span_id: positions 36-51 (16 hex chars)
+    let span_id: i64 = hex_to_i64(header, 36, 16);
+
+    // Parse flags: positions 53-54 (2 hex chars)
+    let flags: i64 = hex_to_i64(header, 53, 2);
+
+    vec_push(ctx, trace_hi);  // [0] = trace_id_hi
+    vec_push(ctx, trace_lo);  // [1] = trace_id_lo
+    vec_push(ctx, span_id);   // [2] = span_id
+    vec_push(ctx, flags);     // [3] = flags
+    vec_push(ctx, 1);         // [4] = valid
+
+    ctx
+}
+
+// =============================================================================
+// Context Accessors
+// =============================================================================
+
+/// Get the trace ID high bits from an extracted context.
+pub fn otel_ctx_trace_id_hi(ctx: i64) -> i64 {
+    vec_get(ctx, 0)
+}
+
+/// Get the trace ID low bits from an extracted context.
+pub fn otel_ctx_trace_id_lo(ctx: i64) -> i64 {
+    vec_get(ctx, 1)
+}
+
+/// Get the span ID from an extracted context.
+pub fn otel_ctx_span_id(ctx: i64) -> i64 {
+    vec_get(ctx, 2)
+}
+
+/// Get the flags from an extracted context.
+pub fn otel_ctx_flags(ctx: i64) -> i64 {
+    vec_get(ctx, 3)
+}
+
+/// Check if the extracted context is valid.
+///
+/// # Returns
+/// 1 if valid, 0 if invalid
+pub fn otel_ctx_is_valid(ctx: i64) -> i64 {
+    vec_get(ctx, 4)
+}
+
+/// Check if the trace is sampled (flag bit 0).
+///
+/// # Returns
+/// 1 if sampled, 0 if not
+pub fn otel_ctx_is_sampled(ctx: i64) -> i64 {
+    let flags: i64 = vec_get(ctx, 3);
+    flags % 2
+}

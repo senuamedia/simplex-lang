@@ -1,0 +1,28 @@
+# simplex-prometheus - Prometheus Metrics for Simplex
+#
+# Provides Prometheus-compatible metric collection and exposition.
+# Supports counters, gauges, and histograms with label support
+# and the standard Prometheus text exposition format.
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-prometheus"
+version = "0.16.0"
+description = "Prometheus metrics collection and exposition for Simplex"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+
+[features]
+default = ["full"]
+full = ["counter", "gauge", "histogram", "server"]
+
+counter = []       # Counter metrics
+gauge = []         # Gauge metrics
+histogram = []     # Histogram metrics with bucket tracking
+server = []        # HTTP /metrics endpoint

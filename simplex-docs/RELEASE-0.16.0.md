@@ -1,116 +1,136 @@
-# Release 0.16.0 — Mathematical Intelligence
+# Simplex v0.16.0 — Enterprise Libraries & Hive Intelligence
 
-**Codename:** Mathematical Intelligence
-**Status:** Planned
-**Theme:** Advanced mathematical AI primitives that make Simplex the definitive language
-for building governed, efficient, interpretable AI systems.
+**Release Date:** 2026-03-19
 
-## Vision
+## Overview
 
-Every major advance in AI comes from better mathematics, not more compute. v0.16.0 makes
-Simplex the only language where cutting-edge mathematical AI is *native* — not bolted on
-through libraries, but compiled down to efficient code with formal guarantees.
+v0.16.0 is a major ecosystem release delivering the libraries needed for production applications: data format parsing, unified database connectivity, real-time communication protocols, authentication, observability, and AI-native intelligence infrastructure. This release adds ~35,000 lines of pure Simplex code across 18 new modules.
 
-**Tagline:** *AI that proves it's right, explains why, and runs on a phone.*
+---
 
-## Priority-Ordered Task List
+## Data Format Libraries (TASK-023)
 
-### P0 — Critical (Must Ship)
+### CSV Parser/Serializer
+RFC 4180 compliant CSV parsing with configurable delimiters, quoted field handling, and header detection.
 
-These three features form the foundation of v0.16.0. They address the three biggest
-problems in deployed AI: hallucination, efficiency, and scalability.
-
-| Order | Task | Feature | Lines | Why Critical |
-|-------|------|---------|-------|-------------|
-| 1 | TASK-036 | Conformal Prediction | ~1,500 | Hallucination governance with mathematical guarantees — no other language has this |
-| 2 | TASK-037 | Mixture of Experts | ~1,800 | 10x parameter efficiency via sparse activation — the architecture behind every frontier model |
-| 3 | TASK-038 | State Space Models | ~1,800 | O(n) sequence processing for edge SLMs — linear scaling replaces quadratic transformers |
-
-### P1 — High (Should Ship)
-
-These three features provide the mathematical depth that differentiates Simplex from
-every other AI language. They make training faster, models smaller, and reasoning causal.
-
-| Order | Task | Feature | Lines | Why Important |
-|-------|------|---------|-------|-------------|
-| 4 | TASK-039 | Information Geometry | ~1,500 | 10-100x faster training convergence via natural gradient on statistical manifolds |
-| 5 | TASK-040 | KAN Layers | ~1,500 | 100x smaller specialists + models that compile to symbolic formulas |
-| 6 | TASK-041 | Causal Inference | ~1,650 | Root-cause hallucination prevention — SLMs that reason about cause, not correlation |
-
-### P2 — Medium (Target Ship)
-
-These two features complete the governance and adaptivity story. They depend on the P0/P1
-foundations and provide the verification and efficiency layers.
-
-| Order | Task | Feature | Lines | Why Valuable |
-|-------|------|---------|-------|-------------|
-| 7 | TASK-042 | Mechanistic Interpretability | ~1,600 | Verify what models learned — audit circuits, not just accuracy metrics |
-| 8 | TASK-043 | Neural ODEs | ~1,650 | Adaptive computation depth — models that decide how much to think per input |
-
-## Implementation Order & Dependencies
-
-```
-Phase 1 (P0 — Foundation):
-  TASK-036 Conformal Prediction ─────────────────────┐
-  TASK-037 Mixture of Experts ───────────────────────┤
-  TASK-038 State Space Models ───────────────────────┤
-                                                      │
-Phase 2 (P1 — Depth):                                │
-  TASK-039 Information Geometry ─────────────────────┤
-  TASK-040 KAN Layers ──────────────────────────────┤
-  TASK-041 Causal Inference ─────────────────────────┤
-                                                      │
-Phase 3 (P2 — Governance & Adaptivity):              │
-  TASK-042 Mechanistic Interpretability ◄────────────┘
-  TASK-043 Neural ODEs ◄─────────────────────────────┘
+```simplex
+let table = csv_parse_default(string_from("name,age\nAlice,30\nBob,25"));
+let name = csv_get_cell(table, 0, 0);  // "Alice"
 ```
 
-**Key dependencies:**
-- TASK-042 (Interpretability) benefits from TASK-037 (MoE) and TASK-038 (SSM) being
-  complete, as it needs models to interpret
-- TASK-043 (Neural ODEs) benefits from TASK-039 (Information Geometry) for geometric
-  ODE sensitivity analysis
-- TASK-037 (MoE) and TASK-038 (SSM) can be built in parallel
-- TASK-040 (KAN) integrates with TASK-037 (MoE) via KANExpert — build KAN after MoE core
-- TASK-041 (Causal) integrates with TASK-036 (Conformal) via causal conformal prediction
+### YAML 1.2 Parser
+Full YAML Core Schema support including mappings, sequences, multi-line strings, flow style, and comments.
 
-## Total Estimated Scope
+### XML Parser
+Well-formed XML parsing with namespace awareness, entity references, CDATA sections, and XPath-lite queries.
 
-| Category | Lines |
-|----------|-------|
-| P0 features | ~5,100 |
-| P1 features | ~4,650 |
-| P2 features | ~3,250 |
-| **Total** | **~13,000** |
+## Unified Database Connectivity (TASK-024)
 
-## Competitive Position After v0.16.0
+### simplex-db — One Package, All Databases
 
-| Capability | Python/PyTorch | Rust | Mojo | Julia | **Simplex** |
-|-----------|---------------|------|------|-------|-------------|
-| Conformal prediction | Library (MAPIE) | None | None | None | **First-class type** |
-| MoE routing | Manual code | None | None | None | **Neural gate** |
-| State space models | Custom CUDA | None | None | None | **Compiled layer** |
-| Natural gradient | Rare libraries | None | None | Partial | **Built-in optimizer** |
-| KAN + symbolic extraction | Library (pykan) | None | None | None | **Compiles to formula** |
-| Causal inference | Library (DoWhy) | None | None | None | **Language operator** |
-| Mechanistic interpretability | Ad-hoc scripts | None | None | None | **Compiler annotation** |
-| Neural ODEs | Library (torchdiffeq) | None | None | DiffEq.jl | **Adaptive layer** |
-| Safety contracts | None | None | None | None | **Type system** |
-| Cognitive hive | None | None | None | None | **Architecture** |
+Unified CRUD interface with pluggable drivers:
 
-## What This Means for Simplex Users
+```simplex
+let config = db_config_new(DRIVER_POSTGRES());
+db_config_set(config, string_from("host"), string_from("localhost"));
+let conn = db_connect(config);
+let result = db_query(conn, string_from("SELECT * FROM users"));
+db_close(conn);
+```
 
-After v0.16.0, a Simplex developer can:
+**SQL Drivers:** PostgreSQL (wire protocol v3), MySQL (client/server protocol), SQLite
+**NoSQL Drivers:** Redis (RESP3)
+**Planned:** MongoDB, DynamoDB
 
-1. **Build a specialist SLM** using MoE (sparse, efficient) with SSM layers (linear
-   scaling) — runs on a phone
-2. **Train it faster** with natural gradient (10x fewer steps) on KAN layers (100x fewer
-   parameters)
-3. **Guarantee its outputs** with conformal prediction (statistical coverage proofs)
-4. **Prevent hallucination** with causal gates (interventional reasoning, not correlation)
-5. **Verify what it learned** with mechanistic interpretability (circuit extraction)
-6. **Optimize its compute** with Neural ODEs (adaptive depth per query)
-7. **Extract its knowledge** as symbolic formulas (KAN symbolic extraction)
-8. **Deploy with governance** through contracts, beliefs, and conformal bounds
+Features: connection pooling, transactions, prepared statements, key-value operations.
 
-No other language offers any three of these together. Simplex offers all eight.
+## Real-Time Communication (TASK-025)
+
+### WebSocket (RFC 6455)
+Client and server WebSocket with frame encoding/decoding, masking, fragmentation, and control frames.
+
+### Protocol Buffers
+Proto3 wire format encoding/decoding with varint, length-delimited, and fixed-width fields.
+
+### NATS Messaging
+Lightweight pub/sub messaging with request/reply, subject wildcards, and queue groups.
+
+## Authentication & Security (TASK-026)
+
+### JWT (JSON Web Tokens)
+HS256 signing and verification with base64url encoding, HMAC-SHA256, standard claims, and expiration checking.
+
+### OAuth 2.0
+Authorization Code flow with PKCE, provider presets (GitHub, Google, Microsoft), token refresh.
+
+### dotenv
+`.env` file parser with quoted values, comments, variable expansion.
+
+## Observability (TASK-028)
+
+### Prometheus Metrics
+Counter, gauge, histogram metric types with labels, registry, and text exposition format for `/metrics` endpoint.
+
+### OpenTelemetry Tracing
+W3C Trace Context propagation, span lifecycle, attributes/events, OTLP JSON export, auto-instrumentation helpers for actors/SLM/hives.
+
+## Hive Intelligence (TASK-029)
+
+### VectorDB
+In-memory vector store with cosine similarity, HNSW index, brute-force search, metadata filtering, and disk persistence.
+
+### RAG Pipeline
+Document ingestion with chunking (fixed, sentence, paragraph), embedding, vector search, context building, and source attribution.
+
+### Guardrails
+Output validation with configurable rules: max/min length, must contain/not contain, PII detection, JSON validity, retry/fallback actions.
+
+### Eval Suite
+Model evaluation with exact match, Levenshtein distance, BLEU score, length ratio, and A/B comparison.
+
+---
+
+## New Packages
+
+| Package | Description | Lines |
+|---------|-------------|:-----:|
+| `simplex-db` | Unified SQL/NoSQL database connectivity | 7,544 |
+| `simplex-prometheus` | Prometheus metrics exposition | 1,792 |
+| `simplex-opentelemetry` | Distributed tracing (OpenTelemetry) | 2,106 |
+| `simplex-protobuf` | Protocol Buffers encoding/decoding | 1,465 |
+| `simplex-nats` | NATS messaging protocol | 1,719 |
+| `simplex-vectordb` | Vector similarity search | 1,976 |
+| `simplex-rag` | Retrieval-Augmented Generation pipeline | 1,010 |
+| `simplex-guardrails` | Output validation and safety | 989 |
+| `simplex-eval` | Model evaluation framework | 855 |
+
+## New Standard Library Modules
+
+| Module | Description | Lines |
+|--------|-------------|:-----:|
+| `csv.sx` | CSV parser/serializer | 772 |
+| `yaml.sx` | YAML 1.2 parser | 1,690 |
+| `xml.sx` | XML parser | 1,402 |
+| `jwt.sx` | JSON Web Tokens | 1,230 |
+| `oauth.sx` | OAuth 2.0 flows | 1,083 |
+| `dotenv.sx` | .env file parser | 591 |
+| `websocket.sx` | WebSocket RFC 6455 | 1,660 |
+
+## Test Suite
+
+**215 tests across 21 categories — 100% pass rate**
+
+19 new test files added for v0.16.0 covering all new libraries.
+
+## Breaking Changes
+
+- `simplex-postgres`, `simplex-mysql`, `simplex-redis`, `simplex-sql` replaced by unified `simplex-db`
+- Wire protocol implementations preserved as drivers within `simplex-db/drivers/`
+
+## Dependencies
+
+No new external dependencies. All new code is pure Simplex.
+
+## Contributors
+
+- Rod Higgins

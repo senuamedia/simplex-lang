@@ -1,0 +1,31 @@
+# simplex-protobuf - Protocol Buffers Wire Format
+#
+# Pure Simplex implementation of the Protocol Buffers (proto3) wire format.
+# Provides encoding and decoding of protobuf messages without code generation.
+#
+# Features:
+# - Varint encoding/decoding
+# - Length-delimited fields (strings, bytes, embedded messages)
+# - Fixed32/Fixed64 wire types
+# - Schema definition for field type mapping
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-protobuf"
+version = "0.16.0"
+description = "Protocol Buffers wire format encoding/decoding for Simplex"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+
+[features]
+default = ["full"]
+full = ["encode", "decode", "schema"]
+encode = []
+decode = []
+schema = []

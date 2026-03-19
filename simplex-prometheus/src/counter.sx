@@ -1,0 +1,217 @@
+// simplex-prometheus::counter - Prometheus Counter Metric
+//
+// A counter is a cumulative metric that represents a single monotonically
+// increasing value. Counters can only increase or be reset to zero on restart.
+//
+// # Vec Layout
+//   [0] = METRIC_COUNTER (1)
+//   [1] = name (string handle)
+//   [2] = help_text (string handle)
+//   [3] = labels_vec (vec of [key, value, key, value, ...])
+//   [4] = value (i64 count)
+//
+// # Example
+//
+// ```simplex
+// let ctr = prom_counter_new("http_requests_total", "Total HTTP requests");
+// prom_counter_inc(ctr);
+// prom_counter_inc(ctr);
+// prom_counter_add(ctr, 5);
+// // value is now 7
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+// =============================================================================
+// Counter Creation
+// =============================================================================
+
+/// Create a new counter metric.
+///
+/// Returns a vec handle representing the counter.
+/// The counter starts at 0.
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+///
+/// # Returns
+/// Counter vec handle (i64)
+pub fn prom_counter_new(name: i64, help: i64) -> i64 {
+    let ctr: i64 = vec_new();
+    vec_push(ctr, 1);           // [0] = METRIC_COUNTER
+    vec_push(ctr, name);        // [1] = name
+    vec_push(ctr, help);        // [2] = help text
+    let labels: i64 = vec_new();
+    vec_push(ctr, labels);      // [3] = empty labels vec
+    vec_push(ctr, 0);           // [4] = value (starts at 0)
+    ctr
+}
+
+/// Create a counter with a single label pair.
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+/// - `label_key`: Label key (string handle)
+/// - `label_val`: Label value (string handle)
+///
+/// # Returns
+/// Counter vec handle (i64)
+pub fn prom_counter_new_labeled(name: i64, help: i64, label_key: i64, label_val: i64) -> i64 {
+    let ctr: i64 = vec_new();
+    vec_push(ctr, 1);           // [0] = METRIC_COUNTER
+    vec_push(ctr, name);        // [1] = name
+    vec_push(ctr, help);        // [2] = help text
+    let labels: i64 = vec_new();
+    vec_push(labels, label_key);
+    vec_push(labels, label_val);
+    vec_push(ctr, labels);      // [3] = labels vec
+    vec_push(ctr, 0);           // [4] = value
+    ctr
+}
+
+/// Create a counter with multiple label pairs.
+///
+/// Labels are passed as a flat vec: [key1, val1, key2, val2, ...]
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+/// - `labels`: Flat vec of [key, value] pairs
+///
+/// # Returns
+/// Counter vec handle (i64)
+pub fn prom_counter_new_labels(name: i64, help: i64, labels: i64) -> i64 {
+    let ctr: i64 = vec_new();
+    vec_push(ctr, 1);           // [0] = METRIC_COUNTER
+    vec_push(ctr, name);        // [1] = name
+    vec_push(ctr, help);        // [2] = help text
+    vec_push(ctr, labels);      // [3] = labels vec
+    vec_push(ctr, 0);           // [4] = value
+    ctr
+}
+
+// =============================================================================
+// Counter Operations
+// =============================================================================
+
+/// Increment counter by 1.
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+pub fn prom_counter_inc(ctr: i64) -> i64 {
+    let val: i64 = vec_get(ctr, 4);
+    vec_set(ctr, 4, val + 1);
+    0
+}
+
+/// Add a positive value to the counter.
+///
+/// If the value is negative, it is ignored (counters can only increase).
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+/// - `n`: Value to add (must be >= 0)
+pub fn prom_counter_add(ctr: i64, n: i64) -> i64 {
+    if n < 0 {
+        return 0;
+    }
+    let val: i64 = vec_get(ctr, 4);
+    vec_set(ctr, 4, val + n);
+    0
+}
+
+/// Get the current value of a counter.
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+///
+/// # Returns
+/// Current counter value (i64)
+pub fn prom_counter_get(ctr: i64) -> i64 {
+    vec_get(ctr, 4)
+}
+
+/// Reset the counter to zero.
+///
+/// Note: In production Prometheus, counters should generally not be reset.
+/// This is provided for testing purposes.
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+pub fn prom_counter_reset(ctr: i64) -> i64 {
+    vec_set(ctr, 4, 0);
+    0
+}
+
+// =============================================================================
+// Counter Label Operations
+// =============================================================================
+
+/// Add a label pair to an existing counter.
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+/// - `key`: Label key (string handle)
+/// - `val`: Label value (string handle)
+pub fn prom_counter_add_label(ctr: i64, key: i64, val: i64) -> i64 {
+    let labels: i64 = vec_get(ctr, 3);
+    vec_push(labels, key);
+    vec_push(labels, val);
+    0
+}
+
+/// Get the name of a counter.
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+///
+/// # Returns
+/// Name string handle (i64)
+pub fn prom_counter_name(ctr: i64) -> i64 {
+    vec_get(ctr, 1)
+}
+
+/// Get the help text of a counter.
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+///
+/// # Returns
+/// Help text string handle (i64)
+pub fn prom_counter_help(ctr: i64) -> i64 {
+    vec_get(ctr, 2)
+}
+
+/// Get the labels vec of a counter.
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+///
+/// # Returns
+/// Labels vec handle (i64), flat [key, val, key, val, ...]
+pub fn prom_counter_labels(ctr: i64) -> i64 {
+    vec_get(ctr, 3)
+}
+
+/// Get the metric type of a counter (always 1).
+///
+/// # Arguments
+/// - `ctr`: Counter vec handle
+///
+/// # Returns
+/// Metric type tag (1 for counter)
+pub fn prom_counter_type(ctr: i64) -> i64 {
+    vec_get(ctr, 0)
+}

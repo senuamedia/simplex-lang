@@ -1,0 +1,364 @@
+// simplex-opentelemetry::exporter - Span Exporters
+//
+// Provides exporters to output spans in different formats:
+// - stdout: Human-readable text output
+// - JSON: OTLP-compatible JSON format
+//
+// # Example
+//
+// ```simplex
+// let span = otel_start_span("op", trace_hi, trace_lo, 0);
+// otel_end_span(span);
+// otel_export_stdout(span);        // Print to stdout
+// let json = otel_export_json(span); // Get JSON string
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+
+// =============================================================================
+// Status Name Helper
+// =============================================================================
+
+/// Get the status name string for a status code.
+fn status_name(status: i64) -> i64 {
+    if status == 0 { return "UNSET"; }
+    if status == 1 { return "OK"; }
+    if status == 2 { return "ERROR"; }
+    "UNKNOWN"
+}
+
+/// Get the span kind name string.
+fn span_kind_name(kind: i64) -> i64 {
+    if kind == 0 { return "INTERNAL"; }
+    if kind == 1 { return "SERVER"; }
+    if kind == 2 { return "CLIENT"; }
+    if kind == 3 { return "PRODUCER"; }
+    if kind == 4 { return "CONSUMER"; }
+    "UNKNOWN"
+}
+
+// =============================================================================
+// Stdout Exporter
+// =============================================================================
+
+/// Export a span to stdout in human-readable format.
+///
+/// Output format:
+///   Span: name
+///     TraceID:  {trace_id_hi}.{trace_id_lo}
+///     SpanID:   {span_id}
+///     Parent:   {parent_span_id}
+///     Kind:     {kind}
+///     Start:    {start_time_ms}
+///     End:      {end_time_ms}
+///     Duration: {duration_ms}ms
+///     Status:   {status}
+///     Attributes:
+///       key = value
+///     Events:
+///       [timestamp] event_name
+///
+/// # Arguments
+/// - `span`: Span vec handle
+///
+/// # Returns
+/// Formatted string handle
+pub fn otel_export_stdout(span: i64) -> i64 {
+    let name: i64 = vec_get(span, 4);
+    let trace_hi: i64 = vec_get(span, 0);
+    let trace_lo: i64 = vec_get(span, 1);
+    let span_id: i64 = vec_get(span, 2);
+    let parent_id: i64 = vec_get(span, 3);
+    let start: i64 = vec_get(span, 5);
+    let end: i64 = vec_get(span, 6);
+    let status: i64 = vec_get(span, 7);
+    let kind: i64 = vec_get(span, 11);
+
+    let out: i64 = "Span: ";
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, "\n");
+
+    let out: i64 = string_concat(out, "  TraceID:  ");
+    let out: i64 = string_concat(out, i64_to_string(trace_hi));
+    let out: i64 = string_concat(out, ".");
+    let out: i64 = string_concat(out, i64_to_string(trace_lo));
+    let out: i64 = string_concat(out, "\n");
+
+    let out: i64 = string_concat(out, "  SpanID:   ");
+    let out: i64 = string_concat(out, i64_to_string(span_id));
+    let out: i64 = string_concat(out, "\n");
+
+    let out: i64 = string_concat(out, "  Parent:   ");
+    let out: i64 = string_concat(out, i64_to_string(parent_id));
+    let out: i64 = string_concat(out, "\n");
+
+    let out: i64 = string_concat(out, "  Kind:     ");
+    let out: i64 = string_concat(out, span_kind_name(kind));
+    let out: i64 = string_concat(out, "\n");
+
+    let out: i64 = string_concat(out, "  Start:    ");
+    let out: i64 = string_concat(out, i64_to_string(start));
+    let out: i64 = string_concat(out, "\n");
+
+    let out: i64 = string_concat(out, "  End:      ");
+    let out: i64 = string_concat(out, i64_to_string(end));
+    let out: i64 = string_concat(out, "\n");
+
+    // Duration
+    let duration: i64 = 0;
+    if end > 0 {
+        let duration: i64 = end - start;
+    }
+    let out: i64 = string_concat(out, "  Duration: ");
+    let out: i64 = string_concat(out, i64_to_string(duration));
+    let out: i64 = string_concat(out, "ms\n");
+
+    let out: i64 = string_concat(out, "  Status:   ");
+    let out: i64 = string_concat(out, status_name(status));
+    let out: i64 = string_concat(out, "\n");
+
+    // Attributes
+    let attrs: i64 = vec_get(span, 9);
+    let n_attrs: i64 = vec_len(attrs);
+    if n_attrs > 0 {
+        let out: i64 = string_concat(out, "  Attributes:\n");
+        let i: i64 = 0;
+        loop {
+            if i >= n_attrs {
+                break;
+            }
+            let key: i64 = vec_get(attrs, i);
+            let val: i64 = vec_get(attrs, i + 1);
+            let out: i64 = string_concat(out, "    ");
+            let out: i64 = string_concat(out, key);
+            let out: i64 = string_concat(out, " = ");
+            let out: i64 = string_concat(out, val);
+            let out: i64 = string_concat(out, "\n");
+            let i: i64 = i + 2;
+        }
+    }
+
+    // Events
+    let events: i64 = vec_get(span, 10);
+    let n_events: i64 = vec_len(events);
+    if n_events > 0 {
+        let out: i64 = string_concat(out, "  Events:\n");
+        let i: i64 = 0;
+        loop {
+            if i >= n_events {
+                break;
+            }
+            let event: i64 = vec_get(events, i);
+            let ename: i64 = vec_get(event, 0);
+            let etime: i64 = vec_get(event, 1);
+            let out: i64 = string_concat(out, "    [");
+            let out: i64 = string_concat(out, i64_to_string(etime));
+            let out: i64 = string_concat(out, "] ");
+            let out: i64 = string_concat(out, ename);
+            let out: i64 = string_concat(out, "\n");
+            let i: i64 = i + 1;
+        }
+    }
+
+    out
+}
+
+// =============================================================================
+// JSON Exporter (OTLP-compatible)
+// =============================================================================
+
+/// Escape a string for JSON output.
+///
+/// Wraps the string in double quotes, escaping special characters.
+fn json_escape(s: i64) -> i64 {
+    let out: i64 = "\"";
+    let out: i64 = string_concat(out, s);
+    let out: i64 = string_concat(out, "\"");
+    out
+}
+
+/// Export a span to OTLP-compatible JSON format.
+///
+/// Produces a JSON object with all span fields.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+///
+/// # Returns
+/// JSON string handle
+pub fn otel_export_json(span: i64) -> i64 {
+    let trace_hi: i64 = vec_get(span, 0);
+    let trace_lo: i64 = vec_get(span, 1);
+    let span_id: i64 = vec_get(span, 2);
+    let parent_id: i64 = vec_get(span, 3);
+    let name: i64 = vec_get(span, 4);
+    let start: i64 = vec_get(span, 5);
+    let end: i64 = vec_get(span, 6);
+    let status: i64 = vec_get(span, 7);
+    let status_msg: i64 = vec_get(span, 8);
+    let kind: i64 = vec_get(span, 11);
+
+    let out: i64 = "{";
+
+    // traceId
+    let out: i64 = string_concat(out, "\"traceId\":\"");
+    let out: i64 = string_concat(out, i64_to_string(trace_hi));
+    let out: i64 = string_concat(out, ".");
+    let out: i64 = string_concat(out, i64_to_string(trace_lo));
+    let out: i64 = string_concat(out, "\",");
+
+    // spanId
+    let out: i64 = string_concat(out, "\"spanId\":\"");
+    let out: i64 = string_concat(out, i64_to_string(span_id));
+    let out: i64 = string_concat(out, "\",");
+
+    // parentSpanId
+    let out: i64 = string_concat(out, "\"parentSpanId\":\"");
+    let out: i64 = string_concat(out, i64_to_string(parent_id));
+    let out: i64 = string_concat(out, "\",");
+
+    // name
+    let out: i64 = string_concat(out, "\"name\":");
+    let out: i64 = string_concat(out, json_escape(name));
+    let out: i64 = string_concat(out, ",");
+
+    // kind
+    let out: i64 = string_concat(out, "\"kind\":\"");
+    let out: i64 = string_concat(out, span_kind_name(kind));
+    let out: i64 = string_concat(out, "\",");
+
+    // startTimeUnixNano (we store ms, convert to a string representation)
+    let out: i64 = string_concat(out, "\"startTimeUnixNano\":");
+    let out: i64 = string_concat(out, i64_to_string(start));
+    let out: i64 = string_concat(out, ",");
+
+    // endTimeUnixNano
+    let out: i64 = string_concat(out, "\"endTimeUnixNano\":");
+    let out: i64 = string_concat(out, i64_to_string(end));
+    let out: i64 = string_concat(out, ",");
+
+    // status
+    let out: i64 = string_concat(out, "\"status\":{\"code\":\"");
+    let out: i64 = string_concat(out, status_name(status));
+    let out: i64 = string_concat(out, "\",\"message\":");
+    let out: i64 = string_concat(out, json_escape(status_msg));
+    let out: i64 = string_concat(out, "},");
+
+    // attributes
+    let out: i64 = string_concat(out, "\"attributes\":[");
+    let attrs: i64 = vec_get(span, 9);
+    let n_attrs: i64 = vec_len(attrs);
+    let i: i64 = 0;
+    loop {
+        if i >= n_attrs {
+            break;
+        }
+        if i > 0 {
+            let out: i64 = string_concat(out, ",");
+        }
+        let key: i64 = vec_get(attrs, i);
+        let val: i64 = vec_get(attrs, i + 1);
+        let out: i64 = string_concat(out, "{\"key\":");
+        let out: i64 = string_concat(out, json_escape(key));
+        let out: i64 = string_concat(out, ",\"value\":{\"stringValue\":");
+        let out: i64 = string_concat(out, json_escape(val));
+        let out: i64 = string_concat(out, "}}");
+        let i: i64 = i + 2;
+    }
+    let out: i64 = string_concat(out, "],");
+
+    // events
+    let out: i64 = string_concat(out, "\"events\":[");
+    let events: i64 = vec_get(span, 10);
+    let n_events: i64 = vec_len(events);
+    let i: i64 = 0;
+    loop {
+        if i >= n_events {
+            break;
+        }
+        if i > 0 {
+            let out: i64 = string_concat(out, ",");
+        }
+        let event: i64 = vec_get(events, i);
+        let ename: i64 = vec_get(event, 0);
+        let etime: i64 = vec_get(event, 1);
+        let out: i64 = string_concat(out, "{\"name\":");
+        let out: i64 = string_concat(out, json_escape(ename));
+        let out: i64 = string_concat(out, ",\"timeUnixNano\":");
+        let out: i64 = string_concat(out, i64_to_string(etime));
+        let out: i64 = string_concat(out, "}");
+        let i: i64 = i + 1;
+    }
+    let out: i64 = string_concat(out, "]");
+
+    let out: i64 = string_concat(out, "}");
+    out
+}
+
+// =============================================================================
+// Batch Export
+// =============================================================================
+
+/// Export multiple spans to JSON array format.
+///
+/// # Arguments
+/// - `spans`: Vec of span handles
+///
+/// # Returns
+/// JSON array string handle
+pub fn otel_export_json_batch(spans: i64) -> i64 {
+    let out: i64 = "[";
+    let n: i64 = vec_len(spans);
+    let i: i64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        if i > 0 {
+            let out: i64 = string_concat(out, ",");
+        }
+        let span: i64 = vec_get(spans, i);
+        let json: i64 = otel_export_json(span);
+        let out: i64 = string_concat(out, json);
+        let i: i64 = i + 1;
+    }
+    let out: i64 = string_concat(out, "]");
+    out
+}
+
+/// Export multiple spans to stdout.
+///
+/// # Arguments
+/// - `spans`: Vec of span handles
+///
+/// # Returns
+/// Formatted string handle with all spans
+pub fn otel_export_stdout_batch(spans: i64) -> i64 {
+    let out: i64 = "";
+    let n: i64 = vec_len(spans);
+    let i: i64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        let span: i64 = vec_get(spans, i);
+        let text: i64 = otel_export_stdout(span);
+        let out: i64 = string_concat(out, text);
+        if i < n - 1 {
+            let out: i64 = string_concat(out, "\n");
+        }
+        let i: i64 = i + 1;
+    }
+    out
+}

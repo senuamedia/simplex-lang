@@ -1,0 +1,96 @@
+// simplex-guardrails - Output Guardrails for Simplex
+//
+// Validates outputs against configurable rules before they reach users.
+// Supports length, content, format, and PII checks.
+//
+// # Modules
+//
+// - `rules`:   Guardrail rule definitions (length, content, format, PII)
+// - `checker`: Rule checking engine
+// - `wrapper`: Function wrapping with guardrail enforcement
+// - `report`:  Check result formatting
+//
+// # Data Model
+//
+// Rules and check results are represented as i64 handles to vec objects.
+//
+// # Example
+//
+// ```simplex
+// let rules = vec_new();
+// vec_push(rules, rule_max_length(1000));
+// vec_push(rules, rule_must_not_contain(banned_terms));
+// let result = guardrail_check(output, rules);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_push(v: i64, value: i64) -> i64;
+extern fn vec_pop(v: i64) -> i64;
+extern fn vec_get(v: i64, index: i64) -> i64;
+extern fn vec_set(v: i64, index: i64, value: i64) -> i64;
+
+extern fn string_from(s: &str) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_len(s: i64) -> i64;
+extern fn string_cmp(a: i64, b: i64) -> i64;
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+extern fn string_contains(haystack: i64, needle: i64) -> i64;
+
+extern fn i64_to_string(n: i64) -> i64;
+
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+
+// =============================================================================
+// f64 bit conversion helpers
+// =============================================================================
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }
+
+// =============================================================================
+// Rule Type Constants
+// =============================================================================
+
+fn RULE_MAX_LENGTH() -> i64       { 1 }
+fn RULE_MIN_LENGTH() -> i64       { 2 }
+fn RULE_MUST_CONTAIN() -> i64     { 3 }
+fn RULE_MUST_NOT_CONTAIN() -> i64 { 4 }
+fn RULE_JSON_VALID() -> i64       { 5 }
+fn RULE_NO_PII() -> i64           { 6 }
+fn RULE_CUSTOM() -> i64           { 7 }
+
+// =============================================================================
+// Action Constants
+// =============================================================================
+
+fn ACTION_REJECT() -> i64  { 1 }
+fn ACTION_WARN() -> i64    { 2 }
+fn ACTION_RETRY() -> i64   { 3 }
+
+// =============================================================================
+// Rule Field Offsets
+// =============================================================================
+
+fn RULE_TYPE() -> i64    { 0 }
+fn RULE_PARAM() -> i64   { 1 }
+fn RULE_ACTION() -> i64  { 2 }
+fn RULE_MSG() -> i64     { 3 }
+
+// =============================================================================
+// Check Result Field Offsets
+// =============================================================================
+
+fn CHECK_PASSED() -> i64     { 0 }
+fn CHECK_FAILURES() -> i64   { 1 }
+fn CHECK_N_RULES() -> i64    { 2 }
+fn CHECK_N_PASSED() -> i64   { 3 }

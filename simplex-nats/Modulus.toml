@@ -1,0 +1,27 @@
+# simplex-nats - NATS Messaging Client
+#
+# Pure Simplex implementation of the NATS messaging protocol.
+# Provides publish/subscribe, request/reply, and queue group support.
+#
+# NATS uses a simple text-based protocol over TCP for high-performance
+# messaging between distributed services.
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-nats"
+version = "0.16.0"
+description = "NATS messaging client for Simplex - pub/sub, request/reply, queue groups"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+
+[features]
+default = ["full"]
+full = ["pubsub", "queue"]
+pubsub = []
+queue = []

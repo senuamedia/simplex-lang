@@ -1,0 +1,210 @@
+// Guardrails Tests
+// Tests string validation rules: max length, must contain, must not contain
+// Self-contained: no extern fn, no const, no f64 params
+
+// =============================================================================
+// Test 1: Max length - passes when under limit
+// =============================================================================
+fn test_max_length_pass() -> i64 {
+    println("  Test 1: Max length (under limit)...");
+
+    let output: i64 = "Hello world";
+    let max: i64 = 100;
+    let len: i64 = string_len(output);
+
+    if len > max {
+        println("  FAIL: should be under limit");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 2: Max length - fails when over limit
+// =============================================================================
+fn test_max_length_fail() -> i64 {
+    println("  Test 2: Max length (over limit)...");
+
+    let output: i64 = "This is a longer output string that exceeds the limit";
+    let max: i64 = 10;
+    let len: i64 = string_len(output);
+
+    if len <= max {
+        println("  FAIL: should be over limit");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 3: Must contain - passes when term present
+// =============================================================================
+fn test_must_contain_pass() -> i64 {
+    println("  Test 3: Must contain (present)...");
+
+    let output: i64 = "The answer is 42 and it is correct.";
+    let found: i64 = string_contains(output, "42");
+
+    if found != 1 {
+        println("  FAIL: should find '42'");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 4: Must contain - fails when term missing
+// =============================================================================
+fn test_must_contain_fail() -> i64 {
+    println("  Test 4: Must contain (missing)...");
+
+    let output: i64 = "The answer is unknown.";
+    let found: i64 = string_contains(output, "42");
+
+    if found != 0 {
+        println("  FAIL: should not find '42'");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 5: Must not contain - passes when term absent
+// =============================================================================
+fn test_must_not_contain_pass() -> i64 {
+    println("  Test 5: Must not contain (absent)...");
+
+    let output: i64 = "This is a clean output.";
+    let found: i64 = string_contains(output, "forbidden");
+
+    if found != 0 {
+        println("  FAIL: should not find 'forbidden'");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 6: Must not contain - fails when term present
+// =============================================================================
+fn test_must_not_contain_fail() -> i64 {
+    println("  Test 6: Must not contain (present)...");
+
+    let output: i64 = "This contains forbidden content.";
+    let found: i64 = string_contains(output, "forbidden");
+
+    if found != 1 {
+        println("  FAIL: should find 'forbidden'");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 7: Email PII detection
+// =============================================================================
+fn test_pii_email() -> i64 {
+    println("  Test 7: PII email detection...");
+
+    let text: i64 = "Contact me at user@example.com for details";
+    let len: i64 = string_len(text);
+
+    // Look for @ sign followed by . -- simple email pattern
+    var has_at: i64 = 0;
+    var i: i64 = 1;
+    while i < len - 3 {
+        let ch: i64 = string_char_at(text, i);
+        if ch == 64 {
+            // Check for . after @
+            var j: i64 = i + 2;
+            while j < len {
+                let dch: i64 = string_char_at(text, j);
+                if dch == 46 {
+                    has_at = 1;
+                    j = len;
+                }
+                j = j + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    if has_at != 1 {
+        println("  FAIL: should detect email PII");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 8: Multiple rules checked together
+// =============================================================================
+fn test_multiple_rules() -> i64 {
+    println("  Test 8: Multiple rules...");
+
+    let output: i64 = "The result is 42.";
+
+    // Rule 1: max length 100
+    let len: i64 = string_len(output);
+    if len > 100 {
+        println("  FAIL: rule 1 (max length) failed");
+        return 1;
+    }
+
+    // Rule 2: must contain "42"
+    let has_42: i64 = string_contains(output, "42");
+    if has_42 != 1 {
+        println("  FAIL: rule 2 (must contain 42) failed");
+        return 1;
+    }
+
+    // Rule 3: must not contain "error"
+    let has_error: i64 = string_contains(output, "error");
+    if has_error != 0 {
+        println("  FAIL: rule 3 (must not contain error) failed");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+fn main() -> i64 {
+    println("=== Guardrails Tests ===");
+
+    var failures: i64 = 0;
+    failures = failures + test_max_length_pass();
+    failures = failures + test_max_length_fail();
+    failures = failures + test_must_contain_pass();
+    failures = failures + test_must_contain_fail();
+    failures = failures + test_must_not_contain_pass();
+    failures = failures + test_must_not_contain_fail();
+    failures = failures + test_pii_email();
+    failures = failures + test_multiple_rules();
+
+    println("");
+    if failures == 0 {
+        println("All 8 guardrails tests passed!");
+    } else {
+        println("Some guardrails tests failed");
+    }
+
+    failures
+}

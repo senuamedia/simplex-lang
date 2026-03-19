@@ -1,0 +1,17 @@
+[package]
+name = "simplex-guardrails"
+version = "0.16.0"
+description = "Output guardrails and validation for Simplex hive intelligence"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+
+[features]
+default = ["full"]
+full = ["rules", "checker", "wrapper"]
+rules = []      # Guardrail rule definitions
+checker = []    # Rule checking engine
+wrapper = []    # Function wrapping with guardrails

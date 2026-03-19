@@ -1,0 +1,239 @@
+// simplex-rag::pipeline - RAG Pipeline
+//
+// Core RAG pipeline: create, ingest documents, query with retrieval.
+//
+// Pipeline layout (vec of i64):
+//   [0] dimension       - embedding dimension
+//   [1] store_handle    - vector store handle (from simplex-vectordb)
+//   [2] chunks_vec      - vec of chunk text handles (indexed by vector ID)
+//   [3] sources_vec     - vec of source handles (indexed by vector ID)
+//   [4] chunk_size      - default chunk size for fixed chunking
+//   [5] chunk_overlap   - default overlap for fixed chunking
+//   [6] next_id         - next available vector ID
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Pipeline Creation
+// =============================================================================
+
+/// Create a new RAG pipeline.
+///
+/// Arguments:
+///   dimension - embedding dimension for the vector store
+///
+/// Returns: handle to pipeline vec
+fn rag_create(dimension: i64) -> i64 {
+    let name: i64 = string_from("rag_store");
+    let store: i64 = vdb_create(name, dimension);
+
+    let pipe = vec_new();
+    vec_push(pipe, dimension);        // [0] dimension
+    vec_push(pipe, store);            // [1] store_handle
+    vec_push(pipe, vec_new());        // [2] chunks_vec
+    vec_push(pipe, vec_new());        // [3] sources_vec
+    vec_push(pipe, 256);              // [4] default chunk_size
+    vec_push(pipe, 32);               // [5] default chunk_overlap
+    vec_push(pipe, 0);                // [6] next_id
+    pipe
+}
+
+/// Create a RAG pipeline with custom chunk settings.
+///
+/// Arguments:
+///   dimension    - embedding dimension
+///   chunk_size   - characters per chunk
+///   chunk_overlap - overlap between consecutive chunks
+///
+/// Returns: handle to pipeline vec
+fn rag_create_custom(dimension: i64, chunk_size: i64, chunk_overlap: i64) -> i64 {
+    let pipe: i64 = rag_create(dimension);
+    vec_set(pipe, PIPE_CHUNK_SIZE(), chunk_size);
+    vec_set(pipe, PIPE_CHUNK_OVERLAP(), chunk_overlap);
+    pipe
+}
+
+// =============================================================================
+// Document Ingestion
+// =============================================================================
+
+/// Ingest a document into the RAG pipeline.
+///
+/// The document is chunked, embedded, and stored in the vector database.
+/// Uses fixed-size chunking by default.
+///
+/// Arguments:
+///   pipe     - pipeline handle
+///   document - text content (string handle)
+///   source   - source identifier (string handle)
+///
+/// Returns: number of chunks ingested
+fn rag_ingest(pipe: i64, document: i64, source: i64) -> i64 {
+    let dimension: i64 = vec_get(pipe, PIPE_DIMENSION());
+    let store: i64 = vec_get(pipe, PIPE_STORE());
+    let chunks_vec: i64 = vec_get(pipe, PIPE_CHUNKS());
+    let sources_vec: i64 = vec_get(pipe, PIPE_SOURCES());
+    let chunk_size: i64 = vec_get(pipe, PIPE_CHUNK_SIZE());
+    let chunk_overlap: i64 = vec_get(pipe, PIPE_CHUNK_OVERLAP());
+
+    // Chunk the document
+    let chunks: i64 = chunk_fixed(document, chunk_size, chunk_overlap);
+    let n_chunks: i64 = vec_len(chunks);
+
+    var i: i64 = 0;
+    while i < n_chunks {
+        let chunk_text: i64 = vec_get(chunks, i);
+        let chunk_id: i64 = vec_get(pipe, PIPE_NEXT_ID());
+        vec_set(pipe, PIPE_NEXT_ID(), chunk_id + 1);
+
+        // Embed the chunk
+        let embedding: i64 = simple_embed(chunk_text, dimension);
+
+        // Store in vector database
+        vdb_insert(store, chunk_id, embedding, source);
+
+        // Store chunk text and source for retrieval
+        vec_push(chunks_vec, chunk_text);
+        vec_push(sources_vec, source);
+
+        i = i + 1;
+    }
+
+    n_chunks
+}
+
+/// Ingest a document using sentence-based chunking.
+fn rag_ingest_sentences(pipe: i64, document: i64, source: i64) -> i64 {
+    let dimension: i64 = vec_get(pipe, PIPE_DIMENSION());
+    let store: i64 = vec_get(pipe, PIPE_STORE());
+    let chunks_vec: i64 = vec_get(pipe, PIPE_CHUNKS());
+    let sources_vec: i64 = vec_get(pipe, PIPE_SOURCES());
+
+    let chunks: i64 = chunk_sentence(document);
+    let n_chunks: i64 = vec_len(chunks);
+
+    var i: i64 = 0;
+    while i < n_chunks {
+        let chunk_text: i64 = vec_get(chunks, i);
+        let chunk_id: i64 = vec_get(pipe, PIPE_NEXT_ID());
+        vec_set(pipe, PIPE_NEXT_ID(), chunk_id + 1);
+
+        let embedding: i64 = simple_embed(chunk_text, dimension);
+        vdb_insert(store, chunk_id, embedding, source);
+        vec_push(chunks_vec, chunk_text);
+        vec_push(sources_vec, source);
+
+        i = i + 1;
+    }
+
+    n_chunks
+}
+
+/// Ingest a document using paragraph-based chunking.
+fn rag_ingest_paragraphs(pipe: i64, document: i64, source: i64) -> i64 {
+    let dimension: i64 = vec_get(pipe, PIPE_DIMENSION());
+    let store: i64 = vec_get(pipe, PIPE_STORE());
+    let chunks_vec: i64 = vec_get(pipe, PIPE_CHUNKS());
+    let sources_vec: i64 = vec_get(pipe, PIPE_SOURCES());
+
+    let chunks: i64 = chunk_paragraph(document);
+    let n_chunks: i64 = vec_len(chunks);
+
+    var i: i64 = 0;
+    while i < n_chunks {
+        let chunk_text: i64 = vec_get(chunks, i);
+        let chunk_id: i64 = vec_get(pipe, PIPE_NEXT_ID());
+        vec_set(pipe, PIPE_NEXT_ID(), chunk_id + 1);
+
+        let embedding: i64 = simple_embed(chunk_text, dimension);
+        vdb_insert(store, chunk_id, embedding, source);
+        vec_push(chunks_vec, chunk_text);
+        vec_push(sources_vec, source);
+
+        i = i + 1;
+    }
+
+    n_chunks
+}
+
+// =============================================================================
+// Query
+// =============================================================================
+
+/// Query the RAG pipeline for relevant context.
+///
+/// Embeds the question, searches the vector store, and returns
+/// the most relevant chunks with their scores and sources.
+///
+/// Arguments:
+///   pipe     - pipeline handle
+///   question - query text (string handle)
+///   top_k    - number of chunks to retrieve
+///
+/// Returns: handle to result vec [chunks_vec, scores_vec, sources_vec, count]
+fn rag_query(pipe: i64, question: i64, top_k: i64) -> i64 {
+    let dimension: i64 = vec_get(pipe, PIPE_DIMENSION());
+    let store: i64 = vec_get(pipe, PIPE_STORE());
+    let chunks_vec: i64 = vec_get(pipe, PIPE_CHUNKS());
+    let sources_vec: i64 = vec_get(pipe, PIPE_SOURCES());
+
+    // Embed the question
+    let query_emb: i64 = simple_embed(question, dimension);
+
+    // Search the vector store
+    let search_result: i64 = vdb_search(store, query_emb, top_k);
+    let result_ids: i64 = vec_get(search_result, 0);
+    let result_scores: i64 = vec_get(search_result, 1);
+    let result_count: i64 = vec_get(search_result, 2);
+
+    // Collect chunk texts and sources for each result
+    let out_chunks = vec_new();
+    let out_scores = vec_new();
+    let out_sources = vec_new();
+
+    var i: i64 = 0;
+    while i < result_count {
+        let id: i64 = vec_get(result_ids, i);
+        let score: i64 = vec_get(result_scores, i);
+
+        // id maps to index in chunks_vec/sources_vec
+        if id >= 0 {
+            let n_stored: i64 = vec_len(chunks_vec);
+            if id < n_stored {
+                vec_push(out_chunks, vec_get(chunks_vec, id));
+                vec_push(out_scores, score);
+                vec_push(out_sources, vec_get(sources_vec, id));
+            }
+        }
+        i = i + 1;
+    }
+
+    let result = vec_new();
+    vec_push(result, out_chunks);    // [0] chunks
+    vec_push(result, out_scores);    // [1] scores
+    vec_push(result, out_sources);   // [2] sources
+    vec_push(result, vec_len(out_chunks));  // [3] count
+    result
+}
+
+// =============================================================================
+// Pipeline Stats
+// =============================================================================
+
+/// Get the total number of chunks in the pipeline.
+fn rag_chunk_count(pipe: i64) -> i64 {
+    let chunks_vec: i64 = vec_get(pipe, PIPE_CHUNKS());
+    vec_len(chunks_vec)
+}
+
+/// Get the total number of vectors in the store.
+fn rag_vector_count(pipe: i64) -> i64 {
+    let store: i64 = vec_get(pipe, PIPE_STORE());
+    vdb_count(store)
+}
+
+/// Get the embedding dimension.
+fn rag_dimension(pipe: i64) -> i64 {
+    vec_get(pipe, PIPE_DIMENSION())
+}

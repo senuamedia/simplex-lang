@@ -1,0 +1,232 @@
+// Evaluation Suite Tests
+// Tests exact match, edit distance, length ratio metrics
+// Self-contained: no extern fn, no const, no f64 params
+
+// =============================================================================
+// Levenshtein distance implementation
+// =============================================================================
+fn levenshtein(a: i64, b: i64) -> i64 {
+    let len_a: i64 = string_len(a);
+    let len_b: i64 = string_len(b);
+
+    if len_a == 0 { return len_b; }
+    if len_b == 0 { return len_a; }
+
+    // Use shorter string for column dimension
+    var short: i64 = a;
+    var long: i64 = b;
+    var short_len: i64 = len_a;
+    var long_len: i64 = len_b;
+    if len_a > len_b {
+        short = b;
+        long = a;
+        short_len = len_b;
+        long_len = len_a;
+    }
+
+    // Two rows
+    let prev: i64 = vec_new();
+    let curr: i64 = vec_new();
+    var j: i64 = 0;
+    while j <= short_len {
+        vec_push(prev, j);
+        vec_push(curr, 0);
+        j = j + 1;
+    }
+
+    var i: i64 = 1;
+    while i <= long_len {
+        vec_set(curr, 0, i);
+        j = 1;
+        while j <= short_len {
+            let lch: i64 = string_char_at(long, i - 1);
+            let sch: i64 = string_char_at(short, j - 1);
+            var cost: i64 = 1;
+            if lch == sch { cost = 0; }
+
+            let ins: i64 = vec_get(curr, j - 1) + 1;
+            let del: i64 = vec_get(prev, j) + 1;
+            let rep: i64 = vec_get(prev, j - 1) + cost;
+
+            var min_c: i64 = ins;
+            if del < min_c { min_c = del; }
+            if rep < min_c { min_c = rep; }
+            vec_set(curr, j, min_c);
+            j = j + 1;
+        }
+
+        // Copy curr to prev
+        j = 0;
+        while j <= short_len {
+            vec_set(prev, j, vec_get(curr, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    vec_get(prev, short_len)
+}
+
+// =============================================================================
+// Test 1: Exact match - identical strings
+// =============================================================================
+fn test_exact_match_identical() -> i64 {
+    println("  Test 1: Exact match (identical)...");
+
+    let a: i64 = "hello world";
+    let b: i64 = "hello world";
+    let eq: i64 = string_eq(a, b);
+
+    if eq != 1 {
+        println("  FAIL: identical strings should match");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 2: Exact match - different strings
+// =============================================================================
+fn test_exact_match_different() -> i64 {
+    println("  Test 2: Exact match (different)...");
+
+    let a: i64 = "hello world";
+    let b: i64 = "hello earth";
+    let eq: i64 = string_eq(a, b);
+
+    if eq != 0 {
+        println("  FAIL: different strings should not match");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 3: Levenshtein distance - identical strings
+// =============================================================================
+fn test_levenshtein_identical() -> i64 {
+    println("  Test 3: Levenshtein (identical)...");
+
+    let dist: i64 = levenshtein("kitten", "kitten");
+
+    if dist != 0 {
+        println("  FAIL: identical strings should have distance 0");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 4: Levenshtein distance - known value
+// =============================================================================
+fn test_levenshtein_known() -> i64 {
+    println("  Test 4: Levenshtein (kitten->sitting)...");
+
+    let dist: i64 = levenshtein("kitten", "sitting");
+
+    // kitten -> sitting = 3 edits (k->s, e->i, +g)
+    if dist != 3 {
+        println("  FAIL: expected 3 edits");
+        println(string_concat("  got: ", int_to_string(dist)));
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 5: Levenshtein distance - empty string
+// =============================================================================
+fn test_levenshtein_empty() -> i64 {
+    println("  Test 5: Levenshtein (empty)...");
+
+    let dist: i64 = levenshtein("", "hello");
+
+    if dist != 5 {
+        println("  FAIL: expected distance 5");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 6: Exact match implies perfect score
+// =============================================================================
+fn test_exact_match_score() -> i64 {
+    println("  Test 6: Perfect match score...");
+
+    let output: i64 = "the cat sat";
+    let reference: i64 = "the cat sat";
+
+    let eq: i64 = string_eq(output, reference);
+    if eq != 1 {
+        println("  FAIL: perfect match should score 1");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 7: Length ratio (integer-scaled * 100)
+// =============================================================================
+fn test_length_ratio() -> i64 {
+    println("  Test 7: Length ratio...");
+
+    let output: i64 = "hello";          // 5 chars
+    let expected: i64 = "hello world";  // 11 chars
+
+    let out_len: i64 = string_len(output);
+    let exp_len: i64 = string_len(expected);
+
+    // ratio * 100 = 500 / 11 = 45
+    let ratio_100: i64 = out_len * 100 / exp_len;
+
+    // 5/11 ~ 0.4545 -> ratio_100 ~ 45
+    if ratio_100 < 40 {
+        println("  FAIL: ratio too low");
+        return 1;
+    }
+    if ratio_100 > 50 {
+        println("  FAIL: ratio too high");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+fn main() -> i64 {
+    println("=== Evaluation Suite Tests ===");
+
+    var failures: i64 = 0;
+    failures = failures + test_exact_match_identical();
+    failures = failures + test_exact_match_different();
+    failures = failures + test_levenshtein_identical();
+    failures = failures + test_levenshtein_known();
+    failures = failures + test_levenshtein_empty();
+    failures = failures + test_exact_match_score();
+    failures = failures + test_length_ratio();
+
+    println("");
+    if failures == 0 {
+        println("All 7 evaluation suite tests passed!");
+    } else {
+        println("Some evaluation suite tests failed");
+    }
+
+    failures
+}

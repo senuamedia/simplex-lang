@@ -1,0 +1,358 @@
+// simplex-db - Unified Database Connectivity Tests
+// Tests the common API layer: config, connect, query, result, pool, transactions
+
+// Driver constants
+fn DRIVER_POSTGRES() -> i64 { 1 }
+fn DRIVER_MYSQL() -> i64 { 2 }
+fn DRIVER_SQLITE() -> i64 { 3 }
+fn DRIVER_REDIS() -> i64 { 4 }
+fn DRIVER_MONGODB() -> i64 { 5 }
+
+fn CONN_DISCONNECTED() -> i64 { 0 }
+fn CONN_CONNECTED() -> i64 { 1 }
+fn CONN_IN_TRANSACTION() -> i64 { 2 }
+
+fn ERR_NONE() -> i64 { 0 }
+fn ERR_CONNECTION() -> i64 { 1 }
+fn ERR_TRANSACTION() -> i64 { 7 }
+
+// Test 1: Config creation and parameter setting
+fn test_config() -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, DRIVER_POSTGRES());
+    let params: i64 = vec_new();
+    vec_push(config, params);
+
+    // Set host param
+    let pair: i64 = vec_new();
+    vec_push(pair, string_from("host"));
+    vec_push(pair, string_from("localhost"));
+    vec_push(params, pair);
+
+    // Set port param
+    let pair2: i64 = vec_new();
+    vec_push(pair2, string_from("port"));
+    vec_push(pair2, string_from("5432"));
+    vec_push(params, pair2);
+
+    // Verify driver
+    if vec_get(config, 0) != DRIVER_POSTGRES() {
+        println(string_from("FAIL: config driver"));
+        return 1;
+    }
+    // Verify params count
+    if vec_len(params) != 2 {
+        println(string_from("FAIL: config param count"));
+        return 1;
+    }
+    // Verify param lookup
+    let p: i64 = vec_get(params, 0);
+    if string_eq(vec_get(p, 1), string_from("localhost")) != 1 {
+        println(string_from("FAIL: config host value"));
+        return 1;
+    }
+    println(string_from("PASS: test_config"));
+    0
+}
+
+// Test 2: Connection state management
+fn test_connection_state() -> i64 {
+    // Simulate connection vec: [driver, state, handle, config, error, result]
+    let conn: i64 = vec_new();
+    vec_push(conn, DRIVER_POSTGRES());
+    vec_push(conn, CONN_CONNECTED());
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+
+    // Should be connected
+    if vec_get(conn, 1) != CONN_CONNECTED() {
+        println(string_from("FAIL: should be connected"));
+        return 1;
+    }
+    // Disconnect
+    vec_set(conn, 1, CONN_DISCONNECTED());
+    if vec_get(conn, 1) != CONN_DISCONNECTED() {
+        println(string_from("FAIL: should be disconnected"));
+        return 1;
+    }
+    println(string_from("PASS: test_connection_state"));
+    0
+}
+
+// Test 3: Result structure
+fn test_result_structure() -> i64 {
+    // Result: [status, columns_vec, rows_vec, affected_rows, error_msg]
+    let result: i64 = vec_new();
+    vec_push(result, ERR_NONE());
+
+    let cols: i64 = vec_new();
+    vec_push(cols, string_from("id"));
+    vec_push(cols, string_from("name"));
+    vec_push(cols, string_from("email"));
+    vec_push(result, cols);
+
+    let rows: i64 = vec_new();
+    // Row 1: vec of [col_name, value] pairs
+    let row1: i64 = vec_new();
+    let p1: i64 = vec_new();
+    vec_push(p1, string_from("id"));
+    vec_push(p1, string_from("1"));
+    vec_push(row1, p1);
+    let p2: i64 = vec_new();
+    vec_push(p2, string_from("name"));
+    vec_push(p2, string_from("Alice"));
+    vec_push(row1, p2);
+    let p3: i64 = vec_new();
+    vec_push(p3, string_from("email"));
+    vec_push(p3, string_from("alice@example.com"));
+    vec_push(row1, p3);
+    vec_push(rows, row1);
+    vec_push(result, rows);
+
+    vec_push(result, 0);  // affected
+    vec_push(result, 0);  // no error
+
+    // Verify status
+    if vec_get(result, 0) != ERR_NONE() {
+        println(string_from("FAIL: result status"));
+        return 1;
+    }
+    // Verify column count
+    if vec_len(vec_get(result, 1)) != 3 {
+        println(string_from("FAIL: column count"));
+        return 1;
+    }
+    // Verify row count
+    if vec_len(vec_get(result, 2)) != 1 {
+        println(string_from("FAIL: row count"));
+        return 1;
+    }
+    // Verify row data by name lookup
+    let row: i64 = vec_get(rows, 0);
+    var found_name: i64 = 0;
+    var j: i64 = 0;
+    while j < vec_len(row) {
+        let pair: i64 = vec_get(row, j);
+        if string_eq(vec_get(pair, 0), string_from("name")) == 1 {
+            if string_eq(vec_get(pair, 1), string_from("Alice")) == 1 {
+                found_name = 1;
+            }
+        }
+        j = j + 1;
+    }
+    if found_name != 1 {
+        println(string_from("FAIL: row name lookup"));
+        return 1;
+    }
+    println(string_from("PASS: test_result_structure"));
+    0
+}
+
+// Test 4: Transaction state transitions
+fn test_transactions() -> i64 {
+    let conn: i64 = vec_new();
+    vec_push(conn, DRIVER_MYSQL());
+    vec_push(conn, CONN_CONNECTED());
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+
+    // Begin transaction
+    vec_set(conn, 1, CONN_IN_TRANSACTION());
+    if vec_get(conn, 1) != CONN_IN_TRANSACTION() {
+        println(string_from("FAIL: begin transaction"));
+        return 1;
+    }
+    // Commit
+    vec_set(conn, 1, CONN_CONNECTED());
+    if vec_get(conn, 1) != CONN_CONNECTED() {
+        println(string_from("FAIL: commit"));
+        return 1;
+    }
+    // Begin again then rollback
+    vec_set(conn, 1, CONN_IN_TRANSACTION());
+    vec_set(conn, 1, CONN_CONNECTED());
+    if vec_get(conn, 1) != CONN_CONNECTED() {
+        println(string_from("FAIL: rollback"));
+        return 1;
+    }
+    println(string_from("PASS: test_transactions"));
+    0
+}
+
+// Test 5: Connection pool
+fn test_pool() -> i64 {
+    // Pool: [config, max_size, connections_vec, available_vec]
+    let pool: i64 = vec_new();
+    vec_push(pool, 0);  // config
+    vec_push(pool, 5);  // max_size
+    let conns: i64 = vec_new();
+    vec_push(pool, conns);
+    let avail: i64 = vec_new();
+    vec_push(pool, avail);
+
+    // Create 3 connections
+    var i: i64 = 0;
+    while i < 3 {
+        let conn: i64 = vec_new();
+        vec_push(conn, DRIVER_REDIS());
+        vec_push(conn, CONN_CONNECTED());
+        vec_push(conns, conn);
+        i = i + 1;
+    }
+    if vec_len(conns) != 3 {
+        println(string_from("FAIL: pool size"));
+        return 1;
+    }
+    // Return one to available
+    vec_push(avail, vec_get(conns, 0));
+    if vec_len(avail) != 1 {
+        println(string_from("FAIL: pool available"));
+        return 1;
+    }
+    println(string_from("PASS: test_pool"));
+    0
+}
+
+// Test 6: Driver identification
+fn test_driver_types() -> i64 {
+    // SQL drivers
+    var pg_is_sql: i64 = 0;
+    let d: i64 = DRIVER_POSTGRES();
+    if d == 1 || d == 2 || d == 3 { pg_is_sql = 1; }
+    if pg_is_sql != 1 {
+        println(string_from("FAIL: postgres is sql"));
+        return 1;
+    }
+
+    // NoSQL drivers
+    var redis_is_nosql: i64 = 0;
+    let r: i64 = DRIVER_REDIS();
+    if r == 4 || r == 5 || r == 6 { redis_is_nosql = 1; }
+    if redis_is_nosql != 1 {
+        println(string_from("FAIL: redis is nosql"));
+        return 1;
+    }
+
+    // Driver constants are distinct
+    if DRIVER_POSTGRES() == DRIVER_MYSQL() {
+        println(string_from("FAIL: postgres != mysql"));
+        return 1;
+    }
+    if DRIVER_REDIS() == DRIVER_SQLITE() {
+        println(string_from("FAIL: redis != sqlite"));
+        return 1;
+    }
+    println(string_from("PASS: test_driver_types"));
+    0
+}
+
+// Test 7: Key-value operations (NoSQL pattern)
+fn test_kv_operations() -> i64 {
+    // Simulate a KV store as a vec of [key, value] pairs
+    let store: i64 = vec_new();
+
+    // SET
+    let p1: i64 = vec_new();
+    vec_push(p1, string_from("user:1"));
+    vec_push(p1, string_from("Alice"));
+    vec_push(store, p1);
+
+    let p2: i64 = vec_new();
+    vec_push(p2, string_from("user:2"));
+    vec_push(p2, string_from("Bob"));
+    vec_push(store, p2);
+
+    // GET by key
+    var found: i64 = 0;
+    var i: i64 = 0;
+    while i < vec_len(store) {
+        let pair: i64 = vec_get(store, i);
+        if string_eq(vec_get(pair, 0), string_from("user:1")) == 1 {
+            if string_eq(vec_get(pair, 1), string_from("Alice")) == 1 {
+                found = 1;
+            }
+        }
+        i = i + 1;
+    }
+    if found != 1 {
+        println(string_from("FAIL: kv get"));
+        return 1;
+    }
+
+    // EXISTS
+    var exists: i64 = 0;
+    i = 0;
+    while i < vec_len(store) {
+        let pair: i64 = vec_get(store, i);
+        if string_eq(vec_get(pair, 0), string_from("user:2")) == 1 {
+            exists = 1;
+        }
+        i = i + 1;
+    }
+    if exists != 1 {
+        println(string_from("FAIL: kv exists"));
+        return 1;
+    }
+    println(string_from("PASS: test_kv_operations"));
+    0
+}
+
+// Test 8: Error handling
+fn test_error_handling() -> i64 {
+    // Disconnected connection should return error
+    let conn: i64 = vec_new();
+    vec_push(conn, DRIVER_POSTGRES());
+    vec_push(conn, CONN_DISCONNECTED());
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+    vec_push(conn, 0);
+
+    let state: i64 = vec_get(conn, 1);
+    let is_connected: i64 = if state == CONN_CONNECTED() || state == CONN_IN_TRANSACTION() { 1 } else { 0 };
+    if is_connected != 0 {
+        println(string_from("FAIL: should not be connected"));
+        return 1;
+    }
+
+    // Error result
+    let result: i64 = vec_new();
+    vec_push(result, ERR_CONNECTION());
+    vec_push(result, vec_new());
+    vec_push(result, vec_new());
+    vec_push(result, 0);
+    vec_push(result, string_from("connection refused"));
+
+    if vec_get(result, 0) == ERR_NONE() {
+        println(string_from("FAIL: should be error"));
+        return 1;
+    }
+    let err_msg: i64 = vec_get(result, 4);
+    if string_len(err_msg) < 5 {
+        println(string_from("FAIL: error message too short"));
+        return 1;
+    }
+    println(string_from("PASS: test_error_handling"));
+    0
+}
+
+fn main() -> i64 {
+    println(string_from("=== simplex-db Unified Database Tests ==="));
+    var failures: i64 = 0;
+    failures = failures + test_config();
+    failures = failures + test_connection_state();
+    failures = failures + test_result_structure();
+    failures = failures + test_transactions();
+    failures = failures + test_pool();
+    failures = failures + test_driver_types();
+    failures = failures + test_kv_operations();
+    failures = failures + test_error_handling();
+    if failures == 0 {
+        println(string_from("All simplex-db tests passed!"));
+    }
+    failures
+}

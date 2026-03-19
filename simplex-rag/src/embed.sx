@@ -1,0 +1,165 @@
+// simplex-rag::embed - Simple Embedding via Character N-Gram Hashing
+//
+// Provides a lightweight embedding function that converts text into
+// fixed-dimensional vectors using character n-gram hashing. No SLM or
+// external model is required.
+//
+// This is a "bag of character n-grams" approach:
+//   1. Extract all character n-grams (bigrams and trigrams)
+//   2. Hash each n-gram to a dimension index
+//   3. Accumulate hashed values in a fixed-size vector
+//   4. Normalize to unit length
+//
+// Quality is limited compared to learned embeddings, but sufficient
+// for basic similarity search and testing without model dependencies.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Simple Embedding
+// =============================================================================
+
+/// Generate a simple embedding for text using character n-gram hashing.
+///
+/// Arguments:
+///   text      - text content (string handle)
+///   dimension - embedding dimension (number of f64 values)
+///
+/// Returns: handle to vec of f64_to_bits values (length = dimension)
+fn simple_embed(text: i64, dimension: i64) -> i64 {
+    let emb = vec_new();
+
+    // Initialize all dimensions to 0.0
+    var d: i64 = 0;
+    while d < dimension {
+        vec_push(emb, f64_to_bits(0.0));
+        d = d + 1;
+    }
+
+    let text_len: i64 = string_len(text);
+    if text_len == 0 { return emb; }
+
+    // Process unigrams
+    var i: i64 = 0;
+    while i < text_len {
+        let ch: i64 = string_char_at(text, i);
+        let h: i64 = hash_char(ch, 0);
+        let idx: i64 = mod_positive(h, dimension);
+        let old: f64 = bits_to_f64(vec_get(emb, idx));
+        vec_set(emb, idx, f64_to_bits(old + 1.0));
+        i = i + 1;
+    }
+
+    // Process bigrams
+    i = 0;
+    while i < text_len - 1 {
+        let ch1: i64 = string_char_at(text, i);
+        let ch2: i64 = string_char_at(text, i + 1);
+        let h: i64 = hash_bigram(ch1, ch2);
+        let idx: i64 = mod_positive(h, dimension);
+        let old: f64 = bits_to_f64(vec_get(emb, idx));
+        vec_set(emb, idx, f64_to_bits(old + 2.0));
+        i = i + 1;
+    }
+
+    // Process trigrams
+    i = 0;
+    while i < text_len - 2 {
+        let ch1: i64 = string_char_at(text, i);
+        let ch2: i64 = string_char_at(text, i + 1);
+        let ch3: i64 = string_char_at(text, i + 2);
+        let h: i64 = hash_trigram(ch1, ch2, ch3);
+        let idx: i64 = mod_positive(h, dimension);
+        let old: f64 = bits_to_f64(vec_get(emb, idx));
+        vec_set(emb, idx, f64_to_bits(old + 3.0));
+        i = i + 1;
+    }
+
+    // Normalize to unit length
+    var sum_sq: f64 = 0.0;
+    d = 0;
+    while d < dimension {
+        let val: f64 = bits_to_f64(vec_get(emb, d));
+        sum_sq = sum_sq + val * val;
+        d = d + 1;
+    }
+
+    if sum_sq > 0.000001 {
+        let norm: f64 = sqrt(sum_sq);
+        d = 0;
+        while d < dimension {
+            let val: f64 = bits_to_f64(vec_get(emb, d));
+            vec_set(emb, d, f64_to_bits(val / norm));
+            d = d + 1;
+        }
+    }
+
+    emb
+}
+
+// =============================================================================
+// Hash Functions
+// =============================================================================
+
+/// Hash a single character to an i64 using a simple multiplicative hash.
+fn hash_char(ch: i64, seed: i64) -> i64 {
+    var h: i64 = seed + ch * 2654435761;
+    h = h + (h / 65536);
+    if h < 0 { h = 0 - h; }
+    h
+}
+
+/// Hash a bigram (two characters) to an i64.
+fn hash_bigram(ch1: i64, ch2: i64) -> i64 {
+    var h: i64 = ch1 * 2654435761 + ch2 * 40503;
+    h = h + (h / 65536);
+    if h < 0 { h = 0 - h; }
+    h
+}
+
+/// Hash a trigram (three characters) to an i64.
+fn hash_trigram(ch1: i64, ch2: i64, ch3: i64) -> i64 {
+    var h: i64 = ch1 * 2654435761 + ch2 * 40503 + ch3 * 1103515245;
+    h = h + (h / 65536);
+    if h < 0 { h = 0 - h; }
+    h
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/// Compute a positive modulo (handles negative inputs).
+fn mod_positive(a: i64, m: i64) -> i64 {
+    if m <= 0 { return 0; }
+    var r: i64 = a - (a / m) * m;
+    if r < 0 { r = r + m; }
+    r
+}
+
+// =============================================================================
+// Batch Embedding
+// =============================================================================
+
+/// Generate embeddings for a batch of texts.
+///
+/// Arguments:
+///   texts     - handle to vec of text string handles
+///   dimension - embedding dimension
+///
+/// Returns: handle to vec of embedding handles
+fn batch_embed(texts: i64, dimension: i64) -> i64 {
+    let result = vec_new();
+    let n: i64 = vec_len(texts);
+
+    var i: i64 = 0;
+    while i < n {
+        let text: i64 = vec_get(texts, i);
+        let emb: i64 = simple_embed(text, dimension);
+        vec_push(result, emb);
+        i = i + 1;
+    }
+
+    result
+}

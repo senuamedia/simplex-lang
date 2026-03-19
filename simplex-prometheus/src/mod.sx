@@ -1,0 +1,101 @@
+// simplex-prometheus - Prometheus Metrics for Simplex
+//
+// Provides Prometheus-compatible metric collection and exposition.
+// All metrics are stored as vec handles (i64). Supports counters,
+// gauges, and histograms with labels and the standard Prometheus
+// text exposition format.
+//
+// # Modules
+//
+// - `counter`: Monotonically increasing counters
+// - `gauge`: Values that can go up and down
+// - `histogram`: Observation distribution with buckets
+// - `registry`: Global metric registry
+// - `exposition`: Prometheus text format output
+// - `server`: HTTP /metrics endpoint
+//
+// # Example
+//
+// ```simplex
+// use simplex_prometheus::counter::*;
+// use simplex_prometheus::registry::*;
+// use simplex_prometheus::exposition::*;
+//
+// fn main() {
+//     let reg = prom_registry_new();
+//     let ctr = prom_counter_new("http_requests_total", "Total HTTP requests");
+//     prom_counter_inc(ctr);
+//     prom_register(reg, ctr);
+//     let output = prom_export(reg);
+//     println(output);
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Public API - Module Exports
+// =============================================================================
+
+pub mod counter;
+pub mod gauge;
+pub mod histogram;
+pub mod registry;
+pub mod exposition;
+pub mod server;
+
+// =============================================================================
+// Metric Type Constants
+// =============================================================================
+
+// Metric type tags stored at slot 0 of each metric vec
+// Use functions instead of const to comply with Simplex patterns
+
+/// Counter metric type tag
+pub fn METRIC_COUNTER() -> i64 { 1 }
+
+/// Gauge metric type tag
+pub fn METRIC_GAUGE() -> i64 { 2 }
+
+/// Histogram metric type tag
+pub fn METRIC_HISTOGRAM() -> i64 { 3 }
+
+// =============================================================================
+// Metric Vec Layout (common prefix)
+// =============================================================================
+//
+// All metric vecs share this layout for the first 5 slots:
+//   [0] = metric_type (METRIC_COUNTER, METRIC_GAUGE, METRIC_HISTOGRAM)
+//   [1] = name (string handle)
+//   [2] = help_text (string handle)
+//   [3] = labels_vec (vec of label pairs: [key, value, key, value, ...])
+//   [4+] = type-specific data
+//
+// Counter:
+//   [4] = value (i64, integer count)
+//
+// Gauge:
+//   [4] = value (i64, integer value)
+//
+// Histogram:
+//   [4] = sum (i64, total of observed values)
+//   [5] = count (i64, number of observations)
+//   [6] = buckets_vec (vec of [upper_bound, count] pairs)
+//   [7] = observations_vec (vec of raw observations for quantiles)
+
+// =============================================================================
+// Common Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_from(s: &str) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn time_now() -> i64;
+extern fn print_i64(n: i64) -> i64;
