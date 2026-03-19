@@ -1,0 +1,1083 @@
+// Simplex OAuth 2.0 Library
+// OAuth 2.0 Authorization Code flow with PKCE support
+//
+// Implements the OAuth 2.0 Authorization Code Grant (RFC 6749) with
+// Proof Key for Code Exchange (PKCE, RFC 7636) for secure authorization.
+//
+// # Usage
+//
+// ```simplex
+// use simplex_std::oauth::{oauth_config_new, oauth_auth_url, oauth_exchange_code};
+//
+// // Configure OAuth client
+// let config = oauth_config_new(
+//     "client_id", "client_secret",
+//     "https://auth.example.com/authorize",
+//     "https://auth.example.com/token",
+//     "https://myapp.com/callback"
+// );
+// let config = oauth_add_scope(config, "openid");
+// let config = oauth_add_scope(config, "profile");
+//
+// // Generate authorization URL with PKCE
+// let auth = oauth_auth_url(config, "random-state-value");
+// // Redirect user to auth URL...
+//
+// // Exchange authorization code for tokens
+// let token = oauth_exchange_code(config, "auth-code-from-callback");
+// let access = oauth_token_access(token);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+/// SHA-256 hash returning hex string
+extern fn sha256_hex(data: i64) -> i64;
+
+/// Generate cryptographic random token (hex string)
+extern fn generate_token(len: i64) -> i64;
+
+/// String concatenation
+extern fn string_concat(a: i64, b: i64) -> i64;
+
+/// String equality check
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+/// String length
+extern fn string_length(s: i64) -> i64;
+
+/// Get character at position (returns ASCII code)
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+
+/// Get substring
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+
+/// Print to stdout
+extern fn println(s: i64) -> i64;
+
+/// Create a vec (runtime handle)
+extern fn vec_new() -> i64;
+
+/// Push value to vec
+extern fn vec_push(v: i64, val: i64) -> i64;
+
+/// Get vec element
+extern fn vec_get(v: i64, idx: i64) -> i64;
+
+/// Get vec length
+extern fn vec_len(v: i64) -> i64;
+
+/// Integer to string
+extern fn int_to_string(n: i64) -> i64;
+
+/// String to integer
+extern fn string_to_int(s: i64) -> i64;
+
+/// Create a single-character string from ASCII code
+extern fn string_char_create(code: i64) -> i64;
+
+/// HTTP POST request
+extern fn http_request_new(method: i64, url: i64) -> i64;
+extern fn http_request_header(req: i64, name: i64, value: i64) -> i64;
+extern fn http_request_body(req: i64, body: i64) -> i64;
+extern fn http_request_send(req: i64) -> i64;
+extern fn http_request_free(req: i64) -> i64;
+extern fn http_response_status(resp: i64) -> i64;
+extern fn http_response_body(resp: i64) -> i64;
+extern fn http_response_free(resp: i64) -> i64;
+
+/// JSON functions
+extern fn json_parse_simple(s: i64) -> i64;
+extern fn json_get_sx(obj: i64, key: i64) -> i64;
+extern fn json_as_string(val: i64) -> i64;
+extern fn json_as_i64(val: i64) -> i64;
+extern fn json_is_string(val: i64) -> i64;
+extern fn json_is_number(val: i64) -> i64;
+extern fn json_is_null(val: i64) -> i64;
+extern fn json_stringify(val: i64) -> i64;
+
+// =============================================================================
+// URL Encoding
+// =============================================================================
+
+/// URL-encode a string (percent-encoding per RFC 3986)
+///
+/// Encodes all characters except unreserved characters:
+/// A-Z, a-z, 0-9, '-', '_', '.', '~'
+///
+/// # Arguments
+/// - `s`: string handle to encode
+///
+/// # Returns
+/// URL-encoded string handle
+///
+/// # Example
+/// ```simplex
+/// let encoded = url_encode("hello world");
+/// // encoded = "hello%20world"
+/// ```
+pub fn url_encode(s: i64) -> i64 {
+    let len: i64 = string_length(s);
+    let mut result: i64 = "";
+    let mut i: i64 = 0;
+
+    while i < len {
+        let ch: i64 = string_char_at(s, i);
+
+        if is_unreserved_char(ch) == 1 {
+            result = string_concat(result, string_char_create(ch));
+        } else if ch == 32 {
+            // Space -> %20
+            result = string_concat(result, "%20");
+        } else {
+            // Percent-encode: %XX
+            let hi: i64 = ch / 16;
+            let lo: i64 = ch - hi * 16;
+            let mut enc: i64 = "%";
+            enc = string_concat(enc, hex_digit(hi));
+            enc = string_concat(enc, hex_digit(lo));
+            result = string_concat(result, enc);
+        }
+
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Check if a character is unreserved (RFC 3986)
+/// Unreserved: A-Z, a-z, 0-9, '-', '_', '.', '~'
+fn is_unreserved_char(ch: i64) -> i64 {
+    // A-Z (65-90)
+    if ch >= 65 {
+        if ch <= 90 {
+            return 1;
+        }
+    }
+    // a-z (97-122)
+    if ch >= 97 {
+        if ch <= 122 {
+            return 1;
+        }
+    }
+    // 0-9 (48-57)
+    if ch >= 48 {
+        if ch <= 57 {
+            return 1;
+        }
+    }
+    // - (45)
+    if ch == 45 { return 1; }
+    // _ (95)
+    if ch == 95 { return 1; }
+    // . (46)
+    if ch == 46 { return 1; }
+    // ~ (126)
+    if ch == 126 { return 1; }
+
+    0
+}
+
+/// Convert a nibble value (0-15) to a hex digit string
+fn hex_digit(val: i64) -> i64 {
+    if val < 10 {
+        // 0-9 -> ASCII 48-57
+        string_char_create(val + 48)
+    } else {
+        // A-F -> ASCII 65-70
+        string_char_create(val - 10 + 65)
+    }
+}
+
+/// URL-decode a percent-encoded string
+///
+/// # Arguments
+/// - `s`: URL-encoded string handle
+///
+/// # Returns
+/// Decoded string handle
+pub fn url_decode(s: i64) -> i64 {
+    let len: i64 = string_length(s);
+    let mut result: i64 = "";
+    let mut i: i64 = 0;
+
+    while i < len {
+        let ch: i64 = string_char_at(s, i);
+
+        if ch == 37 {
+            // % sign - read next two hex digits
+            if i + 2 < len {
+                let hi: i64 = hex_char_val(string_char_at(s, i + 1));
+                let lo: i64 = hex_char_val(string_char_at(s, i + 2));
+                if hi >= 0 {
+                    if lo >= 0 {
+                        let byte_val: i64 = hi * 16 + lo;
+                        result = string_concat(result, string_char_create(byte_val));
+                        i = i + 3;
+                        continue;
+                    }
+                }
+            }
+            // Invalid percent encoding, keep as-is
+            result = string_concat(result, "%");
+            i = i + 1;
+        } else if ch == 43 {
+            // + -> space (application/x-www-form-urlencoded)
+            result = string_concat(result, " ");
+            i = i + 1;
+        } else {
+            result = string_concat(result, string_char_create(ch));
+            i = i + 1;
+        }
+    }
+
+    result
+}
+
+/// Convert a hex character to its numeric value (0-15)
+/// Returns -1 for invalid characters
+fn hex_char_val(ch: i64) -> i64 {
+    // 0-9 (48-57)
+    if ch >= 48 {
+        if ch <= 57 {
+            return ch - 48;
+        }
+    }
+    // A-F (65-70)
+    if ch >= 65 {
+        if ch <= 70 {
+            return ch - 65 + 10;
+        }
+    }
+    // a-f (97-102)
+    if ch >= 97 {
+        if ch <= 102 {
+            return ch - 97 + 10;
+        }
+    }
+    -1
+}
+
+// Use continue as a label concept (the compiler handles while-loop continues)
+// We just restructure the loop to avoid it
+// Actually the above url_decode uses continue which the simplex compiler
+// should support in while loops. If not, we restructure:
+
+// =============================================================================
+// Base64url (for PKCE)
+// =============================================================================
+
+/// Base64url encode (no padding) for PKCE code challenge
+/// Same implementation as jwt.sx but duplicated here to avoid circular deps
+fn b64url_char(val: i64) -> i64 {
+    if val < 26 {
+        val + 65
+    } else if val < 52 {
+        val - 26 + 97
+    } else if val < 62 {
+        val - 52 + 48
+    } else if val == 62 {
+        45
+    } else {
+        95
+    }
+}
+
+fn base64url_encode_internal(data: i64) -> i64 {
+    let len: i64 = string_length(data);
+    let mut result: i64 = "";
+    let mut i: i64 = 0;
+
+    while i + 3 <= len {
+        let b0: i64 = string_char_at(data, i);
+        let b1: i64 = string_char_at(data, i + 1);
+        let b2: i64 = string_char_at(data, i + 2);
+
+        let c0: i64 = b0 / 4;
+        let c1: i64 = (b0 - c0 * 4) * 16 + b1 / 16;
+        let c2: i64 = (b1 - (b1 / 16) * 16) * 4 + b2 / 64;
+        let c3: i64 = b2 - (b2 / 64) * 64;
+
+        result = string_concat(result, string_char_create(b64url_char(c0)));
+        result = string_concat(result, string_char_create(b64url_char(c1)));
+        result = string_concat(result, string_char_create(b64url_char(c2)));
+        result = string_concat(result, string_char_create(b64url_char(c3)));
+
+        i = i + 3;
+    }
+
+    let remaining: i64 = len - i;
+    if remaining == 1 {
+        let b0: i64 = string_char_at(data, i);
+        let c0: i64 = b0 / 4;
+        let c1: i64 = (b0 - c0 * 4) * 16;
+        result = string_concat(result, string_char_create(b64url_char(c0)));
+        result = string_concat(result, string_char_create(b64url_char(c1)));
+    } else if remaining == 2 {
+        let b0: i64 = string_char_at(data, i);
+        let b1: i64 = string_char_at(data, i + 1);
+        let c0: i64 = b0 / 4;
+        let c1: i64 = (b0 - c0 * 4) * 16 + b1 / 16;
+        let c2: i64 = (b1 - (b1 / 16) * 16) * 4;
+        result = string_concat(result, string_char_create(b64url_char(c0)));
+        result = string_concat(result, string_char_create(b64url_char(c1)));
+        result = string_concat(result, string_char_create(b64url_char(c2)));
+    }
+
+    result
+}
+
+// =============================================================================
+// PKCE (Proof Key for Code Exchange)
+// =============================================================================
+
+/// Generate a random PKCE code verifier
+///
+/// Creates a 43-128 character string using unreserved characters.
+/// Per RFC 7636, the verifier must be 43-128 characters from [A-Z][a-z][0-9]-._~
+///
+/// # Returns
+/// A random code verifier string handle (64 hex characters)
+///
+/// # Example
+/// ```simplex
+/// let verifier = pkce_code_verifier();
+/// let challenge = pkce_code_challenge(verifier);
+/// ```
+pub fn pkce_code_verifier() -> i64 {
+    // Generate 32 random bytes as hex = 64 characters
+    // All hex characters are in the unreserved set
+    generate_token(32)
+}
+
+/// Generate a PKCE code challenge from a verifier (S256 method)
+///
+/// Computes: BASE64URL(SHA256(verifier))
+/// Per RFC 7636 Section 4.2
+///
+/// # Arguments
+/// - `verifier`: code verifier string handle
+///
+/// # Returns
+/// Code challenge string handle (base64url-encoded SHA-256 hash)
+///
+/// # Example
+/// ```simplex
+/// let verifier = pkce_code_verifier();
+/// let challenge = pkce_code_challenge(verifier);
+/// // Use challenge in authorization URL
+/// ```
+pub fn pkce_code_challenge(verifier: i64) -> i64 {
+    let hash: i64 = sha256_hex(verifier);
+    base64url_encode_internal(hash)
+}
+
+// =============================================================================
+// OAuth Configuration
+// =============================================================================
+
+/// Create a new OAuth 2.0 configuration
+///
+/// Sets up the client credentials and endpoint URLs for an OAuth provider.
+/// The configuration is stored as a vec:
+/// [client_id, client_secret, auth_url, token_url, redirect_uri, scopes_vec, pkce_verifier]
+///
+/// Index layout:
+///   0: client_id
+///   1: client_secret
+///   2: auth_url (authorization endpoint)
+///   3: token_url (token endpoint)
+///   4: redirect_uri
+///   5: scopes vec handle
+///   6: pkce code_verifier (generated on creation)
+///
+/// # Arguments
+/// - `client_id`: OAuth client ID
+/// - `client_secret`: OAuth client secret
+/// - `auth_url`: authorization endpoint URL
+/// - `token_url`: token endpoint URL
+/// - `redirect_uri`: callback URL after authorization
+///
+/// # Returns
+/// Configuration vec handle
+///
+/// # Example
+/// ```simplex
+/// let config = oauth_config_new(
+///     "my-client-id", "my-secret",
+///     "https://accounts.google.com/o/oauth2/v2/auth",
+///     "https://oauth2.googleapis.com/token",
+///     "http://localhost:8080/callback"
+/// );
+/// ```
+pub fn oauth_config_new(client_id: i64, client_secret: i64, auth_url: i64, token_url: i64, redirect_uri: i64) -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, client_id);        // 0
+    vec_push(config, client_secret);    // 1
+    vec_push(config, auth_url);         // 2
+    vec_push(config, token_url);        // 3
+    vec_push(config, redirect_uri);     // 4
+    vec_push(config, vec_new());        // 5: scopes
+    vec_push(config, pkce_code_verifier()); // 6: PKCE verifier
+    config
+}
+
+/// Add a scope to the OAuth configuration
+///
+/// # Arguments
+/// - `config`: configuration vec handle
+/// - `scope`: scope string to add (e.g. "openid", "profile", "email")
+///
+/// # Returns
+/// The configuration handle (for chaining)
+///
+/// # Example
+/// ```simplex
+/// let config = oauth_config_new(...);
+/// let config = oauth_add_scope(config, "openid");
+/// let config = oauth_add_scope(config, "profile");
+/// ```
+pub fn oauth_add_scope(config: i64, scope: i64) -> i64 {
+    let scopes: i64 = vec_get(config, 5);
+    vec_push(scopes, scope);
+    config
+}
+
+/// Get the scopes as a space-separated string
+fn oauth_scopes_string(config: i64) -> i64 {
+    let scopes: i64 = vec_get(config, 5);
+    let count: i64 = vec_len(scopes);
+    let mut result: i64 = "";
+    let mut i: i64 = 0;
+
+    while i < count {
+        if i > 0 {
+            result = string_concat(result, " ");
+        }
+        result = string_concat(result, vec_get(scopes, i));
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Authorization URL Generation
+// =============================================================================
+
+/// Generate the OAuth 2.0 authorization URL
+///
+/// Builds the URL that the user should be redirected to for authorization.
+/// Includes PKCE code challenge (S256 method) and state parameter for CSRF protection.
+///
+/// # Arguments
+/// - `config`: configuration vec handle
+/// - `state`: random state string for CSRF protection
+///
+/// # Returns
+/// Complete authorization URL string handle
+///
+/// # Example
+/// ```simplex
+/// let url = oauth_auth_url(config, "random-csrf-state");
+/// // Redirect user to this URL
+/// ```
+pub fn oauth_auth_url(config: i64, state: i64) -> i64 {
+    let auth_url: i64 = vec_get(config, 2);
+    let client_id: i64 = vec_get(config, 0);
+    let redirect_uri: i64 = vec_get(config, 4);
+    let verifier: i64 = vec_get(config, 6);
+
+    // Build query parameters
+    let mut url: i64 = auth_url;
+    url = string_concat(url, "?response_type=code");
+    url = string_concat(url, "&client_id=");
+    url = string_concat(url, url_encode(client_id));
+    url = string_concat(url, "&redirect_uri=");
+    url = string_concat(url, url_encode(redirect_uri));
+    url = string_concat(url, "&state=");
+    url = string_concat(url, url_encode(state));
+
+    // Add scopes if any
+    let scopes_str: i64 = oauth_scopes_string(config);
+    let scopes_len: i64 = string_length(scopes_str);
+    if scopes_len > 0 {
+        url = string_concat(url, "&scope=");
+        url = string_concat(url, url_encode(scopes_str));
+    }
+
+    // Add PKCE challenge
+    let challenge: i64 = pkce_code_challenge(verifier);
+    url = string_concat(url, "&code_challenge=");
+    url = string_concat(url, url_encode(challenge));
+    url = string_concat(url, "&code_challenge_method=S256");
+
+    url
+}
+
+/// Get the PKCE code verifier from the config
+/// (Needed when exchanging the authorization code)
+///
+/// # Arguments
+/// - `config`: configuration vec handle
+///
+/// # Returns
+/// The PKCE code verifier string handle
+pub fn oauth_get_verifier(config: i64) -> i64 {
+    vec_get(config, 6)
+}
+
+// =============================================================================
+// Token Exchange
+// =============================================================================
+
+/// Exchange an authorization code for tokens
+///
+/// Sends a POST request to the token endpoint with the authorization code,
+/// PKCE verifier, and client credentials to obtain access and refresh tokens.
+///
+/// # Arguments
+/// - `config`: configuration vec handle
+/// - `code`: authorization code received from the callback
+///
+/// # Returns
+/// Token response vec handle:
+///   [access_token, refresh_token, expires_in, token_type, scope, raw_json]
+///   Index 0: access_token string
+///   Index 1: refresh_token string (empty if not provided)
+///   Index 2: expires_in string (seconds)
+///   Index 3: token_type string (usually "Bearer")
+///   Index 4: scope string
+///   Index 5: raw JSON response handle
+///
+/// # Example
+/// ```simplex
+/// let token = oauth_exchange_code(config, "auth-code");
+/// let access = oauth_token_access(token);
+/// ```
+pub fn oauth_exchange_code(config: i64, code: i64) -> i64 {
+    let token_url: i64 = vec_get(config, 3);
+    let client_id: i64 = vec_get(config, 0);
+    let client_secret: i64 = vec_get(config, 1);
+    let redirect_uri: i64 = vec_get(config, 4);
+    let verifier: i64 = vec_get(config, 6);
+
+    // Build POST body (application/x-www-form-urlencoded)
+    let mut body: i64 = "grant_type=authorization_code";
+    body = string_concat(body, "&code=");
+    body = string_concat(body, url_encode(code));
+    body = string_concat(body, "&redirect_uri=");
+    body = string_concat(body, url_encode(redirect_uri));
+    body = string_concat(body, "&client_id=");
+    body = string_concat(body, url_encode(client_id));
+    body = string_concat(body, "&client_secret=");
+    body = string_concat(body, url_encode(client_secret));
+    body = string_concat(body, "&code_verifier=");
+    body = string_concat(body, url_encode(verifier));
+
+    // Send POST request
+    let req: i64 = http_request_new("POST", token_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Accept", "application/json");
+    http_request_body(req, body);
+    let resp: i64 = http_request_send(req);
+
+    // Parse response
+    let resp_body: i64 = http_response_body(resp);
+    let token_resp: i64 = parse_token_response(resp_body);
+
+    http_request_free(req);
+    http_response_free(resp);
+
+    token_resp
+}
+
+/// Refresh an expired access token using a refresh token
+///
+/// # Arguments
+/// - `config`: configuration vec handle
+/// - `refresh_token`: the refresh token string
+///
+/// # Returns
+/// Token response vec handle (same format as oauth_exchange_code)
+///
+/// # Example
+/// ```simplex
+/// let new_token = oauth_refresh_token(config, refresh_tok);
+/// let new_access = oauth_token_access(new_token);
+/// ```
+pub fn oauth_refresh_token(config: i64, refresh_token: i64) -> i64 {
+    let token_url: i64 = vec_get(config, 3);
+    let client_id: i64 = vec_get(config, 0);
+    let client_secret: i64 = vec_get(config, 1);
+
+    // Build POST body
+    let mut body: i64 = "grant_type=refresh_token";
+    body = string_concat(body, "&refresh_token=");
+    body = string_concat(body, url_encode(refresh_token));
+    body = string_concat(body, "&client_id=");
+    body = string_concat(body, url_encode(client_id));
+    body = string_concat(body, "&client_secret=");
+    body = string_concat(body, url_encode(client_secret));
+
+    // Send POST request
+    let req: i64 = http_request_new("POST", token_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Accept", "application/json");
+    http_request_body(req, body);
+    let resp: i64 = http_request_send(req);
+
+    let resp_body: i64 = http_response_body(resp);
+    let token_resp: i64 = parse_token_response(resp_body);
+
+    http_request_free(req);
+    http_response_free(resp);
+
+    token_resp
+}
+
+/// Parse a JSON token response into the token vec format
+fn parse_token_response(body: i64) -> i64 {
+    let result: i64 = vec_new();
+    let json: i64 = json_parse_simple(body);
+
+    // Extract fields (use empty string as default)
+    let access: i64 = json_get_string_field(json, "access_token");
+    let refresh: i64 = json_get_string_field(json, "refresh_token");
+    let expires: i64 = json_get_field_as_string(json, "expires_in");
+    let token_type: i64 = json_get_string_field(json, "token_type");
+    let scope: i64 = json_get_string_field(json, "scope");
+
+    vec_push(result, access);       // 0: access_token
+    vec_push(result, refresh);      // 1: refresh_token
+    vec_push(result, expires);      // 2: expires_in
+    vec_push(result, token_type);   // 3: token_type
+    vec_push(result, scope);        // 4: scope
+    vec_push(result, json);         // 5: raw JSON
+
+    result
+}
+
+/// Extract a string field from a JSON object, return empty string if missing
+fn json_get_string_field(obj: i64, key: i64) -> i64 {
+    let val: i64 = json_get_sx(obj, key);
+    if json_is_string(val) == 1 {
+        json_as_string(val)
+    } else {
+        ""
+    }
+}
+
+/// Extract a field from JSON and convert to string (handles numbers too)
+fn json_get_field_as_string(obj: i64, key: i64) -> i64 {
+    let val: i64 = json_get_sx(obj, key);
+    if json_is_string(val) == 1 {
+        json_as_string(val)
+    } else if json_is_number(val) == 1 {
+        int_to_string(json_as_i64(val))
+    } else {
+        ""
+    }
+}
+
+// =============================================================================
+// Token Response Accessors
+// =============================================================================
+
+/// Get the access token from a token response
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// Access token string handle
+pub fn oauth_token_access(token: i64) -> i64 {
+    vec_get(token, 0)
+}
+
+/// Get the refresh token from a token response
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// Refresh token string handle (empty if not provided)
+pub fn oauth_token_refresh(token: i64) -> i64 {
+    vec_get(token, 1)
+}
+
+/// Get the expiration time (in seconds) from a token response
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// Expires-in value as integer (seconds), or 0 if not available
+pub fn oauth_token_expires_in(token: i64) -> i64 {
+    let expires_str: i64 = vec_get(token, 2);
+    let len: i64 = string_length(expires_str);
+    if len == 0 {
+        return 0;
+    }
+    string_to_int(expires_str)
+}
+
+/// Get the token type from a token response
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// Token type string handle (usually "Bearer")
+pub fn oauth_token_type(token: i64) -> i64 {
+    vec_get(token, 3)
+}
+
+/// Get the scope from a token response
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// Scope string handle
+pub fn oauth_token_scope(token: i64) -> i64 {
+    vec_get(token, 4)
+}
+
+/// Get the raw JSON response handle
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// Raw JSON object handle for accessing provider-specific fields
+pub fn oauth_token_raw(token: i64) -> i64 {
+    vec_get(token, 5)
+}
+
+/// Check if token response contains an error
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// 1 if error present, 0 if successful
+pub fn oauth_token_is_error(token: i64) -> i64 {
+    let json: i64 = vec_get(token, 5);
+    let error: i64 = json_get_sx(json, "error");
+    if json_is_null(error) == 1 {
+        0
+    } else {
+        1
+    }
+}
+
+/// Get error description from a failed token response
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// Error description string, or empty string if no error
+pub fn oauth_token_error(token: i64) -> i64 {
+    let json: i64 = vec_get(token, 5);
+    let error: i64 = json_get_sx(json, "error_description");
+    if json_is_string(error) == 1 {
+        json_as_string(error)
+    } else {
+        let err: i64 = json_get_sx(json, "error");
+        if json_is_string(err) == 1 {
+            json_as_string(err)
+        } else {
+            ""
+        }
+    }
+}
+
+// =============================================================================
+// Authorization Header Helper
+// =============================================================================
+
+/// Build an Authorization header value from a token response
+///
+/// # Arguments
+/// - `token`: token response vec handle
+///
+/// # Returns
+/// Authorization header value (e.g. "Bearer eyJ...")
+pub fn oauth_auth_header(token: i64) -> i64 {
+    let token_type: i64 = oauth_token_type(token);
+    let access: i64 = oauth_token_access(token);
+    let mut header: i64 = token_type;
+    header = string_concat(header, " ");
+    header = string_concat(header, access);
+    header
+}
+
+// =============================================================================
+// Provider Presets
+// =============================================================================
+
+/// Create an OAuth configuration pre-configured for GitHub
+///
+/// Sets up the correct authorization and token URLs for GitHub OAuth Apps.
+///
+/// # Arguments
+/// - `client_id`: GitHub OAuth App client ID
+/// - `client_secret`: GitHub OAuth App client secret
+///
+/// # Returns
+/// Configuration vec handle with GitHub endpoints
+///
+/// # Example
+/// ```simplex
+/// let config = oauth_github("my-github-client-id", "my-github-secret");
+/// let config = oauth_add_scope(config, "user");
+/// let config = oauth_add_scope(config, "repo");
+/// ```
+pub fn oauth_github(client_id: i64, client_secret: i64) -> i64 {
+    oauth_config_new(
+        client_id,
+        client_secret,
+        "https://github.com/login/oauth/authorize",
+        "https://github.com/login/oauth/access_token",
+        "http://localhost:8080/callback"
+    )
+}
+
+/// Create an OAuth configuration pre-configured for Google
+///
+/// Sets up the correct authorization and token URLs for Google OAuth 2.0.
+///
+/// # Arguments
+/// - `client_id`: Google OAuth client ID
+/// - `client_secret`: Google OAuth client secret
+///
+/// # Returns
+/// Configuration vec handle with Google endpoints
+///
+/// # Example
+/// ```simplex
+/// let config = oauth_google("my-google-client-id", "my-google-secret");
+/// let config = oauth_add_scope(config, "openid");
+/// let config = oauth_add_scope(config, "profile");
+/// let config = oauth_add_scope(config, "email");
+/// ```
+pub fn oauth_google(client_id: i64, client_secret: i64) -> i64 {
+    oauth_config_new(
+        client_id,
+        client_secret,
+        "https://accounts.google.com/o/oauth2/v2/auth",
+        "https://oauth2.googleapis.com/token",
+        "http://localhost:8080/callback"
+    )
+}
+
+/// Create an OAuth configuration pre-configured for Microsoft/Azure AD
+///
+/// # Arguments
+/// - `client_id`: Azure AD application client ID
+/// - `client_secret`: Azure AD client secret
+/// - `tenant`: Azure AD tenant ID (use "common" for multi-tenant)
+///
+/// # Returns
+/// Configuration vec handle with Microsoft endpoints
+pub fn oauth_microsoft(client_id: i64, client_secret: i64, tenant: i64) -> i64 {
+    let mut auth_url: i64 = "https://login.microsoftonline.com/";
+    auth_url = string_concat(auth_url, tenant);
+    auth_url = string_concat(auth_url, "/oauth2/v2.0/authorize");
+
+    let mut token_url: i64 = "https://login.microsoftonline.com/";
+    token_url = string_concat(token_url, tenant);
+    token_url = string_concat(token_url, "/oauth2/v2.0/token");
+
+    oauth_config_new(
+        client_id,
+        client_secret,
+        auth_url,
+        token_url,
+        "http://localhost:8080/callback"
+    )
+}
+
+// =============================================================================
+// OAuth State Management
+// =============================================================================
+
+/// Generate a random state parameter for CSRF protection
+///
+/// # Returns
+/// Random hex string suitable for use as OAuth state parameter
+pub fn oauth_generate_state() -> i64 {
+    generate_token(16)
+}
+
+/// Validate that the state parameter matches what was sent
+///
+/// # Arguments
+/// - `expected`: the state value that was sent in the auth URL
+/// - `received`: the state value received in the callback
+///
+/// # Returns
+/// 1 if states match, 0 otherwise
+pub fn oauth_validate_state(expected: i64, received: i64) -> i64 {
+    intrinsic_string_eq(expected, received)
+}
+
+// =============================================================================
+// Query String Utilities
+// =============================================================================
+
+/// Build a query string from a vec of [key, value] pairs
+///
+/// # Arguments
+/// - `params`: vec where even indices are keys and odd indices are values
+///
+/// # Returns
+/// URL-encoded query string (without leading ?)
+pub fn build_query_string(params: i64) -> i64 {
+    let len: i64 = vec_len(params);
+    let mut result: i64 = "";
+    let mut i: i64 = 0;
+
+    while i < len {
+        if i > 0 {
+            result = string_concat(result, "&");
+        }
+        let key: i64 = vec_get(params, i);
+        let val: i64 = vec_get(params, i + 1);
+        result = string_concat(result, url_encode(key));
+        result = string_concat(result, "=");
+        result = string_concat(result, url_encode(val));
+        i = i + 2;
+    }
+
+    result
+}
+
+/// Parse a query string into a vec of [key, value] pairs
+///
+/// # Arguments
+/// - `query`: query string (without leading ?)
+///
+/// # Returns
+/// Vec handle where even indices are keys and odd indices are values
+pub fn parse_query_string(query: i64) -> i64 {
+    let result: i64 = vec_new();
+    let len: i64 = string_length(query);
+    let mut start: i64 = 0;
+    let mut i: i64 = 0;
+    let mut key: i64 = "";
+    let mut in_value: i64 = 0;
+
+    while i <= len {
+        let at_end: i64 = if i == len { 1 } else { 0 };
+        let ch: i64 = if at_end == 0 { string_char_at(query, i) } else { 0 };
+
+        if ch == 61 {
+            // = sign: end of key
+            if in_value == 0 {
+                key = url_decode(string_substring(query, start, i - start));
+                start = i + 1;
+                in_value = 1;
+            }
+        } else if ch == 38 {
+            // & sign: end of pair
+            let val: i64 = url_decode(string_substring(query, start, i - start));
+            vec_push(result, key);
+            vec_push(result, val);
+            start = i + 1;
+            in_value = 0;
+            key = "";
+        } else if at_end == 1 {
+            // End of string: save last pair
+            if in_value == 1 {
+                let val2: i64 = url_decode(string_substring(query, start, i - start));
+                vec_push(result, key);
+                vec_push(result, val2);
+            } else if i > start {
+                // Key without value
+                let key2: i64 = url_decode(string_substring(query, start, i - start));
+                vec_push(result, key2);
+                vec_push(result, "");
+            }
+        }
+
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Look up a value in a parsed query string vec
+///
+/// # Arguments
+/// - `params`: vec of [key, value] pairs
+/// - `key`: key to look up
+///
+/// # Returns
+/// Value string handle, or empty string if not found
+pub fn query_get(params: i64, key: i64) -> i64 {
+    let len: i64 = vec_len(params);
+    let mut i: i64 = 0;
+    while i < len {
+        if intrinsic_string_eq(vec_get(params, i), key) == 1 {
+            return vec_get(params, i + 1);
+        }
+        i = i + 2;
+    }
+    ""
+}
+
+// =============================================================================
+// OAuth Configuration Accessors
+// =============================================================================
+
+/// Get the client ID from configuration
+pub fn oauth_client_id(config: i64) -> i64 {
+    vec_get(config, 0)
+}
+
+/// Get the client secret from configuration
+pub fn oauth_client_secret(config: i64) -> i64 {
+    vec_get(config, 1)
+}
+
+/// Get the authorization URL from configuration
+pub fn oauth_auth_endpoint(config: i64) -> i64 {
+    vec_get(config, 2)
+}
+
+/// Get the token URL from configuration
+pub fn oauth_token_endpoint(config: i64) -> i64 {
+    vec_get(config, 3)
+}
+
+/// Get the redirect URI from configuration
+pub fn oauth_redirect_uri(config: i64) -> i64 {
+    vec_get(config, 4)
+}
+
+/// Set the redirect URI on an existing configuration
+///
+/// # Arguments
+/// - `config`: configuration vec handle
+/// - `uri`: new redirect URI
+///
+/// # Returns
+/// A new configuration vec handle with the updated redirect URI
+pub fn oauth_set_redirect_uri(config: i64, uri: i64) -> i64 {
+    let new_config: i64 = vec_new();
+    vec_push(new_config, vec_get(config, 0));  // client_id
+    vec_push(new_config, vec_get(config, 1));  // client_secret
+    vec_push(new_config, vec_get(config, 2));  // auth_url
+    vec_push(new_config, vec_get(config, 3));  // token_url
+    vec_push(new_config, uri);                  // redirect_uri (new)
+    vec_push(new_config, vec_get(config, 5));  // scopes
+    vec_push(new_config, vec_get(config, 6));  // pkce verifier
+    new_config
+}

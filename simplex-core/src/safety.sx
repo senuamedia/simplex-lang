@@ -107,9 +107,9 @@ fn CVM_FRAMES_SIZE() -> i64 { 128 } // Call frame capacity
 // Version Constants
 // ========================================
 
-fn SIMPLEX_VERSION() -> i64 { string_from("0.15.0") }
-fn TOOLCHAIN_VERSION() -> i64 { string_from("0.15.0") }
-fn RUNTIME_VERSION() -> i64 { string_from("0.15.0") }
+fn SIMPLEX_VERSION() -> i64 { string_from("0.16.0") }
+fn TOOLCHAIN_VERSION() -> i64 { string_from("0.16.0") }
+fn RUNTIME_VERSION() -> i64 { string_from("0.16.0") }
 
 // Error Handling Helpers
 // ========================================

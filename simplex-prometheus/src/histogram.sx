@@ -1,0 +1,381 @@
+// simplex-prometheus::histogram - Prometheus Histogram Metric
+//
+// A histogram samples observations (usually things like request durations
+// or response sizes) and counts them in configurable buckets. It also
+// provides a sum of all observed values and a count.
+//
+// # Vec Layout
+//   [0] = METRIC_HISTOGRAM (3)
+//   [1] = name (string handle)
+//   [2] = help_text (string handle)
+//   [3] = labels_vec (vec of [key, value, key, value, ...])
+//   [4] = sum (i64, total of all observations)
+//   [5] = count (i64, number of observations)
+//   [6] = bucket_bounds_vec (vec of upper bound values, sorted ascending)
+//   [7] = bucket_counts_vec (vec of cumulative counts, one per bound)
+//   [8] = observations_vec (vec of raw observation values)
+//
+// Default buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
+// (in milliseconds, suitable for HTTP request duration tracking)
+//
+// # Example
+//
+// ```simplex
+// let h = prom_histogram_new("http_request_duration_ms", "Request duration");
+// prom_histogram_observe(h, 42);
+// prom_histogram_observe(h, 150);
+// prom_histogram_observe(h, 3200);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+
+// =============================================================================
+// Default Bucket Bounds
+// =============================================================================
+
+/// Create the default Prometheus bucket bounds.
+///
+/// Returns a vec of upper bounds in milliseconds:
+/// [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
+///
+/// # Returns
+/// Vec handle of bucket bounds
+fn default_bucket_bounds() -> i64 {
+    let bounds: i64 = vec_new();
+    vec_push(bounds, 5);
+    vec_push(bounds, 10);
+    vec_push(bounds, 25);
+    vec_push(bounds, 50);
+    vec_push(bounds, 100);
+    vec_push(bounds, 250);
+    vec_push(bounds, 500);
+    vec_push(bounds, 1000);
+    vec_push(bounds, 2500);
+    vec_push(bounds, 5000);
+    vec_push(bounds, 10000);
+    bounds
+}
+
+/// Create zero-initialized bucket counts matching the given bounds.
+///
+/// # Arguments
+/// - `bounds`: Vec of bucket bounds
+///
+/// # Returns
+/// Vec of zero counts
+fn zero_bucket_counts(bounds: i64) -> i64 {
+    let counts: i64 = vec_new();
+    let n: i64 = vec_len(bounds);
+    let i: i64 = 0;
+    // Push a zero for each bucket bound
+    loop {
+        if i >= n {
+            break;
+        }
+        vec_push(counts, 0);
+        let i: i64 = i + 1;
+    }
+    counts
+}
+
+// =============================================================================
+// Histogram Creation
+// =============================================================================
+
+/// Create a new histogram metric with default buckets.
+///
+/// Default buckets: [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000]
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+///
+/// # Returns
+/// Histogram vec handle (i64)
+pub fn prom_histogram_new(name: i64, help: i64) -> i64 {
+    let h: i64 = vec_new();
+    vec_push(h, 3);              // [0] = METRIC_HISTOGRAM
+    vec_push(h, name);           // [1] = name
+    vec_push(h, help);           // [2] = help text
+    let labels: i64 = vec_new();
+    vec_push(h, labels);         // [3] = empty labels
+    vec_push(h, 0);              // [4] = sum
+    vec_push(h, 0);              // [5] = count
+    let bounds: i64 = default_bucket_bounds();
+    vec_push(h, bounds);         // [6] = bucket bounds
+    let counts: i64 = zero_bucket_counts(bounds);
+    vec_push(h, counts);         // [7] = bucket counts
+    let obs: i64 = vec_new();
+    vec_push(h, obs);            // [8] = observations
+    h
+}
+
+/// Create a histogram with custom bucket bounds.
+///
+/// Bounds should be sorted in ascending order.
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+/// - `bounds`: Vec of upper bound values (sorted ascending)
+///
+/// # Returns
+/// Histogram vec handle (i64)
+pub fn prom_histogram_new_buckets(name: i64, help: i64, bounds: i64) -> i64 {
+    let h: i64 = vec_new();
+    vec_push(h, 3);              // [0] = METRIC_HISTOGRAM
+    vec_push(h, name);           // [1] = name
+    vec_push(h, help);           // [2] = help text
+    let labels: i64 = vec_new();
+    vec_push(h, labels);         // [3] = empty labels
+    vec_push(h, 0);              // [4] = sum
+    vec_push(h, 0);              // [5] = count
+    vec_push(h, bounds);         // [6] = bucket bounds
+    let counts: i64 = zero_bucket_counts(bounds);
+    vec_push(h, counts);         // [7] = bucket counts
+    let obs: i64 = vec_new();
+    vec_push(h, obs);            // [8] = observations
+    h
+}
+
+/// Create a histogram with labels.
+///
+/// # Arguments
+/// - `name`: Metric name (string handle)
+/// - `help`: Help text (string handle)
+/// - `labels`: Flat vec of [key, value] pairs
+///
+/// # Returns
+/// Histogram vec handle (i64)
+pub fn prom_histogram_new_labeled(name: i64, help: i64, labels: i64) -> i64 {
+    let h: i64 = vec_new();
+    vec_push(h, 3);              // [0] = METRIC_HISTOGRAM
+    vec_push(h, name);           // [1] = name
+    vec_push(h, help);           // [2] = help text
+    vec_push(h, labels);         // [3] = labels
+    vec_push(h, 0);              // [4] = sum
+    vec_push(h, 0);              // [5] = count
+    let bounds: i64 = default_bucket_bounds();
+    vec_push(h, bounds);         // [6] = bucket bounds
+    let counts: i64 = zero_bucket_counts(bounds);
+    vec_push(h, counts);         // [7] = bucket counts
+    let obs: i64 = vec_new();
+    vec_push(h, obs);            // [8] = observations
+    h
+}
+
+// =============================================================================
+// Histogram Operations
+// =============================================================================
+
+/// Observe a value in the histogram.
+///
+/// Updates the sum, count, bucket counts, and raw observations.
+///
+/// # Arguments
+/// - `h`: Histogram vec handle
+/// - `value`: Observed value (i64)
+pub fn prom_histogram_observe(h: i64, value: i64) -> i64 {
+    // Update sum
+    let sum: i64 = vec_get(h, 4);
+    vec_set(h, 4, sum + value);
+
+    // Update count
+    let count: i64 = vec_get(h, 5);
+    vec_set(h, 5, count + 1);
+
+    // Update bucket counts (cumulative)
+    let bounds: i64 = vec_get(h, 6);
+    let counts: i64 = vec_get(h, 7);
+    let n_buckets: i64 = vec_len(bounds);
+    let i: i64 = 0;
+    loop {
+        if i >= n_buckets {
+            break;
+        }
+        let bound: i64 = vec_get(bounds, i);
+        if value <= bound {
+            let cur: i64 = vec_get(counts, i);
+            vec_set(counts, i, cur + 1);
+        }
+        let i: i64 = i + 1;
+    }
+
+    // Store raw observation
+    let obs: i64 = vec_get(h, 8);
+    vec_push(obs, value);
+
+    0
+}
+
+/// Get the sum of all observations.
+///
+/// # Arguments
+/// - `h`: Histogram vec handle
+///
+/// # Returns
+/// Sum of all observed values (i64)
+pub fn prom_histogram_sum(h: i64) -> i64 {
+    vec_get(h, 4)
+}
+
+/// Get the count of all observations.
+///
+/// # Arguments
+/// - `h`: Histogram vec handle
+///
+/// # Returns
+/// Total number of observations (i64)
+pub fn prom_histogram_count(h: i64) -> i64 {
+    vec_get(h, 5)
+}
+
+/// Get the bucket bounds vec.
+///
+/// # Arguments
+/// - `h`: Histogram vec handle
+///
+/// # Returns
+/// Bucket bounds vec handle (i64)
+pub fn prom_histogram_bounds(h: i64) -> i64 {
+    vec_get(h, 6)
+}
+
+/// Get the bucket counts vec.
+///
+/// # Arguments
+/// - `h`: Histogram vec handle
+///
+/// # Returns
+/// Bucket counts vec handle (i64), cumulative counts
+pub fn prom_histogram_bucket_counts(h: i64) -> i64 {
+    vec_get(h, 7)
+}
+
+/// Get the raw observations vec.
+///
+/// # Arguments
+/// - `h`: Histogram vec handle
+///
+/// # Returns
+/// Observations vec handle (i64)
+pub fn prom_histogram_observations(h: i64) -> i64 {
+    vec_get(h, 8)
+}
+
+// =============================================================================
+// Quantile Computation
+// =============================================================================
+
+/// Compute a quantile from the raw observations.
+///
+/// Uses a simple sorted-order approach. The quantile parameter
+/// is specified as an integer percentage (0-100).
+/// e.g., 50 = median (p50), 95 = p95, 99 = p99
+///
+/// # Arguments
+/// - `h`: Histogram vec handle
+/// - `quantile_pct`: Quantile as integer percentage (0-100)
+///
+/// # Returns
+/// The quantile value (i64), or 0 if no observations
+pub fn prom_histogram_quantile(h: i64, quantile_pct: i64) -> i64 {
+    let obs: i64 = vec_get(h, 8);
+    let n: i64 = vec_len(obs);
+    if n == 0 {
+        return 0;
+    }
+
+    // Copy observations into a sortable vec
+    let sorted: i64 = vec_new();
+    let i: i64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        vec_push(sorted, vec_get(obs, i));
+        let i: i64 = i + 1;
+    }
+
+    // Simple insertion sort
+    let i: i64 = 1;
+    loop {
+        if i >= n {
+            break;
+        }
+        let key: i64 = vec_get(sorted, i);
+        let j: i64 = i - 1;
+        loop {
+            if j < 0 {
+                break;
+            }
+            let sj: i64 = vec_get(sorted, j);
+            if sj <= key {
+                break;
+            }
+            vec_set(sorted, j + 1, sj);
+            let j: i64 = j - 1;
+        }
+        vec_set(sorted, j + 1, key);
+        let i: i64 = i + 1;
+    }
+
+    // Compute index: floor(quantile_pct * (n - 1) / 100)
+    let idx: i64 = (quantile_pct * (n - 1)) / 100;
+    if idx >= n {
+        let idx: i64 = n - 1;
+    }
+    if idx < 0 {
+        let idx: i64 = 0;
+    }
+    vec_get(sorted, idx)
+}
+
+/// Get the mean of all observations.
+///
+/// # Arguments
+/// - `h`: Histogram vec handle
+///
+/// # Returns
+/// Mean value (i64, integer division), or 0 if no observations
+pub fn prom_histogram_mean(h: i64) -> i64 {
+    let count: i64 = vec_get(h, 5);
+    if count == 0 {
+        return 0;
+    }
+    let sum: i64 = vec_get(h, 4);
+    sum / count
+}
+
+// =============================================================================
+// Histogram Metadata
+// =============================================================================
+
+/// Get the name of a histogram.
+pub fn prom_histogram_name(h: i64) -> i64 {
+    vec_get(h, 1)
+}
+
+/// Get the help text of a histogram.
+pub fn prom_histogram_help(h: i64) -> i64 {
+    vec_get(h, 2)
+}
+
+/// Get the labels vec of a histogram.
+pub fn prom_histogram_labels(h: i64) -> i64 {
+    vec_get(h, 3)
+}
+
+/// Get the metric type of a histogram (always 3).
+pub fn prom_histogram_type(h: i64) -> i64 {
+    vec_get(h, 0)
+}

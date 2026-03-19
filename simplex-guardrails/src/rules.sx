@@ -1,0 +1,260 @@
+// simplex-guardrails::rules - Guardrail Rule Definitions
+//
+// Each rule is a vec with layout:
+//   [0] rule_type  - RULE_MAX_LENGTH, RULE_MUST_CONTAIN, etc.
+//   [1] param      - rule parameter (max length, term to check, etc.)
+//   [2] action     - ACTION_REJECT, ACTION_WARN, ACTION_RETRY
+//   [3] message    - human-readable description (string handle)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Length Rules
+// =============================================================================
+
+/// Create a maximum length rule.
+///
+/// Arguments:
+///   max - maximum allowed string length (characters)
+///
+/// Returns: rule handle
+fn rule_max_length(max: i64) -> i64 {
+    let r = vec_new();
+    vec_push(r, RULE_MAX_LENGTH());
+    vec_push(r, max);
+    vec_push(r, ACTION_REJECT());
+    vec_push(r, string_from("Output exceeds maximum length"));
+    r
+}
+
+/// Create a minimum length rule.
+///
+/// Arguments:
+///   min - minimum required string length (characters)
+///
+/// Returns: rule handle
+fn rule_min_length(min: i64) -> i64 {
+    let r = vec_new();
+    vec_push(r, RULE_MIN_LENGTH());
+    vec_push(r, min);
+    vec_push(r, ACTION_REJECT());
+    vec_push(r, string_from("Output below minimum length"));
+    r
+}
+
+// =============================================================================
+// Content Rules
+// =============================================================================
+
+/// Create a must-contain rule.
+///
+/// The output must contain at least one of the terms in the terms vec.
+///
+/// Arguments:
+///   terms - handle to vec of string handles that output must contain
+///
+/// Returns: rule handle
+fn rule_must_contain(terms: i64) -> i64 {
+    let r = vec_new();
+    vec_push(r, RULE_MUST_CONTAIN());
+    vec_push(r, terms);
+    vec_push(r, ACTION_REJECT());
+    vec_push(r, string_from("Output missing required content"));
+    r
+}
+
+/// Create a must-not-contain rule.
+///
+/// The output must not contain any of the terms in the terms vec.
+///
+/// Arguments:
+///   terms - handle to vec of string handles that output must not contain
+///
+/// Returns: rule handle
+fn rule_must_not_contain(terms: i64) -> i64 {
+    let r = vec_new();
+    vec_push(r, RULE_MUST_NOT_CONTAIN());
+    vec_push(r, terms);
+    vec_push(r, ACTION_REJECT());
+    vec_push(r, string_from("Output contains prohibited content"));
+    r
+}
+
+// =============================================================================
+// Format Rules
+// =============================================================================
+
+/// Create a JSON validity rule.
+///
+/// The output must be valid JSON (checks for balanced braces/brackets,
+/// proper quoting).
+///
+/// Returns: rule handle
+fn rule_json_valid() -> i64 {
+    let r = vec_new();
+    vec_push(r, RULE_JSON_VALID());
+    vec_push(r, 0);
+    vec_push(r, ACTION_REJECT());
+    vec_push(r, string_from("Output is not valid JSON"));
+    r
+}
+
+// =============================================================================
+// Privacy Rules
+// =============================================================================
+
+/// Create a no-PII rule.
+///
+/// Checks for patterns that look like email addresses, phone numbers,
+/// or Social Security numbers.
+///
+/// Returns: rule handle
+fn rule_no_pii() -> i64 {
+    let r = vec_new();
+    vec_push(r, RULE_NO_PII());
+    vec_push(r, 0);
+    vec_push(r, ACTION_REJECT());
+    vec_push(r, string_from("Output contains personally identifiable information"));
+    r
+}
+
+// =============================================================================
+// Custom Rules
+// =============================================================================
+
+/// Create a custom rule with a function handle.
+///
+/// The function should accept a string handle and return 1 (pass) or 0 (fail).
+///
+/// Arguments:
+///   fn_handle - handle to validation function
+///   message   - description of the rule (string handle)
+///
+/// Returns: rule handle
+fn rule_custom(fn_handle: i64, message: i64) -> i64 {
+    let r = vec_new();
+    vec_push(r, RULE_CUSTOM());
+    vec_push(r, fn_handle);
+    vec_push(r, ACTION_REJECT());
+    vec_push(r, message);
+    r
+}
+
+// =============================================================================
+// Rule Configuration
+// =============================================================================
+
+/// Set the action for a rule (REJECT, WARN, or RETRY).
+///
+/// Arguments:
+///   rule   - rule handle
+///   action - ACTION_REJECT, ACTION_WARN, or ACTION_RETRY
+///
+/// Returns: the modified rule handle
+fn rule_set_action(rule: i64, action: i64) -> i64 {
+    vec_set(rule, RULE_ACTION(), action);
+    rule
+}
+
+/// Set the message for a rule.
+///
+/// Arguments:
+///   rule    - rule handle
+///   message - description string handle
+///
+/// Returns: the modified rule handle
+fn rule_set_message(rule: i64, message: i64) -> i64 {
+    vec_set(rule, RULE_MSG(), message);
+    rule
+}
+
+// =============================================================================
+// PII Pattern Detection Helpers
+// =============================================================================
+
+/// Check if a string contains an email-like pattern (chars @ chars . chars).
+fn contains_email_pattern(text: i64) -> i64 {
+    let len: i64 = string_len(text);
+    if len < 5 { return 0; }  // minimum: a@b.c
+
+    var i: i64 = 1;
+    while i < len - 3 {
+        let ch: i64 = string_char_at(text, i);
+        if ch == 64 {  // '@'
+            // Check for characters before @
+            let before: i64 = string_char_at(text, i - 1);
+            let is_alpha_before: i64 = is_alnum(before);
+            if is_alpha_before == 1 {
+                // Look for '.' after @
+                var j: i64 = i + 2;
+                while j < len {
+                    let dch: i64 = string_char_at(text, j);
+                    if dch == 46 {  // '.'
+                        if j + 1 < len {
+                            let after_dot: i64 = string_char_at(text, j + 1);
+                            if is_alpha_char(after_dot) == 1 {
+                                return 1;  // found email pattern
+                            }
+                        }
+                    }
+                    j = j + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+/// Check if a string contains a phone-like pattern (sequence of 10+ digits).
+fn contains_phone_pattern(text: i64) -> i64 {
+    let len: i64 = string_len(text);
+    if len < 10 { return 0; }
+
+    var digit_count: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(text, i);
+        if ch >= 48 {  // '0' = 48
+            if ch <= 57 {  // '9' = 57
+                digit_count = digit_count + 1;
+                if digit_count >= 10 { return 1; }
+            } else {
+                // Allow separators within phone numbers
+                if ch == 45 { }      // '-'
+                else if ch == 40 { } // '('
+                else if ch == 41 { } // ')'
+                else if ch == 32 { } // space
+                else if ch == 43 { } // '+'
+                else { digit_count = 0; }
+            }
+        } else {
+            if ch == 45 { }      // '-'
+            else if ch == 40 { } // '('
+            else if ch == 41 { } // ')'
+            else if ch == 32 { } // space
+            else if ch == 43 { } // '+'
+            else { digit_count = 0; }
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+/// Check if a character is alphanumeric (A-Z, a-z, 0-9).
+fn is_alnum(ch: i64) -> i64 {
+    if ch >= 48 { if ch <= 57 { return 1; } }   // 0-9
+    if ch >= 65 { if ch <= 90 { return 1; } }   // A-Z
+    if ch >= 97 { if ch <= 122 { return 1; } }  // a-z
+    0
+}
+
+/// Check if a character is alphabetic (A-Z, a-z).
+fn is_alpha_char(ch: i64) -> i64 {
+    if ch >= 65 { if ch <= 90 { return 1; } }   // A-Z
+    if ch >= 97 { if ch <= 122 { return 1; } }  // a-z
+    0
+}

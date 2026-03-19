@@ -1,0 +1,2888 @@
+// simplex-postgres - PostgreSQL Client Library
+//
+// Pure-Simplex implementation of the PostgreSQL wire protocol v3.
+// Connects to PostgreSQL servers over TCP and implements the binary
+// message format for authentication, queries, and result parsing.
+//
+// # Modules
+//
+// - `connection`: TCP connection management, startup handshake
+// - `protocol`: Wire protocol v3 message encoding/decoding
+// - `query`: Query execution, prepared statements, parameter binding
+// - `pool`: Connection pooling with checkout/return semantics
+// - `types`: Result types, row access, type mapping
+// - `transaction`: BEGIN/COMMIT/ROLLBACK transaction control
+//
+// # Example
+//
+// ```simplex
+// use simplex_postgres::{pg_connect, pg_query, pg_close, PgConfig};
+//
+// let config = PgConfig::new("localhost", 5432, "mydb", "user", "pass");
+// let conn = pg_connect(config);
+// let result = pg_query(conn, "SELECT id, name FROM users");
+// pg_close(conn);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+pub mod connection;
+pub mod protocol;
+pub mod query;
+pub mod pool;
+pub mod types;
+pub mod transaction;
+
+// =============================================================================
+// Re-exports
+// =============================================================================
+
+pub use connection::{pg_connect, pg_close, PgConfig, PgConnection};
+pub use query::{pg_query, pg_execute, pg_prepare, pg_bind_execute};
+pub use pool::{PgPool, pool_new, pool_checkout, pool_return};
+pub use types::{PgResult, PgRow, PgValue, PgError};
+pub use transaction::{pg_begin, pg_commit, pg_rollback};
+
+// =============================================================================
+// Error Types
+// =============================================================================
+
+/// PostgreSQL error severity levels
+pub enum PgSeverity {
+    Error,
+    Fatal,
+    Panic,
+    Warning,
+    Notice,
+    Debug,
+    Info,
+    Log,
+}
+
+impl PgSeverity {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "ERROR" => PgSeverity::Error,
+            "FATAL" => PgSeverity::Fatal,
+            "PANIC" => PgSeverity::Panic,
+            "WARNING" => PgSeverity::Warning,
+            "NOTICE" => PgSeverity::Notice,
+            "DEBUG" => PgSeverity::Debug,
+            "INFO" => PgSeverity::Info,
+            "LOG" => PgSeverity::Log,
+            _ => PgSeverity::Error,
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        match self {
+            PgSeverity::Error => "ERROR",
+            PgSeverity::Fatal => "FATAL",
+            PgSeverity::Panic => "PANIC",
+            PgSeverity::Warning => "WARNING",
+            PgSeverity::Notice => "NOTICE",
+            PgSeverity::Debug => "DEBUG",
+            PgSeverity::Info => "INFO",
+            PgSeverity::Log => "LOG",
+        }
+    }
+}
+
+// =============================================================================
+// Connection State
+// =============================================================================
+
+/// Connection state machine
+pub enum PgConnState {
+    /// Not connected
+    Disconnected,
+    /// TCP connected, awaiting startup response
+    AwaitingAuth,
+    /// Authentication in progress
+    Authenticating,
+    /// Ready for queries
+    Ready,
+    /// Query in progress
+    InQuery,
+    /// Inside a transaction block
+    InTransaction,
+    /// Connection failed
+    Failed,
+}
+
+impl PgConnState {
+    pub fn is_ready(&self) -> bool {
+        match self {
+            PgConnState::Ready => true,
+            PgConnState::InTransaction => true,
+            _ => false,
+        }
+    }
+}
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// PostgreSQL protocol version 3.0
+pub const PROTOCOL_VERSION: i64 = 196608; // 3 << 16
+
+/// Default PostgreSQL port
+pub const DEFAULT_PORT: i64 = 5432;
+
+/// Maximum message size (16 MB)
+pub const MAX_MESSAGE_SIZE: i64 = 16777216;
+
+/// Null terminator byte
+pub const NULL_BYTE: i64 = 0;
+// simplex-postgres/types - Result Types and Type Mapping
+//
+// Defines the result set types returned by query functions and
+// provides type mapping between PostgreSQL types and Simplex types.
+//
+// PostgreSQL uses OIDs to identify types. This module maps common
+// OIDs to Simplex-native value representations.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+/// PostgreSQL client error
+pub enum PgError {
+    /// Connection establishment failed
+    Connection(String),
+    /// Authentication failed
+    Auth(String),
+    /// Configuration error
+    Config(String),
+    /// Wire protocol error
+    Protocol(String),
+    /// Server-side error with SQLSTATE code
+    Server {
+        severity: String,
+        code: String,
+        message: String,
+    },
+    /// Connection pool error
+    Pool(String),
+    /// Transaction error
+    Transaction(String),
+}
+
+impl PgError {
+    /// Get the error message
+    pub fn message(&self) -> String {
+        match self {
+            PgError::Connection(s) => s.clone(),
+            PgError::Auth(s) => s.clone(),
+            PgError::Config(s) => s.clone(),
+            PgError::Protocol(s) => s.clone(),
+            PgError::Server { message, .. } => message.clone(),
+            PgError::Pool(s) => s.clone(),
+            PgError::Transaction(s) => s.clone(),
+        }
+    }
+
+    /// Get the SQLSTATE code (only for server errors)
+    pub fn sqlstate(&self) -> Option<String> {
+        match self {
+            PgError::Server { code, .. } => Some(code.clone()),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a connection error
+    pub fn is_connection_error(&self) -> bool {
+        match self {
+            PgError::Connection(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Check if this is a server error
+    pub fn is_server_error(&self) -> bool {
+        match self {
+            PgError::Server { .. } => true,
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for PgError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PgError::Connection(s) => write!(f, "pg connection error: {}", s),
+            PgError::Auth(s) => write!(f, "pg auth error: {}", s),
+            PgError::Config(s) => write!(f, "pg config error: {}", s),
+            PgError::Protocol(s) => write!(f, "pg protocol error: {}", s),
+            PgError::Server { severity, code, message } => {
+                write!(f, "pg server error [{}] {}: {}", severity, code, message)
+            },
+            PgError::Pool(s) => write!(f, "pg pool error: {}", s),
+            PgError::Transaction(s) => write!(f, "pg transaction error: {}", s),
+        }
+    }
+}
+
+// =============================================================================
+// Result Value Types
+// =============================================================================
+
+/// A single value from a query result
+pub enum PgValue {
+    /// NULL value
+    Null,
+    /// Boolean value
+    Bool(bool),
+    /// Integer value (i64)
+    Int(i64),
+    /// Floating point value (f64)
+    Float(f64),
+    /// Text/string value
+    Text(String),
+    /// Raw bytes (bytea)
+    Bytes(Vec<i64>),
+}
+
+impl PgValue {
+    /// Check if value is NULL
+    pub fn is_null(&self) -> bool {
+        match self {
+            PgValue::Null => true,
+            _ => false,
+        }
+    }
+
+    /// Get as bool, or None if not a bool
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            PgValue::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// Get as i64, or None if not an integer
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            PgValue::Int(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Get as f64, or None if not a float
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            PgValue::Float(f) => Some(*f),
+            PgValue::Int(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    /// Get as String, or None if NULL
+    pub fn as_text(&self) -> Option<String> {
+        match self {
+            PgValue::Text(s) => Some(s.clone()),
+            PgValue::Int(n) => Some(n.to_string()),
+            PgValue::Float(f) => Some(f.to_string()),
+            PgValue::Bool(b) => Some(if *b { "true" } else { "false" }.to_string()),
+            PgValue::Null => None,
+            PgValue::Bytes(_) => None,
+        }
+    }
+
+    /// Get as bytes, or None if not bytes
+    pub fn as_bytes(&self) -> Option<Vec<i64>> {
+        match self {
+            PgValue::Bytes(b) => Some(b.clone()),
+            _ => None,
+        }
+    }
+
+    /// Get type name as string
+    pub fn type_name(&self) -> &str {
+        match self {
+            PgValue::Null => "null",
+            PgValue::Bool(_) => "bool",
+            PgValue::Int(_) => "int",
+            PgValue::Float(_) => "float",
+            PgValue::Text(_) => "text",
+            PgValue::Bytes(_) => "bytes",
+        }
+    }
+}
+
+impl std::fmt::Display for PgValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PgValue::Null => write!(f, "NULL"),
+            PgValue::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
+            PgValue::Int(n) => write!(f, "{}", n),
+            PgValue::Float(v) => write!(f, "{}", v),
+            PgValue::Text(s) => write!(f, "{}", s),
+            PgValue::Bytes(b) => write!(f, "<{} bytes>", b.len()),
+        }
+    }
+}
+
+// =============================================================================
+// Result Row
+// =============================================================================
+
+/// A single row from a query result
+pub struct PgRow {
+    /// Column values in order
+    pub values: Vec<PgValue>,
+}
+
+impl PgRow {
+    /// Get value by column index
+    pub fn get(&self, index: i64) -> Option<&PgValue> {
+        if index >= 0 && index < self.values.len() as i64 {
+            Some(&self.values[index])
+        } else {
+            None
+        }
+    }
+
+    /// Get value as text by column index
+    pub fn get_text(&self, index: i64) -> Option<String> {
+        match self.get(index) {
+            Some(val) => val.as_text(),
+            None => None,
+        }
+    }
+
+    /// Get value as i64 by column index
+    pub fn get_int(&self, index: i64) -> Option<i64> {
+        match self.get(index) {
+            Some(val) => val.as_int(),
+            None => None,
+        }
+    }
+
+    /// Get value as f64 by column index
+    pub fn get_float(&self, index: i64) -> Option<f64> {
+        match self.get(index) {
+            Some(val) => val.as_float(),
+            None => None,
+        }
+    }
+
+    /// Get value as bool by column index
+    pub fn get_bool(&self, index: i64) -> Option<bool> {
+        match self.get(index) {
+            Some(val) => val.as_bool(),
+            None => None,
+        }
+    }
+
+    /// Check if a column value is NULL
+    pub fn is_null(&self, index: i64) -> bool {
+        match self.get(index) {
+            Some(val) => val.is_null(),
+            None => true,
+        }
+    }
+
+    /// Number of columns in this row
+    pub fn len(&self) -> i64 {
+        self.values.len() as i64
+    }
+}
+
+// =============================================================================
+// Result Set
+// =============================================================================
+
+/// Complete query result set
+pub struct PgResult {
+    /// Column names
+    pub columns: Vec<String>,
+    /// Result rows
+    pub rows: Vec<PgRow>,
+    /// Number of affected rows (for INSERT/UPDATE/DELETE)
+    pub affected_rows: i64,
+    /// Command completion tag (e.g., "SELECT 5", "INSERT 0 1")
+    pub command_tag: String,
+}
+
+impl PgResult {
+    /// Number of rows returned
+    pub fn row_count(&self) -> i64 {
+        self.rows.len() as i64
+    }
+
+    /// Number of columns
+    pub fn column_count(&self) -> i64 {
+        self.columns.len() as i64
+    }
+
+    /// Get column index by name, or -1 if not found
+    pub fn column_index(&self, name: &str) -> i64 {
+        let mut i: i64 = 0;
+        while i < self.columns.len() as i64 {
+            if self.columns[i] == name {
+                return i;
+            }
+            i = i + 1;
+        }
+        -1
+    }
+
+    /// Get a row by index
+    pub fn row(&self, index: i64) -> Option<&PgRow> {
+        if index >= 0 && index < self.rows.len() as i64 {
+            Some(&self.rows[index])
+        } else {
+            None
+        }
+    }
+
+    /// Get a value by row and column name
+    pub fn get(&self, row_idx: i64, col_name: &str) -> Option<&PgValue> {
+        let col_idx = self.column_index(col_name);
+        if col_idx < 0 {
+            return None;
+        }
+        match self.row(row_idx) {
+            Some(row) => row.get(col_idx),
+            None => None,
+        }
+    }
+
+    /// Check if the result is empty
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+// =============================================================================
+// PostgreSQL Type OIDs
+// =============================================================================
+
+/// Common PostgreSQL type OIDs
+pub const OID_BOOL: i64 = 16;
+pub const OID_BYTEA: i64 = 17;
+pub const OID_CHAR: i64 = 18;
+pub const OID_NAME: i64 = 19;
+pub const OID_INT8: i64 = 20;
+pub const OID_INT2: i64 = 21;
+pub const OID_INT4: i64 = 23;
+pub const OID_TEXT: i64 = 25;
+pub const OID_OID: i64 = 26;
+pub const OID_FLOAT4: i64 = 700;
+pub const OID_FLOAT8: i64 = 701;
+pub const OID_VARCHAR: i64 = 1043;
+pub const OID_DATE: i64 = 1082;
+pub const OID_TIME: i64 = 1083;
+pub const OID_TIMESTAMP: i64 = 1114;
+pub const OID_TIMESTAMPTZ: i64 = 1184;
+pub const OID_NUMERIC: i64 = 1700;
+pub const OID_UUID: i64 = 2950;
+pub const OID_JSON: i64 = 114;
+pub const OID_JSONB: i64 = 3802;
+
+/// Get the name of a PostgreSQL type by OID
+pub fn pg_type_name(oid: i64) -> &str {
+    match oid {
+        16 => "bool",
+        17 => "bytea",
+        18 => "char",
+        19 => "name",
+        20 => "int8",
+        21 => "int2",
+        23 => "int4",
+        25 => "text",
+        26 => "oid",
+        114 => "json",
+        700 => "float4",
+        701 => "float8",
+        1043 => "varchar",
+        1082 => "date",
+        1083 => "time",
+        1114 => "timestamp",
+        1184 => "timestamptz",
+        1700 => "numeric",
+        2950 => "uuid",
+        3802 => "jsonb",
+        _ => "unknown",
+    }
+}
+// simplex-postgres/protocol - PostgreSQL Wire Protocol v3
+//
+// Implements encoding and decoding of PostgreSQL wire protocol messages.
+// The protocol is a binary, big-endian format where each message has:
+//   - 1 byte message type identifier (except StartupMessage)
+//   - 4 bytes message length (including self, excluding type byte)
+//   - Variable payload
+//
+// # Message Flow
+//
+// Startup: Client -> StartupMessage -> Server
+// Auth:    Server -> AuthenticationXxx -> Client -> PasswordMessage -> Server
+// Query:   Client -> Query('Q') -> Server -> RowDescription -> DataRow* -> CommandComplete -> ReadyForQuery
+//
+// # References
+// PostgreSQL Frontend/Backend Protocol v3
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::{
+    read_i32_be, read_i16_be, write_i32_be, write_i16_be,
+    write_cstring, read_cstring,
+};
+
+// =============================================================================
+// Message Type Constants (Server -> Client)
+// =============================================================================
+
+/// Authentication request ('R')
+pub const MSG_AUTH: i64 = 82;
+
+/// BackendKeyData ('K')
+pub const MSG_BACKEND_KEY: i64 = 75;
+
+/// BindComplete ('2')
+pub const MSG_BIND_COMPLETE: i64 = 50;
+
+/// CloseComplete ('3')
+pub const MSG_CLOSE_COMPLETE: i64 = 51;
+
+/// CommandComplete ('C')
+pub const MSG_COMMAND_COMPLETE: i64 = 67;
+
+/// DataRow ('D')
+pub const MSG_DATA_ROW: i64 = 68;
+
+/// EmptyQueryResponse ('I')
+pub const MSG_EMPTY_QUERY: i64 = 73;
+
+/// ErrorResponse ('E')
+pub const MSG_ERROR: i64 = 69;
+
+/// NoticeResponse ('N')
+pub const MSG_NOTICE: i64 = 78;
+
+/// ParameterStatus ('S')
+pub const MSG_PARAM_STATUS: i64 = 83;
+
+/// ParseComplete ('1')
+pub const MSG_PARSE_COMPLETE: i64 = 49;
+
+/// ReadyForQuery ('Z')
+pub const MSG_READY: i64 = 90;
+
+/// RowDescription ('T')
+pub const MSG_ROW_DESC: i64 = 84;
+
+/// NoData ('n')
+pub const MSG_NO_DATA: i64 = 110;
+
+// =============================================================================
+// Authentication Sub-types
+// =============================================================================
+
+/// Authentication OK (no further auth needed)
+pub const AUTH_OK: i64 = 0;
+
+/// Cleartext password requested
+pub const AUTH_CLEARTEXT: i64 = 3;
+
+/// MD5 password requested
+pub const AUTH_MD5: i64 = 5;
+
+/// SASL authentication requested
+pub const AUTH_SASL: i64 = 10;
+
+// =============================================================================
+// Message Type Constants (Client -> Server)
+// =============================================================================
+
+/// Bind ('B')
+pub const MSG_BIND: i64 = 66;
+
+/// Close ('C')
+pub const MSG_CLIENT_CLOSE: i64 = 67;
+
+/// Describe ('D')
+pub const MSG_DESCRIBE: i64 = 68;
+
+/// Execute ('E')
+pub const MSG_EXECUTE: i64 = 69;
+
+/// Flush ('H')
+pub const MSG_FLUSH: i64 = 72;
+
+/// Parse ('P')
+pub const MSG_PARSE: i64 = 80;
+
+/// PasswordMessage ('p')
+pub const MSG_PASSWORD: i64 = 112;
+
+/// Query ('Q')
+pub const MSG_QUERY: i64 = 81;
+
+/// Sync ('S')
+pub const MSG_SYNC: i64 = 83;
+
+/// Terminate ('X')
+pub const MSG_TERMINATE: i64 = 88;
+
+// =============================================================================
+// Decoded Message Enum
+// =============================================================================
+
+/// Decoded PostgreSQL protocol message
+pub enum PgMessage {
+    /// Authentication OK
+    AuthOk,
+    /// Cleartext password required
+    AuthCleartext,
+    /// MD5 password required with 4-byte salt
+    AuthMD5 { salt: Vec<i64> },
+    /// Server parameter status
+    ParameterStatus { name: String, value: String },
+    /// Backend key data for cancellation
+    BackendKeyData { pid: i64, secret_key: i64 },
+    /// Ready for query with transaction status
+    ReadyForQuery { status: i64 },
+    /// Row description (column metadata)
+    RowDescription { columns: Vec<PgColumnDesc> },
+    /// Data row (one row of results)
+    DataRow { values: Vec<Option<Vec<i64>>> },
+    /// Command completed successfully
+    CommandComplete { tag: String },
+    /// Empty query response
+    EmptyQuery,
+    /// Error response from server
+    ErrorResponse { severity: String, code: String, message: String },
+    /// Notice from server
+    NoticeResponse { severity: String, message: String },
+    /// Parse complete
+    ParseComplete,
+    /// Bind complete
+    BindComplete,
+    /// No data (response to Describe for non-SELECT)
+    NoData,
+    /// Unknown message type
+    Unknown { msg_type: i64 },
+}
+
+/// Column description from RowDescription message
+pub struct PgColumnDesc {
+    /// Column name
+    pub name: String,
+    /// Table OID (0 if not from a table)
+    pub table_oid: i64,
+    /// Column attribute number
+    pub column_id: i64,
+    /// Data type OID
+    pub type_oid: i64,
+    /// Data type size (-1 for variable-length)
+    pub type_size: i64,
+    /// Type modifier
+    pub type_modifier: i64,
+    /// Format code (0 = text, 1 = binary)
+    pub format_code: i64,
+}
+
+// =============================================================================
+// Message Encoding
+// =============================================================================
+
+/// Encode a StartupMessage
+///
+/// Format:
+///   i32 length (including self)
+///   i32 protocol version (196608 = 3.0)
+///   cstring "user"
+///   cstring user_value
+///   cstring "database"
+///   cstring database_value
+///   cstring "application_name"
+///   cstring app_name_value
+///   byte 0 (terminator)
+pub fn encode_startup_message(user: &str, database: &str, app_name: &str) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    // Placeholder for length (will be filled in)
+    write_i32_be(&mut buf, 0);
+
+    // Protocol version 3.0
+    write_i32_be(&mut buf, 196608);
+
+    // Parameters
+    write_cstring(&mut buf, "user");
+    write_cstring(&mut buf, user);
+    write_cstring(&mut buf, "database");
+    write_cstring(&mut buf, database);
+    write_cstring(&mut buf, "application_name");
+    write_cstring(&mut buf, app_name);
+    write_cstring(&mut buf, "client_encoding");
+    write_cstring(&mut buf, "UTF8");
+
+    // Terminating null byte
+    buf.push(0);
+
+    // Fill in length (entire message including the length field itself)
+    let len = buf.len();
+    buf[0] = ((len >> 24) & 0xFF) as i64;
+    buf[1] = ((len >> 16) & 0xFF) as i64;
+    buf[2] = ((len >> 8) & 0xFF) as i64;
+    buf[3] = (len & 0xFF) as i64;
+
+    buf
+}
+
+/// Encode a PasswordMessage (cleartext)
+///
+/// Format: 'p' | i32 length | cstring password
+pub fn encode_password_message(password: &str) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    // Message type
+    buf.push(MSG_PASSWORD);
+
+    // Placeholder for length
+    write_i32_be(&mut buf, 0);
+
+    // Password as cstring
+    write_cstring(&mut buf, password);
+
+    // Fill in length (length field + payload, NOT including type byte)
+    let len = buf.len() - 1;
+    buf[1] = ((len >> 24) & 0xFF) as i64;
+    buf[2] = ((len >> 16) & 0xFF) as i64;
+    buf[3] = ((len >> 8) & 0xFF) as i64;
+    buf[4] = (len & 0xFF) as i64;
+
+    buf
+}
+
+/// Encode an MD5 password message
+///
+/// MD5 auth: concat("md5", md5(concat(md5(concat(password, username)), salt)))
+pub fn encode_md5_password(user: &str, password: &str, salt: &[i64]) -> Vec<i64> {
+    // Step 1: md5(password + username)
+    var inner_input: Vec<i64> = Vec::new();
+    let pw_bytes = password.as_bytes();
+    let user_bytes = user.as_bytes();
+    let mut i: i64 = 0;
+    while i < pw_bytes.len() {
+        inner_input.push(pw_bytes[i] as i64);
+        i = i + 1;
+    }
+    i = 0;
+    while i < user_bytes.len() {
+        inner_input.push(user_bytes[i] as i64);
+        i = i + 1;
+    }
+    let inner_hash = md5_hex(&inner_input);
+
+    // Step 2: md5(inner_hash + salt)
+    var outer_input: Vec<i64> = Vec::new();
+    let hash_bytes = inner_hash.as_bytes();
+    i = 0;
+    while i < hash_bytes.len() {
+        outer_input.push(hash_bytes[i] as i64);
+        i = i + 1;
+    }
+    i = 0;
+    while i < salt.len() {
+        outer_input.push(salt[i]);
+        i = i + 1;
+    }
+    let outer_hash = md5_hex(&outer_input);
+
+    // Build password string: "md5" + outer_hash
+    var pw_str = String::from("md5");
+    pw_str.push_str(&outer_hash);
+
+    encode_password_message(&pw_str)
+}
+
+/// Encode a simple Query message
+///
+/// Format: 'Q' | i32 length | cstring query
+pub fn encode_query(sql: &str) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    // Message type 'Q'
+    buf.push(MSG_QUERY);
+
+    // Placeholder for length
+    write_i32_be(&mut buf, 0);
+
+    // Query string
+    write_cstring(&mut buf, sql);
+
+    // Fill in length
+    let len = buf.len() - 1;
+    buf[1] = ((len >> 24) & 0xFF) as i64;
+    buf[2] = ((len >> 16) & 0xFF) as i64;
+    buf[3] = ((len >> 8) & 0xFF) as i64;
+    buf[4] = (len & 0xFF) as i64;
+
+    buf
+}
+
+/// Encode a Parse message (prepared statement)
+///
+/// Format: 'P' | i32 length | cstring name | cstring query | i16 num_params | [i32 param_oid]*
+pub fn encode_parse(name: &str, sql: &str, param_oids: &[i64]) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    buf.push(MSG_PARSE);
+    write_i32_be(&mut buf, 0); // placeholder length
+
+    write_cstring(&mut buf, name);
+    write_cstring(&mut buf, sql);
+
+    // Number of parameter type OIDs
+    write_i16_be(&mut buf, param_oids.len() as i64);
+
+    // Parameter OIDs (0 means unspecified)
+    let mut i: i64 = 0;
+    while i < param_oids.len() {
+        write_i32_be(&mut buf, param_oids[i]);
+        i = i + 1;
+    }
+
+    // Fill in length
+    let len = buf.len() - 1;
+    buf[1] = ((len >> 24) & 0xFF) as i64;
+    buf[2] = ((len >> 16) & 0xFF) as i64;
+    buf[3] = ((len >> 8) & 0xFF) as i64;
+    buf[4] = (len & 0xFF) as i64;
+
+    buf
+}
+
+/// Encode a Bind message
+///
+/// Format: 'B' | i32 length | cstring portal | cstring stmt_name |
+///         i16 num_format_codes | [i16 format_code]* |
+///         i16 num_params | [i32 param_len, bytes param_value]* |
+///         i16 num_result_format_codes | [i16 result_format_code]*
+pub fn encode_bind(portal: &str, stmt_name: &str, params: &[String]) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    buf.push(MSG_BIND);
+    write_i32_be(&mut buf, 0); // placeholder length
+
+    write_cstring(&mut buf, portal);
+    write_cstring(&mut buf, stmt_name);
+
+    // Format codes: 0 = text for all
+    write_i16_be(&mut buf, 1);
+    write_i16_be(&mut buf, 0); // all text format
+
+    // Parameters
+    let num_params = params.len() as i64;
+    write_i16_be(&mut buf, num_params);
+
+    let mut i: i64 = 0;
+    while i < num_params {
+        let param = &params[i];
+        let param_bytes = param.as_bytes();
+        let param_len = param_bytes.len() as i64;
+        write_i32_be(&mut buf, param_len);
+        let mut j: i64 = 0;
+        while j < param_len {
+            buf.push(param_bytes[j] as i64);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Result format codes: 0 = text for all
+    write_i16_be(&mut buf, 1);
+    write_i16_be(&mut buf, 0);
+
+    // Fill in length
+    let len = buf.len() - 1;
+    buf[1] = ((len >> 24) & 0xFF) as i64;
+    buf[2] = ((len >> 16) & 0xFF) as i64;
+    buf[3] = ((len >> 8) & 0xFF) as i64;
+    buf[4] = (len & 0xFF) as i64;
+
+    buf
+}
+
+/// Encode a Describe message
+///
+/// Format: 'D' | i32 length | byte type ('S'=statement, 'P'=portal) | cstring name
+pub fn encode_describe(desc_type: i64, name: &str) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    buf.push(MSG_DESCRIBE);
+    write_i32_be(&mut buf, 0);
+
+    buf.push(desc_type); // 'S' = 83 or 'P' = 80
+    write_cstring(&mut buf, name);
+
+    let len = buf.len() - 1;
+    buf[1] = ((len >> 24) & 0xFF) as i64;
+    buf[2] = ((len >> 16) & 0xFF) as i64;
+    buf[3] = ((len >> 8) & 0xFF) as i64;
+    buf[4] = (len & 0xFF) as i64;
+
+    buf
+}
+
+/// Encode an Execute message
+///
+/// Format: 'E' | i32 length | cstring portal | i32 max_rows (0 = no limit)
+pub fn encode_execute(portal: &str, max_rows: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    buf.push(MSG_EXECUTE);
+    write_i32_be(&mut buf, 0);
+
+    write_cstring(&mut buf, portal);
+    write_i32_be(&mut buf, max_rows);
+
+    let len = buf.len() - 1;
+    buf[1] = ((len >> 24) & 0xFF) as i64;
+    buf[2] = ((len >> 16) & 0xFF) as i64;
+    buf[3] = ((len >> 8) & 0xFF) as i64;
+    buf[4] = (len & 0xFF) as i64;
+
+    buf
+}
+
+/// Encode a Sync message
+///
+/// Format: 'S' | i32 4
+pub fn encode_sync() -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+    buf.push(MSG_SYNC);
+    write_i32_be(&mut buf, 4);
+    buf
+}
+
+/// Encode a Flush message
+///
+/// Format: 'H' | i32 4
+pub fn encode_flush() -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+    buf.push(MSG_FLUSH);
+    write_i32_be(&mut buf, 4);
+    buf
+}
+
+/// Encode a Terminate message
+///
+/// Format: 'X' | i32 4
+pub fn encode_terminate() -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+    buf.push(MSG_TERMINATE);
+    write_i32_be(&mut buf, 4);
+    buf
+}
+
+// =============================================================================
+// Message Decoding
+// =============================================================================
+
+/// Decode a single PostgreSQL protocol message from raw bytes
+///
+/// The first byte is the message type, followed by 4-byte length,
+/// then the payload. The length includes itself but not the type byte.
+pub fn decode_message(data: &[i64]) -> PgMessage {
+    if data.len() < 5 {
+        return PgMessage::Unknown { msg_type: 0 };
+    }
+
+    let msg_type = data[0];
+    let msg_len = read_i32_be(data, 1);
+
+    match msg_type {
+        MSG_AUTH => decode_auth(data),
+        MSG_PARAM_STATUS => decode_param_status(data),
+        MSG_BACKEND_KEY => decode_backend_key(data),
+        MSG_READY => decode_ready_for_query(data),
+        MSG_ROW_DESC => decode_row_description(data),
+        MSG_DATA_ROW => decode_data_row(data),
+        MSG_COMMAND_COMPLETE => decode_command_complete(data),
+        MSG_EMPTY_QUERY => PgMessage::EmptyQuery,
+        MSG_ERROR => decode_error_response(data),
+        MSG_NOTICE => decode_notice_response(data),
+        MSG_PARSE_COMPLETE => PgMessage::ParseComplete,
+        MSG_BIND_COMPLETE => PgMessage::BindComplete,
+        MSG_NO_DATA => PgMessage::NoData,
+        _ => PgMessage::Unknown { msg_type },
+    }
+}
+
+/// Decode an Authentication message
+fn decode_auth(data: &[i64]) -> PgMessage {
+    if data.len() < 9 {
+        return PgMessage::Unknown { msg_type: MSG_AUTH };
+    }
+
+    let auth_type = read_i32_be(data, 5);
+
+    match auth_type {
+        AUTH_OK => PgMessage::AuthOk,
+        AUTH_CLEARTEXT => PgMessage::AuthCleartext,
+        AUTH_MD5 => {
+            // 4-byte salt follows
+            if data.len() < 13 {
+                return PgMessage::Unknown { msg_type: MSG_AUTH };
+            }
+            let salt = vec![data[9], data[10], data[11], data[12]];
+            PgMessage::AuthMD5 { salt }
+        },
+        _ => PgMessage::Unknown { msg_type: MSG_AUTH },
+    }
+}
+
+/// Decode a ParameterStatus message
+fn decode_param_status(data: &[i64]) -> PgMessage {
+    let (name, name_len) = read_cstring(data, 5);
+    let (value, _) = read_cstring(data, 5 + name_len);
+    PgMessage::ParameterStatus { name, value }
+}
+
+/// Decode a BackendKeyData message
+fn decode_backend_key(data: &[i64]) -> PgMessage {
+    let pid = read_i32_be(data, 5);
+    let secret_key = read_i32_be(data, 9);
+    PgMessage::BackendKeyData { pid, secret_key }
+}
+
+/// Decode a ReadyForQuery message
+fn decode_ready_for_query(data: &[i64]) -> PgMessage {
+    let status = if data.len() > 5 { data[5] } else { 73 }; // 'I' = idle
+    PgMessage::ReadyForQuery { status }
+}
+
+/// Decode a RowDescription message
+///
+/// Format:
+///   i16 number_of_fields
+///   For each field:
+///     cstring field_name
+///     i32 table_oid
+///     i16 column_id
+///     i32 type_oid
+///     i16 type_size
+///     i32 type_modifier
+///     i16 format_code
+fn decode_row_description(data: &[i64]) -> PgMessage {
+    if data.len() < 7 {
+        return PgMessage::Unknown { msg_type: MSG_ROW_DESC };
+    }
+
+    let num_fields = read_i16_be(data, 5);
+    var columns: Vec<PgColumnDesc> = Vec::new();
+    var offset: i64 = 7;
+
+    let mut i: i64 = 0;
+    while i < num_fields {
+        if offset >= data.len() {
+            break;
+        }
+
+        let (name, name_len) = read_cstring(data, offset);
+        offset = offset + name_len;
+
+        let table_oid = read_i32_be(data, offset);
+        offset = offset + 4;
+
+        let column_id = read_i16_be(data, offset);
+        offset = offset + 2;
+
+        let type_oid = read_i32_be(data, offset);
+        offset = offset + 4;
+
+        let type_size = read_i16_be(data, offset);
+        offset = offset + 2;
+
+        let type_modifier = read_i32_be(data, offset);
+        offset = offset + 4;
+
+        let format_code = read_i16_be(data, offset);
+        offset = offset + 2;
+
+        columns.push(PgColumnDesc {
+            name,
+            table_oid,
+            column_id,
+            type_oid,
+            type_size,
+            type_modifier,
+            format_code,
+        });
+
+        i = i + 1;
+    }
+
+    PgMessage::RowDescription { columns }
+}
+
+/// Decode a DataRow message
+///
+/// Format:
+///   i16 number_of_columns
+///   For each column:
+///     i32 column_length (-1 = NULL)
+///     bytes column_value (if length >= 0)
+fn decode_data_row(data: &[i64]) -> PgMessage {
+    if data.len() < 7 {
+        return PgMessage::Unknown { msg_type: MSG_DATA_ROW };
+    }
+
+    let num_cols = read_i16_be(data, 5);
+    var values: Vec<Option<Vec<i64>>> = Vec::new();
+    var offset: i64 = 7;
+
+    let mut i: i64 = 0;
+    while i < num_cols {
+        if offset + 4 > data.len() {
+            break;
+        }
+
+        let col_len = read_i32_be(data, offset);
+        offset = offset + 4;
+
+        if col_len == -1 {
+            // NULL value
+            values.push(None);
+        } else {
+            var col_data: Vec<i64> = Vec::new();
+            let mut j: i64 = 0;
+            while j < col_len && offset < data.len() {
+                col_data.push(data[offset]);
+                offset = offset + 1;
+                j = j + 1;
+            }
+            values.push(Some(col_data));
+        }
+
+        i = i + 1;
+    }
+
+    PgMessage::DataRow { values }
+}
+
+/// Decode a CommandComplete message
+fn decode_command_complete(data: &[i64]) -> PgMessage {
+    let (tag, _) = read_cstring(data, 5);
+    PgMessage::CommandComplete { tag }
+}
+
+/// Decode an ErrorResponse message
+///
+/// Format: sequence of (byte field_type, cstring value) terminated by 0
+fn decode_error_response(data: &[i64]) -> PgMessage {
+    var severity = String::from("ERROR");
+    var code = String::from("00000");
+    var message = String::new();
+    var offset: i64 = 5;
+
+    while offset < data.len() {
+        let field_type = data[offset];
+        offset = offset + 1;
+
+        if field_type == 0 {
+            break;
+        }
+
+        let (value, value_len) = read_cstring(data, offset);
+        offset = offset + value_len;
+
+        match field_type {
+            83 => { severity = value; }, // 'S'
+            67 => { code = value; },     // 'C'
+            77 => { message = value; },  // 'M'
+            _ => {},
+        }
+    }
+
+    PgMessage::ErrorResponse { severity, code, message }
+}
+
+/// Decode a NoticeResponse message (same format as ErrorResponse)
+fn decode_notice_response(data: &[i64]) -> PgMessage {
+    var severity = String::from("NOTICE");
+    var message = String::new();
+    var offset: i64 = 5;
+
+    while offset < data.len() {
+        let field_type = data[offset];
+        offset = offset + 1;
+
+        if field_type == 0 {
+            break;
+        }
+
+        let (value, value_len) = read_cstring(data, offset);
+        offset = offset + value_len;
+
+        match field_type {
+            83 => { severity = value; }, // 'S'
+            77 => { message = value; },  // 'M'
+            _ => {},
+        }
+    }
+
+    PgMessage::NoticeResponse { severity, message }
+}
+
+// =============================================================================
+// MD5 Hash Implementation (for PG auth)
+// =============================================================================
+
+/// Compute MD5 hash and return as 32-char hex string
+/// Pure Simplex implementation of RFC 1321
+pub fn md5_hex(data: &[i64]) -> String {
+    let digest = md5_digest(data);
+    var result = String::new();
+    let hex_chars = "0123456789abcdef";
+    let mut i: i64 = 0;
+    while i < 16 {
+        let b = digest[i];
+        result.push(hex_chars.as_bytes()[(b >> 4) as usize] as char);
+        result.push(hex_chars.as_bytes()[(b & 0x0F) as usize] as char);
+        i = i + 1;
+    }
+    result
+}
+
+/// Core MD5 digest computation
+/// Returns 16-byte digest as Vec<i64>
+fn md5_digest(data: &[i64]) -> Vec<i64> {
+    // Initial hash values
+    var a0: i64 = 0x67452301;
+    var b0: i64 = 0xefcdab89;
+    var c0: i64 = 0x98badcfe;
+    var d0: i64 = 0x10325476;
+
+    // Pre-processing: pad message to 512-bit blocks
+    let orig_len_bits = data.len() * 8;
+    var msg: Vec<i64> = Vec::new();
+    let mut i: i64 = 0;
+    while i < data.len() {
+        msg.push(data[i] & 0xFF);
+        i = i + 1;
+    }
+
+    // Append bit '1' (0x80 byte)
+    msg.push(0x80);
+
+    // Pad to 56 mod 64 bytes
+    while (msg.len() % 64) != 56 {
+        msg.push(0);
+    }
+
+    // Append original length in bits as 64-bit little-endian
+    msg.push(orig_len_bits & 0xFF);
+    msg.push((orig_len_bits >> 8) & 0xFF);
+    msg.push((orig_len_bits >> 16) & 0xFF);
+    msg.push((orig_len_bits >> 24) & 0xFF);
+    msg.push(0);
+    msg.push(0);
+    msg.push(0);
+    msg.push(0);
+
+    // Per-round shift amounts
+    let s: Vec<i64> = vec![
+        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+        5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20, 5,  9, 14, 20,
+        4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+        6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
+    ];
+
+    // Pre-computed T table (floor(2^32 * abs(sin(i+1))))
+    let k: Vec<i64> = vec![
+        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee,
+        0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be,
+        0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa,
+        0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed,
+        0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c,
+        0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05,
+        0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039,
+        0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1,
+        0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
+    ];
+
+    // Process each 64-byte block
+    var block_offset: i64 = 0;
+    while block_offset < msg.len() {
+        // Break block into 16 32-bit little-endian words
+        var m: Vec<i64> = Vec::with_capacity(16);
+        let mut j: i64 = 0;
+        while j < 16 {
+            let idx = block_offset + j * 4;
+            let word = (msg[idx])
+                | (msg[idx + 1] << 8)
+                | (msg[idx + 2] << 16)
+                | (msg[idx + 3] << 24);
+            m.push(word & 0xFFFFFFFF);
+            j = j + 1;
+        }
+
+        var a = a0;
+        var b = b0;
+        var c = c0;
+        var d = d0;
+
+        j = 0;
+        while j < 64 {
+            var f: i64 = 0;
+            var g: i64 = 0;
+
+            if j < 16 {
+                f = (b & c) | ((!b) & d);
+                g = j;
+            } else if j < 32 {
+                f = (d & b) | ((!d) & c);
+                g = (5 * j + 1) % 16;
+            } else if j < 48 {
+                f = b ^ c ^ d;
+                g = (3 * j + 5) % 16;
+            } else {
+                f = c ^ (b | (!d));
+                g = (7 * j) % 16;
+            }
+
+            f = (f & 0xFFFFFFFF) + a + k[j] + m[g];
+            f = f & 0xFFFFFFFF;
+            a = d;
+            d = c;
+            c = b;
+            let rotated = md5_left_rotate(f, s[j]);
+            b = (b + rotated) & 0xFFFFFFFF;
+
+            j = j + 1;
+        }
+
+        a0 = (a0 + a) & 0xFFFFFFFF;
+        b0 = (b0 + b) & 0xFFFFFFFF;
+        c0 = (c0 + c) & 0xFFFFFFFF;
+        d0 = (d0 + d) & 0xFFFFFFFF;
+
+        block_offset = block_offset + 64;
+    }
+
+    // Produce the 16-byte digest (little-endian)
+    var digest: Vec<i64> = Vec::with_capacity(16);
+    digest.push(a0 & 0xFF);
+    digest.push((a0 >> 8) & 0xFF);
+    digest.push((a0 >> 16) & 0xFF);
+    digest.push((a0 >> 24) & 0xFF);
+    digest.push(b0 & 0xFF);
+    digest.push((b0 >> 8) & 0xFF);
+    digest.push((b0 >> 16) & 0xFF);
+    digest.push((b0 >> 24) & 0xFF);
+    digest.push(c0 & 0xFF);
+    digest.push((c0 >> 8) & 0xFF);
+    digest.push((c0 >> 16) & 0xFF);
+    digest.push((c0 >> 24) & 0xFF);
+    digest.push(d0 & 0xFF);
+    digest.push((d0 >> 8) & 0xFF);
+    digest.push((d0 >> 16) & 0xFF);
+    digest.push((d0 >> 24) & 0xFF);
+    digest
+}
+
+/// Left-rotate a 32-bit value
+fn md5_left_rotate(x: i64, c: i64) -> i64 {
+    let masked = x & 0xFFFFFFFF;
+    ((masked << c) | (masked >> (32 - c))) & 0xFFFFFFFF
+}
+// simplex-postgres/connection - TCP Connection Management
+//
+// Manages TCP connections to PostgreSQL servers, handles the startup
+// handshake sequence, and provides connection lifecycle management.
+//
+// The PostgreSQL startup sequence:
+// 1. Client sends StartupMessage (protocol version + parameters)
+// 2. Server responds with AuthenticationXxx message
+// 3. Client responds to auth challenge (e.g., MD5 password)
+// 4. Server sends ParameterStatus messages, BackendKeyData, ReadyForQuery
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::protocol::{
+    encode_startup_message, encode_password_message, encode_md5_password,
+    encode_terminate, decode_message, PgMessage, MSG_AUTH, MSG_PARAM_STATUS,
+    MSG_BACKEND_KEY, MSG_READY, MSG_ERROR, AUTH_OK, AUTH_CLEARTEXT, AUTH_MD5,
+};
+use crate::types::PgError;
+
+// =============================================================================
+// Connection Configuration
+// =============================================================================
+
+/// PostgreSQL connection configuration
+pub struct PgConfig {
+    /// Server hostname or IP
+    pub host: String,
+    /// Server port (default 5432)
+    pub port: i64,
+    /// Database name
+    pub database: String,
+    /// Username
+    pub user: String,
+    /// Password
+    pub password: String,
+    /// Application name (sent as parameter)
+    pub application_name: String,
+    /// Connection timeout in milliseconds
+    pub connect_timeout_ms: i64,
+    /// Read timeout in milliseconds (0 = no timeout)
+    pub read_timeout_ms: i64,
+}
+
+impl PgConfig {
+    /// Create a new connection configuration
+    pub fn new(host: &str, port: i64, database: &str, user: &str, password: &str) -> Self {
+        PgConfig {
+            host: host.to_string(),
+            port,
+            database: database.to_string(),
+            user: user.to_string(),
+            password: password.to_string(),
+            application_name: "simplex".to_string(),
+            connect_timeout_ms: 5000,
+            read_timeout_ms: 30000,
+        }
+    }
+
+    /// Create configuration from a connection string
+    /// Format: "host=localhost port=5432 dbname=mydb user=myuser password=secret"
+    pub fn from_connection_string(connstr: &str) -> Result<Self, PgError> {
+        var host: String = "localhost".to_string();
+        var port: i64 = 5432;
+        var database: String = "".to_string();
+        var user: String = "".to_string();
+        var password: String = "".to_string();
+        var app_name: String = "simplex".to_string();
+
+        let parts: Vec<&str> = connstr.split(' ');
+        let mut i: i64 = 0;
+        while i < parts.len() {
+            let kv: Vec<&str> = parts[i].splitn(2, '=');
+            if kv.len() == 2 {
+                let key = kv[0];
+                let val = kv[1];
+                match key {
+                    "host" => { host = val.to_string(); },
+                    "port" => {
+                        port = val.parse::<i64>()
+                            .map_err(|_| PgError::Config("invalid port".to_string()))?;
+                    },
+                    "dbname" => { database = val.to_string(); },
+                    "user" => { user = val.to_string(); },
+                    "password" => { password = val.to_string(); },
+                    "application_name" => { app_name = val.to_string(); },
+                    _ => {},
+                }
+            }
+            i = i + 1;
+        }
+
+        if database.is_empty() {
+            return Err(PgError::Config("dbname is required".to_string()));
+        }
+        if user.is_empty() {
+            return Err(PgError::Config("user is required".to_string()));
+        }
+
+        Ok(PgConfig {
+            host,
+            port,
+            database,
+            user,
+            password,
+            application_name: app_name,
+            connect_timeout_ms: 5000,
+            read_timeout_ms: 30000,
+        })
+    }
+
+    /// Set application name
+    pub fn with_app_name(mut self, name: &str) -> Self {
+        self.application_name = name.to_string();
+        self
+    }
+
+    /// Set connection timeout
+    pub fn with_connect_timeout(mut self, ms: i64) -> Self {
+        self.connect_timeout_ms = ms;
+        self
+    }
+
+    /// Set read timeout
+    pub fn with_read_timeout(mut self, ms: i64) -> Self {
+        self.read_timeout_ms = ms;
+        self
+    }
+
+    /// Get the address string for TCP connection
+    pub fn addr_string(&self) -> String {
+        let mut s = self.host.clone();
+        s.push(':');
+        s.push_str(&self.port.to_string());
+        s
+    }
+}
+
+// =============================================================================
+// Connection State
+// =============================================================================
+
+/// Represents an active PostgreSQL connection
+pub struct PgConnection {
+    /// TCP stream handle (i64 from net runtime)
+    pub stream_handle: i64,
+    /// Current connection state
+    pub state: i64, // 0=disconnected, 1=ready, 2=in_query, 3=in_transaction, 4=failed
+    /// Server process ID (from BackendKeyData)
+    pub backend_pid: i64,
+    /// Server secret key (from BackendKeyData)
+    pub backend_key: i64,
+    /// Server parameters (key-value pairs flattened)
+    pub server_params_keys: Vec<String>,
+    pub server_params_values: Vec<String>,
+    /// Read buffer for incoming data
+    pub read_buf: Vec<i64>,
+    /// Write buffer for outgoing data
+    pub write_buf: Vec<i64>,
+    /// Connection configuration (retained for reconnection)
+    pub config: PgConfig,
+    /// Transaction nesting depth
+    pub txn_depth: i64,
+}
+
+impl PgConnection {
+    /// Check if connection is ready for queries
+    pub fn is_ready(&self) -> bool {
+        self.state == 1 || self.state == 3
+    }
+
+    /// Check if connection is in a transaction
+    pub fn is_in_transaction(&self) -> bool {
+        self.state == 3
+    }
+
+    /// Get a server parameter value
+    pub fn get_server_param(&self, key: &str) -> Option<String> {
+        let mut i: i64 = 0;
+        while i < self.server_params_keys.len() {
+            if self.server_params_keys[i] == key {
+                return Some(self.server_params_values[i].clone());
+            }
+            i = i + 1;
+        }
+        None
+    }
+
+    /// Store a server parameter
+    pub fn set_server_param(&mut self, key: String, value: String) {
+        let mut i: i64 = 0;
+        while i < self.server_params_keys.len() {
+            if self.server_params_keys[i] == key {
+                self.server_params_values[i] = value;
+                return;
+            }
+            i = i + 1;
+        }
+        self.server_params_keys.push(key);
+        self.server_params_values.push(value);
+    }
+
+    /// Clear read buffer
+    pub fn clear_read_buf(&mut self) {
+        self.read_buf.clear();
+    }
+
+    /// Clear write buffer
+    pub fn clear_write_buf(&mut self) {
+        self.write_buf.clear();
+    }
+}
+
+// =============================================================================
+// Connection Functions
+// =============================================================================
+
+/// Connect to a PostgreSQL server
+///
+/// Performs TCP connection, startup handshake, and authentication.
+/// Returns a ready-to-use connection handle.
+///
+/// # Arguments
+/// * `config` - Connection configuration
+///
+/// # Example
+/// ```simplex
+/// let config = PgConfig::new("localhost", 5432, "mydb", "user", "pass");
+/// let conn = pg_connect(config);
+/// ```
+pub fn pg_connect(config: PgConfig) -> Result<PgConnection, PgError> {
+    // Build the TCP address
+    let addr = config.addr_string();
+
+    // Establish TCP connection via runtime
+    let stream_handle = tcp_connect(&addr, config.connect_timeout_ms);
+    if stream_handle < 0 {
+        return Err(PgError::Connection(
+            "failed to establish TCP connection".to_string()
+        ));
+    }
+
+    // Create connection object
+    var conn = PgConnection {
+        stream_handle,
+        state: 0,
+        backend_pid: 0,
+        backend_key: 0,
+        server_params_keys: Vec::new(),
+        server_params_values: Vec::new(),
+        read_buf: Vec::new(),
+        write_buf: Vec::new(),
+        config,
+        txn_depth: 0,
+    };
+
+    // Send startup message
+    let startup = encode_startup_message(
+        &conn.config.user,
+        &conn.config.database,
+        &conn.config.application_name,
+    );
+    tcp_send(conn.stream_handle, &startup);
+
+    // Process authentication
+    let auth_result = process_auth(&mut conn);
+    if auth_result != 0 {
+        tcp_close(conn.stream_handle);
+        return Err(PgError::Auth("authentication failed".to_string()));
+    }
+
+    // Wait for ReadyForQuery
+    let ready_result = wait_for_ready(&mut conn);
+    if ready_result != 0 {
+        tcp_close(conn.stream_handle);
+        return Err(PgError::Connection("server did not become ready".to_string()));
+    }
+
+    conn.state = 1; // ready
+    Ok(conn)
+}
+
+/// Process the authentication phase
+fn process_auth(conn: &mut PgConnection) -> i64 {
+    // Read authentication response
+    let msg_data = tcp_recv(conn.stream_handle, 4096);
+    if msg_data.len() < 5 {
+        return 1; // error
+    }
+
+    let msg = decode_message(&msg_data);
+    match msg {
+        PgMessage::AuthOk => {
+            // No password required
+            0
+        },
+        PgMessage::AuthCleartext => {
+            // Send cleartext password
+            let pw_msg = encode_password_message(&conn.config.password);
+            tcp_send(conn.stream_handle, &pw_msg);
+            // Read response
+            let resp = tcp_recv(conn.stream_handle, 4096);
+            let resp_msg = decode_message(&resp);
+            match resp_msg {
+                PgMessage::AuthOk => 0,
+                PgMessage::ErrorResponse { message, .. } => 1,
+                _ => 1,
+            }
+        },
+        PgMessage::AuthMD5 { salt } => {
+            // MD5 authentication: md5(md5(password + user) + salt)
+            let pw_msg = encode_md5_password(
+                &conn.config.user,
+                &conn.config.password,
+                &salt,
+            );
+            tcp_send(conn.stream_handle, &pw_msg);
+            // Read response
+            let resp = tcp_recv(conn.stream_handle, 4096);
+            let resp_msg = decode_message(&resp);
+            match resp_msg {
+                PgMessage::AuthOk => 0,
+                PgMessage::ErrorResponse { message, .. } => 1,
+                _ => 1,
+            }
+        },
+        PgMessage::ErrorResponse { message, .. } => {
+            1
+        },
+        _ => 1,
+    }
+}
+
+/// Wait for ReadyForQuery message, processing intermediate messages
+fn wait_for_ready(conn: &mut PgConnection) -> i64 {
+    var attempts: i64 = 0;
+    while attempts < 100 {
+        let data = tcp_recv(conn.stream_handle, 4096);
+        if data.is_empty() {
+            return 1;
+        }
+
+        // Process messages in the buffer (may contain multiple messages)
+        var offset: i64 = 0;
+        while offset < data.len() {
+            if offset + 5 > data.len() {
+                break;
+            }
+
+            let msg_type = data[offset];
+            let msg_len = read_i32_be(&data, offset + 1);
+            let total_len = msg_len + 1; // type byte + length
+
+            if offset + total_len > data.len() {
+                break;
+            }
+
+            let msg_slice = data[offset..offset + total_len].to_vec();
+            let msg = decode_message(&msg_slice);
+
+            match msg {
+                PgMessage::ParameterStatus { name, value } => {
+                    conn.set_server_param(name, value);
+                },
+                PgMessage::BackendKeyData { pid, secret_key } => {
+                    conn.backend_pid = pid;
+                    conn.backend_key = secret_key;
+                },
+                PgMessage::ReadyForQuery { status } => {
+                    return 0; // success
+                },
+                PgMessage::ErrorResponse { message, .. } => {
+                    return 1;
+                },
+                _ => {},
+            }
+
+            offset = offset + total_len;
+        }
+
+        attempts = attempts + 1;
+    }
+    1
+}
+
+/// Close a PostgreSQL connection
+///
+/// Sends a Terminate message and closes the TCP connection.
+pub fn pg_close(conn: &mut PgConnection) {
+    if conn.state != 0 && conn.state != 4 {
+        let term = encode_terminate();
+        tcp_send(conn.stream_handle, &term);
+    }
+    tcp_close(conn.stream_handle);
+    conn.state = 0;
+}
+
+// =============================================================================
+// TCP Runtime Helpers (thin wrappers over simplex-std::net)
+// =============================================================================
+
+/// Connect to a TCP address with timeout. Returns handle or -1 on error.
+fn tcp_connect(addr: &str, timeout_ms: i64) -> i64 {
+    // Runtime intrinsic: establishes TCP connection
+    unsafe { net_tcp_connect(addr, timeout_ms) }
+}
+
+/// Send data over TCP connection
+fn tcp_send(handle: i64, data: &[i64]) {
+    unsafe { net_tcp_send(handle, data.as_ptr(), data.len() as i64) }
+}
+
+/// Receive data from TCP connection. Returns byte vector.
+fn tcp_recv(handle: i64, max_len: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::with_capacity(max_len);
+    let n = unsafe { net_tcp_recv(handle, buf.as_mut_ptr(), max_len) };
+    if n > 0 {
+        unsafe { buf.set_len(n as i64) };
+    }
+    buf
+}
+
+/// Close a TCP connection
+fn tcp_close(handle: i64) {
+    unsafe { net_tcp_close(handle) }
+}
+
+/// Read a big-endian 32-bit integer from a byte slice at offset
+pub fn read_i32_be(data: &[i64], offset: i64) -> i64 {
+    if offset + 4 > data.len() {
+        return 0;
+    }
+    ((data[offset] & 0xFF) << 24)
+        | ((data[offset + 1] & 0xFF) << 16)
+        | ((data[offset + 2] & 0xFF) << 8)
+        | (data[offset + 3] & 0xFF)
+}
+
+/// Read a big-endian 16-bit integer from a byte slice at offset
+pub fn read_i16_be(data: &[i64], offset: i64) -> i64 {
+    if offset + 2 > data.len() {
+        return 0;
+    }
+    ((data[offset] & 0xFF) << 8) | (data[offset + 1] & 0xFF)
+}
+
+/// Write a big-endian 32-bit integer to a byte vector
+pub fn write_i32_be(buf: &mut Vec<i64>, val: i64) {
+    buf.push((val >> 24) & 0xFF);
+    buf.push((val >> 16) & 0xFF);
+    buf.push((val >> 8) & 0xFF);
+    buf.push(val & 0xFF);
+}
+
+/// Write a big-endian 16-bit integer to a byte vector
+pub fn write_i16_be(buf: &mut Vec<i64>, val: i64) {
+    buf.push((val >> 8) & 0xFF);
+    buf.push(val & 0xFF);
+}
+
+/// Write a null-terminated string to a byte vector
+pub fn write_cstring(buf: &mut Vec<i64>, s: &str) {
+    let bytes = s.as_bytes();
+    let mut i: i64 = 0;
+    while i < bytes.len() {
+        buf.push(bytes[i] as i64);
+        i = i + 1;
+    }
+    buf.push(0); // null terminator
+}
+
+/// Read a null-terminated string from a byte slice starting at offset
+/// Returns (string, bytes_consumed_including_null)
+pub fn read_cstring(data: &[i64], offset: i64) -> (String, i64) {
+    var result = String::new();
+    var i: i64 = offset;
+    while i < data.len() {
+        if data[i] == 0 {
+            return (result, i - offset + 1);
+        }
+        result.push(data[i] as u8 as char);
+        i = i + 1;
+    }
+    (result, i - offset)
+}
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn net_tcp_connect(addr: i64, timeout_ms: i64) -> i64;
+extern fn net_tcp_send(handle: i64, data: i64, len: i64) -> i64;
+extern fn net_tcp_recv(handle: i64, buf: i64, max_len: i64) -> i64;
+extern fn net_tcp_close(handle: i64) -> i64;
+// simplex-postgres/query - Query Execution
+//
+// Provides query execution functions for simple queries, prepared
+// statements, and parameterized queries. Handles result set parsing
+// from the wire protocol response messages.
+//
+// # Simple Query Protocol
+//   Client sends Query ('Q') message with SQL text
+//   Server responds with RowDescription + DataRow* + CommandComplete + ReadyForQuery
+//
+// # Extended Query Protocol
+//   Client sends Parse -> Bind -> Describe -> Execute -> Sync
+//   Server responds with ParseComplete -> BindComplete -> RowDescription -> DataRow* -> CommandComplete -> ReadyForQuery
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::{
+    PgConnection, read_i32_be, read_i16_be, read_cstring,
+};
+use crate::protocol::{
+    encode_query, encode_parse, encode_bind, encode_describe,
+    encode_execute, encode_sync, decode_message,
+    PgMessage, PgColumnDesc,
+    MSG_ROW_DESC, MSG_DATA_ROW, MSG_COMMAND_COMPLETE, MSG_READY,
+    MSG_ERROR, MSG_PARSE_COMPLETE, MSG_BIND_COMPLETE,
+};
+use crate::types::{PgResult, PgRow, PgValue, PgError};
+
+// =============================================================================
+// Simple Query
+// =============================================================================
+
+/// Execute a simple SQL query
+///
+/// Uses the simple query protocol (single round-trip).
+/// Returns all result rows or an error.
+///
+/// # Arguments
+/// * `conn` - Active PostgreSQL connection
+/// * `sql` - SQL query string
+///
+/// # Example
+/// ```simplex
+/// let result = pg_query(&mut conn, "SELECT id, name FROM users");
+/// match result {
+///     Ok(r) => println(format!("Got {} rows", r.row_count())),
+///     Err(e) => println(format!("Error: {}", e.message())),
+/// }
+/// ```
+pub fn pg_query(conn: &mut PgConnection, sql: &str) -> Result<PgResult, PgError> {
+    if !conn.is_ready() {
+        return Err(PgError::Connection("connection not ready".to_string()));
+    }
+
+    conn.state = 2; // in_query
+
+    // Send query message
+    let msg = encode_query(sql);
+    tcp_send(conn.stream_handle, &msg);
+
+    // Collect response
+    var columns: Vec<PgColumnDesc> = Vec::new();
+    var rows: Vec<PgRow> = Vec::new();
+    var command_tag: String = String::new();
+    var affected_rows: i64 = 0;
+
+    // Read and process all response messages
+    var done: bool = false;
+    var attempts: i64 = 0;
+    while !done && attempts < 1000 {
+        let data = tcp_recv(conn.stream_handle, 65536);
+        if data.is_empty() {
+            conn.state = 4; // failed
+            return Err(PgError::Connection("connection lost during query".to_string()));
+        }
+
+        // Process messages in buffer
+        var offset: i64 = 0;
+        while offset < data.len() {
+            if offset + 5 > data.len() {
+                break;
+            }
+
+            let msg_type = data[offset];
+            let msg_len = read_i32_be(&data, offset + 1);
+            let total_len = msg_len + 1;
+
+            if offset + total_len > data.len() {
+                break;
+            }
+
+            let msg_slice = data[offset..offset + total_len].to_vec();
+            let decoded = decode_message(&msg_slice);
+
+            match decoded {
+                PgMessage::RowDescription { columns: cols } => {
+                    columns = cols;
+                },
+                PgMessage::DataRow { values } => {
+                    let row = parse_data_row(&columns, &values);
+                    rows.push(row);
+                },
+                PgMessage::CommandComplete { tag } => {
+                    affected_rows = parse_command_tag(&tag);
+                    command_tag = tag;
+                },
+                PgMessage::EmptyQuery => {
+                    command_tag = "EMPTY".to_string();
+                },
+                PgMessage::ErrorResponse { severity, code, message } => {
+                    // Consume remaining messages until ReadyForQuery
+                    conn.state = 1;
+                    return Err(PgError::Server {
+                        severity,
+                        code,
+                        message,
+                    });
+                },
+                PgMessage::ReadyForQuery { status } => {
+                    match status {
+                        84 => { conn.state = 3; }, // 'T' = in transaction
+                        69 => { conn.state = 4; }, // 'E' = failed transaction
+                        _  => { conn.state = 1; }, // 'I' = idle
+                    }
+                    done = true;
+                },
+                _ => {},
+            }
+
+            offset = offset + total_len;
+        }
+        attempts = attempts + 1;
+    }
+
+    // Build column names list
+    var col_names: Vec<String> = Vec::new();
+    let mut i: i64 = 0;
+    while i < columns.len() {
+        col_names.push(columns[i].name.clone());
+        i = i + 1;
+    }
+
+    Ok(PgResult {
+        columns: col_names,
+        rows,
+        affected_rows,
+        command_tag,
+    })
+}
+
+/// Execute a SQL statement that does not return rows
+///
+/// Convenience wrapper around pg_query for INSERT/UPDATE/DELETE/DDL.
+/// Returns the number of affected rows.
+pub fn pg_execute(conn: &mut PgConnection, sql: &str) -> Result<i64, PgError> {
+    let result = pg_query(conn, sql)?;
+    Ok(result.affected_rows)
+}
+
+// =============================================================================
+// Prepared Statements
+// =============================================================================
+
+/// Prepared statement handle
+pub struct PgPrepared {
+    /// Statement name (empty string for unnamed)
+    pub name: String,
+    /// Original SQL text
+    pub sql: String,
+    /// Number of parameters
+    pub num_params: i64,
+    /// Column descriptions (filled after Describe)
+    pub columns: Vec<PgColumnDesc>,
+}
+
+/// Prepare a SQL statement for repeated execution
+///
+/// Uses the extended query protocol to parse the SQL on the server.
+/// The statement can then be executed multiple times with different parameters.
+///
+/// # Arguments
+/// * `conn` - Active PostgreSQL connection
+/// * `name` - Statement name (use "" for unnamed)
+/// * `sql` - SQL with $1, $2, ... parameter placeholders
+///
+/// # Example
+/// ```simplex
+/// let stmt = pg_prepare(&mut conn, "get_user", "SELECT * FROM users WHERE id = $1");
+/// ```
+pub fn pg_prepare(
+    conn: &mut PgConnection,
+    name: &str,
+    sql: &str,
+) -> Result<PgPrepared, PgError> {
+    if !conn.is_ready() {
+        return Err(PgError::Connection("connection not ready".to_string()));
+    }
+
+    conn.state = 2; // in_query
+
+    // Count parameter placeholders
+    let num_params = count_params(sql);
+
+    // Send Parse + Describe + Sync
+    let parse_msg = encode_parse(name, sql, &[]);
+    let describe_msg = encode_describe(83, name); // 'S' = statement
+    let sync_msg = encode_sync();
+
+    var combined: Vec<i64> = Vec::new();
+    combined.extend_from_slice(&parse_msg);
+    combined.extend_from_slice(&describe_msg);
+    combined.extend_from_slice(&sync_msg);
+    tcp_send(conn.stream_handle, &combined);
+
+    // Read responses
+    var columns: Vec<PgColumnDesc> = Vec::new();
+    var parse_ok: bool = false;
+    var done: bool = false;
+    var attempts: i64 = 0;
+
+    while !done && attempts < 100 {
+        let data = tcp_recv(conn.stream_handle, 65536);
+        if data.is_empty() {
+            conn.state = 4;
+            return Err(PgError::Connection("connection lost during prepare".to_string()));
+        }
+
+        var offset: i64 = 0;
+        while offset < data.len() {
+            if offset + 5 > data.len() {
+                break;
+            }
+
+            let msg_type = data[offset];
+            let msg_len = read_i32_be(&data, offset + 1);
+            let total_len = msg_len + 1;
+
+            if offset + total_len > data.len() {
+                break;
+            }
+
+            let msg_slice = data[offset..offset + total_len].to_vec();
+            let decoded = decode_message(&msg_slice);
+
+            match decoded {
+                PgMessage::ParseComplete => {
+                    parse_ok = true;
+                },
+                PgMessage::RowDescription { columns: cols } => {
+                    columns = cols;
+                },
+                PgMessage::NoData => {
+                    // Statement doesn't return rows (e.g., INSERT)
+                },
+                PgMessage::ErrorResponse { severity, code, message } => {
+                    conn.state = 1;
+                    return Err(PgError::Server { severity, code, message });
+                },
+                PgMessage::ReadyForQuery { status } => {
+                    match status {
+                        84 => { conn.state = 3; },
+                        69 => { conn.state = 4; },
+                        _  => { conn.state = 1; },
+                    }
+                    done = true;
+                },
+                _ => {},
+            }
+
+            offset = offset + total_len;
+        }
+        attempts = attempts + 1;
+    }
+
+    if !parse_ok {
+        return Err(PgError::Protocol("parse did not complete".to_string()));
+    }
+
+    Ok(PgPrepared {
+        name: name.to_string(),
+        sql: sql.to_string(),
+        num_params,
+        columns,
+    })
+}
+
+/// Execute a prepared statement with parameters
+///
+/// # Arguments
+/// * `conn` - Active PostgreSQL connection
+/// * `stmt` - Prepared statement from pg_prepare
+/// * `params` - Parameter values as strings
+///
+/// # Example
+/// ```simplex
+/// let result = pg_bind_execute(&mut conn, &stmt, &["42".to_string()]);
+/// ```
+pub fn pg_bind_execute(
+    conn: &mut PgConnection,
+    stmt: &PgPrepared,
+    params: &[String],
+) -> Result<PgResult, PgError> {
+    if !conn.is_ready() {
+        return Err(PgError::Connection("connection not ready".to_string()));
+    }
+
+    if params.len() as i64 != stmt.num_params {
+        return Err(PgError::Protocol(
+            "parameter count mismatch".to_string()
+        ));
+    }
+
+    conn.state = 2; // in_query
+
+    // Send Bind + Execute + Sync
+    let bind_msg = encode_bind("", &stmt.name, params);
+    let exec_msg = encode_execute("", 0);
+    let sync_msg = encode_sync();
+
+    var combined: Vec<i64> = Vec::new();
+    combined.extend_from_slice(&bind_msg);
+    combined.extend_from_slice(&exec_msg);
+    combined.extend_from_slice(&sync_msg);
+    tcp_send(conn.stream_handle, &combined);
+
+    // Process response
+    var rows: Vec<PgRow> = Vec::new();
+    var command_tag: String = String::new();
+    var affected_rows: i64 = 0;
+    var done: bool = false;
+    var attempts: i64 = 0;
+
+    while !done && attempts < 1000 {
+        let data = tcp_recv(conn.stream_handle, 65536);
+        if data.is_empty() {
+            conn.state = 4;
+            return Err(PgError::Connection("connection lost".to_string()));
+        }
+
+        var offset: i64 = 0;
+        while offset < data.len() {
+            if offset + 5 > data.len() {
+                break;
+            }
+
+            let msg_type = data[offset];
+            let msg_len = read_i32_be(&data, offset + 1);
+            let total_len = msg_len + 1;
+
+            if offset + total_len > data.len() {
+                break;
+            }
+
+            let msg_slice = data[offset..offset + total_len].to_vec();
+            let decoded = decode_message(&msg_slice);
+
+            match decoded {
+                PgMessage::BindComplete => {},
+                PgMessage::DataRow { values } => {
+                    let row = parse_data_row(&stmt.columns, &values);
+                    rows.push(row);
+                },
+                PgMessage::CommandComplete { tag } => {
+                    affected_rows = parse_command_tag(&tag);
+                    command_tag = tag;
+                },
+                PgMessage::ErrorResponse { severity, code, message } => {
+                    conn.state = 1;
+                    return Err(PgError::Server { severity, code, message });
+                },
+                PgMessage::ReadyForQuery { status } => {
+                    match status {
+                        84 => { conn.state = 3; },
+                        69 => { conn.state = 4; },
+                        _  => { conn.state = 1; },
+                    }
+                    done = true;
+                },
+                _ => {},
+            }
+
+            offset = offset + total_len;
+        }
+        attempts = attempts + 1;
+    }
+
+    // Build column names
+    var col_names: Vec<String> = Vec::new();
+    let mut i: i64 = 0;
+    while i < stmt.columns.len() {
+        col_names.push(stmt.columns[i].name.clone());
+        i = i + 1;
+    }
+
+    Ok(PgResult {
+        columns: col_names,
+        rows,
+        affected_rows,
+        command_tag,
+    })
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Parse a DataRow into a PgRow using column descriptions
+fn parse_data_row(columns: &[PgColumnDesc], values: &[Option<Vec<i64>>]) -> PgRow {
+    var row_values: Vec<PgValue> = Vec::new();
+
+    let mut i: i64 = 0;
+    while i < values.len() {
+        match &values[i] {
+            None => {
+                row_values.push(PgValue::Null);
+            },
+            Some(data) => {
+                // Convert raw bytes to string (text format)
+                let text = bytes_to_string(data);
+
+                // Determine type from column OID if available
+                if i < columns.len() {
+                    let type_oid = columns[i].type_oid;
+                    let typed_val = parse_typed_value(&text, type_oid);
+                    row_values.push(typed_val);
+                } else {
+                    row_values.push(PgValue::Text(text));
+                }
+            },
+        }
+        i = i + 1;
+    }
+
+    PgRow { values: row_values }
+}
+
+/// Parse a text value according to its PostgreSQL type OID
+fn parse_typed_value(text: &str, type_oid: i64) -> PgValue {
+    match type_oid {
+        // Boolean (OID 16)
+        16 => {
+            if text == "t" || text == "true" || text == "1" {
+                PgValue::Bool(true)
+            } else {
+                PgValue::Bool(false)
+            }
+        },
+        // Int2 (OID 21), Int4 (OID 23), Int8 (OID 20)
+        20 | 21 | 23 => {
+            match text.parse::<i64>() {
+                Ok(n) => PgValue::Int(n),
+                Err(_) => PgValue::Text(text.to_string()),
+            }
+        },
+        // Float4 (OID 700), Float8 (OID 701), Numeric (OID 1700)
+        700 | 701 | 1700 => {
+            match text.parse::<f64>() {
+                Ok(f) => PgValue::Float(f),
+                Err(_) => PgValue::Text(text.to_string()),
+            }
+        },
+        // Text (OID 25), Varchar (OID 1043), Char (OID 18), Name (OID 19)
+        18 | 19 | 25 | 1043 => {
+            PgValue::Text(text.to_string())
+        },
+        // Bytea (OID 17)
+        17 => {
+            PgValue::Bytes(parse_bytea(text))
+        },
+        // Default: treat as text
+        _ => PgValue::Text(text.to_string()),
+    }
+}
+
+/// Parse PostgreSQL bytea hex format (\x...)
+fn parse_bytea(text: &str) -> Vec<i64> {
+    var result: Vec<i64> = Vec::new();
+    if text.len() < 2 {
+        return result;
+    }
+
+    // Check for hex format prefix \x
+    let bytes = text.as_bytes();
+    if bytes[0] == 92 && bytes[1] == 120 { // \x
+        var i: i64 = 2;
+        while i + 1 < bytes.len() {
+            let hi = hex_digit(bytes[i]);
+            let lo = hex_digit(bytes[i + 1]);
+            if hi >= 0 && lo >= 0 {
+                result.push((hi << 4) | lo);
+            }
+            i = i + 2;
+        }
+    } else {
+        // Escape format
+        var i: i64 = 0;
+        while i < bytes.len() {
+            if bytes[i] == 92 && i + 3 < bytes.len() { // backslash
+                let v = (bytes[i + 1] - 48) * 64
+                    + (bytes[i + 2] - 48) * 8
+                    + (bytes[i + 3] - 48);
+                result.push(v as i64);
+                i = i + 4;
+            } else {
+                result.push(bytes[i] as i64);
+                i = i + 1;
+            }
+        }
+    }
+
+    result
+}
+
+/// Convert a hex digit character to its value (0-15), or -1 if invalid
+fn hex_digit(c: i64) -> i64 {
+    if c >= 48 && c <= 57 { // '0'-'9'
+        c - 48
+    } else if c >= 97 && c <= 102 { // 'a'-'f'
+        c - 87
+    } else if c >= 65 && c <= 70 { // 'A'-'F'
+        c - 55
+    } else {
+        -1
+    }
+}
+
+/// Convert bytes to a UTF-8 string
+fn bytes_to_string(data: &[i64]) -> String {
+    var s = String::new();
+    let mut i: i64 = 0;
+    while i < data.len() {
+        s.push(data[i] as u8 as char);
+        i = i + 1;
+    }
+    s
+}
+
+/// Parse affected row count from a command tag
+/// e.g., "INSERT 0 5" -> 5, "UPDATE 3" -> 3, "DELETE 1" -> 1
+fn parse_command_tag(tag: &str) -> i64 {
+    let parts: Vec<&str> = tag.split(' ');
+    if parts.len() == 0 {
+        return 0;
+    }
+
+    // Last token is usually the row count
+    let last = parts[parts.len() - 1];
+    match last.parse::<i64>() {
+        Ok(n) => n,
+        Err(_) => 0,
+    }
+}
+
+/// Count the number of $N parameter placeholders in a SQL string
+fn count_params(sql: &str) -> i64 {
+    var max_param: i64 = 0;
+    let bytes = sql.as_bytes();
+    let len = bytes.len();
+    var i: i64 = 0;
+
+    while i < len {
+        if bytes[i] == 36 { // '$'
+            var num_str = String::new();
+            var j: i64 = i + 1;
+            while j < len && bytes[j] >= 48 && bytes[j] <= 57 {
+                num_str.push(bytes[j] as u8 as char);
+                j = j + 1;
+            }
+            if !num_str.is_empty() {
+                match num_str.parse::<i64>() {
+                    Ok(n) => {
+                        if n > max_param {
+                            max_param = n;
+                        }
+                    },
+                    Err(_) => {},
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    max_param
+}
+
+// =============================================================================
+// TCP Runtime Helpers
+// =============================================================================
+
+fn tcp_send(handle: i64, data: &[i64]) {
+    unsafe { net_tcp_send(handle, data.as_ptr(), data.len() as i64) }
+}
+
+fn tcp_recv(handle: i64, max_len: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::with_capacity(max_len);
+    let n = unsafe { net_tcp_recv(handle, buf.as_mut_ptr(), max_len) };
+    if n > 0 {
+        unsafe { buf.set_len(n as i64) };
+    }
+    buf
+}
+
+extern fn net_tcp_send(handle: i64, data: i64, len: i64) -> i64;
+extern fn net_tcp_recv(handle: i64, buf: i64, max_len: i64) -> i64;
+// simplex-postgres/pool - Connection Pooling
+//
+// Provides a simple connection pool that manages a set of PostgreSQL
+// connections for reuse. Reduces connection overhead by keeping
+// connections alive between queries.
+//
+// # Usage
+//
+// ```simplex
+// let pool = pool_new(config, 5);  // pool of 5 connections
+// let conn = pool_checkout(&mut pool)?;
+// let result = pg_query(&mut conn, "SELECT 1");
+// pool_return(&mut pool, conn);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::{PgConfig, PgConnection, pg_connect, pg_close};
+use crate::types::PgError;
+
+// =============================================================================
+// Connection Pool
+// =============================================================================
+
+/// Connection pool state
+pub struct PgPool {
+    /// Pool configuration
+    pub config: PgConfig,
+    /// Maximum number of connections
+    pub max_size: i64,
+    /// Available (idle) connections
+    pub available: Vec<PgConnection>,
+    /// Number of connections currently checked out
+    pub checked_out: i64,
+    /// Total connections created over pool lifetime
+    pub total_created: i64,
+    /// Whether the pool is closed
+    pub closed: bool,
+}
+
+/// Create a new connection pool
+///
+/// Creates an empty pool. Connections are created lazily on checkout.
+///
+/// # Arguments
+/// * `config` - Connection configuration (will be cloned for each connection)
+/// * `max_size` - Maximum number of connections in the pool
+///
+/// # Example
+/// ```simplex
+/// let config = PgConfig::new("localhost", 5432, "mydb", "user", "pass");
+/// let pool = pool_new(config, 10);
+/// ```
+pub fn pool_new(config: PgConfig, max_size: i64) -> PgPool {
+    PgPool {
+        config,
+        max_size,
+        available: Vec::new(),
+        checked_out: 0,
+        total_created: 0,
+        closed: false,
+    }
+}
+
+/// Check out a connection from the pool
+///
+/// Returns an idle connection if available, or creates a new one
+/// if the pool has not reached max_size. Returns an error if the
+/// pool is exhausted.
+///
+/// # Arguments
+/// * `pool` - The connection pool
+pub fn pool_checkout(pool: &mut PgPool) -> Result<PgConnection, PgError> {
+    if pool.closed {
+        return Err(PgError::Pool("pool is closed".to_string()));
+    }
+
+    // Try to get an available connection
+    if !pool.available.is_empty() {
+        let conn = pool.available.pop().unwrap();
+
+        // Verify connection is still alive
+        if conn.is_ready() {
+            pool.checked_out = pool.checked_out + 1;
+            return Ok(conn);
+        }
+
+        // Connection is dead, don't count it
+    }
+
+    // Check if we can create a new connection
+    let total = pool.available.len() as i64 + pool.checked_out;
+    if total >= pool.max_size {
+        return Err(PgError::Pool("pool exhausted: all connections in use".to_string()));
+    }
+
+    // Create new connection
+    let new_config = PgConfig {
+        host: pool.config.host.clone(),
+        port: pool.config.port,
+        database: pool.config.database.clone(),
+        user: pool.config.user.clone(),
+        password: pool.config.password.clone(),
+        application_name: pool.config.application_name.clone(),
+        connect_timeout_ms: pool.config.connect_timeout_ms,
+        read_timeout_ms: pool.config.read_timeout_ms,
+    };
+
+    let conn = pg_connect(new_config)?;
+    pool.checked_out = pool.checked_out + 1;
+    pool.total_created = pool.total_created + 1;
+    Ok(conn)
+}
+
+/// Return a connection to the pool
+///
+/// If the connection is still healthy, it is returned to the available
+/// pool. If the connection has failed, it is closed and discarded.
+///
+/// # Arguments
+/// * `pool` - The connection pool
+/// * `conn` - Connection to return
+pub fn pool_return(pool: &mut PgPool, mut conn: PgConnection) {
+    pool.checked_out = pool.checked_out - 1;
+
+    if pool.closed {
+        pg_close(&mut conn);
+        return;
+    }
+
+    if conn.is_ready() {
+        pool.available.push(conn);
+    } else {
+        // Discard failed connection
+        pg_close(&mut conn);
+    }
+}
+
+/// Close all connections in the pool
+///
+/// Closes all idle connections. Checked-out connections will be
+/// closed when returned.
+pub fn pool_close(pool: &mut PgPool) {
+    pool.closed = true;
+
+    while !pool.available.is_empty() {
+        var conn = pool.available.pop().unwrap();
+        pg_close(&mut conn);
+    }
+}
+
+/// Get pool statistics
+pub fn pool_stats(pool: &PgPool) -> PgPoolStats {
+    PgPoolStats {
+        max_size: pool.max_size,
+        available: pool.available.len() as i64,
+        checked_out: pool.checked_out,
+        total_created: pool.total_created,
+    }
+}
+
+/// Pool statistics
+pub struct PgPoolStats {
+    /// Maximum pool size
+    pub max_size: i64,
+    /// Number of idle connections
+    pub available: i64,
+    /// Number of connections in use
+    pub checked_out: i64,
+    /// Total connections created
+    pub total_created: i64,
+}
+
+impl PgPoolStats {
+    /// Total active connections (available + checked out)
+    pub fn total_active(&self) -> i64 {
+        self.available + self.checked_out
+    }
+
+    /// Utilization ratio (0.0 to 1.0)
+    pub fn utilization(&self) -> f64 {
+        if self.max_size == 0 {
+            return 0.0;
+        }
+        self.checked_out as f64 / self.max_size as f64
+    }
+}
+// simplex-postgres/transaction - Transaction Control
+//
+// Provides transaction management with BEGIN/COMMIT/ROLLBACK support
+// and savepoint handling for nested transactions.
+//
+// # Usage
+//
+// ```simplex
+// pg_begin(&mut conn)?;
+// pg_execute(&mut conn, "INSERT INTO users (name) VALUES ('Alice')")?;
+// pg_execute(&mut conn, "INSERT INTO users (name) VALUES ('Bob')")?;
+// pg_commit(&mut conn)?;
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::PgConnection;
+use crate::query::{pg_execute, pg_query};
+use crate::types::PgError;
+
+// =============================================================================
+// Transaction Control
+// =============================================================================
+
+/// Begin a new transaction
+///
+/// If already in a transaction, creates a savepoint for nested
+/// transaction semantics.
+///
+/// # Arguments
+/// * `conn` - Active PostgreSQL connection
+pub fn pg_begin(conn: &mut PgConnection) -> Result<(), PgError> {
+    if !conn.is_ready() {
+        return Err(PgError::Transaction("connection not ready".to_string()));
+    }
+
+    if conn.is_in_transaction() {
+        // Nested transaction: use savepoint
+        conn.txn_depth = conn.txn_depth + 1;
+        let sp_name = format!("sp_{}", conn.txn_depth);
+        let sql = format!("SAVEPOINT {}", sp_name);
+        pg_execute(conn, &sql)?;
+    } else {
+        pg_execute(conn, "BEGIN")?;
+        conn.txn_depth = 1;
+        conn.state = 3; // in_transaction
+    }
+
+    Ok(())
+}
+
+/// Commit the current transaction
+///
+/// If in a nested transaction (savepoint), releases the savepoint.
+/// If at the top level, commits the actual transaction.
+///
+/// # Arguments
+/// * `conn` - Active PostgreSQL connection
+pub fn pg_commit(conn: &mut PgConnection) -> Result<(), PgError> {
+    if !conn.is_in_transaction() {
+        return Err(PgError::Transaction("not in a transaction".to_string()));
+    }
+
+    if conn.txn_depth > 1 {
+        // Release savepoint for nested transaction
+        let sp_name = format!("sp_{}", conn.txn_depth);
+        let sql = format!("RELEASE SAVEPOINT {}", sp_name);
+        pg_execute(conn, &sql)?;
+        conn.txn_depth = conn.txn_depth - 1;
+    } else {
+        // Top-level commit
+        pg_execute(conn, "COMMIT")?;
+        conn.txn_depth = 0;
+        conn.state = 1; // ready (idle)
+    }
+
+    Ok(())
+}
+
+/// Rollback the current transaction
+///
+/// If in a nested transaction (savepoint), rolls back to the savepoint.
+/// If at the top level, rolls back the entire transaction.
+///
+/// # Arguments
+/// * `conn` - Active PostgreSQL connection
+pub fn pg_rollback(conn: &mut PgConnection) -> Result<(), PgError> {
+    if !conn.is_in_transaction() {
+        return Err(PgError::Transaction("not in a transaction".to_string()));
+    }
+
+    if conn.txn_depth > 1 {
+        // Rollback to savepoint
+        let sp_name = format!("sp_{}", conn.txn_depth);
+        let sql = format!("ROLLBACK TO SAVEPOINT {}", sp_name);
+        pg_execute(conn, &sql)?;
+        conn.txn_depth = conn.txn_depth - 1;
+    } else {
+        // Top-level rollback
+        pg_execute(conn, "ROLLBACK")?;
+        conn.txn_depth = 0;
+        conn.state = 1; // ready (idle)
+    }
+
+    Ok(())
+}
+
+/// Execute a block within a transaction
+///
+/// Automatically begins a transaction, executes the statements,
+/// and commits on success or rolls back on error.
+///
+/// # Arguments
+/// * `conn` - Active PostgreSQL connection
+/// * `statements` - SQL statements to execute within the transaction
+///
+/// # Example
+/// ```simplex
+/// let stmts = vec![
+///     "INSERT INTO users (name) VALUES ('Alice')",
+///     "INSERT INTO logs (msg) VALUES ('user created')",
+/// ];
+/// pg_transaction(&mut conn, &stmts)?;
+/// ```
+pub fn pg_transaction(conn: &mut PgConnection, statements: &[&str]) -> Result<i64, PgError> {
+    pg_begin(conn)?;
+
+    var total_affected: i64 = 0;
+    let mut i: i64 = 0;
+    while i < statements.len() as i64 {
+        match pg_execute(conn, statements[i]) {
+            Ok(n) => {
+                total_affected = total_affected + n;
+            },
+            Err(e) => {
+                // Attempt rollback, then propagate error
+                let _ = pg_rollback(conn);
+                return Err(e);
+            },
+        }
+        i = i + 1;
+    }
+
+    pg_commit(conn)?;
+    Ok(total_affected)
+}
+
+// =============================================================================
+// Transaction Isolation Levels
+// =============================================================================
+
+/// Transaction isolation level
+pub enum IsolationLevel {
+    ReadUncommitted,
+    ReadCommitted,
+    RepeatableRead,
+    Serializable,
+}
+
+impl IsolationLevel {
+    pub fn as_sql(&self) -> &str {
+        match self {
+            IsolationLevel::ReadUncommitted => "READ UNCOMMITTED",
+            IsolationLevel::ReadCommitted => "READ COMMITTED",
+            IsolationLevel::RepeatableRead => "REPEATABLE READ",
+            IsolationLevel::Serializable => "SERIALIZABLE",
+        }
+    }
+}
+
+/// Begin a transaction with a specific isolation level
+pub fn pg_begin_with_isolation(
+    conn: &mut PgConnection,
+    level: IsolationLevel,
+) -> Result<(), PgError> {
+    if !conn.is_ready() {
+        return Err(PgError::Transaction("connection not ready".to_string()));
+    }
+
+    if conn.is_in_transaction() {
+        return Err(PgError::Transaction(
+            "cannot set isolation level in nested transaction".to_string()
+        ));
+    }
+
+    let sql = format!("BEGIN ISOLATION LEVEL {}", level.as_sql());
+    pg_execute(conn, &sql)?;
+    conn.txn_depth = 1;
+    conn.state = 3;
+
+    Ok(())
+}

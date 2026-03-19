@@ -1,0 +1,221 @@
+// simplex-eval::report - Evaluation Report Formatting
+//
+// Formats evaluation results into human-readable reports with scores,
+// pass/fail indicators, and summary statistics.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Report Generation
+// =============================================================================
+
+/// Format evaluation results as a human-readable report.
+///
+/// Arguments:
+///   results - result handle from eval_run_with_outputs
+///
+/// Returns: formatted report string handle
+fn eval_report(results: i64) -> i64 {
+    let name: i64 = vec_get(results, RESULT_SUITE_NAME());
+    let scores: i64 = vec_get(results, RESULT_SCORES());
+    let outputs: i64 = vec_get(results, RESULT_OUTPUTS());
+    let expecteds: i64 = vec_get(results, RESULT_EXPECTED());
+    let inputs: i64 = vec_get(results, RESULT_INPUTS());
+    let count: i64 = vec_get(results, RESULT_COUNT());
+    let avg_bits: i64 = vec_get(results, RESULT_AVG_SCORE());
+
+    var report: i64 = string_from("=== Evaluation Report: ");
+    report = string_concat(report, name);
+    report = string_concat(report, string_from(" ===\n"));
+
+    // Per-case results
+    var n_perfect: i64 = 0;
+    var i: i64 = 0;
+    while i < count {
+        let score_bits: i64 = vec_get(scores, i);
+        let score: f64 = bits_to_f64(score_bits);
+        let input: i64 = vec_get(inputs, i);
+        let output: i64 = vec_get(outputs, i);
+        let expected: i64 = vec_get(expecteds, i);
+
+        // Case header
+        let idx_str: i64 = i64_to_string(i + 1);
+        report = string_concat(report, string_from("\nCase "));
+        report = string_concat(report, idx_str);
+        report = string_concat(report, string_from(":\n"));
+
+        // Input
+        report = string_concat(report, string_from("  Input:    "));
+        report = string_concat(report, input);
+        report = string_concat(report, string_from("\n"));
+
+        // Expected
+        report = string_concat(report, string_from("  Expected: "));
+        report = string_concat(report, expected);
+        report = string_concat(report, string_from("\n"));
+
+        // Output
+        report = string_concat(report, string_from("  Output:   "));
+        report = string_concat(report, output);
+        report = string_concat(report, string_from("\n"));
+
+        // Score
+        if score > 0.999 {
+            report = string_concat(report, string_from("  Score:    PERFECT\n"));
+            n_perfect = n_perfect + 1;
+        } else if score > 0.5 {
+            report = string_concat(report, string_from("  Score:    PARTIAL\n"));
+        } else {
+            report = string_concat(report, string_from("  Score:    FAIL\n"));
+        }
+
+        i = i + 1;
+    }
+
+    // Summary
+    report = string_concat(report, string_from("\n--- Summary ---\n"));
+    report = string_concat(report, string_from("Total cases: "));
+    report = string_concat(report, i64_to_string(count));
+    report = string_concat(report, string_from("\n"));
+
+    report = string_concat(report, string_from("Perfect:     "));
+    report = string_concat(report, i64_to_string(n_perfect));
+    report = string_concat(report, string_from("\n"));
+
+    let n_failed: i64 = count - n_perfect;
+    report = string_concat(report, string_from("Imperfect:   "));
+    report = string_concat(report, i64_to_string(n_failed));
+    report = string_concat(report, string_from("\n"));
+
+    // Pass rate as percentage (integer)
+    if count > 0 {
+        let rate: i64 = (n_perfect * 100) / count;
+        report = string_concat(report, string_from("Pass rate:   "));
+        report = string_concat(report, i64_to_string(rate));
+        report = string_concat(report, string_from("%\n"));
+    }
+
+    report = string_concat(report, string_from("===============\n"));
+    report
+}
+
+// =============================================================================
+// Summary Report
+// =============================================================================
+
+/// Generate a compact summary report (one line per case).
+///
+/// Arguments:
+///   results - result handle from eval_run_with_outputs
+///
+/// Returns: compact report string handle
+fn eval_summary(results: i64) -> i64 {
+    let name: i64 = vec_get(results, RESULT_SUITE_NAME());
+    let scores: i64 = vec_get(results, RESULT_SCORES());
+    let count: i64 = vec_get(results, RESULT_COUNT());
+
+    var report: i64 = string_from("Suite: ");
+    report = string_concat(report, name);
+    report = string_concat(report, string_from(" ("));
+    report = string_concat(report, i64_to_string(count));
+    report = string_concat(report, string_from(" cases)\n"));
+
+    var n_pass: i64 = 0;
+    var i: i64 = 0;
+    while i < count {
+        let score: f64 = bits_to_f64(vec_get(scores, i));
+        let idx_str: i64 = i64_to_string(i + 1);
+
+        report = string_concat(report, string_from("  #"));
+        report = string_concat(report, idx_str);
+
+        if score > 0.999 {
+            report = string_concat(report, string_from(" PASS"));
+            n_pass = n_pass + 1;
+        } else if score > 0.5 {
+            report = string_concat(report, string_from(" PARTIAL"));
+        } else {
+            report = string_concat(report, string_from(" FAIL"));
+        }
+        report = string_concat(report, string_from("\n"));
+
+        i = i + 1;
+    }
+
+    report = string_concat(report, string_from("Result: "));
+    report = string_concat(report, i64_to_string(n_pass));
+    report = string_concat(report, string_from("/"));
+    report = string_concat(report, i64_to_string(count));
+    report = string_concat(report, string_from(" passed\n"));
+
+    report
+}
+
+// =============================================================================
+// Comparison Report
+// =============================================================================
+
+/// Compare two evaluation results and report differences.
+///
+/// Arguments:
+///   results_a - first result handle
+///   results_b - second result handle
+///
+/// Returns: comparison report string handle
+fn eval_compare(results_a: i64, results_b: i64) -> i64 {
+    let name_a: i64 = vec_get(results_a, RESULT_SUITE_NAME());
+    let name_b: i64 = vec_get(results_b, RESULT_SUITE_NAME());
+    let scores_a: i64 = vec_get(results_a, RESULT_SCORES());
+    let scores_b: i64 = vec_get(results_b, RESULT_SCORES());
+    let count_a: i64 = vec_get(results_a, RESULT_COUNT());
+    let count_b: i64 = vec_get(results_b, RESULT_COUNT());
+
+    var report: i64 = string_from("=== Comparison ===\n");
+    report = string_concat(report, string_from("A: "));
+    report = string_concat(report, name_a);
+    report = string_concat(report, string_from("\n"));
+    report = string_concat(report, string_from("B: "));
+    report = string_concat(report, name_b);
+    report = string_concat(report, string_from("\n\n"));
+
+    var min_count: i64 = count_a;
+    if count_b < min_count { min_count = count_b; }
+
+    var a_better: i64 = 0;
+    var b_better: i64 = 0;
+    var tied: i64 = 0;
+
+    var i: i64 = 0;
+    while i < min_count {
+        let sa: f64 = bits_to_f64(vec_get(scores_a, i));
+        let sb: f64 = bits_to_f64(vec_get(scores_b, i));
+
+        let idx_str: i64 = i64_to_string(i + 1);
+        report = string_concat(report, string_from("Case "));
+        report = string_concat(report, idx_str);
+
+        if sa > sb + 0.001 {
+            report = string_concat(report, string_from(": A better\n"));
+            a_better = a_better + 1;
+        } else if sb > sa + 0.001 {
+            report = string_concat(report, string_from(": B better\n"));
+            b_better = b_better + 1;
+        } else {
+            report = string_concat(report, string_from(": tied\n"));
+            tied = tied + 1;
+        }
+
+        i = i + 1;
+    }
+
+    report = string_concat(report, string_from("\nA better: "));
+    report = string_concat(report, i64_to_string(a_better));
+    report = string_concat(report, string_from("  B better: "));
+    report = string_concat(report, i64_to_string(b_better));
+    report = string_concat(report, string_from("  Tied: "));
+    report = string_concat(report, i64_to_string(tied));
+    report = string_concat(report, string_from("\n"));
+
+    report
+}

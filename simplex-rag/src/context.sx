@@ -1,0 +1,180 @@
+// simplex-rag::context - Context Building
+//
+// Assemble retrieved chunks into a formatted context string for prompting.
+// Provides source attribution and token budget management.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Context Building
+// =============================================================================
+
+/// Build a context string from retrieved chunks and scores.
+///
+/// Concatenates chunks up to a maximum token budget (approximated as
+/// characters / 4). Includes relevance scores for each chunk.
+///
+/// Arguments:
+///   query_result - result from rag_query [chunks_vec, scores_vec, sources_vec, count]
+///   max_tokens   - maximum token budget (approx chars / 4)
+///
+/// Returns: formatted context string handle
+fn build_context(query_result: i64, max_tokens: i64) -> i64 {
+    let chunks: i64 = vec_get(query_result, QRESULT_CHUNKS());
+    let scores: i64 = vec_get(query_result, QRESULT_SCORES());
+    let count: i64 = vec_get(query_result, QRESULT_COUNT());
+
+    let max_chars: i64 = max_tokens * 4;  // rough token-to-char ratio
+
+    let header: i64 = string_from("--- Retrieved Context ---\n");
+    var result: i64 = header;
+    var total_chars: i64 = string_len(header);
+
+    var i: i64 = 0;
+    while i < count {
+        let chunk: i64 = vec_get(chunks, i);
+        let chunk_len: i64 = string_len(chunk);
+
+        // Check token budget
+        if total_chars + chunk_len + 40 > max_chars {
+            if i == 0 {
+                // At least include the first chunk truncated
+                let trunc: i64 = extract_substring(chunk, 0, max_chars - total_chars - 40);
+                let prefix: i64 = string_from("[1] ");
+                result = string_concat(result, prefix);
+                result = string_concat(result, trunc);
+                result = string_concat(result, string_from("...\n"));
+            }
+            // Budget exceeded, stop adding
+            i = count;  // break
+        } else {
+            // Format: [N] chunk_text (score: X.XX)
+            let idx_str: i64 = i64_to_string(i + 1);
+            let bracket_open: i64 = string_from("[");
+            let bracket_close: i64 = string_from("] ");
+
+            result = string_concat(result, bracket_open);
+            result = string_concat(result, idx_str);
+            result = string_concat(result, bracket_close);
+            result = string_concat(result, chunk);
+            result = string_concat(result, string_from("\n"));
+
+            total_chars = total_chars + chunk_len + 10;
+            i = i + 1;
+        }
+    }
+
+    let footer: i64 = string_from("--- End Context ---\n");
+    result = string_concat(result, footer);
+
+    result
+}
+
+// =============================================================================
+// Source Attribution
+// =============================================================================
+
+/// Format source attribution for retrieved chunks.
+///
+/// Arguments:
+///   query_result - result from rag_query
+///
+/// Returns: formatted source attribution string handle
+fn format_sources(query_result: i64) -> i64 {
+    let chunks: i64 = vec_get(query_result, QRESULT_CHUNKS());
+    let scores: i64 = vec_get(query_result, QRESULT_SCORES());
+    let sources: i64 = vec_get(query_result, QRESULT_SOURCES());
+    let count: i64 = vec_get(query_result, QRESULT_COUNT());
+
+    let header: i64 = string_from("Sources:\n");
+    var result: i64 = header;
+
+    var i: i64 = 0;
+    while i < count {
+        let source: i64 = vec_get(sources, i);
+        let score_bits: i64 = vec_get(scores, i);
+
+        let idx_str: i64 = i64_to_string(i + 1);
+        result = string_concat(result, string_from("  ["));
+        result = string_concat(result, idx_str);
+        result = string_concat(result, string_from("] "));
+        result = string_concat(result, source);
+        result = string_concat(result, string_from("\n"));
+
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Context with Scores
+// =============================================================================
+
+/// Build context with explicit similarity scores shown.
+///
+/// Arguments:
+///   query_result - result from rag_query
+///   max_tokens   - maximum token budget
+///
+/// Returns: formatted context string with scores
+fn build_context_scored(query_result: i64, max_tokens: i64) -> i64 {
+    let chunks: i64 = vec_get(query_result, QRESULT_CHUNKS());
+    let scores: i64 = vec_get(query_result, QRESULT_SCORES());
+    let sources: i64 = vec_get(query_result, QRESULT_SOURCES());
+    let count: i64 = vec_get(query_result, QRESULT_COUNT());
+
+    let max_chars: i64 = max_tokens * 4;
+
+    let header: i64 = string_from("--- Retrieved Context (with scores) ---\n");
+    var result: i64 = header;
+    var total_chars: i64 = string_len(header);
+
+    var i: i64 = 0;
+    while i < count {
+        let chunk: i64 = vec_get(chunks, i);
+        let chunk_len: i64 = string_len(chunk);
+        let source: i64 = vec_get(sources, i);
+
+        if total_chars + chunk_len + 60 > max_chars {
+            i = count;  // break
+        } else {
+            let idx_str: i64 = i64_to_string(i + 1);
+            result = string_concat(result, string_from("["));
+            result = string_concat(result, idx_str);
+            result = string_concat(result, string_from("] (source: "));
+            result = string_concat(result, source);
+            result = string_concat(result, string_from(")\n"));
+            result = string_concat(result, chunk);
+            result = string_concat(result, string_from("\n\n"));
+
+            total_chars = total_chars + chunk_len + 40;
+            i = i + 1;
+        }
+    }
+
+    let footer: i64 = string_from("--- End Context ---\n");
+    result = string_concat(result, footer);
+
+    result
+}
+
+// =============================================================================
+// Combined Context + Sources
+// =============================================================================
+
+/// Build a complete context block with both content and source attribution.
+///
+/// Arguments:
+///   query_result - result from rag_query
+///   max_tokens   - maximum token budget
+///
+/// Returns: formatted string with context and sources
+fn build_full_context(query_result: i64, max_tokens: i64) -> i64 {
+    let context: i64 = build_context(query_result, max_tokens);
+    let sources: i64 = format_sources(query_result);
+
+    let result: i64 = string_concat(context, string_from("\n"));
+    string_concat(result, sources)
+}

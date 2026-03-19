@@ -1,0 +1,27 @@
+# simplex-opentelemetry - OpenTelemetry Distributed Tracing for Simplex
+#
+# Provides W3C-compatible distributed tracing with span creation,
+# context propagation, and multiple exporters (stdout, JSON/OTLP).
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-opentelemetry"
+version = "0.16.0"
+description = "OpenTelemetry distributed tracing for Simplex"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+
+[features]
+default = ["full"]
+full = ["tracing", "context", "exporters", "instrumentation"]
+
+tracing = []           # Span creation and management
+context = []           # W3C trace context propagation
+exporters = []         # Stdout and JSON exporters
+instrumentation = []   # Auto-instrumentation helpers

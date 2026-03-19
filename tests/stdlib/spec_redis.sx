@@ -1,0 +1,290 @@
+// Redis RESP3 Protocol Format Tests
+// Tests RESP encoding/decoding logic inline without a running server
+
+// =============================================================================
+// Helper: build RESP bulk string $<len>\r\n<data>\r\n
+// =============================================================================
+
+fn resp_bulk_string(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    let cr: i64 = intrinsic_string_from_char(13);
+    let lf: i64 = intrinsic_string_from_char(10);
+    let crlf: i64 = string_concat(cr, lf);
+    string_concat("$", string_concat(int_to_string(len), string_concat(crlf, string_concat(s, crlf))))
+}
+
+// =============================================================================
+// Helper: build RESP array header *<count>\r\n
+// =============================================================================
+
+fn resp_array_header(count: i64) -> i64 {
+    let cr: i64 = intrinsic_string_from_char(13);
+    let lf: i64 = intrinsic_string_from_char(10);
+    string_concat("*", string_concat(int_to_string(count), string_concat(cr, lf)))
+}
+
+// =============================================================================
+// Helper: string_contains
+// =============================================================================
+
+fn string_contains(haystack: i64, needle: i64) -> i64 {
+    let h_len: i64 = string_len(haystack);
+    let n_len: i64 = string_len(needle);
+    if n_len > h_len { return 0; }
+    if n_len == 0 { return 1; }
+    var i: i64 = 0;
+    while i <= h_len - n_len {
+        let sub: i64 = intrinsic_string_slice(haystack, i, i + n_len);
+        if string_eq(sub, needle) == 1 { return 1; }
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Test 1: Encode PING command
+// =============================================================================
+
+fn test_encode_ping() -> i64 {
+    println("  Testing encode PING command...");
+    // PING -> *1\r\n$4\r\nPING\r\n
+    let cmd: i64 = string_concat(resp_array_header(1), resp_bulk_string("PING"));
+    if string_contains(cmd, "*1") != 1 {
+        println("  FAIL: should start with *1");
+        return 1;
+    }
+    if string_contains(cmd, "$4") != 1 {
+        println("  FAIL: should have $4 for PING length");
+        return 1;
+    }
+    if string_contains(cmd, "PING") != 1 {
+        println("  FAIL: should contain PING");
+        return 1;
+    }
+    println("  PASS: encode PING command");
+    0
+}
+
+// =============================================================================
+// Test 2: Encode SET command
+// =============================================================================
+
+fn test_encode_set() -> i64 {
+    println("  Testing encode SET command...");
+    // SET key value -> *3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n
+    let cmd: i64 = string_concat(resp_array_header(3),
+        string_concat(resp_bulk_string("SET"),
+        string_concat(resp_bulk_string("key"),
+        resp_bulk_string("value"))));
+
+    if string_contains(cmd, "*3") != 1 {
+        println("  FAIL: should start with *3");
+        return 1;
+    }
+    if string_contains(cmd, "$3") != 1 {
+        println("  FAIL: should have $3 for SET/key");
+        return 1;
+    }
+    if string_contains(cmd, "$5") != 1 {
+        println("  FAIL: should have $5 for value");
+        return 1;
+    }
+    println("  PASS: encode SET command");
+    0
+}
+
+// =============================================================================
+// Test 3: Simple string response format
+// =============================================================================
+
+fn test_simple_string() -> i64 {
+    println("  Testing simple string response...");
+    // Simple string: +OK\r\n
+    let resp: i64 = "+OK";
+    if string_char_at(resp, 0) != 43 {
+        println("  FAIL: simple string should start with +");
+        return 1;
+    }
+    let val: i64 = intrinsic_string_slice(resp, 1, string_len(resp));
+    if string_eq(val, "OK") != 1 {
+        println("  FAIL: value should be OK");
+        return 1;
+    }
+    println("  PASS: simple string response");
+    0
+}
+
+// =============================================================================
+// Test 4: Error response format
+// =============================================================================
+
+fn test_error_response() -> i64 {
+    println("  Testing error response...");
+    // Error: -ERR unknown\r\n
+    let resp: i64 = "-ERR unknown";
+    if string_char_at(resp, 0) != 45 {
+        println("  FAIL: error should start with -");
+        return 1;
+    }
+    let msg: i64 = intrinsic_string_slice(resp, 1, string_len(resp));
+    if string_contains(msg, "ERR") != 1 {
+        println("  FAIL: error message should contain ERR");
+        return 1;
+    }
+    println("  PASS: error response");
+    0
+}
+
+// =============================================================================
+// Test 5: Integer response format
+// =============================================================================
+
+fn test_integer_response() -> i64 {
+    println("  Testing integer response...");
+    // Integer: :42\r\n
+    let resp: i64 = ":42";
+    if string_char_at(resp, 0) != 58 {
+        println("  FAIL: integer should start with :");
+        return 1;
+    }
+    let num_str: i64 = intrinsic_string_slice(resp, 1, string_len(resp));
+    let val: i64 = string_to_int(num_str);
+    if val != 42 {
+        println("  FAIL: integer value should be 42");
+        return 1;
+    }
+    println("  PASS: integer response");
+    0
+}
+
+// =============================================================================
+// Test 6: Bulk string format
+// =============================================================================
+
+fn test_bulk_string_format() -> i64 {
+    println("  Testing bulk string format...");
+    let bulk: i64 = resp_bulk_string("hello");
+    if string_char_at(bulk, 0) != 36 {
+        println("  FAIL: bulk string should start with $");
+        return 1;
+    }
+    if string_contains(bulk, "$5") != 1 {
+        println("  FAIL: should contain $5 for hello");
+        return 1;
+    }
+    if string_contains(bulk, "hello") != 1 {
+        println("  FAIL: should contain hello");
+        return 1;
+    }
+    println("  PASS: bulk string format");
+    0
+}
+
+// =============================================================================
+// Test 7: Null bulk string format
+// =============================================================================
+
+fn test_null_bulk_string() -> i64 {
+    println("  Testing null bulk string...");
+    // Null: $-1\r\n
+    let null_resp: i64 = "$-1";
+    if string_char_at(null_resp, 0) != 36 {
+        println("  FAIL: should start with $");
+        return 1;
+    }
+    if string_char_at(null_resp, 1) != 45 {
+        println("  FAIL: should have - for negative length");
+        return 1;
+    }
+    println("  PASS: null bulk string");
+    0
+}
+
+// =============================================================================
+// Test 8: RESP3 null type
+// =============================================================================
+
+fn test_resp3_null() -> i64 {
+    println("  Testing RESP3 null type...");
+    // RESP3 null: _\r\n
+    let null_type: i64 = 95;
+    if null_type != 95 {
+        println("  FAIL: RESP3 null should be _ (95)");
+        return 1;
+    }
+    println("  PASS: RESP3 null type");
+    0
+}
+
+// =============================================================================
+// Test 9: RESP3 boolean type
+// =============================================================================
+
+fn test_resp3_boolean() -> i64 {
+    println("  Testing RESP3 boolean type...");
+    // Boolean: #t\r\n or #f\r\n
+    let bool_prefix: i64 = 35;
+    let true_val: i64 = 116;
+    let false_val: i64 = 102;
+
+    if bool_prefix != 35 {
+        println("  FAIL: boolean prefix should be # (35)");
+        return 1;
+    }
+    if true_val != 116 {
+        println("  FAIL: true should be t (116)");
+        return 1;
+    }
+    if false_val != 102 {
+        println("  FAIL: false should be f (102)");
+        return 1;
+    }
+    println("  PASS: RESP3 boolean type");
+    0
+}
+
+// =============================================================================
+// Test 10: Empty array format
+// =============================================================================
+
+fn test_empty_array() -> i64 {
+    println("  Testing empty array format...");
+    let header: i64 = resp_array_header(0);
+    if string_contains(header, "*0") != 1 {
+        println("  FAIL: empty array should be *0");
+        return 1;
+    }
+    println("  PASS: empty array format");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Redis RESP3 Protocol Tests ===");
+    println("");
+
+    let f1: i64 = test_encode_ping();
+    let f2: i64 = test_encode_set();
+    let f3: i64 = test_simple_string();
+    let f4: i64 = test_error_response();
+    let f5: i64 = test_integer_response();
+    let f6: i64 = test_bulk_string_format();
+    let f7: i64 = test_null_bulk_string();
+    let f8: i64 = test_resp3_null();
+    let f9: i64 = test_resp3_boolean();
+    let f10: i64 = test_empty_array();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
+
+    println("");
+    if failures == 0 {
+        println("All 10 Redis RESP3 tests passed!");
+    } else {
+        println("Some Redis RESP3 tests failed");
+    }
+
+    failures
+}

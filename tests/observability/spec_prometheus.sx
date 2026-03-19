@@ -1,0 +1,346 @@
+// Prometheus Observability Tests
+// Tests counter, gauge, histogram creation and exposition format output
+// Self-contained: no extern fn, no const, no f64 params
+
+// =============================================================================
+// Inline metric functions (standalone test, no module imports)
+// =============================================================================
+
+fn prom_counter_new(name: i64, help: i64) -> i64 {
+    let ctr: i64 = vec_new();
+    vec_push(ctr, 1);
+    vec_push(ctr, name);
+    vec_push(ctr, help);
+    let labels: i64 = vec_new();
+    vec_push(ctr, labels);
+    vec_push(ctr, 0);
+    ctr
+}
+
+fn prom_counter_inc(ctr: i64) -> i64 {
+    let val: i64 = vec_get(ctr, 4);
+    vec_set(ctr, 4, val + 1);
+    0
+}
+
+fn prom_counter_add(ctr: i64, n: i64) -> i64 {
+    if n < 0 { return 0; }
+    let val: i64 = vec_get(ctr, 4);
+    vec_set(ctr, 4, val + n);
+    0
+}
+
+fn prom_counter_get(ctr: i64) -> i64 {
+    vec_get(ctr, 4)
+}
+
+fn prom_gauge_new(name: i64, help: i64) -> i64 {
+    let g: i64 = vec_new();
+    vec_push(g, 2);
+    vec_push(g, name);
+    vec_push(g, help);
+    let labels: i64 = vec_new();
+    vec_push(g, labels);
+    vec_push(g, 0);
+    g
+}
+
+fn prom_gauge_set(g: i64, val: i64) -> i64 {
+    vec_set(g, 4, val);
+    0
+}
+
+fn prom_gauge_inc(g: i64) -> i64 {
+    let val: i64 = vec_get(g, 4);
+    vec_set(g, 4, val + 1);
+    0
+}
+
+fn prom_gauge_dec(g: i64) -> i64 {
+    let val: i64 = vec_get(g, 4);
+    vec_set(g, 4, val - 1);
+    0
+}
+
+fn prom_gauge_get(g: i64) -> i64 {
+    vec_get(g, 4)
+}
+
+fn prom_histogram_new(name: i64, help: i64) -> i64 {
+    let h: i64 = vec_new();
+    vec_push(h, 3);
+    vec_push(h, name);
+    vec_push(h, help);
+    let labels: i64 = vec_new();
+    vec_push(h, labels);
+    vec_push(h, 0);
+    vec_push(h, 0);
+    let bounds: i64 = vec_new();
+    vec_push(bounds, 10);
+    vec_push(bounds, 50);
+    vec_push(bounds, 100);
+    vec_push(h, bounds);
+    let counts: i64 = vec_new();
+    vec_push(counts, 0);
+    vec_push(counts, 0);
+    vec_push(counts, 0);
+    vec_push(h, counts);
+    let obs: i64 = vec_new();
+    vec_push(h, obs);
+    h
+}
+
+fn prom_histogram_observe(h: i64, value: i64) -> i64 {
+    let sum: i64 = vec_get(h, 4);
+    vec_set(h, 4, sum + value);
+    let count: i64 = vec_get(h, 5);
+    vec_set(h, 5, count + 1);
+    let bounds: i64 = vec_get(h, 6);
+    let counts: i64 = vec_get(h, 7);
+    let n: i64 = vec_len(bounds);
+    var i: i64 = 0;
+    while i < n {
+        let bound: i64 = vec_get(bounds, i);
+        if value <= bound {
+            let cur: i64 = vec_get(counts, i);
+            vec_set(counts, i, cur + 1);
+        }
+        i = i + 1;
+    }
+    let obs: i64 = vec_get(h, 8);
+    vec_push(obs, value);
+    0
+}
+
+fn prom_registry_new() -> i64 { vec_new() }
+
+fn prom_register(reg: i64, metric: i64) -> i64 {
+    vec_push(reg, metric);
+    0
+}
+
+// =============================================================================
+// Test 1: Counter creation and increment
+// =============================================================================
+
+fn test_counter() -> i64 {
+    println("  Testing counter creation and increment...");
+
+    let ctr: i64 = prom_counter_new("http_requests_total", "Total HTTP requests");
+
+    if vec_get(ctr, 0) != 1 {
+        println("  FAIL: metric type should be 1 (counter)");
+        return 1;
+    }
+
+    prom_counter_inc(ctr);
+    prom_counter_inc(ctr);
+    prom_counter_add(ctr, 5);
+
+    let val: i64 = prom_counter_get(ctr);
+    if val != 7 {
+        println("  FAIL: counter should be 7");
+        return 1;
+    }
+
+    // Negative add should be ignored
+    prom_counter_add(ctr, 0 - 3);
+    let val2: i64 = prom_counter_get(ctr);
+    if val2 != 7 {
+        println("  FAIL: negative add should be ignored");
+        return 1;
+    }
+
+    println("  PASS: counter creation and increment");
+    0
+}
+
+// =============================================================================
+// Test 2: Gauge operations
+// =============================================================================
+
+fn test_gauge() -> i64 {
+    println("  Testing gauge operations...");
+
+    let g: i64 = prom_gauge_new("temperature", "Current temperature");
+
+    if vec_get(g, 0) != 2 {
+        println("  FAIL: metric type should be 2 (gauge)");
+        return 1;
+    }
+
+    prom_gauge_set(g, 23);
+    if prom_gauge_get(g) != 23 {
+        println("  FAIL: gauge should be 23");
+        return 1;
+    }
+
+    prom_gauge_inc(g);
+    if prom_gauge_get(g) != 24 {
+        println("  FAIL: gauge should be 24 after inc");
+        return 1;
+    }
+
+    prom_gauge_dec(g);
+    if prom_gauge_get(g) != 23 {
+        println("  FAIL: gauge should be 23 after dec");
+        return 1;
+    }
+
+    println("  PASS: gauge operations");
+    0
+}
+
+// =============================================================================
+// Test 3: Histogram observations
+// =============================================================================
+
+fn test_histogram() -> i64 {
+    println("  Testing histogram observations...");
+
+    let h: i64 = prom_histogram_new("request_duration", "Request duration");
+
+    prom_histogram_observe(h, 5);
+    prom_histogram_observe(h, 15);
+    prom_histogram_observe(h, 75);
+    prom_histogram_observe(h, 200);
+
+    let sum: i64 = vec_get(h, 4);
+    if sum != 295 {
+        println("  FAIL: sum should be 295");
+        return 1;
+    }
+
+    let count: i64 = vec_get(h, 5);
+    if count != 4 {
+        println("  FAIL: count should be 4");
+        return 1;
+    }
+
+    // Bucket counts (cumulative): le=10 -> 1, le=50 -> 2, le=100 -> 3
+    let counts: i64 = vec_get(h, 7);
+    let b0: i64 = vec_get(counts, 0);
+    let b1: i64 = vec_get(counts, 1);
+    let b2: i64 = vec_get(counts, 2);
+
+    if b0 != 1 {
+        println("  FAIL: bucket le=10 should be 1");
+        return 1;
+    }
+    if b1 != 2 {
+        println("  FAIL: bucket le=50 should be 2");
+        return 1;
+    }
+    if b2 != 3 {
+        println("  FAIL: bucket le=100 should be 3");
+        return 1;
+    }
+
+    println("  PASS: histogram observations");
+    0
+}
+
+// =============================================================================
+// Test 4: Registry
+// =============================================================================
+
+fn test_registry() -> i64 {
+    println("  Testing metric registry...");
+
+    let reg: i64 = prom_registry_new();
+    let ctr: i64 = prom_counter_new("req_total", "Total requests");
+    let g: i64 = prom_gauge_new("active_conns", "Active connections");
+
+    prom_register(reg, ctr);
+    prom_register(reg, g);
+
+    let n: i64 = vec_len(reg);
+    if n != 2 {
+        println("  FAIL: registry should have 2 metrics");
+        return 1;
+    }
+
+    let m0: i64 = vec_get(reg, 0);
+    let m0_type: i64 = vec_get(m0, 0);
+    if m0_type != 1 {
+        println("  FAIL: first metric should be counter (type 1)");
+        return 1;
+    }
+
+    let m1: i64 = vec_get(reg, 1);
+    let m1_type: i64 = vec_get(m1, 0);
+    if m1_type != 2 {
+        println("  FAIL: second metric should be gauge (type 2)");
+        return 1;
+    }
+
+    println("  PASS: metric registry");
+    0
+}
+
+// =============================================================================
+// Test 5: Exposition format output
+// =============================================================================
+
+fn test_exposition() -> i64 {
+    println("  Testing exposition format...");
+
+    let ctr: i64 = prom_counter_new("test_counter", "A test counter");
+    prom_counter_inc(ctr);
+    prom_counter_inc(ctr);
+    prom_counter_inc(ctr);
+
+    let name: i64 = vec_get(ctr, 1);
+    let help: i64 = vec_get(ctr, 2);
+    let value: i64 = vec_get(ctr, 4);
+
+    let out: i64 = string_concat("# HELP ", name);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, help);
+    let out: i64 = string_concat(out, "\n# TYPE ");
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, " counter\n");
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, int_to_string(value));
+    let out: i64 = string_concat(out, "\n");
+
+    let len: i64 = string_len(out);
+    if len < 10 {
+        println("  FAIL: exposition output too short");
+        return 1;
+    }
+
+    if value != 3 {
+        println("  FAIL: counter should be 3");
+        return 1;
+    }
+
+    println("  PASS: exposition format");
+    0
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== Prometheus Observability Tests ===");
+    println("");
+
+    var failures: i64 = 0;
+    failures = failures + test_counter();
+    failures = failures + test_gauge();
+    failures = failures + test_histogram();
+    failures = failures + test_registry();
+    failures = failures + test_exposition();
+
+    println("");
+    if failures == 0 {
+        println("All 5 Prometheus tests passed!");
+    } else {
+        println("Some Prometheus tests failed");
+    }
+
+    failures
+}

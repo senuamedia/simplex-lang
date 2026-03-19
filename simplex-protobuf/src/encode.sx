@@ -1,0 +1,488 @@
+// simplex-protobuf/encode - Protocol Buffers Wire Format Encoding
+//
+// Implements proto3 wire format encoding for all field types.
+// Uses byte vec handles for buffer management.
+//
+// # Wire Format
+//
+// Each field is encoded as: tag + value
+// Tag = (field_number << 3) | wire_type
+// Tag is encoded as a varint.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, byte: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_concat(a: i64, b: i64) -> i64;
+extern fn vec_slice(v: i64, start: i64, end: i64) -> i64;
+extern fn string_to_bytes(s: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+
+// =============================================================================
+// Buffer Management
+// =============================================================================
+
+/// Create a new encoding buffer (byte vec handle)
+fn proto_buffer_new() -> i64 {
+    vec_new()
+}
+
+/// Get the current size of the buffer in bytes
+fn proto_buffer_size(buffer: i64) -> i64 {
+    vec_len(buffer)
+}
+
+/// Get the raw byte data from the buffer
+fn proto_buffer_data(buffer: i64) -> i64 {
+    buffer
+}
+
+/// Clear a buffer (create a new empty one)
+fn proto_buffer_clear() -> i64 {
+    vec_new()
+}
+
+/// Concatenate two buffers (for merging encoded messages)
+fn proto_buffer_merge(a: i64, b: i64) -> i64 {
+    vec_concat(a, b)
+}
+
+// =============================================================================
+// Varint Encoding
+// =============================================================================
+
+/// Encode an unsigned value as a varint and append to buffer.
+///
+/// Varints use 7 bits per byte with bit 7 as continuation flag.
+/// Values 0-127 use 1 byte, 128-16383 use 2 bytes, etc.
+///
+/// # Arguments
+/// * `buffer` - Byte vec handle to append to
+/// * `value`  - Unsigned value to encode (i64 treated as unsigned)
+///
+/// # Returns
+/// Number of bytes written
+fn proto_encode_varint(buffer: i64, value: i64) -> i64 {
+    var v: i64 = value;
+    var bytes_written: i64 = 0;
+
+    // Handle negative values (treat as large unsigned via two's complement)
+    // For proto3, negative int32/int64 always use 10 bytes
+    if v < 0 {
+        // Encode as 10-byte varint for negative values
+        var i: i64 = 0;
+        while i < 9 {
+            let byte: i64 = (v % 128);
+            if byte < 0 { byte = byte + 128; }
+            vec_push(buffer, byte + 128);  // Set continuation bit
+            v = v / 128;
+            bytes_written = bytes_written + 1;
+            i = i + 1;
+        }
+        // Last byte (10th) has no continuation bit
+        let last_byte: i64 = 1;  // Sign extension
+        vec_push(buffer, last_byte);
+        bytes_written = bytes_written + 1;
+        return bytes_written;
+    }
+
+    // Non-negative value encoding
+    if v == 0 {
+        vec_push(buffer, 0);
+        return 1;
+    }
+
+    while v > 0 {
+        let byte: i64 = v % 128;
+        v = v / 128;
+        if v > 0 {
+            // More bytes to come: set continuation bit
+            vec_push(buffer, byte + 128);
+        } else {
+            // Last byte: no continuation bit
+            vec_push(buffer, byte);
+        }
+        bytes_written = bytes_written + 1;
+    }
+
+    bytes_written
+}
+
+/// Encode a varint to a standalone buffer (not appending to existing)
+///
+/// # Returns
+/// Vec handle containing the varint bytes
+fn proto_varint_to_bytes(value: i64) -> i64 {
+    let buf: i64 = vec_new();
+    proto_encode_varint(buf, value);
+    buf
+}
+
+/// Calculate the number of bytes needed to encode a varint
+fn proto_varint_size(value: i64) -> i64 {
+    if value < 0 { return 10; }
+    if value == 0 { return 1; }
+    var v: i64 = value;
+    var size: i64 = 0;
+    while v > 0 {
+        size = size + 1;
+        v = v / 128;
+    }
+    size
+}
+
+// =============================================================================
+// ZigZag Encoding (for sint32/sint64)
+// =============================================================================
+
+/// Encode a signed value using ZigZag encoding.
+///
+/// ZigZag maps signed integers to unsigned:
+///   0 -> 0, -1 -> 1, 1 -> 2, -2 -> 3, 2 -> 4, ...
+///
+/// This ensures small-magnitude negatives use few bytes.
+fn proto_zigzag_encode(value: i64) -> i64 {
+    if value >= 0 {
+        value * 2
+    } else {
+        (0 - value) * 2 - 1
+    }
+}
+
+/// Decode a ZigZag-encoded value back to signed.
+fn proto_zigzag_decode(value: i64) -> i64 {
+    if value % 2 == 0 {
+        value / 2
+    } else {
+        0 - (value + 1) / 2
+    }
+}
+
+// =============================================================================
+// Tag Encoding
+// =============================================================================
+
+/// Encode a field tag (field_number << 3 | wire_type)
+///
+/// # Arguments
+/// * `field_num`  - Field number (1-536870911)
+/// * `wire_type`  - Wire type (0, 1, 2, or 5)
+///
+/// # Returns
+/// The tag value (to be encoded as varint)
+fn proto_make_tag(field_num: i64, wire_type: i64) -> i64 {
+    field_num * 8 + wire_type
+}
+
+/// Extract field number from a tag
+fn proto_tag_field_num(tag: i64) -> i64 {
+    tag / 8
+}
+
+/// Extract wire type from a tag
+fn proto_tag_wire_type(tag: i64) -> i64 {
+    tag % 8
+}
+
+/// Encode a field tag and append to buffer as varint
+fn proto_encode_tag(buffer: i64, field_num: i64, wire_type: i64) -> i64 {
+    let tag: i64 = proto_make_tag(field_num, wire_type);
+    proto_encode_varint(buffer, tag)
+}
+
+// =============================================================================
+// Field Encoding: Generic
+// =============================================================================
+
+/// Encode a complete field (tag + value) into the buffer.
+///
+/// # Arguments
+/// * `buffer`    - Byte vec handle
+/// * `field_num` - Field number
+/// * `wire_type` - Wire type (0=varint, 1=64bit, 2=length-delimited, 5=32bit)
+/// * `value`     - Value (interpretation depends on wire type):
+///                 - VARINT: the i64 value
+///                 - 64BIT: the i64 value (8 bytes little-endian)
+///                 - LENGTH_DELIMITED: vec handle of bytes
+///                 - 32BIT: the i64 value (4 bytes little-endian)
+///
+/// # Returns
+/// Total bytes written
+fn proto_encode_field(buffer: i64, field_num: i64, wire_type: i64, value: i64) -> i64 {
+    var bytes: i64 = 0;
+
+    // Encode tag
+    bytes = bytes + proto_encode_tag(buffer, field_num, wire_type);
+
+    // Encode value based on wire type
+    if wire_type == 0 {
+        // Varint
+        bytes = bytes + proto_encode_varint(buffer, value);
+    } else if wire_type == 1 {
+        // 64-bit fixed (little-endian)
+        bytes = bytes + proto_encode_fixed64_value(buffer, value);
+    } else if wire_type == 2 {
+        // Length-delimited
+        let data_len: i64 = vec_len(value);
+        bytes = bytes + proto_encode_varint(buffer, data_len);
+        var i: i64 = 0;
+        while i < data_len {
+            vec_push(buffer, vec_get(value, i));
+            i = i + 1;
+        }
+        bytes = bytes + data_len;
+    } else if wire_type == 5 {
+        // 32-bit fixed (little-endian)
+        bytes = bytes + proto_encode_fixed32_value(buffer, value);
+    }
+
+    bytes
+}
+
+// =============================================================================
+// Field Encoding: Varint Fields
+// =============================================================================
+
+/// Encode a varint field (wire type 0): int32, int64, uint32, uint64, bool, enum
+fn proto_encode_varint_field(buffer: i64, field_num: i64, value: i64) -> i64 {
+    proto_encode_field(buffer, field_num, 0, value)
+}
+
+/// Encode a boolean field (true = 1, false = 0)
+fn proto_encode_bool(buffer: i64, field_num: i64, value: i64) -> i64 {
+    let v: i64 = 0;
+    if value != 0 { v = 1; }
+    proto_encode_varint_field(buffer, field_num, v)
+}
+
+/// Encode a sint32/sint64 field (ZigZag + varint)
+fn proto_encode_sint(buffer: i64, field_num: i64, value: i64) -> i64 {
+    let zigzag: i64 = proto_zigzag_encode(value);
+    proto_encode_varint_field(buffer, field_num, zigzag)
+}
+
+/// Encode an enum field (same as varint)
+fn proto_encode_enum(buffer: i64, field_num: i64, value: i64) -> i64 {
+    proto_encode_varint_field(buffer, field_num, value)
+}
+
+// =============================================================================
+// Field Encoding: Fixed Width
+// =============================================================================
+
+/// Encode 4 bytes in little-endian order
+fn proto_encode_fixed32_value(buffer: i64, value: i64) -> i64 {
+    vec_push(buffer, value % 256);
+    vec_push(buffer, (value / 256) % 256);
+    vec_push(buffer, (value / 65536) % 256);
+    vec_push(buffer, (value / 16777216) % 256);
+    4
+}
+
+/// Encode 8 bytes in little-endian order
+fn proto_encode_fixed64_value(buffer: i64, value: i64) -> i64 {
+    vec_push(buffer, value % 256);
+    vec_push(buffer, (value / 256) % 256);
+    vec_push(buffer, (value / 65536) % 256);
+    vec_push(buffer, (value / 16777216) % 256);
+    vec_push(buffer, (value / 4294967296) % 256);
+    vec_push(buffer, (value / 1099511627776) % 256);
+    vec_push(buffer, (value / 281474976710656) % 256);
+    vec_push(buffer, (value / 72057594037927936) % 256);
+    8
+}
+
+/// Encode a fixed32 field (wire type 5)
+fn proto_encode_fixed32(buffer: i64, field_num: i64, value: i64) -> i64 {
+    proto_encode_field(buffer, field_num, 5, value)
+}
+
+/// Encode a fixed64 field (wire type 1)
+fn proto_encode_fixed64(buffer: i64, field_num: i64, value: i64) -> i64 {
+    proto_encode_field(buffer, field_num, 1, value)
+}
+
+// =============================================================================
+// Field Encoding: Length-Delimited
+// =============================================================================
+
+/// Encode a string field (wire type 2).
+///
+/// # Arguments
+/// * `buffer`    - Byte vec handle
+/// * `field_num` - Field number
+/// * `str`       - String handle
+///
+/// # Returns
+/// Total bytes written
+fn proto_encode_string(buffer: i64, field_num: i64, str: i64) -> i64 {
+    let bytes_data: i64 = string_to_bytes(str);
+    proto_encode_field(buffer, field_num, 2, bytes_data)
+}
+
+/// Encode a bytes field (wire type 2).
+///
+/// # Arguments
+/// * `buffer`    - Byte vec handle
+/// * `field_num` - Field number
+/// * `data`      - Vec handle of raw bytes
+///
+/// # Returns
+/// Total bytes written
+fn proto_encode_bytes(buffer: i64, field_num: i64, data: i64) -> i64 {
+    proto_encode_field(buffer, field_num, 2, data)
+}
+
+/// Encode an embedded message field (wire type 2).
+///
+/// The embedded message should already be encoded into a byte vec.
+///
+/// # Arguments
+/// * `buffer`    - Byte vec handle
+/// * `field_num` - Field number
+/// * `msg_data`  - Vec handle of the encoded message bytes
+///
+/// # Returns
+/// Total bytes written
+fn proto_encode_message(buffer: i64, field_num: i64, msg_data: i64) -> i64 {
+    proto_encode_field(buffer, field_num, 2, msg_data)
+}
+
+// =============================================================================
+// Packed Repeated Fields
+// =============================================================================
+
+/// Encode a packed repeated varint field.
+///
+/// All values are concatenated as varints within a single length-delimited field.
+///
+/// # Arguments
+/// * `buffer`    - Byte vec handle
+/// * `field_num` - Field number
+/// * `values`    - Vec handle of i64 values to encode
+///
+/// # Returns
+/// Total bytes written
+fn proto_encode_packed_varints(buffer: i64, field_num: i64, values: i64) -> i64 {
+    let count: i64 = vec_len(values);
+
+    // First encode all varints into a temporary buffer
+    let inner: i64 = vec_new();
+    var i: i64 = 0;
+    while i < count {
+        let val: i64 = vec_get(values, i);
+        proto_encode_varint(inner, val);
+        i = i + 1;
+    }
+
+    // Now encode as length-delimited field
+    proto_encode_field(buffer, field_num, 2, inner)
+}
+
+/// Encode a packed repeated fixed32 field.
+fn proto_encode_packed_fixed32(buffer: i64, field_num: i64, values: i64) -> i64 {
+    let count: i64 = vec_len(values);
+
+    let inner: i64 = vec_new();
+    var i: i64 = 0;
+    while i < count {
+        let val: i64 = vec_get(values, i);
+        proto_encode_fixed32_value(inner, val);
+        i = i + 1;
+    }
+
+    proto_encode_field(buffer, field_num, 2, inner)
+}
+
+/// Encode a packed repeated fixed64 field.
+fn proto_encode_packed_fixed64(buffer: i64, field_num: i64, values: i64) -> i64 {
+    let count: i64 = vec_len(values);
+
+    let inner: i64 = vec_new();
+    var i: i64 = 0;
+    while i < count {
+        let val: i64 = vec_get(values, i);
+        proto_encode_fixed64_value(inner, val);
+        i = i + 1;
+    }
+
+    proto_encode_field(buffer, field_num, 2, inner)
+}
+
+// =============================================================================
+// Default Value Skipping (proto3 semantics)
+// =============================================================================
+
+/// Encode a varint field only if the value is non-default (non-zero).
+/// In proto3, fields with default values are omitted from the wire format.
+fn proto_encode_varint_field_if(buffer: i64, field_num: i64, value: i64) -> i64 {
+    if value == 0 { return 0; }
+    proto_encode_varint_field(buffer, field_num, value)
+}
+
+/// Encode a bool field only if true
+fn proto_encode_bool_if(buffer: i64, field_num: i64, value: i64) -> i64 {
+    if value == 0 { return 0; }
+    proto_encode_bool(buffer, field_num, value)
+}
+
+/// Encode a string field only if non-empty
+fn proto_encode_string_if(buffer: i64, field_num: i64, str: i64) -> i64 {
+    if string_length(str) == 0 { return 0; }
+    proto_encode_string(buffer, field_num, str)
+}
+
+/// Encode a bytes field only if non-empty
+fn proto_encode_bytes_if(buffer: i64, field_num: i64, data: i64) -> i64 {
+    if vec_len(data) == 0 { return 0; }
+    proto_encode_bytes(buffer, field_num, data)
+}
+
+// =============================================================================
+// Size Calculation
+// =============================================================================
+
+/// Calculate the encoded size of a varint field (tag + value)
+fn proto_varint_field_size(field_num: i64, value: i64) -> i64 {
+    let tag: i64 = proto_make_tag(field_num, 0);
+    proto_varint_size(tag) + proto_varint_size(value)
+}
+
+/// Calculate the encoded size of a string field
+fn proto_string_field_size(field_num: i64, str: i64) -> i64 {
+    let tag: i64 = proto_make_tag(field_num, 2);
+    let str_len: i64 = string_length(str);
+    proto_varint_size(tag) + proto_varint_size(str_len) + str_len
+}
+
+/// Calculate the encoded size of a bytes field
+fn proto_bytes_field_size(field_num: i64, data: i64) -> i64 {
+    let tag: i64 = proto_make_tag(field_num, 2);
+    let data_len: i64 = vec_len(data);
+    proto_varint_size(tag) + proto_varint_size(data_len) + data_len
+}
+
+/// Calculate the encoded size of a fixed32 field
+fn proto_fixed32_field_size(field_num: i64) -> i64 {
+    let tag: i64 = proto_make_tag(field_num, 5);
+    proto_varint_size(tag) + 4
+}
+
+/// Calculate the encoded size of a fixed64 field
+fn proto_fixed64_field_size(field_num: i64) -> i64 {
+    let tag: i64 = proto_make_tag(field_num, 1);
+    proto_varint_size(tag) + 8
+}
+
+/// Calculate the encoded size of an embedded message field
+fn proto_message_field_size(field_num: i64, msg_size: i64) -> i64 {
+    let tag: i64 = proto_make_tag(field_num, 2);
+    proto_varint_size(tag) + proto_varint_size(msg_size) + msg_size
+}

@@ -3,7 +3,7 @@
 
 [package]
 name = "simplex-quantum-mitigation"
-version = "0.15.0"
+version = "0.16.0"
 description = "Quantum error mitigation strategies -- ZNE, PEC, readout mitigation"
 authors = ["Rod Higgins"]
 license = "AGPL-3.0"

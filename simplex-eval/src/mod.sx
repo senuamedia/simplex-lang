@@ -1,0 +1,79 @@
+// simplex-eval - Evaluation Suites and Metrics for Simplex
+//
+// Provides evaluation infrastructure for measuring output quality.
+// Supports exact match, fuzzy matching, edit distance, and BLEU scoring.
+//
+// # Modules
+//
+// - `suite`:   Evaluation suite management (create, add cases, run)
+// - `metrics`: Evaluation metrics (exact match, Levenshtein, BLEU, etc.)
+// - `report`:  Report formatting for evaluation results
+//
+// # Data Model
+//
+// Suites, cases, and results are represented as i64 handles to vec objects.
+//
+// # Example
+//
+// ```simplex
+// let suite = eval_suite_new("qa_test");
+// eval_add_case(suite, "What is 2+2?", "4");
+// eval_add_case(suite, "Capital of France?", "Paris");
+// let results = eval_run(suite, qa_fn_handle);
+// let report = eval_report(results);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_push(v: i64, value: i64) -> i64;
+extern fn vec_pop(v: i64) -> i64;
+extern fn vec_get(v: i64, index: i64) -> i64;
+extern fn vec_set(v: i64, index: i64, value: i64) -> i64;
+
+extern fn string_from(s: &str) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_len(s: i64) -> i64;
+extern fn string_cmp(a: i64, b: i64) -> i64;
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+extern fn string_contains(haystack: i64, needle: i64) -> i64;
+
+extern fn i64_to_string(n: i64) -> i64;
+
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+
+// =============================================================================
+// f64 bit conversion helpers
+// =============================================================================
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }
+
+// =============================================================================
+// Suite Field Offsets
+// =============================================================================
+
+fn SUITE_NAME() -> i64     { 0 }
+fn SUITE_INPUTS() -> i64   { 1 }
+fn SUITE_EXPECTED() -> i64 { 2 }
+fn SUITE_COUNT() -> i64    { 3 }
+
+// =============================================================================
+// Result Field Offsets
+// =============================================================================
+
+fn RESULT_SUITE_NAME() -> i64   { 0 }
+fn RESULT_SCORES() -> i64       { 1 }
+fn RESULT_OUTPUTS() -> i64      { 2 }
+fn RESULT_EXPECTED() -> i64     { 3 }
+fn RESULT_INPUTS() -> i64       { 4 }
+fn RESULT_COUNT() -> i64        { 5 }
+fn RESULT_AVG_SCORE() -> i64    { 6 }

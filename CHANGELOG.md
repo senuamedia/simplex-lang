@@ -5,6 +5,66 @@ All notable changes to Simplex will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-03-19
+
+### Highlights
+
+**Enterprise Libraries & Hive Intelligence** — Data formats, unified database connectivity, real-time communication, authentication, observability, and AI-native intelligence. 35,000 lines of new pure Simplex code. 215 tests passing (100%).
+
+### Added
+
+#### Data Formats (TASK-023)
+- CSV parser/serializer (RFC 4180, quoted fields, configurable delimiters)
+- YAML 1.2 Core Schema parser (mappings, sequences, flow style, multi-line)
+- XML parser (elements, attributes, entities, CDATA, namespaces, XPath-lite)
+
+#### Unified Database (TASK-024)
+- `simplex-db` — unified SQL/NoSQL with pluggable drivers
+- PostgreSQL driver (wire protocol v3, MD5 auth, prepared statements)
+- MySQL driver (client/server protocol, SHA-1 auth)
+- Redis driver (RESP3 protocol, pub/sub, pipeline)
+- SQLite driver (existing, consolidated)
+- Common API: `db_connect`, `db_query`, `db_execute`, `db_close`
+- Connection pooling, transactions, key-value operations
+
+#### Real-Time Communication (TASK-025)
+- WebSocket client/server (RFC 6455, frame encoding, masking, fragmentation)
+- Protocol Buffers (Proto3 wire format, varint, length-delimited)
+- NATS messaging (pub/sub, request/reply, queue groups, wildcards)
+
+#### Authentication & Security (TASK-026)
+- JWT (HS256 signing, base64url, HMAC-SHA256, expiration, standard claims)
+- OAuth 2.0 (Authorization Code + PKCE, GitHub/Google/Microsoft presets)
+- dotenv (.env parser with quotes, comments, variable expansion)
+
+#### Observability (TASK-028)
+- Prometheus metrics (counter, gauge, histogram, labels, text exposition)
+- OpenTelemetry tracing (W3C traceparent, spans, OTLP JSON export)
+- Auto-instrumentation helpers for actors, SLM, hives
+
+#### Hive Intelligence (TASK-029)
+- VectorDB (cosine similarity, HNSW index, metadata filtering, persistence)
+- RAG pipeline (chunking, embedding, retrieval, context building, attribution)
+- Guardrails (output validation, PII detection, retry/fallback)
+- Eval suite (exact match, Levenshtein, BLEU, A/B comparison)
+
+### New Packages
+- `simplex-db`, `simplex-prometheus`, `simplex-opentelemetry`
+- `simplex-protobuf`, `simplex-nats`
+- `simplex-vectordb`, `simplex-rag`, `simplex-guardrails`, `simplex-eval`
+
+### Changed
+- Replaced `simplex-postgres`, `simplex-mysql`, `simplex-redis`, `simplex-sql` with unified `simplex-db`
+
+### New Test Files (19)
+- spec_csv, spec_yaml, spec_xml, spec_jwt, spec_oauth, spec_dotenv
+- spec_websocket, spec_protobuf, spec_nats
+- spec_db, spec_postgres, spec_redis, spec_mysql
+- spec_prometheus, spec_opentelemetry
+- spec_vectordb, spec_rag, spec_guardrails, spec_eval
+
+---
+
 ## [0.15.0] - 2026-03-19
 
 ### Highlights

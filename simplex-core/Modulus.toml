@@ -18,7 +18,7 @@
 
 [package]
 name = "simplex-core"
-version = "0.15.0"
+version = "0.16.0"
 description = "Core infrastructure for the Simplex compiler, toolchain, and runtime"
 authors = ["Rod Higgins"]
 license = "AGPL-3.0"

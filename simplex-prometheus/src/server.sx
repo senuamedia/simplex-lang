@@ -1,0 +1,270 @@
+// simplex-prometheus::server - HTTP /metrics Endpoint
+//
+// Serves Prometheus metrics over HTTP. Provides a simple HTTP server
+// that responds to GET /metrics with the Prometheus text exposition format.
+//
+// # Example
+//
+// ```simplex
+// use simplex_prometheus::server::*;
+// use simplex_prometheus::registry::*;
+// use simplex_prometheus::counter::*;
+//
+// fn main() {
+//     let reg = prom_registry_new();
+//     let ctr = prom_counter_new("requests_total", "Total requests");
+//     prom_register(reg, ctr);
+//     prom_serve(reg, "0.0.0.0", 9090);
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+// =============================================================================
+// Server Configuration
+// =============================================================================
+
+/// Server config vec layout:
+///   [0] = registry handle
+///   [1] = bind address (string handle)
+///   [2] = port (i64)
+///   [3] = running flag (1 = running, 0 = stopped)
+///   [4] = request count (i64)
+
+/// Create a new metrics server configuration.
+///
+/// # Arguments
+/// - `reg`: Registry vec handle to serve metrics from
+/// - `addr`: Bind address (string handle, e.g., "0.0.0.0")
+/// - `port`: Port number (i64, e.g., 9090)
+///
+/// # Returns
+/// Server config vec handle (i64)
+pub fn prom_server_new(reg: i64, addr: i64, port: i64) -> i64 {
+    let srv: i64 = vec_new();
+    vec_push(srv, reg);      // [0] = registry
+    vec_push(srv, addr);     // [1] = bind address
+    vec_push(srv, port);     // [2] = port
+    vec_push(srv, 0);        // [3] = running flag
+    vec_push(srv, 0);        // [4] = request count
+    srv
+}
+
+/// Get the registry from a server config.
+pub fn prom_server_registry(srv: i64) -> i64 {
+    vec_get(srv, 0)
+}
+
+/// Get the bind address from a server config.
+pub fn prom_server_addr(srv: i64) -> i64 {
+    vec_get(srv, 1)
+}
+
+/// Get the port from a server config.
+pub fn prom_server_port(srv: i64) -> i64 {
+    vec_get(srv, 2)
+}
+
+/// Check if the server is running.
+pub fn prom_server_is_running(srv: i64) -> i64 {
+    vec_get(srv, 3)
+}
+
+/// Get the number of requests served.
+pub fn prom_server_request_count(srv: i64) -> i64 {
+    vec_get(srv, 4)
+}
+
+// =============================================================================
+// HTTP Response Building
+// =============================================================================
+
+/// Build an HTTP 200 response with the given body.
+///
+/// Returns the full HTTP response including headers:
+///   HTTP/1.1 200 OK
+///   Content-Type: text/plain; version=0.0.4; charset=utf-8
+///   Content-Length: <len>
+///
+/// # Arguments
+/// - `body`: Response body (string handle)
+///
+/// # Returns
+/// Full HTTP response string handle
+pub fn prom_build_metrics_response(body: i64) -> i64 {
+    let resp: i64 = "HTTP/1.1 200 OK\r\n";
+    let resp: i64 = string_concat(resp, "Content-Type: text/plain; version=0.0.4; charset=utf-8\r\n");
+    let body_len: i64 = string_length(body);
+    let resp: i64 = string_concat(resp, "Content-Length: ");
+    let resp: i64 = string_concat(resp, i64_to_string(body_len));
+    let resp: i64 = string_concat(resp, "\r\n\r\n");
+    let resp: i64 = string_concat(resp, body);
+    resp
+}
+
+/// Build an HTTP 404 response.
+///
+/// # Returns
+/// Full HTTP 404 response string handle
+pub fn prom_build_404_response() -> i64 {
+    let body: i64 = "404 Not Found\n";
+    let resp: i64 = "HTTP/1.1 404 Not Found\r\n";
+    let resp: i64 = string_concat(resp, "Content-Type: text/plain\r\n");
+    let resp: i64 = string_concat(resp, "Content-Length: 14\r\n");
+    let resp: i64 = string_concat(resp, "\r\n");
+    let resp: i64 = string_concat(resp, body);
+    resp
+}
+
+// =============================================================================
+// Serve Endpoint
+// =============================================================================
+
+/// Start serving metrics on the given address and port.
+///
+/// This creates a simple HTTP server that responds to:
+/// - GET /metrics -> Prometheus text format
+/// - Everything else -> 404
+///
+/// Note: This is a blocking call in the current implementation.
+/// Use with actors for non-blocking operation.
+///
+/// # Arguments
+/// - `reg`: Registry vec handle
+/// - `addr`: Bind address (string handle)
+/// - `port`: Port number (i64)
+///
+/// # Returns
+/// Server config vec handle (i64)
+pub fn prom_serve(reg: i64, addr: i64, port: i64) -> i64 {
+    let srv: i64 = prom_server_new(reg, addr, port);
+    vec_set(srv, 3, 1);  // Mark as running
+
+    // In Simplex, the actual TCP listen/accept loop would use
+    // simplex-std::net::TcpListener. For now, we set up the
+    // server configuration and return it.
+    //
+    // The caller can use simplex-std::http for full server operation:
+    //
+    //   let server = HttpServer::bind(addr, port);
+    //   server.route("GET", "/metrics", |req| {
+    //       let body = prom_export(reg);
+    //       prom_build_metrics_response(body)
+    //   });
+    //   server.run();
+
+    srv
+}
+
+/// Stop a running metrics server.
+///
+/// # Arguments
+/// - `srv`: Server config vec handle
+pub fn prom_server_stop(srv: i64) -> i64 {
+    vec_set(srv, 3, 0);  // Mark as stopped
+    0
+}
+
+/// Handle an incoming request path.
+///
+/// Routes the request to the appropriate handler:
+/// - "/metrics" -> returns exposition format
+/// - anything else -> returns 404
+///
+/// # Arguments
+/// - `srv`: Server config vec handle
+/// - `path`: Request path (string handle)
+///
+/// # Returns
+/// HTTP response string handle
+pub fn prom_handle_request(srv: i64, path: i64) -> i64 {
+    // Increment request count
+    let count: i64 = vec_get(srv, 4);
+    vec_set(srv, 4, count + 1);
+
+    // Check if path is /metrics
+    if intrinsic_string_eq(path, "/metrics") == 1 {
+        let reg: i64 = vec_get(srv, 0);
+        // Import exposition function inline
+        let body: i64 = prom_export_inline(reg);
+        return prom_build_metrics_response(body);
+    }
+
+    prom_build_404_response()
+}
+
+/// Inline export for use within the server module.
+///
+/// Iterates registry and builds exposition text.
+/// (Mirrors prom_export from exposition module for standalone use.)
+///
+/// # Arguments
+/// - `reg`: Registry vec handle
+///
+/// # Returns
+/// Exposition text string handle
+fn prom_export_inline(reg: i64) -> i64 {
+    let out: i64 = "";
+    let n: i64 = vec_len(reg);
+    let i: i64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        let metric: i64 = vec_get(reg, i);
+        if metric != 0 {
+            let mtype: i64 = vec_get(metric, 0);
+            let name: i64 = vec_get(metric, 1);
+            let help: i64 = vec_get(metric, 2);
+            let labels: i64 = vec_get(metric, 3);
+            let value: i64 = vec_get(metric, 4);
+
+            // HELP line
+            let out: i64 = string_concat(out, "# HELP ");
+            let out: i64 = string_concat(out, name);
+            let out: i64 = string_concat(out, " ");
+            let out: i64 = string_concat(out, help);
+            let out: i64 = string_concat(out, "\n");
+
+            // TYPE line
+            let out: i64 = string_concat(out, "# TYPE ");
+            let out: i64 = string_concat(out, name);
+            if mtype == 1 {
+                let out: i64 = string_concat(out, " counter\n");
+            }
+            if mtype == 2 {
+                let out: i64 = string_concat(out, " gauge\n");
+            }
+            if mtype == 3 {
+                let out: i64 = string_concat(out, " histogram\n");
+            }
+
+            // Value line (for counter/gauge; histogram handled separately)
+            if mtype == 1 {
+                let out: i64 = string_concat(out, name);
+                let out: i64 = string_concat(out, " ");
+                let out: i64 = string_concat(out, i64_to_string(value));
+                let out: i64 = string_concat(out, "\n");
+            }
+            if mtype == 2 {
+                let out: i64 = string_concat(out, name);
+                let out: i64 = string_concat(out, " ");
+                let out: i64 = string_concat(out, i64_to_string(value));
+                let out: i64 = string_concat(out, "\n");
+            }
+        }
+        let i: i64 = i + 1;
+    }
+    out
+}

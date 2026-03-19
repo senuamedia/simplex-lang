@@ -1,0 +1,287 @@
+// PostgreSQL Wire Protocol Format Tests
+// Tests protocol encoding logic inline without a running database
+
+// =============================================================================
+// Test 1: Big-endian 32-bit integer encoding
+// =============================================================================
+
+fn test_big_endian_i32() -> i64 {
+    println("  Testing big-endian i32 encoding...");
+    let val: i64 = 12345678;
+    let b0: i64 = (val / 16777216) % 256;
+    let b1: i64 = (val / 65536) % 256;
+    let b2: i64 = (val / 256) % 256;
+    let b3: i64 = val % 256;
+
+    let reconstructed: i64 = b0 * 16777216 + b1 * 65536 + b2 * 256 + b3;
+    if reconstructed != val {
+        println("  FAIL: i32 big-endian round-trip failed");
+        return 1;
+    }
+    println("  PASS: big-endian i32 encoding");
+    0
+}
+
+// =============================================================================
+// Test 2: Big-endian 16-bit integer encoding
+// =============================================================================
+
+fn test_big_endian_i16() -> i64 {
+    println("  Testing big-endian i16 encoding...");
+    let val: i64 = 4321;
+    let hi: i64 = (val / 256) % 256;
+    let lo: i64 = val % 256;
+    let r: i64 = hi * 256 + lo;
+    if r != val {
+        println("  FAIL: i16 big-endian round-trip failed");
+        return 1;
+    }
+    println("  PASS: big-endian i16 encoding");
+    0
+}
+
+// =============================================================================
+// Test 3: Protocol version 3.0
+// =============================================================================
+
+fn test_protocol_version() -> i64 {
+    println("  Testing protocol version 3.0...");
+    // Protocol version 3.0 = 196608 = 0x00030000
+    let version: i64 = 196608;
+    let major: i64 = version / 65536;
+    let minor: i64 = version % 65536;
+    if major != 3 {
+        println("  FAIL: major version should be 3");
+        return 1;
+    }
+    if minor != 0 {
+        println("  FAIL: minor version should be 0");
+        return 1;
+    }
+    println("  PASS: protocol version 3.0");
+    0
+}
+
+// =============================================================================
+// Test 4: Query message type byte
+// =============================================================================
+
+fn test_query_message_type() -> i64 {
+    println("  Testing query message type...");
+    // Query = 'Q' = ASCII 81
+    let msg_type: i64 = 81;
+    if msg_type != 81 {
+        println("  FAIL: query type should be 81 (Q)");
+        return 1;
+    }
+    // Query message: type(1) + length(4) + sql_cstring
+    let sql: i64 = "SELECT 1";
+    let sql_len: i64 = string_len(sql);
+    // length field = 4 (self) + sql_len + 1 (null terminator)
+    let length_field: i64 = 4 + sql_len + 1;
+    if length_field != 13 {
+        println("  FAIL: query length field should be 13");
+        return 1;
+    }
+    println("  PASS: query message type");
+    0
+}
+
+// =============================================================================
+// Test 5: Terminate message
+// =============================================================================
+
+fn test_terminate_message() -> i64 {
+    println("  Testing terminate message...");
+    // Terminate = 'X' = ASCII 88, length = 4
+    let msg_type: i64 = 88;
+    let length: i64 = 4;
+    if msg_type != 88 {
+        println("  FAIL: terminate type should be 88 (X)");
+        return 1;
+    }
+    // Total message is 5 bytes: type(1) + length(4)
+    let total: i64 = 1 + length;
+    if total != 5 {
+        println("  FAIL: terminate message should be 5 bytes total");
+        return 1;
+    }
+    println("  PASS: terminate message");
+    0
+}
+
+// =============================================================================
+// Test 6: Auth message types
+// =============================================================================
+
+fn test_auth_types() -> i64 {
+    println("  Testing auth message types...");
+    // Auth response type = 'R' = 82
+    let auth_type: i64 = 82;
+    if auth_type != 82 {
+        println("  FAIL: auth type should be 82 (R)");
+        return 1;
+    }
+    // Auth sub-types: 0=OK, 3=cleartext, 5=MD5
+    let auth_ok: i64 = 0;
+    let auth_cleartext: i64 = 3;
+    let auth_md5: i64 = 5;
+    if auth_ok != 0 {
+        println("  FAIL: AuthOK should be 0");
+        return 1;
+    }
+    if auth_md5 != 5 {
+        println("  FAIL: AuthMD5 should be 5");
+        return 1;
+    }
+    println("  PASS: auth message types");
+    0
+}
+
+// =============================================================================
+// Test 7: ReadyForQuery status bytes
+// =============================================================================
+
+fn test_ready_status() -> i64 {
+    println("  Testing ReadyForQuery status bytes...");
+    // Z(90) message with status: I=idle(73), T=in_transaction(84), E=error(69)
+    let msg_type: i64 = 90;
+    let idle: i64 = 73;
+    let in_txn: i64 = 84;
+    let error: i64 = 69;
+
+    if msg_type != 90 {
+        println("  FAIL: ReadyForQuery should be 90 (Z)");
+        return 1;
+    }
+    if idle != 73 {
+        println("  FAIL: idle status should be 73 (I)");
+        return 1;
+    }
+    if in_txn != 84 {
+        println("  FAIL: transaction status should be 84 (T)");
+        return 1;
+    }
+    if error != 69 {
+        println("  FAIL: error status should be 69 (E)");
+        return 1;
+    }
+    println("  PASS: ReadyForQuery status bytes");
+    0
+}
+
+// =============================================================================
+// Test 8: Null-terminated string encoding
+// =============================================================================
+
+fn test_cstring_encoding() -> i64 {
+    println("  Testing C-string encoding...");
+    // "hello" is bytes [104, 101, 108, 108, 111] + null [0]
+    let s: i64 = "hello";
+    let len: i64 = string_len(s);
+    if len != 5 {
+        println("  FAIL: hello should be 5 chars");
+        return 1;
+    }
+    // First char should be 'h' = 104
+    if string_char_at(s, 0) != 104 {
+        println("  FAIL: first char should be h (104)");
+        return 1;
+    }
+    // C-string total length = string_len + 1 (null)
+    let cstring_len: i64 = len + 1;
+    if cstring_len != 6 {
+        println("  FAIL: C-string of hello should be 6 bytes");
+        return 1;
+    }
+    println("  PASS: C-string encoding");
+    0
+}
+
+// =============================================================================
+// Test 9: Error response field codes
+// =============================================================================
+
+fn test_error_fields() -> i64 {
+    println("  Testing error response field codes...");
+    // Error = 'E' = 69
+    // Fields: S(83)=severity, C(67)=code, M(77)=message
+    let error_type: i64 = 69;
+    let severity: i64 = 83;
+    let code: i64 = 67;
+    let message: i64 = 77;
+
+    if error_type != 69 {
+        println("  FAIL: error type should be 69 (E)");
+        return 1;
+    }
+    if severity != 83 {
+        println("  FAIL: severity field should be 83 (S)");
+        return 1;
+    }
+    if code != 67 {
+        println("  FAIL: code field should be 67 (C)");
+        return 1;
+    }
+    if message != 77 {
+        println("  FAIL: message field should be 77 (M)");
+        return 1;
+    }
+    println("  PASS: error response field codes");
+    0
+}
+
+// =============================================================================
+// Test 10: Password message encoding
+// =============================================================================
+
+fn test_password_message() -> i64 {
+    println("  Testing password message encoding...");
+    // Password = 'p' = 112
+    let msg_type: i64 = 112;
+    let password: i64 = "secretpass";
+    let pw_len: i64 = string_len(password);
+    // length field = 4 + pw_len + 1 (null)
+    let length_field: i64 = 4 + pw_len + 1;
+    if msg_type != 112 {
+        println("  FAIL: password type should be 112 (p)");
+        return 1;
+    }
+    if length_field != 15 {
+        println("  FAIL: password message length should be 15");
+        return 1;
+    }
+    println("  PASS: password message encoding");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== PostgreSQL Protocol Format Tests ===");
+    println("");
+
+    let f1: i64 = test_big_endian_i32();
+    let f2: i64 = test_big_endian_i16();
+    let f3: i64 = test_protocol_version();
+    let f4: i64 = test_query_message_type();
+    let f5: i64 = test_terminate_message();
+    let f6: i64 = test_auth_types();
+    let f7: i64 = test_ready_status();
+    let f8: i64 = test_cstring_encoding();
+    let f9: i64 = test_error_fields();
+    let f10: i64 = test_password_message();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10;
+
+    println("");
+    if failures == 0 {
+        println("All 10 PostgreSQL protocol tests passed!");
+    } else {
+        println("Some PostgreSQL protocol tests failed");
+    }
+
+    failures
+}

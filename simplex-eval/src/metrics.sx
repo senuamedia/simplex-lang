@@ -1,0 +1,382 @@
+// simplex-eval::metrics - Evaluation Metrics
+//
+// Provides various metrics for comparing outputs against expected values.
+//
+// All metrics return i64 values:
+//   - Binary metrics (exact_match, contains): 0 or 1
+//   - Distance metrics (levenshtein): i64 count
+//   - Ratio metrics (bleu, length_ratio): f64_to_bits
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Exact Match
+// =============================================================================
+
+/// Check if output exactly matches expected.
+///
+/// Arguments:
+///   output   - output string handle
+///   expected - expected string handle
+///
+/// Returns: 1 if exact match, 0 otherwise
+fn metric_exact_match(output: i64, expected: i64) -> i64 {
+    let cmp: i64 = string_cmp(output, expected);
+    if cmp == 0 { return 1; }
+    0
+}
+
+// =============================================================================
+// Contains
+// =============================================================================
+
+/// Check if output contains the expected string.
+///
+/// Arguments:
+///   output   - output string handle
+///   expected - expected string handle
+///
+/// Returns: 1 if output contains expected, 0 otherwise
+fn metric_contains(output: i64, expected: i64) -> i64 {
+    string_contains(output, expected)
+}
+
+// =============================================================================
+// Levenshtein Distance
+// =============================================================================
+
+/// Compute Levenshtein (edit) distance between two strings.
+///
+/// Uses a two-row dynamic programming approach for O(min(m,n)) space.
+///
+/// Arguments:
+///   a - first string handle
+///   b - second string handle
+///
+/// Returns: edit distance (i64)
+fn metric_levenshtein(a: i64, b: i64) -> i64 {
+    let len_a: i64 = string_len(a);
+    let len_b: i64 = string_len(b);
+
+    // Edge cases
+    if len_a == 0 { return len_b; }
+    if len_b == 0 { return len_a; }
+
+    // Ensure a is the shorter string (for space efficiency)
+    var short: i64 = a;
+    var long: i64 = b;
+    var short_len: i64 = len_a;
+    var long_len: i64 = len_b;
+    if len_a > len_b {
+        short = b;
+        long = a;
+        short_len = len_b;
+        long_len = len_a;
+    }
+
+    // Two rows: previous and current
+    let prev_row = vec_new();
+    let curr_row = vec_new();
+
+    // Initialize prev_row: [0, 1, 2, ..., short_len]
+    var j: i64 = 0;
+    while j <= short_len {
+        vec_push(prev_row, j);
+        vec_push(curr_row, 0);
+        j = j + 1;
+    }
+
+    // Fill the matrix
+    var i: i64 = 1;
+    while i <= long_len {
+        vec_set(curr_row, 0, i);
+
+        j = 1;
+        while j <= short_len {
+            let long_ch: i64 = string_char_at(long, i - 1);
+            let short_ch: i64 = string_char_at(short, j - 1);
+
+            var cost: i64 = 1;
+            if long_ch == short_ch { cost = 0; }
+
+            // min(insert, delete, replace)
+            let insert_cost: i64 = vec_get(curr_row, j - 1) + 1;
+            let delete_cost: i64 = vec_get(prev_row, j) + 1;
+            let replace_cost: i64 = vec_get(prev_row, j - 1) + cost;
+
+            var min_cost: i64 = insert_cost;
+            if delete_cost < min_cost { min_cost = delete_cost; }
+            if replace_cost < min_cost { min_cost = replace_cost; }
+
+            vec_set(curr_row, j, min_cost);
+            j = j + 1;
+        }
+
+        // Swap rows: copy curr to prev
+        j = 0;
+        while j <= short_len {
+            vec_set(prev_row, j, vec_get(curr_row, j));
+            j = j + 1;
+        }
+
+        i = i + 1;
+    }
+
+    vec_get(prev_row, short_len)
+}
+
+// =============================================================================
+// BLEU Score (Unigram)
+// =============================================================================
+
+/// Compute a simple unigram BLEU score.
+///
+/// This is a simplified BLEU that only considers unigrams (individual words).
+/// Words are split on spaces. The score is the precision of output words
+/// found in the reference, with a brevity penalty.
+///
+/// Arguments:
+///   output    - output string handle
+///   reference - reference string handle
+///
+/// Returns: BLEU score as f64_to_bits (range 0.0 to 1.0)
+fn metric_bleu_unigram(output: i64, reference: i64) -> i64 {
+    // Split both strings into words (by spaces)
+    let out_words: i64 = split_words(output);
+    let ref_words: i64 = split_words(reference);
+
+    let n_out: i64 = vec_len(out_words);
+    let n_ref: i64 = vec_len(ref_words);
+
+    if n_out == 0 { return f64_to_bits(0.0); }
+    if n_ref == 0 { return f64_to_bits(0.0); }
+
+    // Count matching unigrams (with clipping)
+    // For each output word, check if it appears in reference
+    var matches: i64 = 0;
+    var i: i64 = 0;
+
+    // Track which reference words have been matched
+    let ref_matched = vec_new();
+    var ri: i64 = 0;
+    while ri < n_ref {
+        vec_push(ref_matched, 0);
+        ri = ri + 1;
+    }
+
+    while i < n_out {
+        let out_word: i64 = vec_get(out_words, i);
+
+        // Search for match in reference
+        var j: i64 = 0;
+        var found: i64 = 0;
+        while j < n_ref {
+            if found == 0 {
+                let already_matched: i64 = vec_get(ref_matched, j);
+                if already_matched == 0 {
+                    let ref_word: i64 = vec_get(ref_words, j);
+                    let cmp: i64 = string_cmp(out_word, ref_word);
+                    if cmp == 0 {
+                        matches = matches + 1;
+                        vec_set(ref_matched, j, 1);
+                        found = 1;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+
+        i = i + 1;
+    }
+
+    // Precision
+    let n_out_f: f64 = 0.0 + n_out;
+    let matches_f: f64 = 0.0 + matches;
+    let precision: f64 = matches_f / n_out_f;
+
+    // Brevity penalty
+    let n_ref_f: f64 = 0.0 + n_ref;
+    var bp: f64 = 1.0;
+    if n_out_f < n_ref_f {
+        // BP = exp(1 - ref_len/out_len)
+        // Approximate: BP = 1 - (ref_len - out_len) / ref_len for simplicity
+        let ratio: f64 = n_out_f / n_ref_f;
+        bp = ratio;  // simplified brevity penalty
+        if bp > 1.0 { bp = 1.0; }
+    }
+
+    let bleu: f64 = bp * precision;
+    f64_to_bits(bleu)
+}
+
+// =============================================================================
+// Length Ratio
+// =============================================================================
+
+/// Compute the length ratio between output and expected.
+///
+/// Arguments:
+///   output   - output string handle
+///   expected - expected string handle
+///
+/// Returns: ratio as f64_to_bits (output_len / expected_len)
+fn metric_length_ratio(output: i64, expected: i64) -> i64 {
+    let out_len: i64 = string_len(output);
+    let exp_len: i64 = string_len(expected);
+
+    if exp_len == 0 {
+        if out_len == 0 { return f64_to_bits(1.0); }
+        return f64_to_bits(999999.0);
+    }
+
+    let out_f: f64 = 0.0 + out_len;
+    let exp_f: f64 = 0.0 + exp_len;
+    let ratio: f64 = out_f / exp_f;
+    f64_to_bits(ratio)
+}
+
+// =============================================================================
+// F1 Score (Word-Level)
+// =============================================================================
+
+/// Compute word-level F1 score between output and expected.
+///
+/// F1 = 2 * precision * recall / (precision + recall)
+///
+/// Arguments:
+///   output   - output string handle
+///   expected - expected string handle
+///
+/// Returns: F1 score as f64_to_bits (range 0.0 to 1.0)
+fn metric_f1_words(output: i64, expected: i64) -> i64 {
+    let out_words: i64 = split_words(output);
+    let exp_words: i64 = split_words(expected);
+
+    let n_out: i64 = vec_len(out_words);
+    let n_exp: i64 = vec_len(exp_words);
+
+    if n_out == 0 {
+        if n_exp == 0 { return f64_to_bits(1.0); }
+        return f64_to_bits(0.0);
+    }
+    if n_exp == 0 { return f64_to_bits(0.0); }
+
+    // Count matches (each expected word can only match once)
+    let exp_matched = vec_new();
+    var ei: i64 = 0;
+    while ei < n_exp {
+        vec_push(exp_matched, 0);
+        ei = ei + 1;
+    }
+
+    var matches: i64 = 0;
+    var i: i64 = 0;
+    while i < n_out {
+        let out_word: i64 = vec_get(out_words, i);
+        var j: i64 = 0;
+        var found: i64 = 0;
+        while j < n_exp {
+            if found == 0 {
+                let matched: i64 = vec_get(exp_matched, j);
+                if matched == 0 {
+                    let exp_word: i64 = vec_get(exp_words, j);
+                    if string_cmp(out_word, exp_word) == 0 {
+                        matches = matches + 1;
+                        vec_set(exp_matched, j, 1);
+                        found = 1;
+                    }
+                }
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    let matches_f: f64 = 0.0 + matches;
+    let n_out_f: f64 = 0.0 + n_out;
+    let n_exp_f: f64 = 0.0 + n_exp;
+
+    let precision: f64 = matches_f / n_out_f;
+    let recall: f64 = matches_f / n_exp_f;
+
+    let sum: f64 = precision + recall;
+    if sum < 0.000001 { return f64_to_bits(0.0); }
+
+    let f1: f64 = 2.0 * precision * recall / sum;
+    f64_to_bits(f1)
+}
+
+// =============================================================================
+// Word Splitting Helper
+// =============================================================================
+
+/// Split a string into words by spaces.
+///
+/// Arguments:
+///   text - string handle
+///
+/// Returns: handle to vec of word string handles
+fn split_words(text: i64) -> i64 {
+    let words = vec_new();
+    let len: i64 = string_len(text);
+    if len == 0 { return words; }
+
+    var start: i64 = -1;
+    var i: i64 = 0;
+
+    while i < len {
+        let ch: i64 = string_char_at(text, i);
+        let is_space: i64 = 0;
+        if ch == 32 { is_space = 1; }    // space
+        if ch == 10 { is_space = 1; }    // newline
+        if ch == 9 { is_space = 1; }     // tab
+        if ch == 13 { is_space = 1; }    // carriage return
+
+        if is_space == 1 {
+            if start >= 0 {
+                // End of a word
+                let word: i64 = extract_substr(text, start, i);
+                let wlen: i64 = string_len(word);
+                if wlen > 0 {
+                    vec_push(words, word);
+                }
+                start = -1;
+            }
+        } else {
+            if start < 0 {
+                start = i;
+            }
+        }
+
+        i = i + 1;
+    }
+
+    // Handle last word
+    if start >= 0 {
+        let word: i64 = extract_substr(text, start, len);
+        let wlen: i64 = string_len(word);
+        if wlen > 0 {
+            vec_push(words, word);
+        }
+    }
+
+    words
+}
+
+/// Extract a substring from start to end (exclusive).
+fn extract_substr(text: i64, start: i64, end: i64) -> i64 {
+    let result: i64 = string_from("");
+    var i: i64 = start;
+    while i < end {
+        let ch: i64 = string_char_at(text, i);
+        let v = vec_new();
+        vec_push(v, ch);
+        let ch_str: i64 = vec_to_string(v);
+        result = string_concat(result, ch_str);
+        i = i + 1;
+    }
+    result
+}
+
+extern fn vec_to_string(v: i64) -> i64;

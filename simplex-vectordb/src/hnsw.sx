@@ -1,0 +1,704 @@
+// simplex-vectordb::hnsw - Hierarchical Navigable Small World Index
+//
+// HNSW is an approximate nearest neighbor search algorithm that uses a
+// multi-layer graph structure for logarithmic-time search complexity.
+//
+// Key concepts:
+//   - Multi-layer graph: higher layers have fewer nodes, act as skip lists
+//   - Greedy search: at each layer, greedily move toward query
+//   - Neighbor selection: heuristic to maintain graph connectivity
+//
+// HNSW layout (vec of i64):
+//   [0] m               - max connections per node
+//   [1] m_max0           - max connections at layer 0 (2 * m)
+//   [2] ef_construction  - size of dynamic candidate list during build
+//   [3] dimension        - embedding dimension
+//   [4] max_level        - current maximum level in graph
+//   [5] entry_point      - ID of entry point node
+//   [6] n_nodes          - number of nodes inserted
+//   [7] levels_vec       - vec of level assignments per node
+//   [8] neighbors_vec    - vec of neighbor lists (vec of vecs per layer per node)
+//   [9] embeddings_vec   - vec of embedding handles per node
+//  [10] ml               - level multiplier as f64_to_bits (1/ln(m))
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// HNSW Field Offsets
+// =============================================================================
+
+fn HNSW_M() -> i64              { 0 }
+fn HNSW_M_MAX0() -> i64         { 1 }
+fn HNSW_EF_CONSTRUCTION() -> i64 { 2 }
+fn HNSW_DIMENSION() -> i64      { 3 }
+fn HNSW_MAX_LEVEL() -> i64      { 4 }
+fn HNSW_ENTRY_POINT() -> i64    { 5 }
+fn HNSW_N_NODES() -> i64        { 6 }
+fn HNSW_LEVELS() -> i64         { 7 }
+fn HNSW_NEIGHBORS() -> i64      { 8 }
+fn HNSW_EMBEDDINGS() -> i64     { 9 }
+fn HNSW_ML() -> i64             { 10 }
+fn HNSW_FIELDS() -> i64         { 11 }
+
+// =============================================================================
+// Constructor
+// =============================================================================
+
+/// Create a new HNSW index.
+///
+/// Arguments:
+///   m              - max connections per node (typical: 16)
+///   ef_construction - candidate list size during build (typical: 200)
+///   dimension      - embedding dimension
+///
+/// Returns: handle to HNSW index vec
+fn hnsw_new(m: i64, ef_construction: i64, dimension: i64) -> i64 {
+    let idx = vec_new();
+    vec_push(idx, m);                    // [0] m
+    vec_push(idx, m * 2);               // [1] m_max0
+    vec_push(idx, ef_construction);      // [2] ef_construction
+    vec_push(idx, dimension);            // [3] dimension
+    vec_push(idx, 0);                    // [4] max_level
+    vec_push(idx, -1);                   // [5] entry_point (-1 = empty)
+    vec_push(idx, 0);                    // [6] n_nodes
+    vec_push(idx, vec_new());            // [7] levels_vec
+    vec_push(idx, vec_new());            // [8] neighbors_vec
+    vec_push(idx, vec_new());            // [9] embeddings_vec
+
+    // ml = 1.0 / ln(m) -- approximation: ln(16) ~ 2.77
+    // For m=16, ml ~ 0.36; for m=8, ml ~ 0.48
+    let m_f: f64 = 0.0 + m;
+    let ln_m: f64 = hnsw_approx_ln(m_f);
+    var ml: f64 = 0.36;
+    if ln_m > 0.001 {
+        ml = 1.0 / ln_m;
+    }
+    vec_push(idx, f64_to_bits(ml));      // [10] ml
+
+    idx
+}
+
+// =============================================================================
+// Random Level Selection
+// =============================================================================
+
+/// Select a random level for a new node.
+/// Uses a deterministic hash-based approach seeded by node_id.
+///
+/// Level probability: P(level=l) = (1/m)^l
+fn hnsw_random_level(idx: i64, node_id: i64) -> i64 {
+    let ml: f64 = bits_to_f64(vec_get(idx, HNSW_ML()));
+
+    // Simple hash-based pseudo-random
+    var hash: i64 = node_id * 2654435761;  // Knuth multiplicative hash
+    hash = hash + 13;
+    if hash < 0 { hash = 0 - hash; }
+
+    // Use bits of hash to determine level
+    var level: i64 = 0;
+    var threshold: i64 = 1000;  // ~1/m chance of going up each level
+
+    let m: i64 = vec_get(idx, HNSW_M());
+    var remain: i64 = hash;
+
+    var cont: i64 = 1;
+    while cont == 1 {
+        let r: i64 = remain - (remain / 1000) * 1000;  // mod 1000
+        remain = remain / 1000;
+        if remain == 0 { remain = hash + level * 7919; }
+        if remain < 0 { remain = 0 - remain; }
+
+        // Probability 1/m of going up
+        let cutoff: i64 = 1000 / m;
+        if r < cutoff {
+            level = level + 1;
+            if level >= 16 {
+                cont = 0;  // cap at 16 levels
+            }
+        } else {
+            cont = 0;
+        }
+    }
+
+    level
+}
+
+// =============================================================================
+// Insert
+// =============================================================================
+
+/// Insert a vector into the HNSW index.
+///
+/// Arguments:
+///   idx       - HNSW index handle
+///   vector_id - ID for the vector
+///   embedding - handle to vec of f64_to_bits values
+///
+/// Returns: 1 on success
+fn hnsw_insert(idx: i64, vector_id: i64, embedding: i64) -> i64 {
+    let m: i64 = vec_get(idx, HNSW_M());
+    let m_max0: i64 = vec_get(idx, HNSW_M_MAX0());
+    let ef_construction: i64 = vec_get(idx, HNSW_EF_CONSTRUCTION());
+    let dimension: i64 = vec_get(idx, HNSW_DIMENSION());
+    let n_nodes: i64 = vec_get(idx, HNSW_N_NODES());
+
+    // Assign node index
+    let node_idx: i64 = n_nodes;
+
+    // Select random level
+    let new_level: i64 = hnsw_random_level(idx, vector_id);
+
+    // Store embedding
+    let embeddings: i64 = vec_get(idx, HNSW_EMBEDDINGS());
+    vec_push(embeddings, embedding);
+
+    // Store level
+    let levels: i64 = vec_get(idx, HNSW_LEVELS());
+    vec_push(levels, new_level);
+
+    // Initialize neighbor lists for each layer
+    let neighbors: i64 = vec_get(idx, HNSW_NEIGHBORS());
+    let node_neighbors = vec_new();
+    var l: i64 = 0;
+    while l <= new_level {
+        vec_push(node_neighbors, vec_new());  // empty neighbor list per layer
+        l = l + 1;
+    }
+    vec_push(neighbors, node_neighbors);
+
+    // Update node count
+    vec_set(idx, HNSW_N_NODES(), n_nodes + 1);
+
+    // If first node, set as entry point
+    let entry_point: i64 = vec_get(idx, HNSW_ENTRY_POINT());
+    if entry_point == -1 {
+        vec_set(idx, HNSW_ENTRY_POINT(), node_idx);
+        vec_set(idx, HNSW_MAX_LEVEL(), new_level);
+        return 1;
+    }
+
+    // Traverse from top to insertion level, greedily approaching
+    let max_level: i64 = vec_get(idx, HNSW_MAX_LEVEL());
+    var cur_ep: i64 = entry_point;
+
+    // Phase 1: greedy search from top to new_level+1
+    l = max_level;
+    while l > new_level {
+        cur_ep = hnsw_greedy_closest(idx, embedding, cur_ep, l, dimension);
+        l = l - 1;
+    }
+
+    // Phase 2: insert at layers new_level down to 0
+    l = new_level;
+    if l > max_level { l = max_level; }
+
+    while l >= 0 {
+        // Search for ef_construction nearest neighbors at this layer
+        let candidates: i64 = hnsw_search_layer(idx, embedding, cur_ep, ef_construction, l, dimension);
+        let n_candidates: i64 = vec_len(candidates);
+
+        // Select neighbors (simple: take closest m)
+        var max_conn: i64 = m;
+        if l == 0 { max_conn = m_max0; }
+        let selected: i64 = hnsw_select_neighbors(idx, embedding, candidates, max_conn, dimension);
+        let n_selected: i64 = vec_len(selected);
+
+        // Add bidirectional connections
+        let my_neighbors: i64 = vec_get(node_neighbors, l);
+        var si: i64 = 0;
+        while si < n_selected {
+            let neighbor_id: i64 = vec_get(selected, si);
+            vec_push(my_neighbors, neighbor_id);
+
+            // Add reverse connection
+            let nb_all_neighbors: i64 = vec_get(neighbors, neighbor_id);
+            let nb_level: i64 = vec_get(levels, neighbor_id);
+            if l <= nb_level {
+                let nb_layer_neighbors: i64 = vec_get(nb_all_neighbors, l);
+                vec_push(nb_layer_neighbors, node_idx);
+
+                // Prune if over capacity
+                let nb_count: i64 = vec_len(nb_layer_neighbors);
+                if nb_count > max_conn {
+                    hnsw_prune_connections(idx, neighbor_id, l, max_conn, dimension);
+                }
+            }
+            si = si + 1;
+        }
+
+        // Use first candidate as entry point for next layer
+        if n_candidates > 0 {
+            cur_ep = vec_get(candidates, 0);
+        }
+
+        l = l - 1;
+    }
+
+    // Update entry point if new level is higher
+    if new_level > max_level {
+        vec_set(idx, HNSW_ENTRY_POINT(), node_idx);
+        vec_set(idx, HNSW_MAX_LEVEL(), new_level);
+    }
+
+    1
+}
+
+// =============================================================================
+// Search
+// =============================================================================
+
+/// Search the HNSW index for nearest neighbors.
+///
+/// Arguments:
+///   idx       - HNSW index handle
+///   query     - handle to vec of f64_to_bits values
+///   ef_search - candidate list size during search (higher = more accurate)
+///   top_k     - number of results to return
+///
+/// Returns: handle to result vec [ids_vec, scores_vec, count]
+fn hnsw_search(idx: i64, query: i64, ef_search: i64, top_k: i64) -> i64 {
+    let dimension: i64 = vec_get(idx, HNSW_DIMENSION());
+    let entry_point: i64 = vec_get(idx, HNSW_ENTRY_POINT());
+    let max_level: i64 = vec_get(idx, HNSW_MAX_LEVEL());
+    let n_nodes: i64 = vec_get(idx, HNSW_N_NODES());
+
+    // Handle empty index
+    if entry_point == -1 {
+        let result = vec_new();
+        vec_push(result, vec_new());
+        vec_push(result, vec_new());
+        vec_push(result, 0);
+        return result;
+    }
+
+    // Phase 1: greedy traverse from top to layer 1
+    var cur_ep: i64 = entry_point;
+    var l: i64 = max_level;
+    while l > 0 {
+        cur_ep = hnsw_greedy_closest(idx, query, cur_ep, l, dimension);
+        l = l - 1;
+    }
+
+    // Phase 2: search at layer 0 with ef_search candidates
+    let candidates: i64 = hnsw_search_layer(idx, query, cur_ep, ef_search, 0, dimension);
+    let n_candidates: i64 = vec_len(candidates);
+
+    // Score all candidates
+    let scored_ids = vec_new();
+    let scored_scores = vec_new();
+    let embeddings: i64 = vec_get(idx, HNSW_EMBEDDINGS());
+
+    var i: i64 = 0;
+    while i < n_candidates {
+        let cand_id: i64 = vec_get(candidates, i);
+        if cand_id >= 0 {
+            if cand_id < n_nodes {
+                let emb: i64 = vec_get(embeddings, cand_id);
+                let sim: i64 = cosine_similarity(query, emb, dimension);
+                vec_push(scored_ids, cand_id);
+                vec_push(scored_scores, sim);
+            }
+        }
+        i = i + 1;
+    }
+
+    // Select top-k by descending score
+    let n_scored: i64 = vec_len(scored_ids);
+    var k: i64 = top_k;
+    if k > n_scored { k = n_scored; }
+
+    let result_ids = vec_new();
+    let result_scores = vec_new();
+
+    var found: i64 = 0;
+    while found < k {
+        var best_j: i64 = -1;
+        var best_score: f64 = -999999.0;
+
+        var j: i64 = 0;
+        while j < n_scored {
+            let s: f64 = bits_to_f64(vec_get(scored_scores, j));
+            if s > best_score {
+                best_score = s;
+                best_j = j;
+            }
+            j = j + 1;
+        }
+
+        if best_j == -1 {
+            found = k;
+        } else {
+            vec_push(result_ids, vec_get(scored_ids, best_j));
+            vec_push(result_scores, vec_get(scored_scores, best_j));
+            vec_set(scored_scores, best_j, f64_to_bits(-1000000.0));
+            found = found + 1;
+        }
+    }
+
+    let result = vec_new();
+    vec_push(result, result_ids);
+    vec_push(result, result_scores);
+    vec_push(result, found);
+    result
+}
+
+// =============================================================================
+// Internal: Greedy Closest at a Layer
+// =============================================================================
+
+/// Starting from ep, greedily move to the closest node at the given layer.
+fn hnsw_greedy_closest(idx: i64, query: i64, ep: i64, layer: i64, dimension: i64) -> i64 {
+    let embeddings: i64 = vec_get(idx, HNSW_EMBEDDINGS());
+    let neighbors: i64 = vec_get(idx, HNSW_NEIGHBORS());
+    let levels: i64 = vec_get(idx, HNSW_LEVELS());
+
+    var current: i64 = ep;
+    let ep_emb: i64 = vec_get(embeddings, ep);
+    var current_dist_bits: i64 = cosine_similarity(query, ep_emb, dimension);
+    var current_dist: f64 = bits_to_f64(current_dist_bits);
+
+    var changed: i64 = 1;
+    while changed == 1 {
+        changed = 0;
+
+        let node_level: i64 = vec_get(levels, current);
+        if layer <= node_level {
+            let cur_neighbors: i64 = vec_get(neighbors, current);
+            let layer_neighbors: i64 = vec_get(cur_neighbors, layer);
+            let n_nb: i64 = vec_len(layer_neighbors);
+
+            var ni: i64 = 0;
+            while ni < n_nb {
+                let nb_id: i64 = vec_get(layer_neighbors, ni);
+                let nb_emb: i64 = vec_get(embeddings, nb_id);
+                let nb_sim: f64 = bits_to_f64(cosine_similarity(query, nb_emb, dimension));
+
+                if nb_sim > current_dist {
+                    current = nb_id;
+                    current_dist = nb_sim;
+                    changed = 1;
+                }
+                ni = ni + 1;
+            }
+        }
+    }
+
+    current
+}
+
+// =============================================================================
+// Internal: Search Layer
+// =============================================================================
+
+/// Search a single layer starting from ep, collecting ef candidates.
+/// Returns vec of candidate node IDs.
+fn hnsw_search_layer(idx: i64, query: i64, ep: i64, ef: i64, layer: i64, dimension: i64) -> i64 {
+    let embeddings: i64 = vec_get(idx, HNSW_EMBEDDINGS());
+    let neighbors: i64 = vec_get(idx, HNSW_NEIGHBORS());
+    let levels: i64 = vec_get(idx, HNSW_LEVELS());
+    let n_nodes: i64 = vec_get(idx, HNSW_N_NODES());
+
+    // visited set (simple: vec of flags, one per node)
+    let visited = vec_new();
+    var vi: i64 = 0;
+    while vi < n_nodes {
+        vec_push(visited, 0);
+        vi = vi + 1;
+    }
+
+    // candidates and result lists (store as parallel id + score vecs)
+    let cand_ids = vec_new();
+    let cand_scores = vec_new();
+    let result_ids = vec_new();
+    let result_scores = vec_new();
+
+    // Initialize with entry point
+    let ep_emb: i64 = vec_get(embeddings, ep);
+    let ep_sim: i64 = cosine_similarity(query, ep_emb, dimension);
+    vec_push(cand_ids, ep);
+    vec_push(cand_scores, ep_sim);
+    vec_push(result_ids, ep);
+    vec_push(result_scores, ep_sim);
+    vec_set(visited, ep, 1);
+
+    var cont: i64 = 1;
+    while cont == 1 {
+        // Find best unprocessed candidate (highest similarity)
+        let n_cand: i64 = vec_len(cand_ids);
+        if n_cand == 0 {
+            cont = 0;
+        } else {
+            // Pop best candidate
+            var best_ci: i64 = -1;
+            var best_sim: f64 = -999999.0;
+            var ci: i64 = 0;
+            while ci < n_cand {
+                let s: f64 = bits_to_f64(vec_get(cand_scores, ci));
+                if s > best_sim {
+                    best_sim = s;
+                    best_ci = ci;
+                }
+                ci = ci + 1;
+            }
+
+            if best_ci == -1 {
+                cont = 0;
+            } else {
+                let best_id: i64 = vec_get(cand_ids, best_ci);
+
+                // Remove from candidates (swap with last)
+                let last_ci: i64 = n_cand - 1;
+                if best_ci != last_ci {
+                    vec_set(cand_ids, best_ci, vec_get(cand_ids, last_ci));
+                    vec_set(cand_scores, best_ci, vec_get(cand_scores, last_ci));
+                }
+                vec_pop(cand_ids);
+                vec_pop(cand_scores);
+
+                // Find worst result
+                let n_result: i64 = vec_len(result_ids);
+                var worst_score: f64 = 999999.0;
+                var worst_ri: i64 = -1;
+                var ri: i64 = 0;
+                while ri < n_result {
+                    let rs: f64 = bits_to_f64(vec_get(result_scores, ri));
+                    if rs < worst_score {
+                        worst_score = rs;
+                        worst_ri = ri;
+                    }
+                    ri = ri + 1;
+                }
+
+                // If best candidate is worse than worst result, stop
+                if best_sim < worst_score {
+                    if n_result >= ef {
+                        cont = 0;
+                    }
+                }
+
+                if cont == 1 {
+                    // Expand neighbors
+                    let node_level: i64 = vec_get(levels, best_id);
+                    if layer <= node_level {
+                        let cur_neighbors: i64 = vec_get(neighbors, best_id);
+                        let layer_neighbors: i64 = vec_get(cur_neighbors, layer);
+                        let n_nb: i64 = vec_len(layer_neighbors);
+
+                        var ni: i64 = 0;
+                        while ni < n_nb {
+                            let nb_id: i64 = vec_get(layer_neighbors, ni);
+                            if nb_id >= 0 {
+                                if nb_id < n_nodes {
+                                    let was_visited: i64 = vec_get(visited, nb_id);
+                                    if was_visited == 0 {
+                                        vec_set(visited, nb_id, 1);
+                                        let nb_emb: i64 = vec_get(embeddings, nb_id);
+                                        let nb_sim: i64 = cosine_similarity(query, nb_emb, dimension);
+                                        let nb_sim_f: f64 = bits_to_f64(nb_sim);
+
+                                        let n_r: i64 = vec_len(result_ids);
+                                        if n_r < ef {
+                                            vec_push(cand_ids, nb_id);
+                                            vec_push(cand_scores, nb_sim);
+                                            vec_push(result_ids, nb_id);
+                                            vec_push(result_scores, nb_sim);
+                                        } else {
+                                            // Check if better than worst result
+                                            if nb_sim_f > worst_score {
+                                                vec_push(cand_ids, nb_id);
+                                                vec_push(cand_scores, nb_sim);
+
+                                                // Replace worst result
+                                                if worst_ri >= 0 {
+                                                    vec_set(result_ids, worst_ri, nb_id);
+                                                    vec_set(result_scores, worst_ri, nb_sim);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            ni = ni + 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    result_ids
+}
+
+// =============================================================================
+// Internal: Select Neighbors Heuristic
+// =============================================================================
+
+/// Select up to max_conn neighbors from candidates.
+/// Simple heuristic: select closest by cosine similarity.
+fn hnsw_select_neighbors(idx: i64, query: i64, candidates: i64, max_conn: i64, dimension: i64) -> i64 {
+    let embeddings: i64 = vec_get(idx, HNSW_EMBEDDINGS());
+    let n_cand: i64 = vec_len(candidates);
+
+    // Score all candidates
+    let scored = vec_new();    // pairs: [id, score_bits, ...]
+    var i: i64 = 0;
+    while i < n_cand {
+        let cand_id: i64 = vec_get(candidates, i);
+        let emb: i64 = vec_get(embeddings, cand_id);
+        let sim: i64 = cosine_similarity(query, emb, dimension);
+        vec_push(scored, cand_id);
+        vec_push(scored, sim);
+        i = i + 1;
+    }
+
+    // Select top max_conn by descending similarity
+    let selected = vec_new();
+    let n_pairs: i64 = vec_len(scored) / 2;
+    var k: i64 = max_conn;
+    if k > n_pairs { k = n_pairs; }
+
+    var found: i64 = 0;
+    while found < k {
+        var best_j: i64 = -1;
+        var best_sim: f64 = -999999.0;
+
+        var j: i64 = 0;
+        while j < n_pairs {
+            let s: f64 = bits_to_f64(vec_get(scored, j * 2 + 1));
+            if s > best_sim {
+                best_sim = s;
+                best_j = j;
+            }
+            j = j + 1;
+        }
+
+        if best_j == -1 {
+            found = k;
+        } else {
+            vec_push(selected, vec_get(scored, best_j * 2));
+            vec_set(scored, best_j * 2 + 1, f64_to_bits(-1000000.0));
+            found = found + 1;
+        }
+    }
+
+    selected
+}
+
+// =============================================================================
+// Internal: Prune Connections
+// =============================================================================
+
+/// Prune a node's connections at a given layer to max_conn.
+/// Keeps the closest neighbors by similarity.
+fn hnsw_prune_connections(idx: i64, node_id: i64, layer: i64, max_conn: i64, dimension: i64) -> i64 {
+    let neighbors: i64 = vec_get(idx, HNSW_NEIGHBORS());
+    let embeddings: i64 = vec_get(idx, HNSW_EMBEDDINGS());
+    let node_emb: i64 = vec_get(embeddings, node_id);
+
+    let node_neighbors: i64 = vec_get(neighbors, node_id);
+    let layer_neighbors: i64 = vec_get(node_neighbors, layer);
+    let n_nb: i64 = vec_len(layer_neighbors);
+
+    if n_nb <= max_conn { return 1; }
+
+    // Score all neighbors
+    let nb_scores = vec_new();
+    var i: i64 = 0;
+    while i < n_nb {
+        let nb_id: i64 = vec_get(layer_neighbors, i);
+        let nb_emb: i64 = vec_get(embeddings, nb_id);
+        let sim: i64 = cosine_similarity(node_emb, nb_emb, dimension);
+        vec_push(nb_scores, sim);
+        i = i + 1;
+    }
+
+    // Build new neighbor list with top max_conn
+    let new_neighbors = vec_new();
+    var found: i64 = 0;
+    while found < max_conn {
+        var best_j: i64 = -1;
+        var best_sim: f64 = -999999.0;
+
+        var j: i64 = 0;
+        while j < n_nb {
+            let s: f64 = bits_to_f64(vec_get(nb_scores, j));
+            if s > best_sim {
+                best_sim = s;
+                best_j = j;
+            }
+            j = j + 1;
+        }
+
+        if best_j == -1 {
+            found = max_conn;
+        } else {
+            vec_push(new_neighbors, vec_get(layer_neighbors, best_j));
+            vec_set(nb_scores, best_j, f64_to_bits(-1000000.0));
+            found = found + 1;
+        }
+    }
+
+    // Replace layer neighbors
+    vec_set(node_neighbors, layer, new_neighbors);
+    1
+}
+
+// =============================================================================
+// Internal: Approximate Natural Logarithm
+// =============================================================================
+
+/// Approximate ln(x) using a series expansion.
+/// Valid for x > 0. Uses ln(x) = 2 * atanh((x-1)/(x+1)) approximation.
+fn hnsw_approx_ln(x: f64) -> f64 {
+    if x <= 0.0 { return -999999.0; }
+    if x < 0.001 { return -999999.0; }
+
+    // Reduce to range [1, 2) by counting powers of 2
+    var reduced: f64 = x;
+    var n_halves: i64 = 0;
+    while reduced > 2.0 {
+        reduced = reduced / 2.0;
+        n_halves = n_halves + 1;
+    }
+    while reduced < 1.0 {
+        reduced = reduced * 2.0;
+        n_halves = n_halves - 1;
+    }
+
+    // ln(reduced) using Taylor series around 1
+    // ln(1+u) = u - u^2/2 + u^3/3 - u^4/4 + ...
+    let u: f64 = reduced - 1.0;
+    var result: f64 = u;
+    var u_pow: f64 = u * u;
+    result = result - u_pow / 2.0;
+    u_pow = u_pow * u;
+    result = result + u_pow / 3.0;
+    u_pow = u_pow * u;
+    result = result - u_pow / 4.0;
+    u_pow = u_pow * u;
+    result = result + u_pow / 5.0;
+    u_pow = u_pow * u;
+    result = result - u_pow / 6.0;
+
+    // ln(x) = ln(reduced) + n_halves * ln(2)
+    let ln2: f64 = 0.6931471805599453;
+    let n_f: f64 = 0.0 + n_halves;
+    result = result + n_f * ln2;
+
+    result
+}
+
+// =============================================================================
+// HNSW Node Count
+// =============================================================================
+
+/// Get the number of nodes in the HNSW index.
+fn hnsw_node_count(idx: i64) -> i64 {
+    vec_get(idx, HNSW_N_NODES())
+}
+
+/// Get the maximum level in the HNSW index.
+fn hnsw_max_level(idx: i64) -> i64 {
+    vec_get(idx, HNSW_MAX_LEVEL())
+}

@@ -1,0 +1,349 @@
+// simplex-prometheus::exposition - Prometheus Text Exposition Format
+//
+// Generates the standard Prometheus text exposition format from a registry.
+// Output follows the Prometheus exposition format specification:
+//
+//   # HELP metric_name Help text here
+//   # TYPE metric_name counter
+//   metric_name{label="value"} 42
+//
+// See: https://prometheus.io/docs/instrumenting/exposition_formats/
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+// =============================================================================
+// Type Name Helpers
+// =============================================================================
+
+/// Get the Prometheus type name for a metric type tag.
+///
+/// # Arguments
+/// - `type_tag`: Metric type (1=counter, 2=gauge, 3=histogram)
+///
+/// # Returns
+/// Type name string handle ("counter", "gauge", "histogram")
+fn metric_type_name(type_tag: i64) -> i64 {
+    if type_tag == 1 {
+        return "counter";
+    }
+    if type_tag == 2 {
+        return "gauge";
+    }
+    if type_tag == 3 {
+        return "histogram";
+    }
+    "unknown"
+}
+
+// =============================================================================
+// Label Formatting
+// =============================================================================
+
+/// Format labels as Prometheus label string.
+///
+/// Input: flat vec [key1, val1, key2, val2, ...]
+/// Output: string like {key1="val1",key2="val2"} or empty string if no labels
+///
+/// # Arguments
+/// - `labels`: Labels flat vec handle
+///
+/// # Returns
+/// Formatted label string handle, or empty string handle
+fn format_labels(labels: i64) -> i64 {
+    let n: i64 = vec_len(labels);
+    if n == 0 {
+        return "";
+    }
+
+    let result: i64 = "{";
+    let i: i64 = 0;
+    let first: i64 = 1;
+    loop {
+        if i >= n {
+            break;
+        }
+        let key: i64 = vec_get(labels, i);
+        let val: i64 = vec_get(labels, i + 1);
+
+        if first == 0 {
+            let result: i64 = string_concat(result, ",");
+        }
+
+        let result: i64 = string_concat(result, key);
+        let result: i64 = string_concat(result, "=\"");
+        let result: i64 = string_concat(result, val);
+        let result: i64 = string_concat(result, "\"");
+
+        let first: i64 = 0;
+        let i: i64 = i + 2;
+    }
+
+    let result: i64 = string_concat(result, "}");
+    result
+}
+
+/// Format labels with an additional label pair appended.
+///
+/// Used by histogram bucket exposition to add the "le" label.
+///
+/// # Arguments
+/// - `labels`: Existing labels flat vec
+/// - `extra_key`: Additional label key (string handle)
+/// - `extra_val`: Additional label value (string handle)
+///
+/// # Returns
+/// Formatted label string with extra label included
+fn format_labels_with_extra(labels: i64, extra_key: i64, extra_val: i64) -> i64 {
+    let n: i64 = vec_len(labels);
+
+    let result: i64 = "{";
+    let i: i64 = 0;
+    let first: i64 = 1;
+    loop {
+        if i >= n {
+            break;
+        }
+        let key: i64 = vec_get(labels, i);
+        let val: i64 = vec_get(labels, i + 1);
+
+        if first == 0 {
+            let result: i64 = string_concat(result, ",");
+        }
+
+        let result: i64 = string_concat(result, key);
+        let result: i64 = string_concat(result, "=\"");
+        let result: i64 = string_concat(result, val);
+        let result: i64 = string_concat(result, "\"");
+
+        let first: i64 = 0;
+        let i: i64 = i + 2;
+    }
+
+    // Add the extra label
+    if first == 0 {
+        let result: i64 = string_concat(result, ",");
+    }
+    let result: i64 = string_concat(result, extra_key);
+    let result: i64 = string_concat(result, "=\"");
+    let result: i64 = string_concat(result, extra_val);
+    let result: i64 = string_concat(result, "\"");
+
+    let result: i64 = string_concat(result, "}");
+    result
+}
+
+// =============================================================================
+// Single Metric Exposition
+// =============================================================================
+
+/// Export a single counter metric to Prometheus text format.
+///
+/// # Arguments
+/// - `metric`: Counter vec handle
+///
+/// # Returns
+/// String handle with the counter exposition text
+fn export_counter(metric: i64) -> i64 {
+    let name: i64 = vec_get(metric, 1);
+    let help: i64 = vec_get(metric, 2);
+    let labels: i64 = vec_get(metric, 3);
+    let value: i64 = vec_get(metric, 4);
+
+    let out: i64 = "# HELP ";
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, help);
+    let out: i64 = string_concat(out, "\n# TYPE ");
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, " counter\n");
+    let out: i64 = string_concat(out, name);
+
+    let label_str: i64 = format_labels(labels);
+    let out: i64 = string_concat(out, label_str);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, i64_to_string(value));
+    let out: i64 = string_concat(out, "\n");
+    out
+}
+
+/// Export a single gauge metric to Prometheus text format.
+///
+/// # Arguments
+/// - `metric`: Gauge vec handle
+///
+/// # Returns
+/// String handle with the gauge exposition text
+fn export_gauge(metric: i64) -> i64 {
+    let name: i64 = vec_get(metric, 1);
+    let help: i64 = vec_get(metric, 2);
+    let labels: i64 = vec_get(metric, 3);
+    let value: i64 = vec_get(metric, 4);
+
+    let out: i64 = "# HELP ";
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, help);
+    let out: i64 = string_concat(out, "\n# TYPE ");
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, " gauge\n");
+    let out: i64 = string_concat(out, name);
+
+    let label_str: i64 = format_labels(labels);
+    let out: i64 = string_concat(out, label_str);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, i64_to_string(value));
+    let out: i64 = string_concat(out, "\n");
+    out
+}
+
+/// Export a single histogram metric to Prometheus text format.
+///
+/// Outputs HELP, TYPE, bucket lines, _sum, and _count.
+///
+/// # Arguments
+/// - `metric`: Histogram vec handle
+///
+/// # Returns
+/// String handle with the histogram exposition text
+fn export_histogram(metric: i64) -> i64 {
+    let name: i64 = vec_get(metric, 1);
+    let help: i64 = vec_get(metric, 2);
+    let labels: i64 = vec_get(metric, 3);
+    let sum: i64 = vec_get(metric, 4);
+    let count: i64 = vec_get(metric, 5);
+    let bounds: i64 = vec_get(metric, 6);
+    let counts: i64 = vec_get(metric, 7);
+
+    // HELP and TYPE lines
+    let out: i64 = "# HELP ";
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, help);
+    let out: i64 = string_concat(out, "\n# TYPE ");
+    let out: i64 = string_concat(out, name);
+    let out: i64 = string_concat(out, " histogram\n");
+
+    // Bucket lines
+    let n_buckets: i64 = vec_len(bounds);
+    let bucket_name: i64 = string_concat(name, "_bucket");
+    let i: i64 = 0;
+    loop {
+        if i >= n_buckets {
+            break;
+        }
+        let bound: i64 = vec_get(bounds, i);
+        let bcount: i64 = vec_get(counts, i);
+
+        let le_val: i64 = i64_to_string(bound);
+        let label_str: i64 = format_labels_with_extra(labels, "le", le_val);
+
+        let out: i64 = string_concat(out, bucket_name);
+        let out: i64 = string_concat(out, label_str);
+        let out: i64 = string_concat(out, " ");
+        let out: i64 = string_concat(out, i64_to_string(bcount));
+        let out: i64 = string_concat(out, "\n");
+
+        let i: i64 = i + 1;
+    }
+
+    // +Inf bucket (always equals total count)
+    let inf_label: i64 = format_labels_with_extra(labels, "le", "+Inf");
+    let out: i64 = string_concat(out, bucket_name);
+    let out: i64 = string_concat(out, inf_label);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, i64_to_string(count));
+    let out: i64 = string_concat(out, "\n");
+
+    // _sum line
+    let sum_name: i64 = string_concat(name, "_sum");
+    let label_str: i64 = format_labels(labels);
+    let out: i64 = string_concat(out, sum_name);
+    let out: i64 = string_concat(out, label_str);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, i64_to_string(sum));
+    let out: i64 = string_concat(out, "\n");
+
+    // _count line
+    let count_name: i64 = string_concat(name, "_count");
+    let out: i64 = string_concat(out, count_name);
+    let out: i64 = string_concat(out, label_str);
+    let out: i64 = string_concat(out, " ");
+    let out: i64 = string_concat(out, i64_to_string(count));
+    let out: i64 = string_concat(out, "\n");
+
+    out
+}
+
+// =============================================================================
+// Full Registry Export
+// =============================================================================
+
+/// Export all metrics in a registry to Prometheus text exposition format.
+///
+/// Iterates over all registered metrics and generates the standard
+/// Prometheus text format output.
+///
+/// # Arguments
+/// - `reg`: Registry vec handle
+///
+/// # Returns
+/// String handle containing the full exposition text
+pub fn prom_export(reg: i64) -> i64 {
+    let out: i64 = "";
+    let n: i64 = vec_len(reg);
+    let i: i64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        let metric: i64 = vec_get(reg, i);
+        if metric != 0 {
+            let mtype: i64 = vec_get(metric, 0);
+            if mtype == 1 {
+                let text: i64 = export_counter(metric);
+                let out: i64 = string_concat(out, text);
+            }
+            if mtype == 2 {
+                let text: i64 = export_gauge(metric);
+                let out: i64 = string_concat(out, text);
+            }
+            if mtype == 3 {
+                let text: i64 = export_histogram(metric);
+                let out: i64 = string_concat(out, text);
+            }
+        }
+        let i: i64 = i + 1;
+    }
+    out
+}
+
+/// Export a single metric to Prometheus text format.
+///
+/// # Arguments
+/// - `metric`: Metric vec handle (counter, gauge, or histogram)
+///
+/// # Returns
+/// String handle containing the metric exposition text
+pub fn prom_export_metric(metric: i64) -> i64 {
+    let mtype: i64 = vec_get(metric, 0);
+    if mtype == 1 {
+        return export_counter(metric);
+    }
+    if mtype == 2 {
+        return export_gauge(metric);
+    }
+    if mtype == 3 {
+        return export_histogram(metric);
+    }
+    ""
+}

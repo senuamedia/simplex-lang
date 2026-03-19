@@ -1,0 +1,338 @@
+// simplex-rag::chunker - Text Chunking Strategies
+//
+// Splits text into chunks for embedding and retrieval.
+// Three strategies:
+//   - Fixed-size chunks with configurable overlap
+//   - Sentence-based splitting (on . ! ?)
+//   - Paragraph-based splitting (on double newlines)
+//
+// All text is handled as i64 string handles.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Fixed-Size Chunking
+// =============================================================================
+
+/// Split text into fixed-size chunks with overlap.
+///
+/// Arguments:
+///   text       - text content (string handle)
+///   chunk_size - maximum characters per chunk
+///   overlap    - number of overlapping characters between chunks
+///
+/// Returns: handle to vec of chunk string handles
+fn chunk_fixed(text: i64, chunk_size: i64, overlap: i64) -> i64 {
+    let chunks = vec_new();
+    let text_len: i64 = string_len(text);
+
+    if text_len == 0 { return chunks; }
+    if chunk_size <= 0 { return chunks; }
+
+    // Ensure overlap is less than chunk_size
+    var eff_overlap: i64 = overlap;
+    if eff_overlap >= chunk_size { eff_overlap = chunk_size / 2; }
+    if eff_overlap < 0 { eff_overlap = 0; }
+
+    let step: i64 = chunk_size - eff_overlap;
+    if step <= 0 { return chunks; }
+
+    var start: i64 = 0;
+    while start < text_len {
+        var end: i64 = start + chunk_size;
+        if end > text_len { end = text_len; }
+
+        // Extract substring by building it character by character
+        let chunk: i64 = extract_substring(text, start, end);
+        vec_push(chunks, chunk);
+
+        start = start + step;
+    }
+
+    chunks
+}
+
+// =============================================================================
+// Sentence-Based Chunking
+// =============================================================================
+
+/// Split text into sentence-based chunks.
+///
+/// Splits on sentence terminators: period (.), exclamation (!), question (?).
+/// Preserves the terminator at the end of each chunk.
+///
+/// Arguments:
+///   text - text content (string handle)
+///
+/// Returns: handle to vec of chunk string handles
+fn chunk_sentence(text: i64) -> i64 {
+    let chunks = vec_new();
+    let text_len: i64 = string_len(text);
+
+    if text_len == 0 { return chunks; }
+
+    var start: i64 = 0;
+    var i: i64 = 0;
+
+    while i < text_len {
+        let ch: i64 = string_char_at(text, i);
+
+        // Check for sentence terminators: . (46), ! (33), ? (63)
+        let is_terminator: i64 = 0;
+        if ch == 46 { is_terminator = 1; }
+        if ch == 33 { is_terminator = 1; }
+        if ch == 63 { is_terminator = 1; }
+
+        if is_terminator == 1 {
+            // Include the terminator
+            let end: i64 = i + 1;
+
+            // Skip trailing whitespace
+            var ws_end: i64 = end;
+            while ws_end < text_len {
+                let ws_ch: i64 = string_char_at(text, ws_end);
+                if ws_ch == 32 { ws_end = ws_end + 1; }   // space
+                else if ws_ch == 10 { ws_end = ws_end + 1; }  // newline
+                else if ws_ch == 13 { ws_end = ws_end + 1; }  // carriage return
+                else if ws_ch == 9 { ws_end = ws_end + 1; }   // tab
+                else { ws_end = text_len + 1; }  // break
+            }
+
+            let chunk: i64 = extract_substring(text, start, end);
+            let chunk_len: i64 = string_len(chunk);
+            if chunk_len > 0 {
+                // Skip leading whitespace from chunk
+                let trimmed: i64 = trim_leading_whitespace(chunk);
+                let trimmed_len: i64 = string_len(trimmed);
+                if trimmed_len > 0 {
+                    vec_push(chunks, trimmed);
+                }
+            }
+
+            if ws_end <= text_len {
+                start = ws_end;
+            } else {
+                start = end;
+                // Skip whitespace after terminator
+                while start < text_len {
+                    let skip_ch: i64 = string_char_at(text, start);
+                    if skip_ch == 32 { start = start + 1; }
+                    else if skip_ch == 10 { start = start + 1; }
+                    else if skip_ch == 13 { start = start + 1; }
+                    else if skip_ch == 9 { start = start + 1; }
+                    else { start = text_len + 1; }  // break inner while
+                }
+                if start > text_len { start = i + 1; }
+                // re-scan from after whitespace
+                while start < text_len {
+                    let sc: i64 = string_char_at(text, start);
+                    if sc == 32 { start = start + 1; }
+                    else if sc == 10 { start = start + 1; }
+                    else { start = text_len + 1; }
+                }
+                if start > text_len { start = end; }
+            }
+
+            // Simplify: just advance start past whitespace after terminator
+            start = i + 1;
+            while start < text_len {
+                let sc2: i64 = string_char_at(text, start);
+                if sc2 == 32 { start = start + 1; }
+                else if sc2 == 10 { start = start + 1; }
+                else if sc2 == 13 { start = start + 1; }
+                else if sc2 == 9 { start = start + 1; }
+                else {
+                    i = start - 1;  // will be incremented
+                    start = text_len + 1;  // break
+                }
+            }
+            if start <= text_len { i = start - 1; }
+        }
+
+        i = i + 1;
+    }
+
+    // Handle remaining text after last terminator
+    if start < text_len {
+        let remaining: i64 = extract_substring(text, start, text_len);
+        let remaining_trimmed: i64 = trim_leading_whitespace(remaining);
+        let rem_len: i64 = string_len(remaining_trimmed);
+        if rem_len > 0 {
+            vec_push(chunks, remaining_trimmed);
+        }
+    }
+
+    chunks
+}
+
+// =============================================================================
+// Paragraph-Based Chunking
+// =============================================================================
+
+/// Split text into paragraph-based chunks.
+///
+/// Splits on double newlines (\n\n). Each paragraph becomes a chunk.
+///
+/// Arguments:
+///   text - text content (string handle)
+///
+/// Returns: handle to vec of chunk string handles
+fn chunk_paragraph(text: i64) -> i64 {
+    let chunks = vec_new();
+    let text_len: i64 = string_len(text);
+
+    if text_len == 0 { return chunks; }
+
+    var start: i64 = 0;
+    var i: i64 = 0;
+
+    while i < text_len - 1 {
+        let ch: i64 = string_char_at(text, i);
+        let next_ch: i64 = string_char_at(text, i + 1);
+
+        // Check for double newline (10 = '\n')
+        if ch == 10 {
+            if next_ch == 10 {
+                // Found paragraph break
+                if i > start {
+                    let chunk: i64 = extract_substring(text, start, i);
+                    let trimmed: i64 = trim_leading_whitespace(chunk);
+                    let t_len: i64 = string_len(trimmed);
+                    if t_len > 0 {
+                        vec_push(chunks, trimmed);
+                    }
+                }
+
+                // Skip consecutive newlines
+                var skip: i64 = i + 2;
+                while skip < text_len {
+                    let skip_ch: i64 = string_char_at(text, skip);
+                    if skip_ch == 10 { skip = skip + 1; }
+                    else if skip_ch == 13 { skip = skip + 1; }
+                    else if skip_ch == 32 { skip = skip + 1; }
+                    else {
+                        skip = text_len + 1;  // break
+                    }
+                }
+                if skip > text_len { skip = i + 2; }
+                // re-find actual next non-ws
+                skip = i + 2;
+                while skip < text_len {
+                    let sc: i64 = string_char_at(text, skip);
+                    if sc == 10 { skip = skip + 1; }
+                    else if sc == 13 { skip = skip + 1; }
+                    else { i = skip - 1; skip = text_len + 1; }
+                }
+                if skip <= text_len { i = skip - 1; }
+                start = i + 1;
+            }
+        }
+
+        i = i + 1;
+    }
+
+    // Handle remaining text
+    if start < text_len {
+        let remaining: i64 = extract_substring(text, start, text_len);
+        let remaining_trimmed: i64 = trim_leading_whitespace(remaining);
+        let rem_len: i64 = string_len(remaining_trimmed);
+        if rem_len > 0 {
+            vec_push(chunks, remaining_trimmed);
+        }
+    }
+
+    chunks
+}
+
+// =============================================================================
+// Helper: Extract Substring
+// =============================================================================
+
+/// Extract a substring from start (inclusive) to end (exclusive).
+///
+/// Builds the substring character by character using string_char_at.
+///
+/// Arguments:
+///   text  - source string handle
+///   start - start index (inclusive)
+///   end   - end index (exclusive)
+///
+/// Returns: string handle for the substring
+fn extract_substring(text: i64, start: i64, end: i64) -> i64 {
+    let result: i64 = string_from("");
+    var i: i64 = start;
+    while i < end {
+        let ch: i64 = string_char_at(text, i);
+        // Convert char code to single-character string and concat
+        let ch_str: i64 = char_to_string(ch);
+        result = string_concat(result, ch_str);
+        i = i + 1;
+    }
+    result
+}
+
+/// Convert a character code to a single-character string.
+/// This relies on the runtime providing char_to_string or equivalent.
+fn char_to_string(ch: i64) -> i64 {
+    // Build a vec with one byte and convert to string
+    // Use i64_to_string for printable ASCII as a fallback
+    // The runtime handles char -> string conversion
+    let v = vec_new();
+    vec_push(v, ch);
+    vec_to_string(v)
+}
+
+/// Convert a vec of char codes to a string.
+extern fn vec_to_string(v: i64) -> i64;
+
+// =============================================================================
+// Helper: Trim Leading Whitespace
+// =============================================================================
+
+/// Trim leading whitespace from a string.
+fn trim_leading_whitespace(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    var start: i64 = 0;
+
+    while start < len {
+        let ch: i64 = string_char_at(s, start);
+        if ch == 32 { start = start + 1; }        // space
+        else if ch == 10 { start = start + 1; }    // newline
+        else if ch == 13 { start = start + 1; }    // carriage return
+        else if ch == 9 { start = start + 1; }     // tab
+        else { start = len + 1; }                   // break
+    }
+
+    if start > len { start = 0; }
+    // re-find first non-ws
+    var first_non_ws: i64 = 0;
+    while first_non_ws < len {
+        let c: i64 = string_char_at(s, first_non_ws);
+        if c == 32 { first_non_ws = first_non_ws + 1; }
+        else if c == 10 { first_non_ws = first_non_ws + 1; }
+        else if c == 13 { first_non_ws = first_non_ws + 1; }
+        else if c == 9 { first_non_ws = first_non_ws + 1; }
+        else {
+            // found it
+            return extract_substring(s, first_non_ws, len);
+        }
+    }
+
+    // All whitespace
+    string_from("")
+}
+
+// =============================================================================
+// Chunk Metadata
+// =============================================================================
+
+/// Get the number of chunks in a chunk list.
+fn chunk_count(chunks: i64) -> i64 {
+    vec_len(chunks)
+}
+
+/// Get a specific chunk by index.
+fn chunk_at(chunks: i64, idx: i64) -> i64 {
+    vec_get(chunks, idx)
+}

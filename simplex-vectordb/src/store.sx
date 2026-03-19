@@ -1,0 +1,282 @@
+// simplex-vectordb::store - Vector Store
+//
+// Core vector store operations: create, insert, search, delete, count.
+// Stores are represented as i64 handles to runtime-managed vec objects.
+//
+// Store layout (vec of i64):
+//   [0] name            - string handle
+//   [1] dimension       - i64, embedding dimension
+//   [2] n_vectors       - i64, current count
+//   [3] ids_vec         - handle to vec of vector IDs
+//   [4] embeddings_vec  - handle to vec of embedding vecs (each is vec of f64_to_bits)
+//   [5] metadata_vec    - handle to vec of metadata handles
+//   [6] index_handle    - handle to index structure (0 if none)
+//   [7] index_type      - INDEX_FLAT or INDEX_HNSW
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Store Creation
+// =============================================================================
+
+/// Create a new vector store.
+///
+/// Arguments:
+///   name      - string handle for store name
+///   dimension - embedding dimension (number of f64 values per vector)
+///
+/// Returns: handle (i64) to the store vec
+fn vdb_create(name: i64, dimension: i64) -> i64 {
+    let store = vec_new();
+    vec_push(store, name);           // [0] name
+    vec_push(store, dimension);      // [1] dimension
+    vec_push(store, 0);              // [2] n_vectors
+    vec_push(store, vec_new());      // [3] ids_vec
+    vec_push(store, vec_new());      // [4] embeddings_vec
+    vec_push(store, vec_new());      // [5] metadata_vec
+    vec_push(store, 0);              // [6] index_handle
+    vec_push(store, INDEX_FLAT());   // [7] index_type (default flat)
+    store
+}
+
+// =============================================================================
+// Store Insertion
+// =============================================================================
+
+/// Insert a vector into the store.
+///
+/// Arguments:
+///   store         - store handle
+///   id            - unique vector ID
+///   embedding_vec - handle to vec of f64_to_bits values (length must == dimension)
+///   metadata      - metadata handle (0 for none)
+///
+/// Returns: 1 on success, 0 on failure (dimension mismatch)
+fn vdb_insert(store: i64, id: i64, embedding_vec: i64, metadata: i64) -> i64 {
+    let dimension: i64 = vec_get(store, STORE_DIMENSION());
+    let emb_len: i64 = vec_len(embedding_vec);
+
+    // Validate dimension
+    if emb_len != dimension {
+        return 0;
+    }
+
+    // Copy embedding to a new vec for isolation
+    let emb_copy = vec_new();
+    var i: i64 = 0;
+    while i < emb_len {
+        vec_push(emb_copy, vec_get(embedding_vec, i));
+        i = i + 1;
+    }
+
+    // Append to storage
+    let ids: i64 = vec_get(store, STORE_IDS());
+    vec_push(ids, id);
+
+    let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+    vec_push(embeddings, emb_copy);
+
+    let metadata_vec: i64 = vec_get(store, STORE_METADATA());
+    vec_push(metadata_vec, metadata);
+
+    // Update count
+    let old_count: i64 = vec_get(store, STORE_N_VECTORS());
+    vec_set(store, STORE_N_VECTORS(), old_count + 1);
+
+    // If HNSW index exists, insert into it
+    let idx_type: i64 = vec_get(store, STORE_INDEX_TYPE());
+    let idx_handle: i64 = vec_get(store, STORE_INDEX());
+    if idx_type == INDEX_HNSW() {
+        if idx_handle != 0 {
+            hnsw_insert(idx_handle, old_count, emb_copy);
+        }
+    }
+
+    1
+}
+
+// =============================================================================
+// Store Search
+// =============================================================================
+
+/// Search the store for the top-k nearest neighbors to a query vector.
+///
+/// Arguments:
+///   store     - store handle
+///   query_vec - handle to vec of f64_to_bits values (query embedding)
+///   top_k     - number of results to return
+///
+/// Returns: handle to result vec [ids_vec, scores_vec, count]
+fn vdb_search(store: i64, query_vec: i64, top_k: i64) -> i64 {
+    let idx_type: i64 = vec_get(store, STORE_INDEX_TYPE());
+    let idx_handle: i64 = vec_get(store, STORE_INDEX());
+
+    if idx_type == INDEX_HNSW() {
+        if idx_handle != 0 {
+            return hnsw_search(idx_handle, query_vec, 64, top_k);
+        }
+    }
+
+    // Default to flat search
+    flat_search(store, query_vec, top_k)
+}
+
+// =============================================================================
+// Store Deletion
+// =============================================================================
+
+/// Delete a vector from the store by ID.
+///
+/// This performs a linear scan to find and remove the vector.
+/// Does not compact the underlying arrays (marks as deleted).
+///
+/// Arguments:
+///   store - store handle
+///   id    - vector ID to delete
+///
+/// Returns: 1 if deleted, 0 if not found
+fn vdb_delete(store: i64, id: i64) -> i64 {
+    let ids: i64 = vec_get(store, STORE_IDS());
+    let n: i64 = vec_get(store, STORE_N_VECTORS());
+
+    var i: i64 = 0;
+    while i < n {
+        let cur_id: i64 = vec_get(ids, i);
+        if cur_id == id {
+            // Mark as deleted by setting ID to -1
+            vec_set(ids, i, -1);
+
+            // Clear the embedding vec
+            let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+            vec_set(embeddings, i, 0);
+
+            // Clear metadata
+            let metadata_vec: i64 = vec_get(store, STORE_METADATA());
+            vec_set(metadata_vec, i, 0);
+
+            // Decrement count
+            let old_count: i64 = vec_get(store, STORE_N_VECTORS());
+            vec_set(store, STORE_N_VECTORS(), old_count - 1);
+
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Store Count
+// =============================================================================
+
+/// Get the number of vectors in the store.
+///
+/// Arguments:
+///   store - store handle
+///
+/// Returns: number of active vectors
+fn vdb_count(store: i64) -> i64 {
+    vec_get(store, STORE_N_VECTORS())
+}
+
+// =============================================================================
+// Store Accessors
+// =============================================================================
+
+/// Get the dimension of vectors in the store.
+fn vdb_dimension(store: i64) -> i64 {
+    vec_get(store, STORE_DIMENSION())
+}
+
+/// Get the name of the store.
+fn vdb_name(store: i64) -> i64 {
+    vec_get(store, STORE_NAME())
+}
+
+/// Get the embedding vec for a given internal index.
+/// Returns 0 if index is out of bounds or vector is deleted.
+fn vdb_get_embedding(store: i64, idx: i64) -> i64 {
+    let ids: i64 = vec_get(store, STORE_IDS());
+    let n: i64 = vec_len(ids);
+    if idx < 0 { return 0; }
+    if idx >= n { return 0; }
+
+    let id: i64 = vec_get(ids, idx);
+    if id == -1 { return 0; }  // deleted
+
+    let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+    vec_get(embeddings, idx)
+}
+
+/// Get the ID at a given internal index.
+fn vdb_get_id(store: i64, idx: i64) -> i64 {
+    let ids: i64 = vec_get(store, STORE_IDS());
+    vec_get(ids, idx)
+}
+
+/// Get the metadata at a given internal index.
+fn vdb_get_metadata(store: i64, idx: i64) -> i64 {
+    let metadata_vec: i64 = vec_get(store, STORE_METADATA());
+    vec_get(metadata_vec, idx)
+}
+
+// =============================================================================
+// Index Configuration
+// =============================================================================
+
+/// Set the index type for the store.
+/// Must be called before inserting vectors for HNSW to take effect.
+///
+/// Arguments:
+///   store      - store handle
+///   index_type - INDEX_FLAT or INDEX_HNSW
+///
+/// Returns: 1 on success
+fn vdb_set_index_type(store: i64, index_type: i64) -> i64 {
+    vec_set(store, STORE_INDEX_TYPE(), index_type);
+    1
+}
+
+/// Build an HNSW index for the store from existing vectors.
+///
+/// Arguments:
+///   store          - store handle
+///   m              - max connections per node (16 typical)
+///   ef_construction - size of dynamic candidate list (200 typical)
+///
+/// Returns: 1 on success
+fn vdb_build_hnsw(store: i64, m: i64, ef_construction: i64) -> i64 {
+    let dimension: i64 = vec_get(store, STORE_DIMENSION());
+    let idx: i64 = hnsw_new(m, ef_construction, dimension);
+
+    // Insert all existing vectors
+    let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+    let ids: i64 = vec_get(store, STORE_IDS());
+    let n: i64 = vec_len(ids);
+
+    var i: i64 = 0;
+    while i < n {
+        let id: i64 = vec_get(ids, i);
+        if id != -1 {
+            let emb: i64 = vec_get(embeddings, i);
+            hnsw_insert(idx, i, emb);
+        }
+        i = i + 1;
+    }
+
+    vec_set(store, STORE_INDEX(), idx);
+    vec_set(store, STORE_INDEX_TYPE(), INDEX_HNSW());
+    1
+}
+
+// =============================================================================
+// Internal: total entries including deleted
+// =============================================================================
+
+/// Get total slot count (including deleted entries).
+fn vdb_total_slots(store: i64) -> i64 {
+    let ids: i64 = vec_get(store, STORE_IDS());
+    vec_len(ids)
+}

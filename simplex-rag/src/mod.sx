@@ -1,0 +1,88 @@
+// simplex-rag - Retrieval-Augmented Generation for Simplex
+//
+// A complete RAG pipeline for hive intelligence, providing document ingestion,
+// chunking, embedding, vector search, and context assembly.
+//
+// # Modules
+//
+// - `pipeline`:  RAG pipeline creation, document ingestion, query processing
+// - `chunker`:   Text chunking strategies (fixed, sentence, paragraph)
+// - `context`:   Context building from retrieved chunks
+// - `embed`:     Simple character n-gram hash embeddings (no SLM required)
+//
+// # Data Model
+//
+// All data is stored as i64 handles to runtime-managed vec objects.
+// Embeddings are vecs of f64_to_bits values.
+//
+// # Example
+//
+// ```simplex
+// let pipe = rag_create(64);
+// rag_ingest(pipe, "The quick brown fox jumps over the lazy dog.", "source1");
+// let result = rag_query(pipe, "What does the fox do?", 3);
+// let context = build_context(result, 512);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_push(v: i64, value: i64) -> i64;
+extern fn vec_pop(v: i64) -> i64;
+extern fn vec_get(v: i64, index: i64) -> i64;
+extern fn vec_set(v: i64, index: i64, value: i64) -> i64;
+
+extern fn string_from(s: &str) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_len(s: i64) -> i64;
+extern fn string_cmp(a: i64, b: i64) -> i64;
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+
+extern fn i64_to_string(n: i64) -> i64;
+
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+
+// =============================================================================
+// f64 bit conversion helpers
+// =============================================================================
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }
+
+// =============================================================================
+// Pipeline Field Offsets
+// =============================================================================
+
+fn PIPE_DIMENSION() -> i64      { 0 }
+fn PIPE_STORE() -> i64          { 1 }
+fn PIPE_CHUNKS() -> i64         { 2 }
+fn PIPE_SOURCES() -> i64        { 3 }
+fn PIPE_CHUNK_SIZE() -> i64     { 4 }
+fn PIPE_CHUNK_OVERLAP() -> i64  { 5 }
+fn PIPE_NEXT_ID() -> i64        { 6 }
+fn PIPE_FIELDS() -> i64         { 7 }
+
+// =============================================================================
+// Chunk Strategy Constants
+// =============================================================================
+
+fn CHUNK_FIXED() -> i64      { 1 }
+fn CHUNK_SENTENCE() -> i64   { 2 }
+fn CHUNK_PARAGRAPH() -> i64  { 3 }
+
+// =============================================================================
+// Query Result Field Offsets
+// =============================================================================
+
+fn QRESULT_CHUNKS() -> i64   { 0 }
+fn QRESULT_SCORES() -> i64   { 1 }
+fn QRESULT_SOURCES() -> i64  { 2 }
+fn QRESULT_COUNT() -> i64    { 3 }

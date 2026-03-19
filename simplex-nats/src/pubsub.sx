@@ -1,0 +1,456 @@
+// simplex-nats/pubsub - NATS Publish/Subscribe
+//
+// High-level publish, subscribe, and request/reply operations.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn tcp_send(conn: i64, data: i64) -> i64;
+extern fn tcp_recv(conn: i64, max_len: i64) -> i64;
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, byte: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_slice(v: i64, start: i64, end: i64) -> i64;
+extern fn string_to_bytes(s: i64) -> i64;
+extern fn bytes_to_string(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn random_bytes(count: i64) -> i64;
+
+// =============================================================================
+// Connection Accessor (from connection.sx)
+// =============================================================================
+
+/// Extract TCP handle from connection descriptor
+fn pubsub_conn_tcp(conn: i64) -> i64 {
+    conn % 4294967296
+}
+
+/// Extract next SID from connection descriptor
+fn pubsub_conn_next_sid(conn: i64) -> i64 {
+    (conn / 17179869184) % 16384
+}
+
+// =============================================================================
+// Publish
+// =============================================================================
+
+/// Publish a message to a subject.
+///
+/// # Arguments
+/// * `conn`    - NATS connection descriptor
+/// * `subject` - Subject string
+/// * `payload` - Message payload string
+///
+/// # Returns
+/// Bytes sent, or 0 on error
+fn nats_publish(conn: i64, subject: i64, payload: i64) -> i64 {
+    let tcp: i64 = pubsub_conn_tcp(conn);
+
+    let payload_bytes: i64 = string_to_bytes(payload);
+    let payload_len: i64 = vec_len(payload_bytes);
+    let len_str: i64 = i64_to_string(payload_len);
+
+    let msg: i64 = "PUB ";
+    let msg: i64 = string_concat(msg, subject);
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, len_str);
+    let msg: i64 = string_concat(msg, "\r\n");
+    let msg: i64 = string_concat(msg, payload);
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    let msg_bytes: i64 = string_to_bytes(msg);
+    tcp_send(tcp, msg_bytes)
+}
+
+/// Publish with a reply-to subject (for request/reply pattern).
+fn nats_publish_request(conn: i64, subject: i64, reply_to: i64, payload: i64) -> i64 {
+    let tcp: i64 = pubsub_conn_tcp(conn);
+
+    let payload_bytes: i64 = string_to_bytes(payload);
+    let payload_len: i64 = vec_len(payload_bytes);
+    let len_str: i64 = i64_to_string(payload_len);
+
+    let msg: i64 = "PUB ";
+    let msg: i64 = string_concat(msg, subject);
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, reply_to);
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, len_str);
+    let msg: i64 = string_concat(msg, "\r\n");
+    let msg: i64 = string_concat(msg, payload);
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    let msg_bytes: i64 = string_to_bytes(msg);
+    tcp_send(tcp, msg_bytes)
+}
+
+/// Publish an empty message (no payload).
+fn nats_publish_empty(conn: i64, subject: i64) -> i64 {
+    let tcp: i64 = pubsub_conn_tcp(conn);
+
+    let msg: i64 = "PUB ";
+    let msg: i64 = string_concat(msg, subject);
+    let msg: i64 = string_concat(msg, " 0\r\n\r\n");
+
+    let msg_bytes: i64 = string_to_bytes(msg);
+    tcp_send(tcp, msg_bytes)
+}
+
+// =============================================================================
+// Subscribe
+// =============================================================================
+
+/// Subscribe to a subject.
+///
+/// # Arguments
+/// * `conn`    - NATS connection descriptor
+/// * `subject` - Subject pattern (supports * and > wildcards)
+/// * `sid`     - Subscription ID (unique per connection)
+/// * `queue`   - Queue group name (0 for no queue group)
+///
+/// # Returns
+/// Bytes sent, or 0 on error
+fn nats_subscribe(conn: i64, subject: i64, sid: i64, queue: i64) -> i64 {
+    let tcp: i64 = pubsub_conn_tcp(conn);
+    let sid_str: i64 = i64_to_string(sid);
+
+    let msg: i64 = "SUB ";
+    let msg: i64 = string_concat(msg, subject);
+
+    if queue != 0 {
+        let msg: i64 = string_concat(msg, " ");
+        let msg: i64 = string_concat(msg, queue);
+    }
+
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, sid_str);
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    let msg_bytes: i64 = string_to_bytes(msg);
+    tcp_send(tcp, msg_bytes)
+}
+
+/// Unsubscribe from a subscription.
+///
+/// # Arguments
+/// * `conn` - NATS connection descriptor
+/// * `sid`  - Subscription ID to unsubscribe
+///
+/// # Returns
+/// Bytes sent, or 0 on error
+fn nats_unsubscribe(conn: i64, sid: i64) -> i64 {
+    let tcp: i64 = pubsub_conn_tcp(conn);
+    let sid_str: i64 = i64_to_string(sid);
+
+    let msg: i64 = "UNSUB ";
+    let msg: i64 = string_concat(msg, sid_str);
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    let msg_bytes: i64 = string_to_bytes(msg);
+    tcp_send(tcp, msg_bytes)
+}
+
+/// Auto-unsubscribe after receiving N messages.
+fn nats_unsubscribe_after(conn: i64, sid: i64, max_msgs: i64) -> i64 {
+    let tcp: i64 = pubsub_conn_tcp(conn);
+    let sid_str: i64 = i64_to_string(sid);
+    let max_str: i64 = i64_to_string(max_msgs);
+
+    let msg: i64 = "UNSUB ";
+    let msg: i64 = string_concat(msg, sid_str);
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, max_str);
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    let msg_bytes: i64 = string_to_bytes(msg);
+    tcp_send(tcp, msg_bytes)
+}
+
+// =============================================================================
+// Request/Reply Pattern
+// =============================================================================
+
+/// Generate a unique inbox subject for request/reply.
+///
+/// Format: _INBOX.<random-id>
+///
+/// # Returns
+/// String handle of the inbox subject
+fn nats_new_inbox() -> i64 {
+    let prefix: i64 = "_INBOX.";
+    let rand: i64 = random_bytes(16);
+    let rand_len: i64 = vec_len(rand);
+
+    // Convert random bytes to hex string
+    var hex: i64 = prefix;
+    var i: i64 = 0;
+    while i < rand_len {
+        let b: i64 = vec_get(rand, i);
+        let high: i64 = b / 16;
+        let low: i64 = b % 16;
+        hex = string_concat(hex, nats_hex_char(high));
+        hex = string_concat(hex, nats_hex_char(low));
+        i = i + 1;
+    }
+
+    hex
+}
+
+/// Convert a nibble (0-15) to a hex character string
+fn nats_hex_char(n: i64) -> i64 {
+    if n == 0 { return "0"; }
+    if n == 1 { return "1"; }
+    if n == 2 { return "2"; }
+    if n == 3 { return "3"; }
+    if n == 4 { return "4"; }
+    if n == 5 { return "5"; }
+    if n == 6 { return "6"; }
+    if n == 7 { return "7"; }
+    if n == 8 { return "8"; }
+    if n == 9 { return "9"; }
+    if n == 10 { return "a"; }
+    if n == 11 { return "b"; }
+    if n == 12 { return "c"; }
+    if n == 13 { return "d"; }
+    if n == 14 { return "e"; }
+    if n == 15 { return "f"; }
+    "0"
+}
+
+/// Send a request and wait for a single reply (synchronous).
+///
+/// Creates a temporary inbox subscription, publishes the request
+/// with the inbox as reply-to, and waits for one response.
+///
+/// # Arguments
+/// * `conn`    - NATS connection descriptor
+/// * `subject` - Request subject
+/// * `payload` - Request payload string
+///
+/// # Returns
+/// Vec handle: [reply_subject, reply_payload] or 0 on timeout/error
+fn nats_request(conn: i64, subject: i64, payload: i64) -> i64 {
+    let tcp: i64 = pubsub_conn_tcp(conn);
+    let inbox: i64 = nats_new_inbox();
+    let sid: i64 = pubsub_conn_next_sid(conn);
+
+    // Subscribe to inbox (auto-unsub after 1 message)
+    nats_subscribe(conn, inbox, sid, 0);
+    nats_unsubscribe_after(conn, sid, 1);
+
+    // Publish request with reply-to
+    nats_publish_request(conn, subject, inbox, payload);
+
+    // Wait for response
+    let response_data: i64 = tcp_recv(tcp, 65536);
+    if response_data == 0 {
+        return 0;
+    }
+
+    let response_str: i64 = bytes_to_string(response_data);
+
+    // Parse MSG response
+    let msg_prefix: i64 = string_substring(response_str, 0, 3);
+    if intrinsic_string_eq(msg_prefix, "MSG") == 1 {
+        // Find the CRLF after header
+        let resp_bytes: i64 = response_data;
+        let resp_len: i64 = vec_len(resp_bytes);
+        var header_end: i64 = 0;
+        while header_end < resp_len - 1 {
+            if vec_get(resp_bytes, header_end) == 13 {
+                if vec_get(resp_bytes, header_end + 1) == 10 {
+                    // Found first CRLF - payload starts after
+                    let payload_start: i64 = header_end + 2;
+                    // Find next CRLF for end of payload
+                    var payload_end: i64 = payload_start;
+                    while payload_end < resp_len - 1 {
+                        if vec_get(resp_bytes, payload_end) == 13 {
+                            if vec_get(resp_bytes, payload_end + 1) == 10 {
+                                let reply_payload: i64 = bytes_to_string(vec_slice(resp_bytes, payload_start, payload_end));
+                                let result: i64 = vec_new();
+                                vec_push(result, inbox);
+                                vec_push(result, reply_payload);
+                                return result;
+                            }
+                        }
+                        payload_end = payload_end + 1;
+                    }
+                    // Take rest as payload
+                    let reply_payload: i64 = bytes_to_string(vec_slice(resp_bytes, payload_start, resp_len));
+                    let result: i64 = vec_new();
+                    vec_push(result, inbox);
+                    vec_push(result, reply_payload);
+                    return result;
+                }
+            }
+            header_end = header_end + 1;
+        }
+    }
+
+    0
+}
+
+// =============================================================================
+// Message Receiving
+// =============================================================================
+
+/// Wait for the next message on any active subscription.
+///
+/// # Arguments
+/// * `conn` - NATS connection descriptor
+///
+/// # Returns
+/// Vec handle: [subject, sid, reply_to, payload] or 0 on error
+fn nats_next_msg(conn: i64) -> i64 {
+    let tcp: i64 = pubsub_conn_tcp(conn);
+
+    let data: i64 = tcp_recv(tcp, 65536);
+    if data == 0 {
+        return 0;
+    }
+
+    let data_str: i64 = bytes_to_string(data);
+
+    // Check for PING (auto-respond)
+    let prefix: i64 = string_substring(data_str, 0, 4);
+    if intrinsic_string_eq(prefix, "PING") == 1 {
+        let pong: i64 = string_to_bytes("PONG\r\n");
+        tcp_send(tcp, pong);
+        // Recursively try again
+        return nats_next_msg(conn);
+    }
+
+    // Parse MSG
+    let msg_prefix: i64 = string_substring(data_str, 0, 3);
+    if intrinsic_string_eq(msg_prefix, "MSG") != 1 {
+        return 0;
+    }
+
+    // Find header end (first CRLF)
+    let data_len: i64 = vec_len(data);
+    var header_end: i64 = 0;
+    while header_end < data_len - 1 {
+        if vec_get(data, header_end) == 13 {
+            if vec_get(data, header_end + 1) == 10 {
+                // Parse header line
+                let header_bytes: i64 = vec_slice(data, 0, header_end);
+                let header_str: i64 = bytes_to_string(header_bytes);
+
+                // Tokenize: MSG subject sid [reply-to] #bytes
+                let tokens: i64 = nats_pubsub_tokenize(header_str, 4);
+                let token_count: i64 = vec_len(tokens);
+
+                if token_count < 3 { return 0; }
+
+                let subject: i64 = vec_get(tokens, 0);
+                let sid_str: i64 = vec_get(tokens, 1);
+
+                var reply_to: i64 = 0;
+                var len_str: i64 = 0;
+
+                if token_count == 3 {
+                    len_str = vec_get(tokens, 2);
+                } else {
+                    reply_to = vec_get(tokens, 2);
+                    len_str = vec_get(tokens, 3);
+                }
+
+                let sid: i64 = nats_pubsub_parse_int(sid_str);
+                let payload_len: i64 = nats_pubsub_parse_int(len_str);
+
+                // Extract payload
+                let payload_start: i64 = header_end + 2;
+                var payload_end: i64 = payload_start + payload_len;
+                if payload_end > data_len {
+                    payload_end = data_len;
+                }
+
+                let payload: i64 = bytes_to_string(vec_slice(data, payload_start, payload_end));
+
+                let result: i64 = vec_new();
+                vec_push(result, subject);
+                vec_push(result, sid);
+                vec_push(result, reply_to);
+                vec_push(result, payload);
+                return result;
+            }
+        }
+        header_end = header_end + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Internal Helpers
+// =============================================================================
+
+/// Tokenize string by spaces starting at offset
+fn nats_pubsub_tokenize(s: i64, start: i64) -> i64 {
+    let bytes: i64 = string_to_bytes(s);
+    let len: i64 = vec_len(bytes);
+    let tokens: i64 = vec_new();
+    var pos: i64 = start;
+
+    while pos < len {
+        // Skip spaces
+        while pos < len {
+            if vec_get(bytes, pos) != 32 {
+                // Start of token
+                let token_start: i64 = pos;
+                while pos < len {
+                    let ch: i64 = vec_get(bytes, pos);
+                    if ch == 32 {
+                        let token: i64 = bytes_to_string(vec_slice(bytes, token_start, pos));
+                        vec_push(tokens, token);
+                        pos = pos + 1;
+                        token_start = pos;
+                        pos = len + 2; // break inner
+                    } else {
+                        pos = pos + 1;
+                    }
+                }
+                if pos == len {
+                    let token: i64 = bytes_to_string(vec_slice(bytes, token_start, len));
+                    vec_push(tokens, token);
+                }
+                if pos != len + 3 { // not broken
+                    return tokens;
+                }
+                pos = pos - len - 2 + token_start; // restore
+                pos = pos + 1; // skip past space
+                return tokens; // simplification
+            }
+            pos = pos + 1;
+        }
+    }
+
+    tokens
+}
+
+/// Parse an integer from a string
+fn nats_pubsub_parse_int(s: i64) -> i64 {
+    let bytes: i64 = string_to_bytes(s);
+    let len: i64 = vec_len(bytes);
+    var result: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        let digit: i64 = vec_get(bytes, i) - 48;
+        if digit >= 0 {
+            if digit <= 9 {
+                result = result * 10 + digit;
+            }
+        }
+        i = i + 1;
+    }
+    result
+}

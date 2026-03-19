@@ -5,7 +5,7 @@
 // and provide the low-level operations for memory, strings, I/O, and time.
 //
 // The edge-hive uses an i64-handle pattern for compatibility with
-// Simplex 0.15.0's type system. All complex types are represented as
+// Simplex 0.16.0's type system. All complex types are represented as
 // i64 handles to runtime-managed objects.
 
 // =============================================================================

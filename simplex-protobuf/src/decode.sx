@@ -1,0 +1,553 @@
+// simplex-protobuf/decode - Protocol Buffers Wire Format Decoding
+//
+// Implements proto3 wire format decoding. Reads encoded bytes and
+// produces field number, wire type, and value for each field.
+//
+// All decode functions take a data vec handle and an offset,
+// returning a result vec with [value(s), new_offset].
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, byte: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_slice(v: i64, start: i64, end: i64) -> i64;
+extern fn bytes_to_string(v: i64) -> i64;
+
+// =============================================================================
+// Varint Decoding
+// =============================================================================
+
+/// Decode a varint from data at the given offset.
+///
+/// Varints use 7 bits per byte with bit 7 as continuation flag.
+///
+/// # Arguments
+/// * `data`   - Byte vec handle
+/// * `offset` - Starting byte offset
+///
+/// # Returns
+/// Vec handle: [value, new_offset]
+/// Returns 0 if data is truncated or varint is malformed
+fn proto_decode_varint(data: i64, offset: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+
+    if offset >= data_len {
+        return 0;
+    }
+
+    var value: i64 = 0;
+    var shift: i64 = 0;
+    var pos: i64 = offset;
+    var done: i64 = 0;
+    var bytes_read: i64 = 0;
+
+    while done == 0 {
+        if pos >= data_len {
+            return 0;  // Truncated varint
+        }
+        if bytes_read >= 10 {
+            return 0;  // Varint too long (max 10 bytes for 64-bit)
+        }
+
+        let byte: i64 = vec_get(data, pos);
+        let low7: i64 = byte % 128;
+
+        // Multiply low7 by 2^shift using repeated multiplication
+        let shifted: i64 = proto_shift_left(low7, shift);
+        value = value + shifted;
+
+        pos = pos + 1;
+        bytes_read = bytes_read + 1;
+        shift = shift + 7;
+
+        // Check continuation bit (bit 7)
+        if byte < 128 {
+            done = 1;
+        }
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, value);
+    vec_push(result, pos);
+    result
+}
+
+/// Shift a value left by `bits` positions (multiply by 2^bits)
+fn proto_shift_left(value: i64, bits: i64) -> i64 {
+    var result: i64 = value;
+    var i: i64 = 0;
+    while i < bits {
+        result = result * 2;
+        i = i + 1;
+    }
+    result
+}
+
+/// Decode a ZigZag-encoded varint (for sint32/sint64)
+///
+/// # Returns
+/// Vec handle: [signed_value, new_offset]
+fn proto_decode_sint(data: i64, offset: i64) -> i64 {
+    let varint_result: i64 = proto_decode_varint(data, offset);
+    if varint_result == 0 { return 0; }
+
+    let unsigned_val: i64 = vec_get(varint_result, 0);
+    let new_offset: i64 = vec_get(varint_result, 1);
+
+    // ZigZag decode
+    let signed_val: i64 = proto_zigzag_decode_val(unsigned_val);
+
+    let result: i64 = vec_new();
+    vec_push(result, signed_val);
+    vec_push(result, new_offset);
+    result
+}
+
+/// ZigZag decode: reverse the encoding
+fn proto_zigzag_decode_val(value: i64) -> i64 {
+    if value % 2 == 0 {
+        value / 2
+    } else {
+        0 - (value + 1) / 2
+    }
+}
+
+// =============================================================================
+// Tag Decoding
+// =============================================================================
+
+/// Decode a field tag from data at the given offset.
+///
+/// # Returns
+/// Vec handle: [field_num, wire_type, new_offset]
+fn proto_decode_tag(data: i64, offset: i64) -> i64 {
+    let varint_result: i64 = proto_decode_varint(data, offset);
+    if varint_result == 0 { return 0; }
+
+    let tag: i64 = vec_get(varint_result, 0);
+    let new_offset: i64 = vec_get(varint_result, 1);
+
+    let field_num: i64 = tag / 8;
+    let wire_type: i64 = tag % 8;
+
+    let result: i64 = vec_new();
+    vec_push(result, field_num);
+    vec_push(result, wire_type);
+    vec_push(result, new_offset);
+    result
+}
+
+// =============================================================================
+// Field Decoding
+// =============================================================================
+
+/// Decode a complete field (tag + value) from data at the given offset.
+///
+/// # Returns
+/// Vec handle: [field_num, wire_type, value, new_offset]
+///
+/// For wire type 0 (varint): value is the decoded integer
+/// For wire type 1 (64-bit): value is the 8-byte little-endian integer
+/// For wire type 2 (length-delimited): value is a vec handle of the raw bytes
+/// For wire type 5 (32-bit): value is the 4-byte little-endian integer
+///
+/// Returns 0 if data is truncated or malformed
+fn proto_decode_field(data: i64, offset: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+
+    if offset >= data_len {
+        return 0;
+    }
+
+    // Decode tag
+    let tag_result: i64 = proto_decode_tag(data, offset);
+    if tag_result == 0 { return 0; }
+
+    let field_num: i64 = vec_get(tag_result, 0);
+    let wire_type: i64 = vec_get(tag_result, 1);
+    var pos: i64 = vec_get(tag_result, 2);
+
+    var value: i64 = 0;
+
+    if wire_type == 0 {
+        // Varint
+        let varint_result: i64 = proto_decode_varint(data, pos);
+        if varint_result == 0 { return 0; }
+        value = vec_get(varint_result, 0);
+        pos = vec_get(varint_result, 1);
+    } else if wire_type == 1 {
+        // 64-bit fixed
+        if pos + 8 > data_len { return 0; }
+        value = proto_decode_fixed64_at(data, pos);
+        pos = pos + 8;
+    } else if wire_type == 2 {
+        // Length-delimited
+        let len_result: i64 = proto_decode_varint(data, pos);
+        if len_result == 0 { return 0; }
+        let field_len: i64 = vec_get(len_result, 0);
+        pos = vec_get(len_result, 1);
+
+        if pos + field_len > data_len { return 0; }
+        value = vec_slice(data, pos, pos + field_len);
+        pos = pos + field_len;
+    } else if wire_type == 5 {
+        // 32-bit fixed
+        if pos + 4 > data_len { return 0; }
+        value = proto_decode_fixed32_at(data, pos);
+        pos = pos + 4;
+    } else {
+        // Unknown wire type - skip is not possible without more info
+        return 0;
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, field_num);
+    vec_push(result, wire_type);
+    vec_push(result, value);
+    vec_push(result, pos);
+    result
+}
+
+/// Get field number from a decoded field result
+fn proto_field_num(field_result: i64) -> i64 {
+    vec_get(field_result, 0)
+}
+
+/// Get wire type from a decoded field result
+fn proto_field_wire_type(field_result: i64) -> i64 {
+    vec_get(field_result, 1)
+}
+
+/// Get value from a decoded field result
+fn proto_field_value(field_result: i64) -> i64 {
+    vec_get(field_result, 2)
+}
+
+/// Get new offset from a decoded field result
+fn proto_field_offset(field_result: i64) -> i64 {
+    vec_get(field_result, 3)
+}
+
+// =============================================================================
+// Fixed-Width Decoding
+// =============================================================================
+
+/// Decode a 32-bit little-endian value at position
+fn proto_decode_fixed32_at(data: i64, pos: i64) -> i64 {
+    let b0: i64 = vec_get(data, pos);
+    let b1: i64 = vec_get(data, pos + 1);
+    let b2: i64 = vec_get(data, pos + 2);
+    let b3: i64 = vec_get(data, pos + 3);
+    b0 + b1 * 256 + b2 * 65536 + b3 * 16777216
+}
+
+/// Decode a 64-bit little-endian value at position
+fn proto_decode_fixed64_at(data: i64, pos: i64) -> i64 {
+    let b0: i64 = vec_get(data, pos);
+    let b1: i64 = vec_get(data, pos + 1);
+    let b2: i64 = vec_get(data, pos + 2);
+    let b3: i64 = vec_get(data, pos + 3);
+    let b4: i64 = vec_get(data, pos + 4);
+    let b5: i64 = vec_get(data, pos + 5);
+    let b6: i64 = vec_get(data, pos + 6);
+    let b7: i64 = vec_get(data, pos + 7);
+    b0 + b1 * 256 + b2 * 65536 + b3 * 16777216 + b4 * 4294967296 + b5 * 1099511627776 + b6 * 281474976710656 + b7 * 72057594037927936
+}
+
+/// Decode a fixed32 field value from data at offset
+///
+/// # Returns
+/// Vec handle: [value, new_offset]
+fn proto_decode_fixed32(data: i64, offset: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    if offset + 4 > data_len { return 0; }
+
+    let value: i64 = proto_decode_fixed32_at(data, offset);
+    let result: i64 = vec_new();
+    vec_push(result, value);
+    vec_push(result, offset + 4);
+    result
+}
+
+/// Decode a fixed64 field value from data at offset
+///
+/// # Returns
+/// Vec handle: [value, new_offset]
+fn proto_decode_fixed64(data: i64, offset: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    if offset + 8 > data_len { return 0; }
+
+    let value: i64 = proto_decode_fixed64_at(data, offset);
+    let result: i64 = vec_new();
+    vec_push(result, value);
+    vec_push(result, offset + 8);
+    result
+}
+
+// =============================================================================
+// Length-Delimited Decoding
+// =============================================================================
+
+/// Decode a string field from data at offset.
+///
+/// Reads the length prefix, then extracts that many bytes as a string.
+///
+/// # Returns
+/// Vec handle: [string_handle, new_offset]
+fn proto_decode_string(data: i64, offset: i64) -> i64 {
+    let len_result: i64 = proto_decode_varint(data, offset);
+    if len_result == 0 { return 0; }
+
+    let str_len: i64 = vec_get(len_result, 0);
+    let pos: i64 = vec_get(len_result, 1);
+    let data_len: i64 = vec_len(data);
+
+    if pos + str_len > data_len { return 0; }
+
+    let str_bytes: i64 = vec_slice(data, pos, pos + str_len);
+    let str_handle: i64 = bytes_to_string(str_bytes);
+
+    let result: i64 = vec_new();
+    vec_push(result, str_handle);
+    vec_push(result, pos + str_len);
+    result
+}
+
+/// Decode raw bytes field from data at offset.
+///
+/// # Returns
+/// Vec handle: [bytes_vec_handle, new_offset]
+fn proto_decode_bytes(data: i64, offset: i64) -> i64 {
+    let len_result: i64 = proto_decode_varint(data, offset);
+    if len_result == 0 { return 0; }
+
+    let byte_len: i64 = vec_get(len_result, 0);
+    let pos: i64 = vec_get(len_result, 1);
+    let data_len: i64 = vec_len(data);
+
+    if pos + byte_len > data_len { return 0; }
+
+    let raw_bytes: i64 = vec_slice(data, pos, pos + byte_len);
+
+    let result: i64 = vec_new();
+    vec_push(result, raw_bytes);
+    vec_push(result, pos + byte_len);
+    result
+}
+
+/// Decode an embedded message from data at offset.
+///
+/// Returns the raw bytes of the embedded message (caller must decode fields).
+///
+/// # Returns
+/// Vec handle: [message_bytes_handle, new_offset]
+fn proto_decode_embedded(data: i64, offset: i64) -> i64 {
+    proto_decode_bytes(data, offset)
+}
+
+// =============================================================================
+// Packed Repeated Field Decoding
+// =============================================================================
+
+/// Decode a packed repeated varint field.
+///
+/// # Arguments
+/// * `data`   - The raw bytes of the length-delimited field (after tag + length)
+///
+/// # Returns
+/// Vec handle containing all decoded varint values
+fn proto_decode_packed_varints(data: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    let values: i64 = vec_new();
+    var pos: i64 = 0;
+
+    while pos < data_len {
+        let varint_result: i64 = proto_decode_varint(data, pos);
+        if varint_result == 0 { return values; }
+
+        let value: i64 = vec_get(varint_result, 0);
+        let new_pos: i64 = vec_get(varint_result, 1);
+
+        vec_push(values, value);
+        pos = new_pos;
+    }
+
+    values
+}
+
+/// Decode a packed repeated fixed32 field.
+fn proto_decode_packed_fixed32(data: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    let values: i64 = vec_new();
+    var pos: i64 = 0;
+
+    while pos + 4 <= data_len {
+        let value: i64 = proto_decode_fixed32_at(data, pos);
+        vec_push(values, value);
+        pos = pos + 4;
+    }
+
+    values
+}
+
+/// Decode a packed repeated fixed64 field.
+fn proto_decode_packed_fixed64(data: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    let values: i64 = vec_new();
+    var pos: i64 = 0;
+
+    while pos + 8 <= data_len {
+        let value: i64 = proto_decode_fixed64_at(data, pos);
+        vec_push(values, value);
+        pos = pos + 8;
+    }
+
+    values
+}
+
+// =============================================================================
+// Message Iteration
+// =============================================================================
+
+/// Decode all fields from a serialized protobuf message.
+///
+/// # Arguments
+/// * `data` - Byte vec handle of the serialized message
+///
+/// # Returns
+/// Vec handle of field results. Each entry is a vec: [field_num, wire_type, value]
+fn proto_decode_all_fields(data: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    let fields: i64 = vec_new();
+    var pos: i64 = 0;
+
+    while pos < data_len {
+        let field_result: i64 = proto_decode_field(data, pos);
+        if field_result == 0 {
+            return fields;  // Stop on error/end
+        }
+
+        // Store field info
+        let field_info: i64 = vec_new();
+        vec_push(field_info, proto_field_num(field_result));
+        vec_push(field_info, proto_field_wire_type(field_result));
+        vec_push(field_info, proto_field_value(field_result));
+        vec_push(fields, field_info);
+
+        pos = proto_field_offset(field_result);
+    }
+
+    fields
+}
+
+/// Find a field by number in a decoded field list.
+///
+/// # Arguments
+/// * `fields`    - Vec of field results from proto_decode_all_fields
+/// * `field_num` - Field number to find
+///
+/// # Returns
+/// The field info vec [field_num, wire_type, value], or 0 if not found
+fn proto_find_field(fields: i64, field_num: i64) -> i64 {
+    let count: i64 = vec_len(fields);
+    var i: i64 = 0;
+    while i < count {
+        let field_info: i64 = vec_get(fields, i);
+        if vec_get(field_info, 0) == field_num {
+            return field_info;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Get all fields with a given field number (for repeated fields).
+///
+/// # Returns
+/// Vec of field info vecs matching the field number
+fn proto_find_all_fields(fields: i64, field_num: i64) -> i64 {
+    let count: i64 = vec_len(fields);
+    let matches: i64 = vec_new();
+    var i: i64 = 0;
+    while i < count {
+        let field_info: i64 = vec_get(fields, i);
+        if vec_get(field_info, 0) == field_num {
+            vec_push(matches, field_info);
+        }
+        i = i + 1;
+    }
+    matches
+}
+
+// =============================================================================
+// Skip Functions
+// =============================================================================
+
+/// Skip a field value based on wire type at the given offset.
+///
+/// # Returns
+/// The new offset after skipping the field value, or 0 on error
+fn proto_skip_field(data: i64, offset: i64, wire_type: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+
+    if wire_type == 0 {
+        // Varint: read and discard
+        let varint_result: i64 = proto_decode_varint(data, offset);
+        if varint_result == 0 { return 0; }
+        return vec_get(varint_result, 1);
+    } else if wire_type == 1 {
+        // 64-bit
+        if offset + 8 > data_len { return 0; }
+        return offset + 8;
+    } else if wire_type == 2 {
+        // Length-delimited
+        let len_result: i64 = proto_decode_varint(data, offset);
+        if len_result == 0 { return 0; }
+        let field_len: i64 = vec_get(len_result, 0);
+        let pos: i64 = vec_get(len_result, 1);
+        if pos + field_len > data_len { return 0; }
+        return pos + field_len;
+    } else if wire_type == 5 {
+        // 32-bit
+        if offset + 4 > data_len { return 0; }
+        return offset + 4;
+    }
+
+    0  // Unknown wire type
+}
+
+// =============================================================================
+// Convenience Accessors
+// =============================================================================
+
+/// Decode a varint value directly from field bytes (no tag, just the value)
+fn proto_read_varint(data: i64, offset: i64) -> i64 {
+    let result: i64 = proto_decode_varint(data, offset);
+    if result == 0 { return 0; }
+    vec_get(result, 0)
+}
+
+/// Decode a string value directly from field bytes (length + string)
+fn proto_read_string(data: i64, offset: i64) -> i64 {
+    let result: i64 = proto_decode_string(data, offset);
+    if result == 0 { return 0; }
+    vec_get(result, 0)
+}
+
+/// Decode a bool from a varint (non-zero = true)
+fn proto_read_bool(data: i64, offset: i64) -> i64 {
+    let val: i64 = proto_read_varint(data, offset);
+    if val != 0 { 1 } else { 0 }
+}
+
+/// Check if there is more data to decode at the given offset
+fn proto_has_more(data: i64, offset: i64) -> i64 {
+    if offset < vec_len(data) { 1 } else { 0 }
+}
