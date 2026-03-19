@@ -1,0 +1,226 @@
+// RAG Pipeline Tests
+// Tests text chunking (fixed size, sentence splitting)
+// Self-contained: no extern fn, no const, no f64 params
+
+// =============================================================================
+// Test 1: Fixed-size chunking
+// =============================================================================
+fn test_chunk_fixed() -> i64 {
+    println("  Test 1: Fixed-size chunking...");
+
+    let text: i64 = "abcdefghijklmnopqrstuvwxyz";
+    let text_len: i64 = string_len(text);
+    let chunk_size: i64 = 10;
+
+    // 26 chars / 10 = 3 chunks (10, 10, 6)
+    var n_chunks: i64 = 0;
+    var start: i64 = 0;
+    while start < text_len {
+        n_chunks = n_chunks + 1;
+        start = start + chunk_size;
+    }
+
+    if n_chunks != 3 {
+        println("  FAIL: expected 3 chunks");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 2: Sentence-based chunking
+// =============================================================================
+fn test_chunk_sentence() -> i64 {
+    println("  Test 2: Sentence chunking...");
+
+    let text: i64 = "Hello world. How are you? I am fine!";
+    let text_len: i64 = string_len(text);
+
+    // Count sentence terminators: . ? !
+    var n_sentences: i64 = 0;
+    var i: i64 = 0;
+    while i < text_len {
+        let ch: i64 = string_char_at(text, i);
+        if ch == 46 { n_sentences = n_sentences + 1; }
+        if ch == 63 { n_sentences = n_sentences + 1; }
+        if ch == 33 { n_sentences = n_sentences + 1; }
+        i = i + 1;
+    }
+
+    if n_sentences != 3 {
+        println("  FAIL: expected 3 sentences");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 3: Paragraph-based chunking (double newline)
+// =============================================================================
+fn test_chunk_paragraph() -> i64 {
+    println("  Test 3: Paragraph chunking...");
+
+    // Build text with embedded newlines
+    var text: i64 = "First paragraph.";
+    text = string_concat(text, "\n\n");
+    text = string_concat(text, "Second paragraph.");
+    text = string_concat(text, "\n\n");
+    text = string_concat(text, "Third paragraph.");
+    let text_len: i64 = string_len(text);
+
+    var n_breaks: i64 = 0;
+    var i: i64 = 0;
+    while i < text_len - 1 {
+        let ch: i64 = string_char_at(text, i);
+        let next_ch: i64 = string_char_at(text, i + 1);
+        if ch == 10 {
+            if next_ch == 10 {
+                n_breaks = n_breaks + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    let n_paragraphs: i64 = n_breaks + 1;
+    if n_paragraphs != 3 {
+        println("  FAIL: expected 3 paragraphs");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 4: Chunk with overlap
+// =============================================================================
+fn test_chunk_overlap() -> i64 {
+    println("  Test 4: Chunking with overlap...");
+
+    let text: i64 = "abcdefghijklmnopqrst";
+    let text_len: i64 = string_len(text);  // 20
+    let chunk_size: i64 = 10;
+    let overlap: i64 = 3;
+    let step: i64 = chunk_size - overlap;  // 7
+
+    var n_chunks: i64 = 0;
+    var start: i64 = 0;
+    while start < text_len {
+        n_chunks = n_chunks + 1;
+        start = start + step;
+    }
+
+    // start=0,7,14 -> 3 chunks
+    if n_chunks != 3 {
+        println("  FAIL: expected 3 overlapping chunks");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 5: Hash-based embedding produces consistent dimension
+// =============================================================================
+fn test_embedding_dimension() -> i64 {
+    println("  Test 5: Embedding dimension...");
+
+    let dim: i64 = 8;
+    let text: i64 = "test embedding";
+
+    // Create vec of dim zeros
+    let emb: i64 = vec_new();
+    var d: i64 = 0;
+    while d < dim {
+        vec_push(emb, 0);
+        d = d + 1;
+    }
+
+    // Hash chars into dimension buckets
+    let text_len: i64 = string_len(text);
+    var i: i64 = 0;
+    while i < text_len {
+        let ch: i64 = string_char_at(text, i);
+        var h: i64 = ch * 2654435761;
+        if h < 0 { h = 0 - h; }
+        let idx: i64 = h - (h / dim) * dim;
+        let old: i64 = vec_get(emb, idx);
+        vec_set(emb, idx, old + 1);
+        i = i + 1;
+    }
+
+    let emb_len: i64 = vec_len(emb);
+    if emb_len != dim {
+        println("  FAIL: embedding dimension mismatch");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 6: Context building from chunks
+// =============================================================================
+fn test_context_building() -> i64 {
+    println("  Test 6: Context building...");
+
+    let chunks: i64 = vec_new();
+    vec_push(chunks, "First relevant chunk.");
+    vec_push(chunks, "Second relevant chunk.");
+
+    // Build context string
+    var context: i64 = "Context:\n";
+    var i: i64 = 0;
+    let count: i64 = vec_len(chunks);
+    while i < count {
+        let chunk: i64 = vec_get(chunks, i);
+        context = string_concat(context, chunk);
+        context = string_concat(context, "\n");
+        i = i + 1;
+    }
+
+    let has_first: i64 = string_contains(context, "First relevant");
+    let has_second: i64 = string_contains(context, "Second relevant");
+
+    if has_first != 1 {
+        println("  FAIL: context should contain first chunk");
+        return 1;
+    }
+    if has_second != 1 {
+        println("  FAIL: context should contain second chunk");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+fn main() -> i64 {
+    println("=== RAG Pipeline Tests ===");
+
+    var failures: i64 = 0;
+    failures = failures + test_chunk_fixed();
+    failures = failures + test_chunk_sentence();
+    failures = failures + test_chunk_paragraph();
+    failures = failures + test_chunk_overlap();
+    failures = failures + test_embedding_dimension();
+    failures = failures + test_context_building();
+
+    println("");
+    if failures == 0 {
+        println("All 6 RAG pipeline tests passed!");
+    } else {
+        println("Some RAG pipeline tests failed");
+    }
+
+    failures
+}

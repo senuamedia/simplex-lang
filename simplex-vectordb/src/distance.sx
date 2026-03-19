@@ -1,0 +1,191 @@
+// simplex-vectordb::distance - Distance and Similarity Metrics
+//
+// Vector distance and similarity functions for nearest neighbor search.
+// All vectors are stored as vec handles containing f64_to_bits values.
+//
+// Supported metrics:
+//   - Cosine similarity (1 = identical, 0 = orthogonal, -1 = opposite)
+//   - Euclidean distance (L2 norm of difference)
+//   - Dot product (inner product)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Cosine Similarity
+// =============================================================================
+
+/// Compute cosine similarity between two vectors.
+///
+/// cosine_sim(a, b) = dot(a, b) / (|a| * |b|)
+///
+/// Arguments:
+///   a   - handle to vec of f64_to_bits values
+///   b   - handle to vec of f64_to_bits values
+///   dim - number of dimensions
+///
+/// Returns: similarity as f64_to_bits (range -1.0 to 1.0)
+fn cosine_similarity(a: i64, b: i64, dim: i64) -> i64 {
+    var dot_sum: f64 = 0.0;
+    var norm_a: f64 = 0.0;
+    var norm_b: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < dim {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        dot_sum = dot_sum + va * vb;
+        norm_a = norm_a + va * va;
+        norm_b = norm_b + vb * vb;
+        i = i + 1;
+    }
+
+    // Handle zero vectors
+    if norm_a < 0.000000001 { return f64_to_bits(0.0); }
+    if norm_b < 0.000000001 { return f64_to_bits(0.0); }
+
+    let magnitude: f64 = sqrt(norm_a) * sqrt(norm_b);
+    if magnitude < 0.000000001 { return f64_to_bits(0.0); }
+
+    let sim: f64 = dot_sum / magnitude;
+    f64_to_bits(sim)
+}
+
+// =============================================================================
+// Euclidean Distance
+// =============================================================================
+
+/// Compute Euclidean (L2) distance between two vectors.
+///
+/// euclidean(a, b) = sqrt(sum((a_i - b_i)^2))
+///
+/// Arguments:
+///   a   - handle to vec of f64_to_bits values
+///   b   - handle to vec of f64_to_bits values
+///   dim - number of dimensions
+///
+/// Returns: distance as f64_to_bits (>= 0.0)
+fn euclidean_distance(a: i64, b: i64, dim: i64) -> i64 {
+    var sum_sq: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < dim {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        let diff: f64 = va - vb;
+        sum_sq = sum_sq + diff * diff;
+        i = i + 1;
+    }
+
+    f64_to_bits(sqrt(sum_sq))
+}
+
+// =============================================================================
+// Dot Product
+// =============================================================================
+
+/// Compute dot product (inner product) of two vectors.
+///
+/// dot(a, b) = sum(a_i * b_i)
+///
+/// Arguments:
+///   a   - handle to vec of f64_to_bits values
+///   b   - handle to vec of f64_to_bits values
+///   dim - number of dimensions
+///
+/// Returns: dot product as f64_to_bits
+fn dot_product(a: i64, b: i64, dim: i64) -> i64 {
+    var sum: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < dim {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        sum = sum + va * vb;
+        i = i + 1;
+    }
+
+    f64_to_bits(sum)
+}
+
+// =============================================================================
+// Vector Norm
+// =============================================================================
+
+/// Compute L2 norm of a vector.
+///
+/// Arguments:
+///   v   - handle to vec of f64_to_bits values
+///   dim - number of dimensions
+///
+/// Returns: norm as f64_to_bits
+fn vec_norm(v: i64, dim: i64) -> i64 {
+    var sum: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < dim {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        sum = sum + val * val;
+        i = i + 1;
+    }
+
+    f64_to_bits(sqrt(sum))
+}
+
+// =============================================================================
+// Vector Normalization
+// =============================================================================
+
+/// Normalize a vector to unit length (in-place).
+///
+/// Arguments:
+///   v   - handle to vec of f64_to_bits values
+///   dim - number of dimensions
+///
+/// Returns: 1 on success, 0 if zero vector
+fn vec_normalize(v: i64, dim: i64) -> i64 {
+    let norm_bits: i64 = vec_norm(v, dim);
+    let norm: f64 = bits_to_f64(norm_bits);
+
+    if norm < 0.000000001 { return 0; }
+
+    var i: i64 = 0;
+    while i < dim {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        let normalized: f64 = val / norm;
+        vec_set(v, i, f64_to_bits(normalized));
+        i = i + 1;
+    }
+
+    1
+}
+
+// =============================================================================
+// Manhattan Distance
+// =============================================================================
+
+/// Compute Manhattan (L1) distance between two vectors.
+///
+/// manhattan(a, b) = sum(|a_i - b_i|)
+///
+/// Arguments:
+///   a   - handle to vec of f64_to_bits values
+///   b   - handle to vec of f64_to_bits values
+///   dim - number of dimensions
+///
+/// Returns: distance as f64_to_bits (>= 0.0)
+fn manhattan_distance(a: i64, b: i64, dim: i64) -> i64 {
+    var sum: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < dim {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        let diff: f64 = va - vb;
+        if diff < 0.0 { diff = 0.0 - diff; }
+        sum = sum + diff;
+        i = i + 1;
+    }
+
+    f64_to_bits(sum)
+}

@@ -1,0 +1,230 @@
+// Simplex CSV Format Tests
+// Tests CSV parsing logic inline without external module imports
+
+// =============================================================================
+// Helper: split a string by a delimiter character code
+// =============================================================================
+
+fn split_by_char(input: i64, delim: i64) -> i64 {
+    let parts: i64 = vec_new();
+    let len: i64 = string_len(input);
+    var start: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        if string_char_at(input, i) == delim {
+            let part: i64 = intrinsic_string_slice(input, start, i);
+            vec_push(parts, part);
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    // Last segment
+    if start <= len {
+        let last: i64 = intrinsic_string_slice(input, start, len);
+        vec_push(parts, last);
+    }
+    parts
+}
+
+// =============================================================================
+// Test 1: Split by comma
+// =============================================================================
+
+fn test_split_comma() -> i64 {
+    println("  Testing split by comma...");
+    let row: i64 = "Alice,30,NYC";
+    let fields: i64 = split_by_char(row, 44);
+    if vec_len(fields) != 3 {
+        println("  FAIL: should have 3 fields");
+        return 1;
+    }
+    if string_eq(vec_get(fields, 0), "Alice") != 1 {
+        println("  FAIL: first field should be Alice");
+        return 1;
+    }
+    if string_eq(vec_get(fields, 1), "30") != 1 {
+        println("  FAIL: second field should be 30");
+        return 1;
+    }
+    if string_eq(vec_get(fields, 2), "NYC") != 1 {
+        println("  FAIL: third field should be NYC");
+        return 1;
+    }
+    println("  PASS: split by comma");
+    0
+}
+
+// =============================================================================
+// Test 2: Split rows by newline then fields by comma
+// =============================================================================
+
+fn test_parse_rows() -> i64 {
+    println("  Testing parse CSV rows...");
+    let csv: i64 = string_concat("name,age,city", string_concat(intrinsic_string_from_char(10), "Alice,30,NYC"));
+    let rows: i64 = split_by_char(csv, 10);
+    if vec_len(rows) != 2 {
+        println("  FAIL: should have 2 rows");
+        return 1;
+    }
+    // First row is header
+    let header: i64 = split_by_char(vec_get(rows, 0), 44);
+    if vec_len(header) != 3 {
+        println("  FAIL: header should have 3 columns");
+        return 1;
+    }
+    if string_eq(vec_get(header, 0), "name") != 1 {
+        println("  FAIL: first header should be name");
+        return 1;
+    }
+    // Second row is data
+    let data: i64 = split_by_char(vec_get(rows, 1), 44);
+    if string_eq(vec_get(data, 0), "Alice") != 1 {
+        println("  FAIL: first data field should be Alice");
+        return 1;
+    }
+    println("  PASS: parse CSV rows");
+    0
+}
+
+// =============================================================================
+// Test 3: Multiple data rows
+// =============================================================================
+
+fn test_multiple_rows() -> i64 {
+    println("  Testing multiple data rows...");
+    let nl: i64 = intrinsic_string_from_char(10);
+    let csv: i64 = string_concat("a,b", string_concat(nl, string_concat("1,2", string_concat(nl, "3,4"))));
+    let rows: i64 = split_by_char(csv, 10);
+    if vec_len(rows) != 3 {
+        println("  FAIL: should have 3 rows (1 header + 2 data)");
+        return 1;
+    }
+    let row2: i64 = split_by_char(vec_get(rows, 2), 44);
+    if string_eq(vec_get(row2, 0), "3") != 1 {
+        println("  FAIL: row 2 col 0 should be 3");
+        return 1;
+    }
+    if string_eq(vec_get(row2, 1), "4") != 1 {
+        println("  FAIL: row 2 col 1 should be 4");
+        return 1;
+    }
+    println("  PASS: multiple data rows");
+    0
+}
+
+// =============================================================================
+// Test 4: Column lookup by header name
+// =============================================================================
+
+fn test_column_lookup() -> i64 {
+    println("  Testing column lookup by name...");
+    let headers: i64 = vec_new();
+    vec_push(headers, "name");
+    vec_push(headers, "age");
+    vec_push(headers, "city");
+
+    // Find index of "age"
+    var found: i64 = -1;
+    var i: i64 = 0;
+    while i < vec_len(headers) {
+        if string_eq(vec_get(headers, i), "age") == 1 {
+            found = i;
+        }
+        i = i + 1;
+    }
+    if found != 1 {
+        println("  FAIL: age should be at index 1");
+        return 1;
+    }
+
+    // Missing column
+    var missing: i64 = -1;
+    i = 0;
+    while i < vec_len(headers) {
+        if string_eq(vec_get(headers, i), "zip") == 1 {
+            missing = i;
+        }
+        i = i + 1;
+    }
+    if missing != -1 {
+        println("  FAIL: zip should not be found");
+        return 1;
+    }
+    println("  PASS: column lookup by name");
+    0
+}
+
+// =============================================================================
+// Test 5: Build CSV string from data
+// =============================================================================
+
+fn test_build_csv() -> i64 {
+    println("  Testing build CSV string...");
+    let nl: i64 = intrinsic_string_from_char(10);
+    var csv: i64 = "col1,col2";
+    csv = string_concat(csv, nl);
+    csv = string_concat(csv, "a,b");
+    csv = string_concat(csv, nl);
+    csv = string_concat(csv, "c,d");
+
+    // Parse it back
+    let rows: i64 = split_by_char(csv, 10);
+    if vec_len(rows) != 3 {
+        println("  FAIL: built CSV should have 3 rows");
+        return 1;
+    }
+    let hdr: i64 = split_by_char(vec_get(rows, 0), 44);
+    if string_eq(vec_get(hdr, 0), "col1") != 1 {
+        println("  FAIL: first header should be col1");
+        return 1;
+    }
+    println("  PASS: build CSV string");
+    0
+}
+
+// =============================================================================
+// Test 6: Empty fields
+// =============================================================================
+
+fn test_empty_fields() -> i64 {
+    println("  Testing empty fields...");
+    let row: i64 = "a,,c";
+    let fields: i64 = split_by_char(row, 44);
+    if vec_len(fields) != 3 {
+        println("  FAIL: should have 3 fields");
+        return 1;
+    }
+    if string_len(vec_get(fields, 1)) != 0 {
+        println("  FAIL: middle field should be empty");
+        return 1;
+    }
+    println("  PASS: empty fields");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== CSV Format Tests ===");
+    println("");
+
+    let f1: i64 = test_split_comma();
+    let f2: i64 = test_parse_rows();
+    let f3: i64 = test_multiple_rows();
+    let f4: i64 = test_column_lookup();
+    let f5: i64 = test_build_csv();
+    let f6: i64 = test_empty_fields();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6;
+
+    println("");
+    if failures == 0 {
+        println("All 6 CSV format tests passed!");
+    } else {
+        println("Some CSV format tests failed");
+    }
+
+    failures
+}

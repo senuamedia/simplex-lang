@@ -1,0 +1,13 @@
+# Simplex Database Library
+# Unified database connectivity with pluggable drivers
+# Supports SQL (PostgreSQL, MySQL, SQLite) and NoSQL (Redis, MongoDB, DynamoDB)
+
+[package]
+name = "simplex-db"
+version = "0.16.0"
+description = "Unified database connectivity with pluggable SQL and NoSQL drivers"
+authors = ["Rod Higgins"]
+license = "AGPL-3.0"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }

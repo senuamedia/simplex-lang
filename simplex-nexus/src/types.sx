@@ -6,7 +6,7 @@
 // - Message types
 // - Delta operation codes
 //
-// Protocol Version: 0.15.0
+// Protocol Version: 0.16.0
 
 // =============================================================================
 // Protocol Constants

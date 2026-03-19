@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.15.0**
+**Version 0.16.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -114,9 +114,39 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.15.0)
+## Key Features (v0.16.0)
 
-### NEW in v0.15.0: Production Hardening & Quantum Maturity
+### NEW in v0.16.0: Enterprise Libraries & Hive Intelligence
+
+**Production-ready libraries** for data formats, databases, real-time communication, authentication, observability, and AI intelligence infrastructure.
+
+```simplex
+// Unified database connectivity
+let config = db_config_new(DRIVER_POSTGRES());
+db_config_set(config, string_from("host"), string_from("localhost"));
+let conn = db_connect(config);
+let result = db_query(conn, string_from("SELECT * FROM users"));
+
+// JWT authentication
+let token = jwt_encode(payload, secret);
+let valid = jwt_verify(token, secret);
+
+// RAG pipeline
+let pipeline = rag_create(128);
+rag_ingest(pipeline, document, source);
+let answer = rag_query(pipeline, question, 5);
+```
+
+- **Data formats**: CSV, YAML, XML parsers in simplex-std
+- **Database**: Unified `simplex-db` with PostgreSQL, MySQL, SQLite, Redis drivers
+- **Real-time**: WebSocket (RFC 6455), Protocol Buffers, NATS messaging
+- **Auth**: JWT (HS256), OAuth 2.0 (PKCE), dotenv
+- **Observability**: Prometheus metrics, OpenTelemetry tracing
+- **AI Intelligence**: VectorDB, RAG pipeline, Guardrails, Eval suite
+
+See [RELEASE-0.16.0.md](RELEASE-0.16.0.md) for complete release notes.
+
+### v0.15.0: Production Hardening & Quantum Maturity
 
 **Quantum error mitigation, circuit optimization, and production hardening** complete the quantum computing framework for real hardware use.
 
@@ -502,6 +532,7 @@ Simplex uses the following terminology for its module system:
 | 0.13.0 | 2026-03-16 | Completion & Foundations: compiler stability, complex numbers, matrices, dual number extensions, training pipeline, HTTP client, JSON parser |
 | 0.14.0 | 2026-03-17 | Quantum Bridge: quantum computing primitives, backend abstraction, variational algorithms, cost-aware dispatch, quantum-enhanced optimization |
 | 0.15.0 | 2026-03-19 | Production Hardening & Quantum Maturity: noise models, ZNE, PEC, error correction codes, circuit optimization, qubit routing, compiler improvements, fuzzing, property testing, sanitizers, formal invariants |
+| 0.16.0 | 2026-03-19 | Production Hardening & Quantum Maturity: noise models, ZNE, PEC, error correction codes, circuit optimization, qubit routing, compiler improvements, fuzzing, property testing, sanitizers, formal invariants |
 
 ---
 

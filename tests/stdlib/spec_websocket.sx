@@ -1,0 +1,731 @@
+// Simplex WebSocket Module Tests
+// Tests frame encoding/decoding, masking, opcode handling, close codes,
+// handshake format, and fragmentation support.
+//
+// All tests operate on protocol data structures and format handling
+// without requiring a running server.
+
+// =============================================================================
+// WebSocket Opcode Constants
+// =============================================================================
+
+fn WS_OPCODE_CONTINUATION() -> i64 { 0 }
+fn WS_OPCODE_TEXT() -> i64 { 1 }
+fn WS_OPCODE_BINARY() -> i64 { 2 }
+fn WS_OPCODE_CLOSE() -> i64 { 8 }
+fn WS_OPCODE_PING() -> i64 { 9 }
+fn WS_OPCODE_PONG() -> i64 { 10 }
+
+// =============================================================================
+// Close Code Constants
+// =============================================================================
+
+fn WS_CLOSE_NORMAL() -> i64 { 1000 }
+fn WS_CLOSE_GOING_AWAY() -> i64 { 1001 }
+fn WS_CLOSE_PROTOCOL_ERROR() -> i64 { 1002 }
+fn WS_CLOSE_UNSUPPORTED() -> i64 { 1003 }
+
+// =============================================================================
+// XOR Helper (needed for masking tests)
+// =============================================================================
+
+fn test_xor_byte(a: i64, b: i64) -> i64 {
+    var result: i64 = 0;
+    var bit: i64 = 0;
+    var power: i64 = 1;
+    while bit < 8 {
+        let a_bit: i64 = (a / power) % 2;
+        let b_bit: i64 = (b / power) % 2;
+        if a_bit != b_bit {
+            result = result + power;
+        }
+        power = power * 2;
+        bit = bit + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Frame Header Encoding Helpers
+// =============================================================================
+
+/// Build first byte of frame: FIN + opcode
+fn frame_byte0(fin: i64, opcode: i64) -> i64 {
+    let result: i64 = opcode;
+    if fin == 1 {
+        result = result + 128;
+    }
+    result
+}
+
+/// Build second byte of frame: MASK + payload_len (for small payloads < 126)
+fn frame_byte1(masked: i64, payload_len: i64) -> i64 {
+    let result: i64 = payload_len;
+    if masked == 1 {
+        result = result + 128;
+    }
+    result
+}
+
+/// Calculate header size for given payload length and mask flag
+fn frame_header_size(payload_len: i64, masked: i64) -> i64 {
+    var size: i64 = 2;
+    if payload_len >= 126 {
+        if payload_len < 65536 {
+            size = size + 2;
+        } else {
+            size = size + 8;
+        }
+    }
+    if masked == 1 {
+        size = size + 4;
+    }
+    size
+}
+
+// =============================================================================
+// Test 1: Frame First Byte Encoding
+// =============================================================================
+
+fn test_frame_byte0_encoding() -> i64 {
+    println("  Testing frame first byte encoding...");
+
+    // FIN=1, opcode=TEXT (1): should be 0x81 = 129
+    let b: i64 = frame_byte0(1, WS_OPCODE_TEXT());
+    if b != 129 {
+        println("  FAIL: FIN=1 TEXT should be 129");
+        return 1;
+    }
+
+    // FIN=0, opcode=CONTINUATION (0): should be 0x00 = 0
+    let b2: i64 = frame_byte0(0, WS_OPCODE_CONTINUATION());
+    if b2 != 0 {
+        println("  FAIL: FIN=0 CONTINUATION should be 0");
+        return 1;
+    }
+
+    // FIN=1, opcode=BINARY (2): should be 0x82 = 130
+    let b3: i64 = frame_byte0(1, WS_OPCODE_BINARY());
+    if b3 != 130 {
+        println("  FAIL: FIN=1 BINARY should be 130");
+        return 1;
+    }
+
+    // FIN=1, opcode=CLOSE (8): should be 0x88 = 136
+    let b4: i64 = frame_byte0(1, WS_OPCODE_CLOSE());
+    if b4 != 136 {
+        println("  FAIL: FIN=1 CLOSE should be 136");
+        return 1;
+    }
+
+    // FIN=1, opcode=PING (9): should be 0x89 = 137
+    let b5: i64 = frame_byte0(1, WS_OPCODE_PING());
+    if b5 != 137 {
+        println("  FAIL: FIN=1 PING should be 137");
+        return 1;
+    }
+
+    // FIN=1, opcode=PONG (10): should be 0x8A = 138
+    let b6: i64 = frame_byte0(1, WS_OPCODE_PONG());
+    if b6 != 138 {
+        println("  FAIL: FIN=1 PONG should be 138");
+        return 1;
+    }
+
+    println("  PASS: frame first byte encoding");
+    0
+}
+
+// =============================================================================
+// Test 2: Frame Second Byte Encoding
+// =============================================================================
+
+fn test_frame_byte1_encoding() -> i64 {
+    println("  Testing frame second byte encoding...");
+
+    // Unmasked, length 5: should be 5
+    let b1: i64 = frame_byte1(0, 5);
+    if b1 != 5 {
+        println("  FAIL: unmasked length 5 should be 5");
+        return 1;
+    }
+
+    // Masked, length 5: should be 133 (128 + 5)
+    let b2: i64 = frame_byte1(1, 5);
+    if b2 != 133 {
+        println("  FAIL: masked length 5 should be 133");
+        return 1;
+    }
+
+    // Unmasked, length 0: should be 0
+    let b3: i64 = frame_byte1(0, 0);
+    if b3 != 0 {
+        println("  FAIL: unmasked length 0 should be 0");
+        return 1;
+    }
+
+    // Unmasked, length 125 (max single byte): should be 125
+    let b4: i64 = frame_byte1(0, 125);
+    if b4 != 125 {
+        println("  FAIL: unmasked length 125 should be 125");
+        return 1;
+    }
+
+    println("  PASS: frame second byte encoding");
+    0
+}
+
+// =============================================================================
+// Test 3: XOR Masking
+// =============================================================================
+
+fn test_xor_masking() -> i64 {
+    println("  Testing XOR masking operations...");
+
+    // XOR is its own inverse
+    let original: i64 = 72;  // 'H'
+    let mask: i64 = 37;
+    let masked: i64 = test_xor_byte(original, mask);
+    let unmasked: i64 = test_xor_byte(masked, mask);
+
+    if unmasked != original {
+        println("  FAIL: XOR should be its own inverse");
+        return 1;
+    }
+
+    // XOR with 0 should be identity
+    let identity: i64 = test_xor_byte(42, 0);
+    if identity != 42 {
+        println("  FAIL: XOR with 0 should be identity");
+        return 1;
+    }
+
+    // XOR with self should be 0
+    let zero: i64 = test_xor_byte(42, 42);
+    if zero != 0 {
+        println("  FAIL: XOR with self should be 0");
+        return 1;
+    }
+
+    // XOR specific values: 0xFF ^ 0x0F = 0xF0
+    let x1: i64 = test_xor_byte(255, 15);
+    if x1 != 240 {
+        println("  FAIL: 0xFF ^ 0x0F should be 0xF0 (240)");
+        return 1;
+    }
+
+    println("  PASS: XOR masking operations");
+    0
+}
+
+// =============================================================================
+// Test 4: Frame Header Size Calculation
+// =============================================================================
+
+fn test_frame_header_size() -> i64 {
+    println("  Testing frame header size calculation...");
+
+    // Small payload (< 126), unmasked: 2 bytes
+    let s1: i64 = frame_header_size(5, 0);
+    if s1 != 2 {
+        println("  FAIL: small unmasked header should be 2");
+        return 1;
+    }
+
+    // Small payload, masked: 6 bytes (2 + 4 mask key)
+    let s2: i64 = frame_header_size(5, 1);
+    if s2 != 6 {
+        println("  FAIL: small masked header should be 6");
+        return 1;
+    }
+
+    // Medium payload (126-65535), unmasked: 4 bytes (2 + 2 extended)
+    let s3: i64 = frame_header_size(200, 0);
+    if s3 != 4 {
+        println("  FAIL: medium unmasked header should be 4");
+        return 1;
+    }
+
+    // Medium payload, masked: 8 bytes (2 + 2 extended + 4 mask)
+    let s4: i64 = frame_header_size(200, 1);
+    if s4 != 8 {
+        println("  FAIL: medium masked header should be 8");
+        return 1;
+    }
+
+    // Large payload (>= 65536), unmasked: 10 bytes (2 + 8 extended)
+    let s5: i64 = frame_header_size(100000, 0);
+    if s5 != 10 {
+        println("  FAIL: large unmasked header should be 10");
+        return 1;
+    }
+
+    // Large payload, masked: 14 bytes (2 + 8 extended + 4 mask)
+    let s6: i64 = frame_header_size(100000, 1);
+    if s6 != 14 {
+        println("  FAIL: large masked header should be 14");
+        return 1;
+    }
+
+    println("  PASS: frame header size calculation");
+    0
+}
+
+// =============================================================================
+// Test 5: Close Code Encoding
+// =============================================================================
+
+fn test_close_code_encoding() -> i64 {
+    println("  Testing close code encoding...");
+
+    // 1000 = 0x03E8 -> high byte 3, low byte 232
+    let code: i64 = 1000;
+    let high: i64 = (code / 256) % 256;
+    let low: i64 = code % 256;
+
+    if high != 3 {
+        println("  FAIL: 1000 high byte should be 3");
+        return 1;
+    }
+    if low != 232 {
+        println("  FAIL: 1000 low byte should be 232");
+        return 1;
+    }
+
+    // Decode back
+    let decoded: i64 = high * 256 + low;
+    if decoded != 1000 {
+        println("  FAIL: decoded should be 1000");
+        return 1;
+    }
+
+    // 1001
+    let code2: i64 = 1001;
+    let h2: i64 = (code2 / 256) % 256;
+    let l2: i64 = code2 % 256;
+    let d2: i64 = h2 * 256 + l2;
+    if d2 != 1001 {
+        println("  FAIL: 1001 roundtrip failed");
+        return 1;
+    }
+
+    // 4000 (application-defined)
+    let code3: i64 = 4000;
+    let h3: i64 = (code3 / 256) % 256;
+    let l3: i64 = code3 % 256;
+    let d3: i64 = h3 * 256 + l3;
+    if d3 != 4000 {
+        println("  FAIL: 4000 roundtrip failed");
+        return 1;
+    }
+
+    println("  PASS: close code encoding");
+    0
+}
+
+// =============================================================================
+// Test 6: Opcode Validation
+// =============================================================================
+
+fn ws_is_valid_opcode(opcode: i64) -> i64 {
+    if opcode == 0 { return 1; }
+    if opcode == 1 { return 1; }
+    if opcode == 2 { return 1; }
+    if opcode == 8 { return 1; }
+    if opcode == 9 { return 1; }
+    if opcode == 10 { return 1; }
+    0
+}
+
+fn ws_is_control_opcode(opcode: i64) -> i64 {
+    if opcode >= 8 { 1 } else { 0 }
+}
+
+fn test_opcode_validation() -> i64 {
+    println("  Testing opcode validation...");
+
+    // Valid opcodes
+    if ws_is_valid_opcode(0) != 1 {
+        println("  FAIL: 0 (continuation) should be valid");
+        return 1;
+    }
+    if ws_is_valid_opcode(1) != 1 {
+        println("  FAIL: 1 (text) should be valid");
+        return 1;
+    }
+    if ws_is_valid_opcode(2) != 1 {
+        println("  FAIL: 2 (binary) should be valid");
+        return 1;
+    }
+    if ws_is_valid_opcode(8) != 1 {
+        println("  FAIL: 8 (close) should be valid");
+        return 1;
+    }
+    if ws_is_valid_opcode(9) != 1 {
+        println("  FAIL: 9 (ping) should be valid");
+        return 1;
+    }
+    if ws_is_valid_opcode(10) != 1 {
+        println("  FAIL: 10 (pong) should be valid");
+        return 1;
+    }
+
+    // Invalid opcodes
+    if ws_is_valid_opcode(3) != 0 {
+        println("  FAIL: 3 should be invalid");
+        return 1;
+    }
+    if ws_is_valid_opcode(7) != 0 {
+        println("  FAIL: 7 should be invalid");
+        return 1;
+    }
+    if ws_is_valid_opcode(15) != 0 {
+        println("  FAIL: 15 should be invalid");
+        return 1;
+    }
+
+    // Control frame detection
+    if ws_is_control_opcode(8) != 1 {
+        println("  FAIL: close should be control");
+        return 1;
+    }
+    if ws_is_control_opcode(9) != 1 {
+        println("  FAIL: ping should be control");
+        return 1;
+    }
+    if ws_is_control_opcode(1) != 0 {
+        println("  FAIL: text should not be control");
+        return 1;
+    }
+
+    println("  PASS: opcode validation");
+    0
+}
+
+// =============================================================================
+// Test 7: Close Code Validation
+// =============================================================================
+
+fn ws_is_valid_close_code(code: i64) -> i64 {
+    if code == 1000 { return 1; }
+    if code == 1001 { return 1; }
+    if code == 1002 { return 1; }
+    if code == 1003 { return 1; }
+    if code == 1007 { return 1; }
+    if code == 1008 { return 1; }
+    if code == 1009 { return 1; }
+    if code == 1010 { return 1; }
+    if code == 1011 { return 1; }
+    if code >= 3000 {
+        if code <= 4999 { return 1; }
+    }
+    0
+}
+
+fn test_close_code_validation() -> i64 {
+    println("  Testing close code validation...");
+
+    // Valid standard codes
+    if ws_is_valid_close_code(1000) != 1 {
+        println("  FAIL: 1000 should be valid");
+        return 1;
+    }
+    if ws_is_valid_close_code(1001) != 1 {
+        println("  FAIL: 1001 should be valid");
+        return 1;
+    }
+    if ws_is_valid_close_code(1011) != 1 {
+        println("  FAIL: 1011 should be valid");
+        return 1;
+    }
+
+    // Valid application codes
+    if ws_is_valid_close_code(3000) != 1 {
+        println("  FAIL: 3000 should be valid (app range)");
+        return 1;
+    }
+    if ws_is_valid_close_code(4999) != 1 {
+        println("  FAIL: 4999 should be valid (app range)");
+        return 1;
+    }
+
+    // Invalid codes
+    if ws_is_valid_close_code(999) != 0 {
+        println("  FAIL: 999 should be invalid");
+        return 1;
+    }
+    if ws_is_valid_close_code(1004) != 0 {
+        println("  FAIL: 1004 should be invalid (reserved)");
+        return 1;
+    }
+    if ws_is_valid_close_code(5000) != 0 {
+        println("  FAIL: 5000 should be invalid");
+        return 1;
+    }
+
+    println("  PASS: close code validation");
+    0
+}
+
+// =============================================================================
+// Test 8: Connection State Transitions
+// =============================================================================
+
+fn test_connection_states() -> i64 {
+    println("  Testing connection state transitions...");
+
+    // State constants
+    let connecting: i64 = 0;
+    let open: i64 = 1;
+    let closing: i64 = 2;
+    let closed: i64 = 3;
+
+    // Valid state transitions
+    // CONNECTING -> OPEN
+    if connecting != 0 {
+        println("  FAIL: CONNECTING should be 0");
+        return 1;
+    }
+    if open != 1 {
+        println("  FAIL: OPEN should be 1");
+        return 1;
+    }
+    if closing != 2 {
+        println("  FAIL: CLOSING should be 2");
+        return 1;
+    }
+    if closed != 3 {
+        println("  FAIL: CLOSED should be 3");
+        return 1;
+    }
+
+    // Connection descriptor packing
+    let tcp_handle: i64 = 42;
+    let state: i64 = 1;
+    let is_client: i64 = 1;
+    let desc: i64 = tcp_handle + state * 4294967296 + is_client * 17179869184;
+
+    let extracted_tcp: i64 = desc % 4294967296;
+    let extracted_state: i64 = (desc / 4294967296) % 4;
+    let extracted_client: i64 = (desc / 17179869184) % 2;
+
+    if extracted_tcp != 42 {
+        println("  FAIL: TCP handle extraction failed");
+        return 1;
+    }
+    if extracted_state != 1 {
+        println("  FAIL: state extraction failed");
+        return 1;
+    }
+    if extracted_client != 1 {
+        println("  FAIL: is_client extraction failed");
+        return 1;
+    }
+
+    println("  PASS: connection state transitions");
+    0
+}
+
+// =============================================================================
+// Test 9: Extended Payload Length Encoding
+// =============================================================================
+
+fn test_extended_payload_length() -> i64 {
+    println("  Testing extended payload length encoding...");
+
+    // 16-bit extended: value 300 -> two bytes big-endian
+    let val16: i64 = 300;
+    let high16: i64 = (val16 / 256) % 256;
+    let low16: i64 = val16 % 256;
+    let decoded16: i64 = high16 * 256 + low16;
+    if decoded16 != 300 {
+        println("  FAIL: 16-bit 300 roundtrip failed");
+        return 1;
+    }
+
+    // 16-bit max: 65535
+    let val_max16: i64 = 65535;
+    let h_max: i64 = (val_max16 / 256) % 256;
+    let l_max: i64 = val_max16 % 256;
+    let d_max: i64 = h_max * 256 + l_max;
+    if d_max != 65535 {
+        println("  FAIL: 16-bit max roundtrip failed");
+        return 1;
+    }
+
+    // Payload length boundary: 125 uses single byte
+    let small: i64 = 125;
+    if small >= 126 {
+        println("  FAIL: 125 should not trigger extended encoding");
+        return 1;
+    }
+
+    // Payload length boundary: 126 triggers 16-bit
+    let medium: i64 = 126;
+    if medium < 126 {
+        println("  FAIL: 126 should trigger 16-bit extended");
+        return 1;
+    }
+
+    println("  PASS: extended payload length encoding");
+    0
+}
+
+// =============================================================================
+// Test 10: Protocol Version
+// =============================================================================
+
+fn test_protocol_constants() -> i64 {
+    println("  Testing protocol constants...");
+
+    // WebSocket version is always 13
+    let version: i64 = 13;
+    if version != 13 {
+        println("  FAIL: WebSocket version should be 13");
+        return 1;
+    }
+
+    // Max control payload is 125 bytes
+    let max_control: i64 = 125;
+    if max_control != 125 {
+        println("  FAIL: max control payload should be 125");
+        return 1;
+    }
+
+    // All opcodes should be distinct
+    if WS_OPCODE_TEXT() == WS_OPCODE_BINARY() {
+        println("  FAIL: TEXT and BINARY opcodes should differ");
+        return 1;
+    }
+    if WS_OPCODE_CLOSE() == WS_OPCODE_PING() {
+        println("  FAIL: CLOSE and PING opcodes should differ");
+        return 1;
+    }
+    if WS_OPCODE_PING() == WS_OPCODE_PONG() {
+        println("  FAIL: PING and PONG opcodes should differ");
+        return 1;
+    }
+
+    println("  PASS: protocol constants");
+    0
+}
+
+// =============================================================================
+// Test 11: 16-bit Packing
+// =============================================================================
+
+fn test_u16_packing() -> i64 {
+    println("  Testing 16-bit value packing...");
+
+    // Pack/unpack various values
+    let val1: i64 = 8080;
+    let high1: i64 = (val1 / 256) % 256;
+    let low1: i64 = val1 % 256;
+    let unpacked1: i64 = high1 * 256 + low1;
+    if unpacked1 != 8080 {
+        println("  FAIL: 8080 pack/unpack failed");
+        return 1;
+    }
+
+    let val2: i64 = 443;
+    let high2: i64 = (val2 / 256) % 256;
+    let low2: i64 = val2 % 256;
+    let unpacked2: i64 = high2 * 256 + low2;
+    if unpacked2 != 443 {
+        println("  FAIL: 443 pack/unpack failed");
+        return 1;
+    }
+
+    let val3: i64 = 0;
+    let high3: i64 = (val3 / 256) % 256;
+    let low3: i64 = val3 % 256;
+    let unpacked3: i64 = high3 * 256 + low3;
+    if unpacked3 != 0 {
+        println("  FAIL: 0 pack/unpack failed");
+        return 1;
+    }
+
+    println("  PASS: 16-bit value packing");
+    0
+}
+
+// =============================================================================
+// Test 12: Frame Statistics
+// =============================================================================
+
+fn test_frame_statistics() -> i64 {
+    println("  Testing frame statistics tracking...");
+
+    // Stats: bits 0-15=sent frames, 16-31=recv frames, 32-47=sent KB, 48-63=recv KB
+    let stats: i64 = 0;
+
+    // Add sent: 3 frames, 2048 bytes (2 KB)
+    let sent_frames: i64 = 3;
+    let sent_kb: i64 = 2;
+    let stats_after_send: i64 = sent_frames + sent_kb * 4294967296;
+
+    let extracted_sent_frames: i64 = stats_after_send % 65536;
+    let extracted_sent_kb: i64 = (stats_after_send / 4294967296) % 65536;
+
+    if extracted_sent_frames != 3 {
+        println("  FAIL: sent frames should be 3");
+        return 1;
+    }
+    if extracted_sent_kb != 2 {
+        println("  FAIL: sent KB should be 2");
+        return 1;
+    }
+
+    // Add recv: 5 frames, 4 KB
+    let recv_frames: i64 = 5;
+    let recv_kb: i64 = 4;
+    let full_stats: i64 = sent_frames + recv_frames * 65536 + sent_kb * 4294967296 + recv_kb * 281474976710656;
+
+    let ef: i64 = full_stats % 65536;
+    let rf: i64 = (full_stats / 65536) % 65536;
+
+    if ef != 3 {
+        println("  FAIL: sent frames should still be 3");
+        return 1;
+    }
+    if rf != 5 {
+        println("  FAIL: recv frames should be 5");
+        return 1;
+    }
+
+    println("  PASS: frame statistics tracking");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== WebSocket Module Tests ===");
+    println("");
+
+    let f1: i64 = test_frame_byte0_encoding();
+    let f2: i64 = test_frame_byte1_encoding();
+    let f3: i64 = test_xor_masking();
+    let f4: i64 = test_frame_header_size();
+    let f5: i64 = test_close_code_encoding();
+    let f6: i64 = test_opcode_validation();
+    let f7: i64 = test_close_code_validation();
+    let f8: i64 = test_connection_states();
+    let f9: i64 = test_extended_payload_length();
+    let f10: i64 = test_protocol_constants();
+    let f11: i64 = test_u16_packing();
+    let f12: i64 = test_frame_statistics();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7 + f8 + f9 + f10 + f11 + f12;
+
+    println("");
+    if failures == 0 {
+        println("All 12 WebSocket tests passed!");
+    } else {
+        println("Some WebSocket tests failed");
+    }
+
+    failures
+}

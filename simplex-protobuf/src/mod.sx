@@ -1,0 +1,123 @@
+// simplex-protobuf - Protocol Buffers Wire Format
+//
+// Pure Simplex implementation of Protocol Buffers (proto3) wire format.
+// Provides varint encoding, field encoding/decoding, and schema support.
+//
+// # Wire Types (proto3)
+//
+// 0 = Varint (int32, int64, uint32, uint64, sint32, sint64, bool, enum)
+// 1 = 64-bit (fixed64, sfixed64, double)
+// 2 = Length-delimited (string, bytes, embedded messages, packed repeated)
+// 5 = 32-bit (fixed32, sfixed32, float)
+//
+// # Example
+//
+// ```simplex
+// use simplex_protobuf::{proto_buffer_new, proto_encode_varint_field,
+//                        proto_encode_string, proto_decode_field};
+//
+// // Encode a message: field 1 = varint 42, field 2 = string "hello"
+// let buf = proto_buffer_new();
+// proto_encode_varint_field(buf, 1, 42);
+// proto_encode_string(buf, 2, "hello");
+//
+// // Decode fields
+// let data = proto_buffer_data(buf);
+// let field = proto_decode_field(data, 0);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Public Module Exports
+// =============================================================================
+
+pub mod encode;
+pub mod decode;
+pub mod schema;
+
+// =============================================================================
+// Wire Type Constants
+// =============================================================================
+
+/// Varint wire type (int32, int64, bool, enum)
+fn WIRE_VARINT() -> i64 { 0 }
+
+/// 64-bit wire type (fixed64, sfixed64, double)
+fn WIRE_64BIT() -> i64 { 1 }
+
+/// Length-delimited wire type (string, bytes, embedded message)
+fn WIRE_LENGTH_DELIMITED() -> i64 { 2 }
+
+/// 32-bit wire type (fixed32, sfixed32, float)
+fn WIRE_32BIT() -> i64 { 5 }
+
+// =============================================================================
+// Field Type Constants (proto3 types)
+// =============================================================================
+
+fn PROTO_TYPE_INT32() -> i64 { 1 }
+fn PROTO_TYPE_INT64() -> i64 { 2 }
+fn PROTO_TYPE_UINT32() -> i64 { 3 }
+fn PROTO_TYPE_UINT64() -> i64 { 4 }
+fn PROTO_TYPE_SINT32() -> i64 { 5 }
+fn PROTO_TYPE_SINT64() -> i64 { 6 }
+fn PROTO_TYPE_BOOL() -> i64 { 7 }
+fn PROTO_TYPE_ENUM() -> i64 { 8 }
+fn PROTO_TYPE_FIXED64() -> i64 { 9 }
+fn PROTO_TYPE_SFIXED64() -> i64 { 10 }
+fn PROTO_TYPE_DOUBLE() -> i64 { 11 }
+fn PROTO_TYPE_STRING() -> i64 { 12 }
+fn PROTO_TYPE_BYTES() -> i64 { 13 }
+fn PROTO_TYPE_MESSAGE() -> i64 { 14 }
+fn PROTO_TYPE_FIXED32() -> i64 { 15 }
+fn PROTO_TYPE_SFIXED32() -> i64 { 16 }
+fn PROTO_TYPE_FLOAT() -> i64 { 17 }
+
+// =============================================================================
+// Wire Type Mapping
+// =============================================================================
+
+/// Get the wire type for a given proto field type
+fn proto_wire_type_for(field_type: i64) -> i64 {
+    // Varint types
+    if field_type == PROTO_TYPE_INT32() { return WIRE_VARINT(); }
+    if field_type == PROTO_TYPE_INT64() { return WIRE_VARINT(); }
+    if field_type == PROTO_TYPE_UINT32() { return WIRE_VARINT(); }
+    if field_type == PROTO_TYPE_UINT64() { return WIRE_VARINT(); }
+    if field_type == PROTO_TYPE_SINT32() { return WIRE_VARINT(); }
+    if field_type == PROTO_TYPE_SINT64() { return WIRE_VARINT(); }
+    if field_type == PROTO_TYPE_BOOL() { return WIRE_VARINT(); }
+    if field_type == PROTO_TYPE_ENUM() { return WIRE_VARINT(); }
+
+    // 64-bit types
+    if field_type == PROTO_TYPE_FIXED64() { return WIRE_64BIT(); }
+    if field_type == PROTO_TYPE_SFIXED64() { return WIRE_64BIT(); }
+    if field_type == PROTO_TYPE_DOUBLE() { return WIRE_64BIT(); }
+
+    // Length-delimited types
+    if field_type == PROTO_TYPE_STRING() { return WIRE_LENGTH_DELIMITED(); }
+    if field_type == PROTO_TYPE_BYTES() { return WIRE_LENGTH_DELIMITED(); }
+    if field_type == PROTO_TYPE_MESSAGE() { return WIRE_LENGTH_DELIMITED(); }
+
+    // 32-bit types
+    if field_type == PROTO_TYPE_FIXED32() { return WIRE_32BIT(); }
+    if field_type == PROTO_TYPE_SFIXED32() { return WIRE_32BIT(); }
+    if field_type == PROTO_TYPE_FLOAT() { return WIRE_32BIT(); }
+
+    // Unknown
+    -1
+}
+
+// =============================================================================
+// Error Constants
+// =============================================================================
+
+fn PROTO_OK() -> i64 { 0 }
+fn PROTO_ERR_BUFFER_OVERFLOW() -> i64 { 1 }
+fn PROTO_ERR_INVALID_WIRE_TYPE() -> i64 { 2 }
+fn PROTO_ERR_TRUNCATED() -> i64 { 3 }
+fn PROTO_ERR_INVALID_VARINT() -> i64 { 4 }
+fn PROTO_ERR_INVALID_FIELD() -> i64 { 5 }
+fn PROTO_ERR_SCHEMA_MISMATCH() -> i64 { 6 }

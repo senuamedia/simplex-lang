@@ -90,7 +90,7 @@ pub use quantum::{
 };
 
 /// Library version
-pub const VERSION: &str = "0.15.0";
+pub const VERSION: &str = "0.16.0";
 
 /// Configuration for the @learning annotation
 pub struct LearningAnnotation {

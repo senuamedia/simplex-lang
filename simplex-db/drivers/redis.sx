@@ -1,0 +1,1813 @@
+// simplex-redis - Redis Client Library
+//
+// Pure-Simplex implementation of the RESP3 protocol for communicating
+// with Redis servers over TCP. Supports all common Redis data types
+// and operations.
+//
+// # Modules
+//
+// - `connection`: TCP connection management, AUTH, SELECT
+// - `protocol`: RESP3 encoding/decoding (strings, errors, integers, bulk, arrays, null)
+// - `commands`: Key-value, hash, list, set, and utility commands
+// - `pubsub`: Publish/subscribe messaging
+// - `pipeline`: Command batching for reduced round-trips
+//
+// # Example
+//
+// ```simplex
+// use simplex_redis::{redis_connect, redis_set, redis_get, redis_close, RedisConfig};
+//
+// let config = RedisConfig::new("localhost", 6379);
+// let conn = redis_connect(config)?;
+// redis_set(&mut conn, "key", "value")?;
+// let val = redis_get(&mut conn, "key")?;
+// redis_close(&mut conn);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+pub mod connection;
+pub mod protocol;
+pub mod commands;
+pub mod pubsub;
+pub mod pipeline;
+
+// =============================================================================
+// Re-exports
+// =============================================================================
+
+pub use connection::{redis_connect, redis_auth, redis_close, redis_select, RedisConfig, RedisConnection};
+pub use commands::{
+    redis_get, redis_set, redis_del, redis_exists, redis_expire, redis_ttl,
+    redis_hset, redis_hget, redis_hgetall, redis_hdel,
+    redis_lpush, redis_rpop, redis_lrange, redis_llen,
+    redis_sadd, redis_smembers, redis_sismember, redis_srem,
+    redis_incr, redis_decr, redis_keys, redis_type,
+};
+pub use pubsub::{redis_subscribe, redis_publish, redis_unsubscribe};
+pub use pipeline::{RedisPipeline, pipeline_new, pipeline_add, pipeline_execute};
+pub use protocol::{RedisValue, RedisError};
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// Default Redis port
+pub const DEFAULT_PORT: i64 = 6379;
+
+/// RESP3 protocol delimiters
+pub const CRLF: &str = "\r\n";
+
+/// Maximum inline command length
+pub const MAX_INLINE_LEN: i64 = 65536;
+
+/// Default read buffer size
+pub const DEFAULT_BUF_SIZE: i64 = 4096;
+// simplex-redis/protocol - RESP3 Protocol Implementation
+//
+// Implements the Redis Serialization Protocol (RESP3) for encoding
+// commands and decoding responses.
+//
+// RESP3 types:
+//   '+' Simple String: +OK\r\n
+//   '-' Error: -ERR message\r\n
+//   ':' Integer: :42\r\n
+//   '$' Bulk String: $5\r\nhello\r\n
+//   '*' Array: *2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n
+//   '_' Null: _\r\n
+//   '#' Boolean: #t\r\n or #f\r\n
+//   ',' Double: ,1.23\r\n
+//   '(' Big Number: (12345678901234567890\r\n
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Value Types
+// =============================================================================
+
+/// Redis value returned by commands
+pub enum RedisValue {
+    /// Simple string response (e.g., "OK", "PONG")
+    SimpleString(String),
+    /// Error response
+    Error(String),
+    /// Integer response
+    Integer(i64),
+    /// Bulk string response
+    BulkString(String),
+    /// Array response
+    Array(Vec<RedisValue>),
+    /// Null response (key not found, etc.)
+    Null,
+    /// Boolean (RESP3)
+    Boolean(bool),
+    /// Double (RESP3)
+    Double(f64),
+}
+
+impl RedisValue {
+    /// Check if value is null
+    pub fn is_null(&self) -> bool {
+        match self {
+            RedisValue::Null => true,
+            _ => false,
+        }
+    }
+
+    /// Check if value is an error
+    pub fn is_error(&self) -> bool {
+        match self {
+            RedisValue::Error(_) => true,
+            _ => false,
+        }
+    }
+
+    /// Get as string, or None
+    pub fn as_string(&self) -> Option<String> {
+        match self {
+            RedisValue::SimpleString(s) => Some(s.clone()),
+            RedisValue::BulkString(s) => Some(s.clone()),
+            RedisValue::Integer(n) => Some(n.to_string()),
+            _ => None,
+        }
+    }
+
+    /// Get as i64, or None
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            RedisValue::Integer(n) => Some(*n),
+            RedisValue::BulkString(s) => s.parse::<i64>().ok(),
+            _ => None,
+        }
+    }
+
+    /// Get as bool
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            RedisValue::Boolean(b) => Some(*b),
+            RedisValue::Integer(n) => Some(*n != 0),
+            _ => None,
+        }
+    }
+
+    /// Get as array, or None
+    pub fn as_array(&self) -> Option<&Vec<RedisValue>> {
+        match self {
+            RedisValue::Array(a) => Some(a),
+            _ => None,
+        }
+    }
+
+    /// Get as f64, or None
+    pub fn as_double(&self) -> Option<f64> {
+        match self {
+            RedisValue::Double(d) => Some(*d),
+            RedisValue::Integer(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for RedisValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RedisValue::SimpleString(s) => write!(f, "{}", s),
+            RedisValue::Error(s) => write!(f, "ERR: {}", s),
+            RedisValue::Integer(n) => write!(f, "{}", n),
+            RedisValue::BulkString(s) => write!(f, "{}", s),
+            RedisValue::Array(a) => write!(f, "[{} elements]", a.len()),
+            RedisValue::Null => write!(f, "(nil)"),
+            RedisValue::Boolean(b) => write!(f, "{}", b),
+            RedisValue::Double(d) => write!(f, "{}", d),
+        }
+    }
+}
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+/// Redis client error
+pub enum RedisError {
+    /// Connection error
+    Connection(String),
+    /// Authentication error
+    Auth(String),
+    /// Server error response
+    Server(String),
+    /// Protocol parsing error
+    Protocol(String),
+    /// Command error
+    Command(String),
+    /// Timeout
+    Timeout(String),
+}
+
+impl RedisError {
+    pub fn message(&self) -> String {
+        match self {
+            RedisError::Connection(s) => s.clone(),
+            RedisError::Auth(s) => s.clone(),
+            RedisError::Server(s) => s.clone(),
+            RedisError::Protocol(s) => s.clone(),
+            RedisError::Command(s) => s.clone(),
+            RedisError::Timeout(s) => s.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for RedisError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RedisError::Connection(s) => write!(f, "redis connection error: {}", s),
+            RedisError::Auth(s) => write!(f, "redis auth error: {}", s),
+            RedisError::Server(s) => write!(f, "redis server error: {}", s),
+            RedisError::Protocol(s) => write!(f, "redis protocol error: {}", s),
+            RedisError::Command(s) => write!(f, "redis command error: {}", s),
+            RedisError::Timeout(s) => write!(f, "redis timeout: {}", s),
+        }
+    }
+}
+
+// =============================================================================
+// Command Encoding
+// =============================================================================
+
+/// Encode a Redis command as RESP array
+///
+/// Commands are encoded as arrays of bulk strings:
+///   *<num_args>\r\n
+///   $<len>\r\n<arg>\r\n
+///   ...
+///
+/// # Arguments
+/// * `args` - Command arguments (e.g., ["SET", "key", "value"])
+pub fn encode_command(args: &[&str]) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    // Array prefix: *<count>\r\n
+    buf.push(42); // '*'
+    write_int_bytes(&mut buf, args.len() as i64);
+    buf.push(13); // '\r'
+    buf.push(10); // '\n'
+
+    // Each argument as bulk string: $<len>\r\n<data>\r\n
+    let mut i: i64 = 0;
+    while i < args.len() as i64 {
+        let arg = args[i];
+        let arg_bytes = arg.as_bytes();
+        let arg_len = arg_bytes.len() as i64;
+
+        buf.push(36); // '$'
+        write_int_bytes(&mut buf, arg_len);
+        buf.push(13); // '\r'
+        buf.push(10); // '\n'
+
+        let mut j: i64 = 0;
+        while j < arg_len {
+            buf.push(arg_bytes[j] as i64);
+            j = j + 1;
+        }
+
+        buf.push(13); // '\r'
+        buf.push(10); // '\n'
+
+        i = i + 1;
+    }
+
+    buf
+}
+
+/// Encode multiple commands for pipelining
+pub fn encode_commands(commands: &[Vec<String>]) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    let mut i: i64 = 0;
+    while i < commands.len() as i64 {
+        let cmd = &commands[i];
+
+        // Array prefix
+        buf.push(42); // '*'
+        write_int_bytes(&mut buf, cmd.len() as i64);
+        buf.push(13); buf.push(10);
+
+        let mut j: i64 = 0;
+        while j < cmd.len() as i64 {
+            let arg = &cmd[j];
+            let arg_bytes = arg.as_bytes();
+
+            buf.push(36); // '$'
+            write_int_bytes(&mut buf, arg_bytes.len() as i64);
+            buf.push(13); buf.push(10);
+
+            let mut k: i64 = 0;
+            while k < arg_bytes.len() as i64 {
+                buf.push(arg_bytes[k] as i64);
+                k = k + 1;
+            }
+
+            buf.push(13); buf.push(10);
+            j = j + 1;
+        }
+
+        i = i + 1;
+    }
+
+    buf
+}
+
+// =============================================================================
+// Response Decoding
+// =============================================================================
+
+/// Decode a RESP response from raw bytes
+///
+/// Returns the decoded value and the number of bytes consumed.
+/// This allows parsing multiple responses from a single buffer
+/// (e.g., for pipelining).
+///
+/// # Arguments
+/// * `data` - Raw bytes from the server
+/// * `offset` - Starting offset in the data
+pub fn decode_response(data: &[i64], offset: i64) -> (RedisValue, i64) {
+    if offset >= data.len() as i64 {
+        return (RedisValue::Null, 0);
+    }
+
+    let type_byte = data[offset];
+
+    match type_byte {
+        43 => decode_simple_string(data, offset + 1),  // '+'
+        45 => decode_error(data, offset + 1),           // '-'
+        58 => decode_integer(data, offset + 1),         // ':'
+        36 => decode_bulk_string(data, offset + 1),     // '$'
+        42 => decode_array(data, offset + 1),           // '*'
+        95 => {                                          // '_' (RESP3 null)
+            let end = find_crlf(data, offset + 1);
+            (RedisValue::Null, end + 2 - offset)
+        },
+        35 => {                                          // '#' (RESP3 boolean)
+            if offset + 3 < data.len() as i64 {
+                let val = data[offset + 1] == 116; // 't'
+                let end = find_crlf(data, offset + 1);
+                (RedisValue::Boolean(val), end + 2 - offset)
+            } else {
+                (RedisValue::Null, 0)
+            }
+        },
+        44 => {                                          // ',' (RESP3 double)
+            let (line, line_len) = read_line(data, offset + 1);
+            let val = match line.parse::<f64>() {
+                Ok(f) => RedisValue::Double(f),
+                Err(_) => RedisValue::Null,
+            };
+            (val, 1 + line_len)
+        },
+        _ => (RedisValue::Null, 0),
+    }
+}
+
+/// Decode a simple string (+OK\r\n)
+fn decode_simple_string(data: &[i64], offset: i64) -> (RedisValue, i64) {
+    let (line, line_len) = read_line(data, offset);
+    (RedisValue::SimpleString(line), 1 + line_len) // +1 for type byte
+}
+
+/// Decode an error (-ERR message\r\n)
+fn decode_error(data: &[i64], offset: i64) -> (RedisValue, i64) {
+    let (line, line_len) = read_line(data, offset);
+    (RedisValue::Error(line), 1 + line_len)
+}
+
+/// Decode an integer (:42\r\n)
+fn decode_integer(data: &[i64], offset: i64) -> (RedisValue, i64) {
+    let (line, line_len) = read_line(data, offset);
+    let val = match line.parse::<i64>() {
+        Ok(n) => n,
+        Err(_) => 0,
+    };
+    (RedisValue::Integer(val), 1 + line_len)
+}
+
+/// Decode a bulk string ($5\r\nhello\r\n)
+fn decode_bulk_string(data: &[i64], offset: i64) -> (RedisValue, i64) {
+    let (len_str, len_line_len) = read_line(data, offset);
+    let str_len = match len_str.parse::<i64>() {
+        Ok(n) => n,
+        Err(_) => return (RedisValue::Null, 1 + len_line_len),
+    };
+
+    // -1 means null bulk string
+    if str_len < 0 {
+        return (RedisValue::Null, 1 + len_line_len);
+    }
+
+    let data_start = offset + len_line_len;
+    if data_start + str_len + 2 > data.len() as i64 {
+        return (RedisValue::Null, 0);
+    }
+
+    var s = String::new();
+    let mut i: i64 = 0;
+    while i < str_len {
+        s.push(data[data_start + i] as u8 as char);
+        i = i + 1;
+    }
+
+    // Total consumed: type_byte(1) + len_line + data + \r\n
+    let total = 1 + len_line_len + str_len + 2;
+    (RedisValue::BulkString(s), total)
+}
+
+/// Decode an array (*2\r\n...\r\n)
+fn decode_array(data: &[i64], offset: i64) -> (RedisValue, i64) {
+    let (count_str, count_line_len) = read_line(data, offset);
+    let count = match count_str.parse::<i64>() {
+        Ok(n) => n,
+        Err(_) => return (RedisValue::Null, 1 + count_line_len),
+    };
+
+    // -1 means null array
+    if count < 0 {
+        return (RedisValue::Null, 1 + count_line_len);
+    }
+
+    var elements: Vec<RedisValue> = Vec::new();
+    var current_offset = offset + count_line_len;
+    var total_consumed: i64 = 1 + count_line_len; // type byte + count line
+
+    let mut i: i64 = 0;
+    while i < count {
+        let (value, consumed) = decode_response(data, current_offset);
+        if consumed == 0 {
+            break;
+        }
+        elements.push(value);
+        current_offset = current_offset + consumed;
+        total_consumed = total_consumed + consumed;
+        i = i + 1;
+    }
+
+    (RedisValue::Array(elements), total_consumed)
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Read a line until \r\n, returning (content, bytes_consumed_including_crlf)
+fn read_line(data: &[i64], offset: i64) -> (String, i64) {
+    var s = String::new();
+    var i: i64 = offset;
+
+    while i < data.len() as i64 {
+        if data[i] == 13 && i + 1 < data.len() as i64 && data[i + 1] == 10 {
+            // Found \r\n
+            return (s, i - offset + 2);
+        }
+        s.push(data[i] as u8 as char);
+        i = i + 1;
+    }
+
+    (s, i - offset)
+}
+
+/// Find position of \r\n in data starting from offset
+fn find_crlf(data: &[i64], offset: i64) -> i64 {
+    var i: i64 = offset;
+    while i + 1 < data.len() as i64 {
+        if data[i] == 13 && data[i + 1] == 10 {
+            return i;
+        }
+        i = i + 1;
+    }
+    data.len() as i64
+}
+
+/// Write an integer as ASCII bytes to a buffer
+fn write_int_bytes(buf: &mut Vec<i64>, val: i64) {
+    if val == 0 {
+        buf.push(48); // '0'
+        return;
+    }
+
+    var n = val;
+    var negative: bool = false;
+    if n < 0 {
+        negative = true;
+        n = -n;
+    }
+
+    // Build digits in reverse
+    var digits: Vec<i64> = Vec::new();
+    while n > 0 {
+        digits.push(48 + (n % 10)); // '0' + digit
+        n = n / 10;
+    }
+
+    if negative {
+        buf.push(45); // '-'
+    }
+
+    // Push digits in correct order
+    var i: i64 = digits.len() as i64 - 1;
+    while i >= 0 {
+        buf.push(digits[i]);
+        i = i - 1;
+    }
+}
+
+/// Convert a RESP-encoded command back to a printable string (for debugging)
+pub fn command_to_string(data: &[i64]) -> String {
+    var s = String::new();
+    let mut i: i64 = 0;
+    while i < data.len() as i64 {
+        let b = data[i];
+        if b == 13 {
+            s.push_str("\\r");
+        } else if b == 10 {
+            s.push_str("\\n");
+        } else if b >= 32 && b < 127 {
+            s.push(b as u8 as char);
+        } else {
+            s.push_str("\\x");
+            let hi = (b >> 4) & 0x0F;
+            let lo = b & 0x0F;
+            s.push(if hi < 10 { (48 + hi) as u8 as char } else { (87 + hi) as u8 as char });
+            s.push(if lo < 10 { (48 + lo) as u8 as char } else { (87 + lo) as u8 as char });
+        }
+        i = i + 1;
+    }
+    s
+}
+// simplex-redis/connection - TCP Connection Management
+//
+// Manages TCP connections to Redis servers. Handles the connection
+// lifecycle including optional AUTH and database SELECT.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::protocol::{
+    encode_command, decode_response, RedisValue, RedisError,
+};
+
+// =============================================================================
+// Connection Configuration
+// =============================================================================
+
+/// Redis connection configuration
+pub struct RedisConfig {
+    /// Server hostname or IP
+    pub host: String,
+    /// Server port (default 6379)
+    pub port: i64,
+    /// Optional password for AUTH
+    pub password: Option<String>,
+    /// Optional username (Redis 6+ ACL)
+    pub username: Option<String>,
+    /// Database index (default 0)
+    pub db: i64,
+    /// Connection timeout in milliseconds
+    pub connect_timeout_ms: i64,
+    /// Read timeout in milliseconds
+    pub read_timeout_ms: i64,
+}
+
+impl RedisConfig {
+    /// Create a new configuration with defaults
+    pub fn new(host: &str, port: i64) -> Self {
+        RedisConfig {
+            host: host.to_string(),
+            port,
+            password: None,
+            username: None,
+            db: 0,
+            connect_timeout_ms: 5000,
+            read_timeout_ms: 30000,
+        }
+    }
+
+    /// Set password for AUTH
+    pub fn with_password(mut self, password: &str) -> Self {
+        self.password = Some(password.to_string());
+        self
+    }
+
+    /// Set username (Redis 6+ ACL)
+    pub fn with_username(mut self, username: &str) -> Self {
+        self.username = Some(username.to_string());
+        self
+    }
+
+    /// Set database index
+    pub fn with_db(mut self, db: i64) -> Self {
+        self.db = db;
+        self
+    }
+
+    /// Set connection timeout
+    pub fn with_connect_timeout(mut self, ms: i64) -> Self {
+        self.connect_timeout_ms = ms;
+        self
+    }
+
+    /// Set read timeout
+    pub fn with_read_timeout(mut self, ms: i64) -> Self {
+        self.read_timeout_ms = ms;
+        self
+    }
+
+    /// Get TCP address string
+    pub fn addr_string(&self) -> String {
+        var s = self.host.clone();
+        s.push(':');
+        s.push_str(&self.port.to_string());
+        s
+    }
+}
+
+// =============================================================================
+// Connection
+// =============================================================================
+
+/// Represents an active Redis connection
+pub struct RedisConnection {
+    /// TCP stream handle
+    pub stream_handle: i64,
+    /// Connection state: 0=disconnected, 1=ready, 2=subscribed, 3=failed
+    pub state: i64,
+    /// Read buffer for incoming data
+    pub read_buf: Vec<i64>,
+    /// Currently selected database
+    pub current_db: i64,
+    /// Configuration
+    pub config: RedisConfig,
+}
+
+impl RedisConnection {
+    /// Check if connection is ready for commands
+    pub fn is_ready(&self) -> bool {
+        self.state == 1
+    }
+
+    /// Check if connection is in pub/sub mode
+    pub fn is_subscribed(&self) -> bool {
+        self.state == 2
+    }
+}
+
+// =============================================================================
+// Connection Functions
+// =============================================================================
+
+/// Connect to a Redis server
+///
+/// Establishes a TCP connection and optionally authenticates
+/// and selects a database.
+///
+/// # Arguments
+/// * `config` - Connection configuration
+///
+/// # Example
+/// ```simplex
+/// let config = RedisConfig::new("localhost", 6379).with_password("secret");
+/// let conn = redis_connect(config)?;
+/// ```
+pub fn redis_connect(config: RedisConfig) -> Result<RedisConnection, RedisError> {
+    let addr = config.addr_string();
+
+    let stream_handle = tcp_connect(&addr, config.connect_timeout_ms);
+    if stream_handle < 0 {
+        return Err(RedisError::Connection(
+            "failed to establish TCP connection".to_string()
+        ));
+    }
+
+    var conn = RedisConnection {
+        stream_handle,
+        state: 1, // ready
+        read_buf: Vec::new(),
+        current_db: 0,
+        config,
+    };
+
+    // Authenticate if password is provided
+    if let Some(ref password) = conn.config.password {
+        let auth_result = redis_auth_internal(&mut conn, &password)?;
+        match auth_result {
+            RedisValue::SimpleString(s) => {
+                if s != "OK" {
+                    conn.state = 3;
+                    return Err(RedisError::Auth("authentication failed".to_string()));
+                }
+            },
+            RedisValue::Error(e) => {
+                conn.state = 3;
+                return Err(RedisError::Auth(e));
+            },
+            _ => {},
+        }
+    }
+
+    // Select database if not default
+    if conn.config.db != 0 {
+        redis_select(&mut conn, conn.config.db)?;
+    }
+
+    Ok(conn)
+}
+
+/// Internal AUTH command
+fn redis_auth_internal(conn: &mut RedisConnection, password: &str) -> Result<RedisValue, RedisError> {
+    let cmd = match &conn.config.username {
+        Some(username) => encode_command(&["AUTH", username, password]),
+        None => encode_command(&["AUTH", password]),
+    };
+
+    tcp_send(conn.stream_handle, &cmd);
+    let data = tcp_recv(conn.stream_handle, 4096);
+    if data.is_empty() {
+        return Err(RedisError::Connection("no response to AUTH".to_string()));
+    }
+
+    let (value, _) = decode_response(&data, 0);
+    Ok(value)
+}
+
+/// Authenticate with the Redis server
+///
+/// # Arguments
+/// * `conn` - Active connection
+/// * `password` - Redis password
+pub fn redis_auth(conn: &mut RedisConnection, password: &str) -> Result<(), RedisError> {
+    let result = redis_auth_internal(conn, password)?;
+    match result {
+        RedisValue::SimpleString(s) => {
+            if s == "OK" { Ok(()) }
+            else { Err(RedisError::Auth(s)) }
+        },
+        RedisValue::Error(e) => Err(RedisError::Auth(e)),
+        _ => Err(RedisError::Protocol("unexpected AUTH response".to_string())),
+    }
+}
+
+/// Select a Redis database by index
+///
+/// # Arguments
+/// * `conn` - Active connection
+/// * `db` - Database index (0-15 by default)
+pub fn redis_select(conn: &mut RedisConnection, db: i64) -> Result<(), RedisError> {
+    if !conn.is_ready() {
+        return Err(RedisError::Connection("connection not ready".to_string()));
+    }
+
+    let db_str = db.to_string();
+    let cmd = encode_command(&["SELECT", &db_str]);
+    tcp_send(conn.stream_handle, &cmd);
+
+    let data = tcp_recv(conn.stream_handle, 4096);
+    if data.is_empty() {
+        return Err(RedisError::Connection("no response to SELECT".to_string()));
+    }
+
+    let (value, _) = decode_response(&data, 0);
+    match value {
+        RedisValue::SimpleString(s) => {
+            if s == "OK" {
+                conn.current_db = db;
+                Ok(())
+            } else {
+                Err(RedisError::Server(s))
+            }
+        },
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Err(RedisError::Protocol("unexpected SELECT response".to_string())),
+    }
+}
+
+/// Close a Redis connection
+pub fn redis_close(conn: &mut RedisConnection) {
+    if conn.state != 0 && conn.state != 3 {
+        let cmd = encode_command(&["QUIT"]);
+        tcp_send(conn.stream_handle, &cmd);
+    }
+    tcp_close(conn.stream_handle);
+    conn.state = 0;
+}
+
+/// Send a raw command and receive the response
+pub fn redis_raw_command(conn: &mut RedisConnection, args: &[&str]) -> Result<RedisValue, RedisError> {
+    if !conn.is_ready() {
+        return Err(RedisError::Connection("connection not ready".to_string()));
+    }
+
+    let cmd = encode_command(args);
+    tcp_send(conn.stream_handle, &cmd);
+
+    let data = tcp_recv(conn.stream_handle, 65536);
+    if data.is_empty() {
+        conn.state = 3;
+        return Err(RedisError::Connection("connection lost".to_string()));
+    }
+
+    let (value, _) = decode_response(&data, 0);
+    match &value {
+        RedisValue::Error(e) => Err(RedisError::Server(e.clone())),
+        _ => Ok(value),
+    }
+}
+
+// =============================================================================
+// TCP Runtime Helpers
+// =============================================================================
+
+fn tcp_connect(addr: &str, timeout_ms: i64) -> i64 {
+    unsafe { net_tcp_connect(addr, timeout_ms) }
+}
+
+fn tcp_send(handle: i64, data: &[i64]) {
+    unsafe { net_tcp_send(handle, data.as_ptr(), data.len() as i64) }
+}
+
+fn tcp_recv(handle: i64, max_len: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::with_capacity(max_len);
+    let n = unsafe { net_tcp_recv(handle, buf.as_mut_ptr(), max_len) };
+    if n > 0 {
+        unsafe { buf.set_len(n as i64) };
+    }
+    buf
+}
+
+fn tcp_close(handle: i64) {
+    unsafe { net_tcp_close(handle) }
+}
+
+extern fn net_tcp_connect(addr: i64, timeout_ms: i64) -> i64;
+extern fn net_tcp_send(handle: i64, data: i64, len: i64) -> i64;
+extern fn net_tcp_recv(handle: i64, buf: i64, max_len: i64) -> i64;
+extern fn net_tcp_close(handle: i64) -> i64;
+// simplex-redis/commands - Redis Command Implementations
+//
+// Provides typed wrappers around common Redis commands for
+// key-value operations, hashes, lists, sets, and utility commands.
+//
+// All commands use the RESP protocol internally via redis_raw_command.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::{RedisConnection, redis_raw_command};
+use crate::protocol::{RedisValue, RedisError, encode_command};
+
+// =============================================================================
+// Key-Value Commands
+// =============================================================================
+
+/// GET key - Get the value of a key
+///
+/// Returns the value as a string, or None if the key does not exist.
+pub fn redis_get(conn: &mut RedisConnection, key: &str) -> Result<Option<String>, RedisError> {
+    let result = redis_raw_command(conn, &["GET", key])?;
+    match result {
+        RedisValue::BulkString(s) => Ok(Some(s)),
+        RedisValue::Null => Ok(None),
+        _ => Ok(result.as_string()),
+    }
+}
+
+/// SET key value - Set the value of a key
+///
+/// Optionally accepts expiry in seconds.
+pub fn redis_set(conn: &mut RedisConnection, key: &str, value: &str) -> Result<(), RedisError> {
+    let result = redis_raw_command(conn, &["SET", key, value])?;
+    match result {
+        RedisValue::SimpleString(_) => Ok(()),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(()),
+    }
+}
+
+/// SET key value EX seconds - Set with expiry
+pub fn redis_set_ex(
+    conn: &mut RedisConnection,
+    key: &str,
+    value: &str,
+    seconds: i64,
+) -> Result<(), RedisError> {
+    let sec_str = seconds.to_string();
+    let result = redis_raw_command(conn, &["SET", key, value, "EX", &sec_str])?;
+    match result {
+        RedisValue::SimpleString(_) => Ok(()),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(()),
+    }
+}
+
+/// SET key value NX - Set only if key does not exist
+pub fn redis_set_nx(
+    conn: &mut RedisConnection,
+    key: &str,
+    value: &str,
+) -> Result<bool, RedisError> {
+    let result = redis_raw_command(conn, &["SET", key, value, "NX"])?;
+    match result {
+        RedisValue::SimpleString(_) => Ok(true),
+        RedisValue::Null => Ok(false),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(false),
+    }
+}
+
+/// DEL key [key ...] - Delete one or more keys
+///
+/// Returns the number of keys removed.
+pub fn redis_del(conn: &mut RedisConnection, key: &str) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["DEL", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+/// DEL with multiple keys
+pub fn redis_del_multi(conn: &mut RedisConnection, keys: &[&str]) -> Result<i64, RedisError> {
+    var args: Vec<&str> = Vec::new();
+    args.push("DEL");
+    let mut i: i64 = 0;
+    while i < keys.len() as i64 {
+        args.push(keys[i]);
+        i = i + 1;
+    }
+    let result = redis_raw_command(conn, &args)?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+/// EXISTS key - Check if a key exists
+///
+/// Returns true if the key exists.
+pub fn redis_exists(conn: &mut RedisConnection, key: &str) -> Result<bool, RedisError> {
+    let result = redis_raw_command(conn, &["EXISTS", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n > 0),
+        _ => Ok(false),
+    }
+}
+
+/// EXPIRE key seconds - Set a timeout on a key
+pub fn redis_expire(conn: &mut RedisConnection, key: &str, seconds: i64) -> Result<bool, RedisError> {
+    let sec_str = seconds.to_string();
+    let result = redis_raw_command(conn, &["EXPIRE", key, &sec_str])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n == 1),
+        _ => Ok(false),
+    }
+}
+
+/// TTL key - Get the remaining time to live of a key
+///
+/// Returns -1 if key has no expiry, -2 if key does not exist.
+pub fn redis_ttl(conn: &mut RedisConnection, key: &str) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["TTL", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(-2),
+    }
+}
+
+/// INCR key - Increment the integer value of a key by 1
+pub fn redis_incr(conn: &mut RedisConnection, key: &str) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["INCR", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(0),
+    }
+}
+
+/// DECR key - Decrement the integer value of a key by 1
+pub fn redis_decr(conn: &mut RedisConnection, key: &str) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["DECR", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(0),
+    }
+}
+
+/// INCRBY key increment - Increment by a specific amount
+pub fn redis_incrby(conn: &mut RedisConnection, key: &str, amount: i64) -> Result<i64, RedisError> {
+    let amt_str = amount.to_string();
+    let result = redis_raw_command(conn, &["INCRBY", key, &amt_str])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(0),
+    }
+}
+
+/// KEYS pattern - Find all keys matching a pattern
+pub fn redis_keys(conn: &mut RedisConnection, pattern: &str) -> Result<Vec<String>, RedisError> {
+    let result = redis_raw_command(conn, &["KEYS", pattern])?;
+    extract_string_array(&result)
+}
+
+/// TYPE key - Get the type of a key
+pub fn redis_type(conn: &mut RedisConnection, key: &str) -> Result<String, RedisError> {
+    let result = redis_raw_command(conn, &["TYPE", key])?;
+    match result {
+        RedisValue::SimpleString(s) => Ok(s),
+        _ => Ok("none".to_string()),
+    }
+}
+
+/// PING - Test connection
+pub fn redis_ping(conn: &mut RedisConnection) -> Result<String, RedisError> {
+    let result = redis_raw_command(conn, &["PING"])?;
+    match result {
+        RedisValue::SimpleString(s) => Ok(s),
+        _ => Ok("".to_string()),
+    }
+}
+
+// =============================================================================
+// Hash Commands
+// =============================================================================
+
+/// HSET key field value - Set a hash field
+pub fn redis_hset(
+    conn: &mut RedisConnection,
+    key: &str,
+    field: &str,
+    value: &str,
+) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["HSET", key, field, value])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(0),
+    }
+}
+
+/// HGET key field - Get a hash field value
+pub fn redis_hget(
+    conn: &mut RedisConnection,
+    key: &str,
+    field: &str,
+) -> Result<Option<String>, RedisError> {
+    let result = redis_raw_command(conn, &["HGET", key, field])?;
+    match result {
+        RedisValue::BulkString(s) => Ok(Some(s)),
+        RedisValue::Null => Ok(None),
+        _ => Ok(result.as_string()),
+    }
+}
+
+/// HGETALL key - Get all fields and values in a hash
+///
+/// Returns alternating field/value pairs as a flat Vec.
+pub fn redis_hgetall(
+    conn: &mut RedisConnection,
+    key: &str,
+) -> Result<Vec<String>, RedisError> {
+    let result = redis_raw_command(conn, &["HGETALL", key])?;
+    extract_string_array(&result)
+}
+
+/// HDEL key field [field ...] - Delete hash fields
+pub fn redis_hdel(
+    conn: &mut RedisConnection,
+    key: &str,
+    field: &str,
+) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["HDEL", key, field])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+/// HEXISTS key field - Check if a hash field exists
+pub fn redis_hexists(
+    conn: &mut RedisConnection,
+    key: &str,
+    field: &str,
+) -> Result<bool, RedisError> {
+    let result = redis_raw_command(conn, &["HEXISTS", key, field])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n == 1),
+        _ => Ok(false),
+    }
+}
+
+/// HLEN key - Get the number of fields in a hash
+pub fn redis_hlen(conn: &mut RedisConnection, key: &str) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["HLEN", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+// =============================================================================
+// List Commands
+// =============================================================================
+
+/// LPUSH key value [value ...] - Prepend a value to a list
+pub fn redis_lpush(
+    conn: &mut RedisConnection,
+    key: &str,
+    value: &str,
+) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["LPUSH", key, value])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(0),
+    }
+}
+
+/// RPUSH key value - Append a value to a list
+pub fn redis_rpush(
+    conn: &mut RedisConnection,
+    key: &str,
+    value: &str,
+) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["RPUSH", key, value])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(0),
+    }
+}
+
+/// RPOP key - Remove and return the last element of a list
+pub fn redis_rpop(conn: &mut RedisConnection, key: &str) -> Result<Option<String>, RedisError> {
+    let result = redis_raw_command(conn, &["RPOP", key])?;
+    match result {
+        RedisValue::BulkString(s) => Ok(Some(s)),
+        RedisValue::Null => Ok(None),
+        _ => Ok(result.as_string()),
+    }
+}
+
+/// LPOP key - Remove and return the first element of a list
+pub fn redis_lpop(conn: &mut RedisConnection, key: &str) -> Result<Option<String>, RedisError> {
+    let result = redis_raw_command(conn, &["LPOP", key])?;
+    match result {
+        RedisValue::BulkString(s) => Ok(Some(s)),
+        RedisValue::Null => Ok(None),
+        _ => Ok(result.as_string()),
+    }
+}
+
+/// LRANGE key start stop - Get a range of elements from a list
+pub fn redis_lrange(
+    conn: &mut RedisConnection,
+    key: &str,
+    start: i64,
+    stop: i64,
+) -> Result<Vec<String>, RedisError> {
+    let start_str = start.to_string();
+    let stop_str = stop.to_string();
+    let result = redis_raw_command(conn, &["LRANGE", key, &start_str, &stop_str])?;
+    extract_string_array(&result)
+}
+
+/// LLEN key - Get the length of a list
+pub fn redis_llen(conn: &mut RedisConnection, key: &str) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["LLEN", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+// =============================================================================
+// Set Commands
+// =============================================================================
+
+/// SADD key member [member ...] - Add a member to a set
+pub fn redis_sadd(
+    conn: &mut RedisConnection,
+    key: &str,
+    member: &str,
+) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["SADD", key, member])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+/// SMEMBERS key - Get all members of a set
+pub fn redis_smembers(conn: &mut RedisConnection, key: &str) -> Result<Vec<String>, RedisError> {
+    let result = redis_raw_command(conn, &["SMEMBERS", key])?;
+    extract_string_array(&result)
+}
+
+/// SISMEMBER key member - Check if a member is in a set
+pub fn redis_sismember(
+    conn: &mut RedisConnection,
+    key: &str,
+    member: &str,
+) -> Result<bool, RedisError> {
+    let result = redis_raw_command(conn, &["SISMEMBER", key, member])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n == 1),
+        _ => Ok(false),
+    }
+}
+
+/// SREM key member - Remove a member from a set
+pub fn redis_srem(
+    conn: &mut RedisConnection,
+    key: &str,
+    member: &str,
+) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["SREM", key, member])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+/// SCARD key - Get the number of members in a set
+pub fn redis_scard(conn: &mut RedisConnection, key: &str) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["SCARD", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+// =============================================================================
+// Utility Commands
+// =============================================================================
+
+/// APPEND key value - Append a value to a string
+pub fn redis_append(
+    conn: &mut RedisConnection,
+    key: &str,
+    value: &str,
+) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["APPEND", key, value])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+/// STRLEN key - Get the length of a string value
+pub fn redis_strlen(conn: &mut RedisConnection, key: &str) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["STRLEN", key])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+/// DBSIZE - Return the number of keys in the selected database
+pub fn redis_dbsize(conn: &mut RedisConnection) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["DBSIZE"])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        _ => Ok(0),
+    }
+}
+
+/// FLUSHDB - Remove all keys from the current database
+pub fn redis_flushdb(conn: &mut RedisConnection) -> Result<(), RedisError> {
+    let result = redis_raw_command(conn, &["FLUSHDB"])?;
+    match result {
+        RedisValue::SimpleString(_) => Ok(()),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(()),
+    }
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Extract a string array from a RedisValue::Array
+fn extract_string_array(value: &RedisValue) -> Result<Vec<String>, RedisError> {
+    match value {
+        RedisValue::Array(items) => {
+            var result: Vec<String> = Vec::new();
+            let mut i: i64 = 0;
+            while i < items.len() as i64 {
+                match &items[i] {
+                    RedisValue::BulkString(s) => result.push(s.clone()),
+                    RedisValue::SimpleString(s) => result.push(s.clone()),
+                    RedisValue::Integer(n) => result.push(n.to_string()),
+                    RedisValue::Null => result.push("".to_string()),
+                    _ => result.push("".to_string()),
+                }
+                i = i + 1;
+            }
+            Ok(result)
+        },
+        RedisValue::Null => Ok(Vec::new()),
+        _ => Ok(Vec::new()),
+    }
+}
+// simplex-redis/pubsub - Publish/Subscribe Messaging
+//
+// Implements Redis pub/sub functionality. A connection in subscription
+// mode can only receive messages and manage subscriptions -- it cannot
+// execute regular commands.
+//
+// # Usage
+//
+// ```simplex
+// // Publisher
+// redis_publish(&mut conn, "events", "user_signup")?;
+//
+// // Subscriber
+// redis_subscribe(&mut sub_conn, "events")?;
+// loop {
+//     let msg = redis_recv_message(&mut sub_conn)?;
+//     println(format!("Channel: {}, Message: {}", msg.channel, msg.data));
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::{RedisConnection, redis_raw_command};
+use crate::protocol::{
+    RedisValue, RedisError, encode_command, decode_response,
+};
+
+// =============================================================================
+// Pub/Sub Message
+// =============================================================================
+
+/// A message received from a subscription
+pub struct PubSubMessage {
+    /// Message type: "message", "subscribe", "unsubscribe"
+    pub kind: String,
+    /// Channel name
+    pub channel: String,
+    /// Message data (for "message" type) or subscription count (as string)
+    pub data: String,
+}
+
+// =============================================================================
+// Subscribe/Unsubscribe
+// =============================================================================
+
+/// Subscribe to one or more channels
+///
+/// Puts the connection into subscription mode. The connection
+/// can only be used for pub/sub operations after this call.
+///
+/// # Arguments
+/// * `conn` - Redis connection (will be put into subscribed state)
+/// * `channel` - Channel name to subscribe to
+pub fn redis_subscribe(
+    conn: &mut RedisConnection,
+    channel: &str,
+) -> Result<(), RedisError> {
+    let cmd = encode_command(&["SUBSCRIBE", channel]);
+    tcp_send(conn.stream_handle, &cmd);
+
+    let data = tcp_recv(conn.stream_handle, 4096);
+    if data.is_empty() {
+        return Err(RedisError::Connection("no response to SUBSCRIBE".to_string()));
+    }
+
+    let (value, _) = decode_response(&data, 0);
+    match &value {
+        RedisValue::Array(items) => {
+            // Expect ["subscribe", channel, count]
+            if items.len() >= 1 {
+                conn.state = 2; // subscribed
+                Ok(())
+            } else {
+                Err(RedisError::Protocol("unexpected SUBSCRIBE response".to_string()))
+            }
+        },
+        RedisValue::Error(e) => Err(RedisError::Server(e.clone())),
+        _ => {
+            conn.state = 2;
+            Ok(())
+        },
+    }
+}
+
+/// Subscribe to multiple channels at once
+pub fn redis_subscribe_multi(
+    conn: &mut RedisConnection,
+    channels: &[&str],
+) -> Result<(), RedisError> {
+    var args: Vec<&str> = Vec::new();
+    args.push("SUBSCRIBE");
+    let mut i: i64 = 0;
+    while i < channels.len() as i64 {
+        args.push(channels[i]);
+        i = i + 1;
+    }
+
+    let cmd = encode_command(&args);
+    tcp_send(conn.stream_handle, &cmd);
+
+    // Read subscription confirmations
+    i = 0;
+    while i < channels.len() as i64 {
+        let data = tcp_recv(conn.stream_handle, 4096);
+        if data.is_empty() {
+            return Err(RedisError::Connection("lost connection during SUBSCRIBE".to_string()));
+        }
+        i = i + 1;
+    }
+
+    conn.state = 2;
+    Ok(())
+}
+
+/// Unsubscribe from a channel
+pub fn redis_unsubscribe(
+    conn: &mut RedisConnection,
+    channel: &str,
+) -> Result<(), RedisError> {
+    if !conn.is_subscribed() {
+        return Err(RedisError::Command("not in subscription mode".to_string()));
+    }
+
+    let cmd = encode_command(&["UNSUBSCRIBE", channel]);
+    tcp_send(conn.stream_handle, &cmd);
+
+    let data = tcp_recv(conn.stream_handle, 4096);
+    if data.is_empty() {
+        return Err(RedisError::Connection("no response to UNSUBSCRIBE".to_string()));
+    }
+
+    let (value, _) = decode_response(&data, 0);
+    match &value {
+        RedisValue::Array(items) => {
+            // Check remaining subscription count
+            if items.len() >= 3 {
+                if let Some(count) = items[2].as_int() {
+                    if count == 0 {
+                        conn.state = 1; // back to ready mode
+                    }
+                }
+            }
+        },
+        _ => {},
+    }
+
+    Ok(())
+}
+
+/// Unsubscribe from all channels
+pub fn redis_unsubscribe_all(conn: &mut RedisConnection) -> Result<(), RedisError> {
+    if !conn.is_subscribed() {
+        return Err(RedisError::Command("not in subscription mode".to_string()));
+    }
+
+    let cmd = encode_command(&["UNSUBSCRIBE"]);
+    tcp_send(conn.stream_handle, &cmd);
+
+    let data = tcp_recv(conn.stream_handle, 4096);
+    conn.state = 1; // back to ready
+    Ok(())
+}
+
+// =============================================================================
+// Publish
+// =============================================================================
+
+/// Publish a message to a channel
+///
+/// Can be called from any connection (does not need to be subscribed).
+///
+/// # Arguments
+/// * `conn` - Redis connection
+/// * `channel` - Channel to publish to
+/// * `message` - Message content
+///
+/// Returns the number of subscribers that received the message.
+pub fn redis_publish(
+    conn: &mut RedisConnection,
+    channel: &str,
+    message: &str,
+) -> Result<i64, RedisError> {
+    let result = redis_raw_command(conn, &["PUBLISH", channel, message])?;
+    match result {
+        RedisValue::Integer(n) => Ok(n),
+        RedisValue::Error(e) => Err(RedisError::Server(e)),
+        _ => Ok(0),
+    }
+}
+
+// =============================================================================
+// Receive Messages
+// =============================================================================
+
+/// Receive the next pub/sub message
+///
+/// Blocks until a message is received. The connection must be
+/// in subscribed mode (after calling redis_subscribe).
+///
+/// # Arguments
+/// * `conn` - Subscribed Redis connection
+pub fn redis_recv_message(conn: &mut RedisConnection) -> Result<PubSubMessage, RedisError> {
+    if !conn.is_subscribed() {
+        return Err(RedisError::Command("not in subscription mode".to_string()));
+    }
+
+    let data = tcp_recv(conn.stream_handle, 65536);
+    if data.is_empty() {
+        conn.state = 3; // failed
+        return Err(RedisError::Connection("connection lost".to_string()));
+    }
+
+    let (value, _) = decode_response(&data, 0);
+    parse_pubsub_message(&value)
+}
+
+/// Parse a pub/sub message from a RedisValue
+fn parse_pubsub_message(value: &RedisValue) -> Result<PubSubMessage, RedisError> {
+    match value {
+        RedisValue::Array(items) => {
+            if items.len() < 3 {
+                return Err(RedisError::Protocol("invalid pub/sub message".to_string()));
+            }
+
+            let kind = match &items[0] {
+                RedisValue::BulkString(s) => s.clone(),
+                RedisValue::SimpleString(s) => s.clone(),
+                _ => "unknown".to_string(),
+            };
+
+            let channel = match &items[1] {
+                RedisValue::BulkString(s) => s.clone(),
+                RedisValue::SimpleString(s) => s.clone(),
+                _ => "".to_string(),
+            };
+
+            let data = match &items[2] {
+                RedisValue::BulkString(s) => s.clone(),
+                RedisValue::SimpleString(s) => s.clone(),
+                RedisValue::Integer(n) => n.to_string(),
+                _ => "".to_string(),
+            };
+
+            Ok(PubSubMessage { kind, channel, data })
+        },
+        _ => Err(RedisError::Protocol("expected array for pub/sub message".to_string())),
+    }
+}
+
+// =============================================================================
+// TCP Helpers
+// =============================================================================
+
+fn tcp_send(handle: i64, data: &[i64]) {
+    unsafe { net_tcp_send(handle, data.as_ptr(), data.len() as i64) }
+}
+
+fn tcp_recv(handle: i64, max_len: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::with_capacity(max_len);
+    let n = unsafe { net_tcp_recv(handle, buf.as_mut_ptr(), max_len) };
+    if n > 0 {
+        unsafe { buf.set_len(n as i64) };
+    }
+    buf
+}
+
+extern fn net_tcp_send(handle: i64, data: i64, len: i64) -> i64;
+extern fn net_tcp_recv(handle: i64, buf: i64, max_len: i64) -> i64;
+// simplex-redis/pipeline - Command Pipelining
+//
+// Allows batching multiple Redis commands into a single network
+// round-trip. Commands are buffered locally and sent together,
+// then all responses are read and returned.
+//
+// Pipelining can dramatically improve throughput when executing
+// many commands in sequence.
+//
+// # Usage
+//
+// ```simplex
+// let mut pipe = pipeline_new();
+// pipeline_add(&mut pipe, &["SET", "a", "1"]);
+// pipeline_add(&mut pipe, &["SET", "b", "2"]);
+// pipeline_add(&mut pipe, &["GET", "a"]);
+// pipeline_add(&mut pipe, &["GET", "b"]);
+// let results = pipeline_execute(&mut conn, &pipe)?;
+// // results[2] == RedisValue::BulkString("1")
+// // results[3] == RedisValue::BulkString("2")
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::RedisConnection;
+use crate::protocol::{
+    RedisValue, RedisError, encode_command, encode_commands, decode_response,
+};
+
+// =============================================================================
+// Pipeline
+// =============================================================================
+
+/// A batch of Redis commands to execute in a single round-trip
+pub struct RedisPipeline {
+    /// Buffered commands (each is a vec of argument strings)
+    pub commands: Vec<Vec<String>>,
+}
+
+/// Create a new empty pipeline
+pub fn pipeline_new() -> RedisPipeline {
+    RedisPipeline {
+        commands: Vec::new(),
+    }
+}
+
+/// Add a command to the pipeline
+///
+/// # Arguments
+/// * `pipe` - The pipeline to add to
+/// * `args` - Command arguments (e.g., ["SET", "key", "value"])
+pub fn pipeline_add(pipe: &mut RedisPipeline, args: &[&str]) {
+    var cmd: Vec<String> = Vec::new();
+    let mut i: i64 = 0;
+    while i < args.len() as i64 {
+        cmd.push(args[i].to_string());
+        i = i + 1;
+    }
+    pipe.commands.push(cmd);
+}
+
+/// Get the number of commands in the pipeline
+pub fn pipeline_len(pipe: &RedisPipeline) -> i64 {
+    pipe.commands.len() as i64
+}
+
+/// Clear all commands from the pipeline
+pub fn pipeline_clear(pipe: &mut RedisPipeline) {
+    pipe.commands.clear();
+}
+
+/// Execute all commands in the pipeline
+///
+/// Sends all commands in a single write, then reads all responses.
+/// Returns a vector of RedisValue results, one per command.
+///
+/// # Arguments
+/// * `conn` - Active Redis connection
+/// * `pipe` - Pipeline containing commands to execute
+pub fn pipeline_execute(
+    conn: &mut RedisConnection,
+    pipe: &RedisPipeline,
+) -> Result<Vec<RedisValue>, RedisError> {
+    if !conn.is_ready() {
+        return Err(RedisError::Connection("connection not ready".to_string()));
+    }
+
+    if pipe.commands.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Encode all commands into a single buffer
+    let encoded = encode_commands(&pipe.commands);
+    tcp_send(conn.stream_handle, &encoded);
+
+    // Read all responses
+    var results: Vec<RedisValue> = Vec::new();
+    let num_commands = pipe.commands.len() as i64;
+    var responses_read: i64 = 0;
+
+    // Read data in chunks until we have all responses
+    var buffer: Vec<i64> = Vec::new();
+    var buf_offset: i64 = 0;
+
+    while responses_read < num_commands {
+        // Read more data from socket
+        let data = tcp_recv(conn.stream_handle, 65536);
+        if data.is_empty() {
+            conn.state = 3;
+            return Err(RedisError::Connection("connection lost during pipeline".to_string()));
+        }
+
+        // Append to buffer
+        let mut i: i64 = 0;
+        while i < data.len() as i64 {
+            buffer.push(data[i]);
+            i = i + 1;
+        }
+
+        // Parse as many responses as possible from the buffer
+        while responses_read < num_commands && buf_offset < buffer.len() as i64 {
+            let (value, consumed) = decode_response(&buffer, buf_offset);
+            if consumed == 0 {
+                break; // Need more data
+            }
+            results.push(value);
+            buf_offset = buf_offset + consumed;
+            responses_read = responses_read + 1;
+        }
+    }
+
+    Ok(results)
+}
+
+/// Execute a pipeline and return only the last result
+///
+/// Useful for pipelines where only the final command's result matters
+/// (e.g., a series of SETs followed by a GET).
+pub fn pipeline_execute_last(
+    conn: &mut RedisConnection,
+    pipe: &RedisPipeline,
+) -> Result<RedisValue, RedisError> {
+    let results = pipeline_execute(conn, pipe)?;
+    if results.is_empty() {
+        Ok(RedisValue::Null)
+    } else {
+        let last_idx = results.len() - 1;
+        Ok(results[last_idx].clone())
+    }
+}
+
+// =============================================================================
+// Convenience Builders
+// =============================================================================
+
+impl RedisPipeline {
+    /// Add a GET command
+    pub fn get(&mut self, key: &str) -> &mut Self {
+        pipeline_add(self, &["GET", key]);
+        self
+    }
+
+    /// Add a SET command
+    pub fn set(&mut self, key: &str, value: &str) -> &mut Self {
+        pipeline_add(self, &["SET", key, value]);
+        self
+    }
+
+    /// Add a DEL command
+    pub fn del(&mut self, key: &str) -> &mut Self {
+        pipeline_add(self, &["DEL", key]);
+        self
+    }
+
+    /// Add an INCR command
+    pub fn incr(&mut self, key: &str) -> &mut Self {
+        pipeline_add(self, &["INCR", key]);
+        self
+    }
+
+    /// Add an HSET command
+    pub fn hset(&mut self, key: &str, field: &str, value: &str) -> &mut Self {
+        pipeline_add(self, &["HSET", key, field, value]);
+        self
+    }
+
+    /// Add an HGET command
+    pub fn hget(&mut self, key: &str, field: &str) -> &mut Self {
+        pipeline_add(self, &["HGET", key, field]);
+        self
+    }
+
+    /// Add an LPUSH command
+    pub fn lpush(&mut self, key: &str, value: &str) -> &mut Self {
+        pipeline_add(self, &["LPUSH", key, value]);
+        self
+    }
+
+    /// Add an RPOP command
+    pub fn rpop(&mut self, key: &str) -> &mut Self {
+        pipeline_add(self, &["RPOP", key]);
+        self
+    }
+}
+
+// =============================================================================
+// TCP Helpers
+// =============================================================================
+
+fn tcp_send(handle: i64, data: &[i64]) {
+    unsafe { net_tcp_send(handle, data.as_ptr(), data.len() as i64) }
+}
+
+fn tcp_recv(handle: i64, max_len: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::with_capacity(max_len);
+    let n = unsafe { net_tcp_recv(handle, buf.as_mut_ptr(), max_len) };
+    if n > 0 {
+        unsafe { buf.set_len(n as i64) };
+    }
+    buf
+}
+
+extern fn net_tcp_send(handle: i64, data: i64, len: i64) -> i64;
+extern fn net_tcp_recv(handle: i64, buf: i64, max_len: i64) -> i64;

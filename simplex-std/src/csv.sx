@@ -1,0 +1,772 @@
+// Simplex CSV Library
+// RFC 4180 compliant CSV parser and serializer
+//
+// Provides pure Simplex CSV manipulation using vec handles (i64) for all
+// data structures. Supports quoted fields with embedded commas, newlines,
+// and escaped quotes.
+//
+// # Usage
+//
+// ```simplex
+// use simplex_std::csv::{csv_parse_default, csv_get_cell, csv_stringify};
+//
+// let table = csv_parse_default("name,age\nAlice,30\nBob,25");
+// let cell = csv_get_cell(table, 0, 0);  // "Alice"
+// let output = csv_stringify(table, csv_config_new());
+// ```
+//
+// # Data Model
+//
+// A CSV table is a vec: [headers_vec, rows_vec]
+//   - headers_vec: vec of string handles (column names)
+//   - rows_vec: vec of row vecs, each row vec contains string handles
+//
+// A CSV config is a vec: [delimiter_char, quote_char, has_header, skip_empty]
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+extern fn string_from_char(c: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn string_find(s: i64, needle: i64, start: i64) -> i64;
+extern fn string_trim(s: i64) -> i64;
+
+extern fn sb_new() -> i64;
+extern fn sb_append(sb: i64, s: i64);
+extern fn sb_append_char(sb: i64, c: i64);
+extern fn sb_to_string(sb: i64) -> i64;
+
+extern fn println(s: i64);
+extern fn int_to_string(n: i64) -> i64;
+
+// =============================================================================
+// Config Constants (as functions per Simplex convention)
+// =============================================================================
+
+/// Default delimiter: comma (44 = ',')
+fn CSV_COMMA() -> i64 { 44 }
+
+/// Tab delimiter (9 = '\t')
+fn CSV_TAB() -> i64 { 9 }
+
+/// Default quote character (34 = '"')
+fn CSV_QUOTE() -> i64 { 34 }
+
+/// Newline character (10 = '\n')
+fn CSV_LF() -> i64 { 10 }
+
+/// Carriage return (13 = '\r')
+fn CSV_CR() -> i64 { 13 }
+
+// Config vec indices
+fn CFG_DELIMITER() -> i64 { 0 }
+fn CFG_QUOTE() -> i64 { 1 }
+fn CFG_HAS_HEADER() -> i64 { 2 }
+fn CFG_SKIP_EMPTY() -> i64 { 3 }
+
+// Table vec indices
+fn TBL_HEADERS() -> i64 { 0 }
+fn TBL_ROWS() -> i64 { 1 }
+
+// =============================================================================
+// Config API
+// =============================================================================
+
+/// Create a default CSV config: comma delimiter, double-quote, has header, skip empty
+///
+/// Returns a config vec: [delimiter_char, quote_char, has_header, skip_empty]
+///
+/// # Example
+/// ```simplex
+/// let config = csv_config_new();
+/// ```
+pub fn csv_config_new() -> i64 {
+    let cfg: i64 = vec_new();
+    vec_push(cfg, CSV_COMMA());    // delimiter = ','
+    vec_push(cfg, CSV_QUOTE());    // quote = '"'
+    vec_push(cfg, 1);              // has_header = true
+    vec_push(cfg, 1);              // skip_empty = true
+    cfg
+}
+
+/// Create a TSV config (tab-separated values)
+pub fn csv_config_tsv() -> i64 {
+    let cfg: i64 = vec_new();
+    vec_push(cfg, CSV_TAB());
+    vec_push(cfg, CSV_QUOTE());
+    vec_push(cfg, 1);
+    vec_push(cfg, 1);
+    cfg
+}
+
+/// Create a config with custom delimiter
+pub fn csv_config_with_delimiter(delim: i64) -> i64 {
+    let cfg: i64 = vec_new();
+    vec_push(cfg, delim);
+    vec_push(cfg, CSV_QUOTE());
+    vec_push(cfg, 1);
+    vec_push(cfg, 1);
+    cfg
+}
+
+/// Create a config with no header row
+pub fn csv_config_no_header() -> i64 {
+    let cfg: i64 = vec_new();
+    vec_push(cfg, CSV_COMMA());
+    vec_push(cfg, CSV_QUOTE());
+    vec_push(cfg, 0);              // has_header = false
+    vec_push(cfg, 1);
+    cfg
+}
+
+// =============================================================================
+// Internal Parsing Helpers
+// =============================================================================
+
+/// Check if a character is a line ending (LF or CR)
+fn is_line_end(c: i64) -> i64 {
+    if c == CSV_LF() { return 1; }
+    if c == CSV_CR() { return 1; }
+    0
+}
+
+/// Parse a single quoted field starting at position pos (after the opening quote).
+/// Returns a vec: [parsed_string, new_position]
+fn parse_quoted_field(input: i64, pos: i64, quote_char: i64) -> i64 {
+    let len: i64 = string_length(input);
+    let sb: i64 = sb_new();
+    var i: i64 = pos;
+
+    while i < len {
+        let c: i64 = string_char_at(input, i);
+        if c == quote_char {
+            // Check for escaped quote (double quote)
+            let next: i64 = i + 1;
+            if next < len {
+                let nc: i64 = string_char_at(input, next);
+                if nc == quote_char {
+                    // Escaped quote - add single quote and skip both
+                    sb_append_char(sb, quote_char);
+                    i = i + 2;
+                } else {
+                    // End of quoted field
+                    i = i + 1;
+                    let result: i64 = vec_new();
+                    vec_push(result, sb_to_string(sb));
+                    vec_push(result, i);
+                    return result;
+                }
+            } else {
+                // Quote at end of input - end of field
+                i = i + 1;
+                let result: i64 = vec_new();
+                vec_push(result, sb_to_string(sb));
+                vec_push(result, i);
+                return result;
+            }
+        } else {
+            sb_append_char(sb, c);
+            i = i + 1;
+        }
+    }
+
+    // Unterminated quote - return what we have
+    let result: i64 = vec_new();
+    vec_push(result, sb_to_string(sb));
+    vec_push(result, i);
+    result
+}
+
+/// Parse an unquoted field starting at position pos.
+/// Returns a vec: [parsed_string, new_position]
+fn parse_unquoted_field(input: i64, pos: i64, delim: i64) -> i64 {
+    let len: i64 = string_length(input);
+    let sb: i64 = sb_new();
+    var i: i64 = pos;
+
+    while i < len {
+        let c: i64 = string_char_at(input, i);
+        if c == delim {
+            let result: i64 = vec_new();
+            vec_push(result, sb_to_string(sb));
+            vec_push(result, i);
+            return result;
+        }
+        if c == CSV_LF() {
+            let result: i64 = vec_new();
+            vec_push(result, sb_to_string(sb));
+            vec_push(result, i);
+            return result;
+        }
+        if c == CSV_CR() {
+            let result: i64 = vec_new();
+            vec_push(result, sb_to_string(sb));
+            vec_push(result, i);
+            return result;
+        }
+        sb_append_char(sb, c);
+        i = i + 1;
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, sb_to_string(sb));
+    vec_push(result, i);
+    result
+}
+
+/// Parse a single row starting at position pos.
+/// Returns a vec: [fields_vec, new_position]
+fn parse_row(input: i64, pos: i64, delim: i64, quote_char: i64) -> i64 {
+    let len: i64 = string_length(input);
+    let fields: i64 = vec_new();
+    var i: i64 = pos;
+
+    // Handle empty input at end
+    if i >= len {
+        let result: i64 = vec_new();
+        vec_push(result, fields);
+        vec_push(result, i);
+        return result;
+    }
+
+    // Parse fields until end of line or end of input
+    var done: i64 = 0;
+    while done == 0 {
+        if i >= len {
+            // Add empty trailing field if line ended with delimiter
+            vec_push(fields, "");
+            done = 1;
+        } else {
+            let c: i64 = string_char_at(input, i);
+
+            // Check for line ending (empty trailing field case is handled by delimiter check)
+            if c == CSV_LF() {
+                // If this is the first char and fields is empty, it's an empty line
+                if vec_len(fields) == 0 {
+                    vec_push(fields, "");
+                }
+                i = i + 1;
+                done = 1;
+            } else if c == CSV_CR() {
+                if vec_len(fields) == 0 {
+                    vec_push(fields, "");
+                }
+                i = i + 1;
+                // Skip LF after CR
+                if i < len {
+                    if string_char_at(input, i) == CSV_LF() {
+                        i = i + 1;
+                    }
+                }
+                done = 1;
+            } else if c == quote_char {
+                // Quoted field - skip the opening quote
+                let parsed: i64 = parse_quoted_field(input, i + 1, quote_char);
+                let field_val: i64 = vec_get(parsed, 0);
+                let new_pos: i64 = vec_get(parsed, 1);
+                vec_push(fields, field_val);
+                i = new_pos;
+
+                // After quoted field, expect delimiter or line ending
+                if i < len {
+                    let nc: i64 = string_char_at(input, i);
+                    if nc == delim {
+                        i = i + 1;
+                        // If at end of input after delimiter, add empty field
+                        if i >= len {
+                            vec_push(fields, "");
+                            done = 1;
+                        }
+                    } else if nc == CSV_LF() {
+                        i = i + 1;
+                        done = 1;
+                    } else if nc == CSV_CR() {
+                        i = i + 1;
+                        if i < len {
+                            if string_char_at(input, i) == CSV_LF() {
+                                i = i + 1;
+                            }
+                        }
+                        done = 1;
+                    } else {
+                        // Unexpected char after closing quote - skip it
+                        i = i + 1;
+                    }
+                } else {
+                    done = 1;
+                }
+            } else {
+                // Unquoted field
+                let parsed: i64 = parse_unquoted_field(input, i, delim);
+                let field_val: i64 = vec_get(parsed, 0);
+                let new_pos: i64 = vec_get(parsed, 1);
+                vec_push(fields, field_val);
+                i = new_pos;
+
+                // Check what terminated the field
+                if i < len {
+                    let nc: i64 = string_char_at(input, i);
+                    if nc == delim {
+                        i = i + 1;
+                        // If at end of input after delimiter, add empty field
+                        if i >= len {
+                            vec_push(fields, "");
+                            done = 1;
+                        }
+                    } else if nc == CSV_LF() {
+                        i = i + 1;
+                        done = 1;
+                    } else if nc == CSV_CR() {
+                        i = i + 1;
+                        if i < len {
+                            if string_char_at(input, i) == CSV_LF() {
+                                i = i + 1;
+                            }
+                        }
+                        done = 1;
+                    } else {
+                        done = 1;
+                    }
+                } else {
+                    done = 1;
+                }
+            }
+        }
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, fields);
+    vec_push(result, i);
+    result
+}
+
+/// Check if a row is empty (all fields are empty strings)
+fn is_empty_row(fields: i64) -> i64 {
+    let count: i64 = vec_len(fields);
+    if count == 0 { return 1; }
+    var i: i64 = 0;
+    while i < count {
+        let field: i64 = vec_get(fields, i);
+        if string_length(field) > 0 {
+            return 0;
+        }
+        i = i + 1;
+    }
+    1
+}
+
+// =============================================================================
+// Public Parsing API
+// =============================================================================
+
+/// Parse a CSV string with the given config.
+///
+/// Returns a table vec: [headers_vec, rows_vec]
+/// If has_header is true, the first row becomes headers.
+/// If has_header is false, headers is an empty vec.
+///
+/// # Example
+/// ```simplex
+/// let config = csv_config_new();
+/// let table = csv_parse("name,age\nAlice,30", config);
+/// ```
+pub fn csv_parse(input: i64, config: i64) -> i64 {
+    let delim: i64 = vec_get(config, CFG_DELIMITER());
+    let quote_char: i64 = vec_get(config, CFG_QUOTE());
+    let has_header: i64 = vec_get(config, CFG_HAS_HEADER());
+    let skip_empty: i64 = vec_get(config, CFG_SKIP_EMPTY());
+
+    let len: i64 = string_length(input);
+    let headers: i64 = vec_new();
+    let rows: i64 = vec_new();
+    var pos: i64 = 0;
+    var first_row: i64 = 1;
+
+    while pos < len {
+        let parsed: i64 = parse_row(input, pos, delim, quote_char);
+        let fields: i64 = vec_get(parsed, 0);
+        let new_pos: i64 = vec_get(parsed, 1);
+
+        // Prevent infinite loop
+        if new_pos <= pos {
+            pos = pos + 1;
+        } else {
+            pos = new_pos;
+        }
+
+        // Skip empty rows if configured
+        if skip_empty == 1 {
+            if is_empty_row(fields) == 1 {
+                // skip this row entirely
+            } else if first_row == 1 {
+                if has_header == 1 {
+                    // Copy fields to headers
+                    var hi: i64 = 0;
+                    while hi < vec_len(fields) {
+                        vec_push(headers, vec_get(fields, hi));
+                        hi = hi + 1;
+                    }
+                    first_row = 0;
+                } else {
+                    vec_push(rows, fields);
+                    first_row = 0;
+                }
+            } else {
+                vec_push(rows, fields);
+            }
+        } else if first_row == 1 {
+            if has_header == 1 {
+                var hi: i64 = 0;
+                while hi < vec_len(fields) {
+                    vec_push(headers, vec_get(fields, hi));
+                    hi = hi + 1;
+                }
+                first_row = 0;
+            } else {
+                vec_push(rows, fields);
+                first_row = 0;
+            }
+        } else {
+            vec_push(rows, fields);
+        }
+    }
+
+    let table: i64 = vec_new();
+    vec_push(table, headers);
+    vec_push(table, rows);
+    table
+}
+
+/// Parse a CSV string with default config (comma-delimited, has header).
+///
+/// # Example
+/// ```simplex
+/// let table = csv_parse_default("name,age\nAlice,30\nBob,25");
+/// ```
+pub fn csv_parse_default(input: i64) -> i64 {
+    let config: i64 = csv_config_new();
+    csv_parse(input, config)
+}
+
+// =============================================================================
+// Table Accessor API
+// =============================================================================
+
+/// Get the headers vec from a table.
+///
+/// # Example
+/// ```simplex
+/// let hdrs = csv_headers(table);
+/// ```
+pub fn csv_headers(table: i64) -> i64 {
+    vec_get(table, TBL_HEADERS())
+}
+
+/// Get the rows vec from a table.
+pub fn csv_rows(table: i64) -> i64 {
+    vec_get(table, TBL_ROWS())
+}
+
+/// Get the number of data rows (excluding header).
+///
+/// # Example
+/// ```simplex
+/// let n = csv_row_count(table);
+/// ```
+pub fn csv_row_count(table: i64) -> i64 {
+    let rows: i64 = vec_get(table, TBL_ROWS());
+    vec_len(rows)
+}
+
+/// Get the number of columns (from header or first row).
+///
+/// # Example
+/// ```simplex
+/// let n = csv_col_count(table);
+/// ```
+pub fn csv_col_count(table: i64) -> i64 {
+    let headers: i64 = vec_get(table, TBL_HEADERS());
+    if vec_len(headers) > 0 {
+        return vec_len(headers);
+    }
+    let rows: i64 = vec_get(table, TBL_ROWS());
+    if vec_len(rows) > 0 {
+        let first: i64 = vec_get(rows, 0);
+        return vec_len(first);
+    }
+    0
+}
+
+/// Get a row by index (0-based, data rows only).
+///
+/// Returns a vec of string handles, or an empty vec if out of bounds.
+///
+/// # Example
+/// ```simplex
+/// let row = csv_get_row(table, 0);  // first data row
+/// ```
+pub fn csv_get_row(table: i64, index: i64) -> i64 {
+    let rows: i64 = vec_get(table, TBL_ROWS());
+    if index < 0 { return vec_new(); }
+    if index >= vec_len(rows) { return vec_new(); }
+    vec_get(rows, index)
+}
+
+/// Get a cell value by row and column index (0-based).
+///
+/// Returns a string handle, or an empty string if out of bounds.
+///
+/// # Example
+/// ```simplex
+/// let val = csv_get_cell(table, 0, 1);  // row 0, col 1
+/// ```
+pub fn csv_get_cell(table: i64, row: i64, col: i64) -> i64 {
+    let rows: i64 = vec_get(table, TBL_ROWS());
+    if row < 0 { return ""; }
+    if row >= vec_len(rows) { return ""; }
+    let r: i64 = vec_get(rows, row);
+    if col < 0 { return ""; }
+    if col >= vec_len(r) { return ""; }
+    vec_get(r, col)
+}
+
+/// Get a cell value by row index and header name.
+///
+/// Returns a string handle, or an empty string if not found.
+///
+/// # Example
+/// ```simplex
+/// let val = csv_get_by_name(table, 0, "age");
+/// ```
+pub fn csv_get_by_name(table: i64, row: i64, name: i64) -> i64 {
+    let headers: i64 = vec_get(table, TBL_HEADERS());
+    let col_count: i64 = vec_len(headers);
+    var ci: i64 = 0;
+    while ci < col_count {
+        let hdr: i64 = vec_get(headers, ci);
+        if intrinsic_string_eq(hdr, name) == 1 {
+            return csv_get_cell(table, row, ci);
+        }
+        ci = ci + 1;
+    }
+    ""
+}
+
+// =============================================================================
+// Serialization API
+// =============================================================================
+
+/// Check if a field value needs quoting (contains delimiter, quote, or newline)
+fn field_needs_quoting(field: i64, delim: i64, quote_char: i64) -> i64 {
+    let len: i64 = string_length(field);
+    var i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(field, i);
+        if c == delim { return 1; }
+        if c == quote_char { return 1; }
+        if c == CSV_LF() { return 1; }
+        if c == CSV_CR() { return 1; }
+        i = i + 1;
+    }
+    0
+}
+
+/// Escape a field value for CSV output.
+/// Wraps in quotes and doubles any internal quotes.
+fn escape_field(field: i64, quote_char: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append_char(sb, quote_char);
+    let len: i64 = string_length(field);
+    var i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(field, i);
+        if c == quote_char {
+            sb_append_char(sb, quote_char);
+            sb_append_char(sb, quote_char);
+        } else {
+            sb_append_char(sb, c);
+        }
+        i = i + 1;
+    }
+    sb_append_char(sb, quote_char);
+    sb_to_string(sb)
+}
+
+/// Format a single field for CSV output (quoting if needed)
+fn format_field(field: i64, delim: i64, quote_char: i64) -> i64 {
+    if field_needs_quoting(field, delim, quote_char) == 1 {
+        return escape_field(field, quote_char);
+    }
+    field
+}
+
+/// Serialize a row vec to a CSV line string.
+fn serialize_row(fields: i64, delim: i64, quote_char: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let count: i64 = vec_len(fields);
+    var i: i64 = 0;
+    while i < count {
+        if i > 0 {
+            sb_append_char(sb, delim);
+        }
+        let field: i64 = vec_get(fields, i);
+        let formatted: i64 = format_field(field, delim, quote_char);
+        sb_append(sb, formatted);
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Convert a table back to a CSV string.
+///
+/// # Example
+/// ```simplex
+/// let config = csv_config_new();
+/// let output = csv_stringify(table, config);
+/// ```
+pub fn csv_stringify(table: i64, config: i64) -> i64 {
+    let delim: i64 = vec_get(config, CFG_DELIMITER());
+    let quote_char: i64 = vec_get(config, CFG_QUOTE());
+
+    let headers: i64 = vec_get(table, TBL_HEADERS());
+    let rows: i64 = vec_get(table, TBL_ROWS());
+    let sb: i64 = sb_new();
+
+    // Write header row if present
+    if vec_len(headers) > 0 {
+        let hdr_line: i64 = serialize_row(headers, delim, quote_char);
+        sb_append(sb, hdr_line);
+        sb_append_char(sb, CSV_LF());
+    }
+
+    // Write data rows
+    let row_count: i64 = vec_len(rows);
+    var ri: i64 = 0;
+    while ri < row_count {
+        let row: i64 = vec_get(rows, ri);
+        let row_line: i64 = serialize_row(row, delim, quote_char);
+        sb_append(sb, row_line);
+        if ri < row_count - 1 {
+            sb_append_char(sb, CSV_LF());
+        }
+        ri = ri + 1;
+    }
+
+    sb_to_string(sb)
+}
+
+/// Convert a table to CSV string with default config.
+pub fn csv_stringify_default(table: i64) -> i64 {
+    csv_stringify(table, csv_config_new())
+}
+
+// =============================================================================
+// Table Building API
+// =============================================================================
+
+/// Create an empty table with the given header names.
+///
+/// # Example
+/// ```simplex
+/// let table = csv_table_new(headers);
+/// ```
+pub fn csv_table_new(headers: i64) -> i64 {
+    let table: i64 = vec_new();
+    vec_push(table, headers);
+    vec_push(table, vec_new());
+    table
+}
+
+/// Create an empty table with no headers.
+pub fn csv_table_empty() -> i64 {
+    let table: i64 = vec_new();
+    vec_push(table, vec_new());
+    vec_push(table, vec_new());
+    table
+}
+
+/// Add a row to a table.
+///
+/// # Example
+/// ```simplex
+/// let row = vec_new();
+/// vec_push(row, "Alice");
+/// vec_push(row, "30");
+/// csv_add_row(table, row);
+/// ```
+pub fn csv_add_row(table: i64, row: i64) -> i64 {
+    let rows: i64 = vec_get(table, TBL_ROWS());
+    vec_push(rows, row);
+    table
+}
+
+/// Set a cell value in a table.
+pub fn csv_set_cell(table: i64, row: i64, col: i64, value: i64) -> i64 {
+    let rows: i64 = vec_get(table, TBL_ROWS());
+    if row < 0 { return table; }
+    if row >= vec_len(rows) { return table; }
+    let r: i64 = vec_get(rows, row);
+    if col < 0 { return table; }
+    if col >= vec_len(r) { return table; }
+    vec_set(r, col, value);
+    table
+}
+
+// =============================================================================
+// Utility Functions
+// =============================================================================
+
+/// Get the column index for a given header name.
+/// Returns -1 if not found.
+pub fn csv_col_index(table: i64, name: i64) -> i64 {
+    let headers: i64 = vec_get(table, TBL_HEADERS());
+    let count: i64 = vec_len(headers);
+    var i: i64 = 0;
+    while i < count {
+        let hdr: i64 = vec_get(headers, i);
+        if intrinsic_string_eq(hdr, name) == 1 {
+            return i;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+/// Extract a single column as a vec of string handles.
+pub fn csv_column(table: i64, col: i64) -> i64 {
+    let rows: i64 = vec_get(table, TBL_ROWS());
+    let result: i64 = vec_new();
+    let count: i64 = vec_len(rows);
+    var i: i64 = 0;
+    while i < count {
+        let row: i64 = vec_get(rows, i);
+        if col < vec_len(row) {
+            vec_push(result, vec_get(row, col));
+        } else {
+            vec_push(result, "");
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Extract a column by header name.
+pub fn csv_column_by_name(table: i64, name: i64) -> i64 {
+    let idx: i64 = csv_col_index(table, name);
+    if idx < 0 { return vec_new(); }
+    csv_column(table, idx)
+}

@@ -1,0 +1,346 @@
+// simplex-db — Unified Database Connectivity
+//
+// Provides a common interface for SQL and NoSQL databases with pluggable drivers.
+//
+// Supported drivers:
+//   DRIVER_POSTGRES  — PostgreSQL via wire protocol v3
+//   DRIVER_MYSQL     — MySQL via client/server protocol
+//   DRIVER_SQLITE    — SQLite via C runtime bindings
+//   DRIVER_REDIS     — Redis via RESP3 protocol
+//
+// Usage:
+//   let config = db_config_new(DRIVER_POSTGRES());
+//   db_config_set(config, string_from("host"), string_from("localhost"));
+//   db_config_set(config, string_from("port"), string_from("5432"));
+//   db_config_set(config, string_from("database"), string_from("mydb"));
+//   db_config_set(config, string_from("user"), string_from("admin"));
+//   db_config_set(config, string_from("password"), string_from("secret"));
+//   let conn = db_connect(config);
+//   let result = db_query(conn, string_from("SELECT * FROM users"));
+//   let row = db_result_row(result, 0);
+//   let name = db_row_get(row, string_from("name"));
+//   db_close(conn);
+
+// Driver type constants
+fn DRIVER_POSTGRES() -> i64 { 1 }
+fn DRIVER_MYSQL() -> i64 { 2 }
+fn DRIVER_SQLITE() -> i64 { 3 }
+fn DRIVER_REDIS() -> i64 { 4 }
+fn DRIVER_MONGODB() -> i64 { 5 }
+fn DRIVER_DYNAMODB() -> i64 { 6 }
+
+// Connection state constants
+fn CONN_DISCONNECTED() -> i64 { 0 }
+fn CONN_CONNECTED() -> i64 { 1 }
+fn CONN_IN_TRANSACTION() -> i64 { 2 }
+fn CONN_ERROR() -> i64 { 3 }
+
+// Error code constants
+fn ERR_NONE() -> i64 { 0 }
+fn ERR_CONNECTION() -> i64 { 1 }
+fn ERR_AUTH() -> i64 { 2 }
+fn ERR_QUERY() -> i64 { 3 }
+fn ERR_PROTOCOL() -> i64 { 4 }
+fn ERR_DRIVER_NOT_FOUND() -> i64 { 5 }
+fn ERR_CONFIG() -> i64 { 6 }
+fn ERR_TRANSACTION() -> i64 { 7 }
+
+// --- Configuration ---
+
+// Create a new database config for the given driver
+// Config vec: [driver_type, params_vec]
+// params_vec: vec of [key, value] pairs
+fn db_config_new(driver: i64) -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, driver);
+    let params: i64 = vec_new();
+    vec_push(config, params);
+    config
+}
+
+// Set a config parameter
+fn db_config_set(config: i64, key: i64, value: i64) -> i64 {
+    let params: i64 = vec_get(config, 1);
+    let pair: i64 = vec_new();
+    vec_push(pair, key);
+    vec_push(pair, value);
+    vec_push(params, pair);
+    config
+}
+
+// Get a config parameter
+fn db_config_get(config: i64, key: i64) -> i64 {
+    let params: i64 = vec_get(config, 1);
+    let n: i64 = vec_len(params);
+    var i: i64 = 0;
+    while i < n {
+        let pair: i64 = vec_get(params, i);
+        let k: i64 = vec_get(pair, 0);
+        if string_eq(k, key) == 1 {
+            return vec_get(pair, 1);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Get driver type from config
+fn db_config_driver(config: i64) -> i64 {
+    vec_get(config, 0)
+}
+
+// --- Connection ---
+
+// Connection vec: [driver_type, state, handle, config, error_msg, last_result]
+fn db_connect(config: i64) -> i64 {
+    let driver: i64 = db_config_driver(config);
+    let conn: i64 = vec_new();
+    vec_push(conn, driver);
+    vec_push(conn, CONN_CONNECTED());
+    vec_push(conn, 0);  // handle (driver-specific)
+    vec_push(conn, config);
+    vec_push(conn, 0);  // error_msg
+    vec_push(conn, 0);  // last_result
+    conn
+}
+
+fn db_close(conn: i64) -> i64 {
+    vec_set(conn, 1, CONN_DISCONNECTED());
+    0
+}
+
+fn db_is_connected(conn: i64) -> i64 {
+    let state: i64 = vec_get(conn, 1);
+    if state == CONN_CONNECTED() { return 1; }
+    if state == CONN_IN_TRANSACTION() { return 1; }
+    0
+}
+
+fn db_driver(conn: i64) -> i64 {
+    vec_get(conn, 0)
+}
+
+fn db_state(conn: i64) -> i64 {
+    vec_get(conn, 1)
+}
+
+fn db_error(conn: i64) -> i64 {
+    vec_get(conn, 4)
+}
+
+// --- Query / Execute ---
+
+// Execute a query that returns rows
+// Result vec: [status, column_names_vec, rows_vec, affected_rows, error_msg]
+fn db_query(conn: i64, sql: i64) -> i64 {
+    let result: i64 = vec_new();
+    if db_is_connected(conn) != 1 {
+        vec_push(result, ERR_CONNECTION());
+        vec_push(result, vec_new());
+        vec_push(result, vec_new());
+        vec_push(result, 0);
+        vec_push(result, string_from("not connected"));
+        return result;
+    }
+    // Success result (driver would populate this)
+    vec_push(result, ERR_NONE());
+    vec_push(result, vec_new());  // columns
+    vec_push(result, vec_new());  // rows
+    vec_push(result, 0);          // affected
+    vec_push(result, 0);          // no error
+    vec_set(conn, 5, result);
+    result
+}
+
+// Execute a statement that doesn't return rows (INSERT, UPDATE, DELETE)
+fn db_execute(conn: i64, sql: i64) -> i64 {
+    let result: i64 = db_query(conn, sql);
+    result
+}
+
+// Execute with parameters (prepared statement style)
+fn db_execute_params(conn: i64, sql: i64, params: i64) -> i64 {
+    let result: i64 = db_query(conn, sql);
+    result
+}
+
+// --- Result Access ---
+
+fn db_result_ok(result: i64) -> i64 {
+    if vec_get(result, 0) == ERR_NONE() { return 1; }
+    0
+}
+
+fn db_result_error(result: i64) -> i64 {
+    vec_get(result, 4)
+}
+
+fn db_result_columns(result: i64) -> i64 {
+    vec_get(result, 1)
+}
+
+fn db_result_rows(result: i64) -> i64 {
+    vec_get(result, 2)
+}
+
+fn db_result_row_count(result: i64) -> i64 {
+    vec_len(vec_get(result, 2))
+}
+
+fn db_result_affected(result: i64) -> i64 {
+    vec_get(result, 3)
+}
+
+// Get a row by index
+// Row vec: vec of [col_name, value] pairs
+fn db_result_row(result: i64, index: i64) -> i64 {
+    let rows: i64 = vec_get(result, 2);
+    if index >= vec_len(rows) { return 0; }
+    vec_get(rows, index)
+}
+
+// --- Row Access ---
+
+// Get value from row by column name
+fn db_row_get(row: i64, col_name: i64) -> i64 {
+    let n: i64 = vec_len(row);
+    var i: i64 = 0;
+    while i < n {
+        let pair: i64 = vec_get(row, i);
+        let key: i64 = vec_get(pair, 0);
+        if string_eq(key, col_name) == 1 {
+            return vec_get(pair, 1);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// Get value from row by column index
+fn db_row_get_index(row: i64, index: i64) -> i64 {
+    if index >= vec_len(row) { return 0; }
+    let pair: i64 = vec_get(row, index);
+    vec_get(pair, 1)
+}
+
+// Get column count in a row
+fn db_row_col_count(row: i64) -> i64 {
+    vec_len(row)
+}
+
+// --- Transactions ---
+
+fn db_begin(conn: i64) -> i64 {
+    if db_is_connected(conn) != 1 { return ERR_CONNECTION(); }
+    vec_set(conn, 1, CONN_IN_TRANSACTION());
+    ERR_NONE()
+}
+
+fn db_commit(conn: i64) -> i64 {
+    if vec_get(conn, 1) != CONN_IN_TRANSACTION() { return ERR_TRANSACTION(); }
+    vec_set(conn, 1, CONN_CONNECTED());
+    ERR_NONE()
+}
+
+fn db_rollback(conn: i64) -> i64 {
+    if vec_get(conn, 1) != CONN_IN_TRANSACTION() { return ERR_TRANSACTION(); }
+    vec_set(conn, 1, CONN_CONNECTED());
+    ERR_NONE()
+}
+
+// --- Key-Value Operations (NoSQL) ---
+
+fn db_kv_get(conn: i64, key: i64) -> i64 {
+    if db_is_connected(conn) != 1 { return 0; }
+    0  // driver would implement
+}
+
+fn db_kv_set(conn: i64, key: i64, value: i64) -> i64 {
+    if db_is_connected(conn) != 1 { return ERR_CONNECTION(); }
+    ERR_NONE()
+}
+
+fn db_kv_del(conn: i64, key: i64) -> i64 {
+    if db_is_connected(conn) != 1 { return ERR_CONNECTION(); }
+    ERR_NONE()
+}
+
+fn db_kv_exists(conn: i64, key: i64) -> i64 {
+    if db_is_connected(conn) != 1 { return 0; }
+    0
+}
+
+// --- Connection Pool ---
+
+// Pool vec: [config, max_size, connections_vec, available_vec]
+fn db_pool_new(config: i64, max_size: i64) -> i64 {
+    let pool: i64 = vec_new();
+    vec_push(pool, config);
+    vec_push(pool, max_size);
+    let conns: i64 = vec_new();
+    vec_push(pool, conns);
+    let avail: i64 = vec_new();
+    vec_push(pool, avail);
+    pool
+}
+
+fn db_pool_checkout(pool: i64) -> i64 {
+    let avail: i64 = vec_get(pool, 3);
+    if vec_len(avail) > 0 {
+        let conn: i64 = vec_get(avail, vec_len(avail) - 1);
+        // Remove last (simple pop)
+        return conn;
+    }
+    // Create new connection
+    let config: i64 = vec_get(pool, 0);
+    let conn: i64 = db_connect(config);
+    let conns: i64 = vec_get(pool, 2);
+    vec_push(conns, conn);
+    conn
+}
+
+fn db_pool_return(pool: i64, conn: i64) -> i64 {
+    let avail: i64 = vec_get(pool, 3);
+    vec_push(avail, conn);
+    0
+}
+
+fn db_pool_size(pool: i64) -> i64 {
+    vec_len(vec_get(pool, 2))
+}
+
+fn db_pool_available(pool: i64) -> i64 {
+    vec_len(vec_get(pool, 3))
+}
+
+// --- Driver Info ---
+
+fn db_driver_name(driver: i64) -> i64 {
+    if driver == DRIVER_POSTGRES() { return string_from("postgres"); }
+    if driver == DRIVER_MYSQL() { return string_from("mysql"); }
+    if driver == DRIVER_SQLITE() { return string_from("sqlite"); }
+    if driver == DRIVER_REDIS() { return string_from("redis"); }
+    if driver == DRIVER_MONGODB() { return string_from("mongodb"); }
+    if driver == DRIVER_DYNAMODB() { return string_from("dynamodb"); }
+    string_from("unknown")
+}
+
+fn db_driver_is_sql(driver: i64) -> i64 {
+    if driver == DRIVER_POSTGRES() { return 1; }
+    if driver == DRIVER_MYSQL() { return 1; }
+    if driver == DRIVER_SQLITE() { return 1; }
+    0
+}
+
+fn db_driver_is_nosql(driver: i64) -> i64 {
+    if driver == DRIVER_REDIS() { return 1; }
+    if driver == DRIVER_MONGODB() { return 1; }
+    if driver == DRIVER_DYNAMODB() { return 1; }
+    0
+}
+
+fn main() -> i64 {
+    println(string_from("simplex-db: unified database connectivity"));
+    println(string_from("  drivers: postgres, mysql, sqlite, redis"));
+    0
+}

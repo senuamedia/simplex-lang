@@ -1,0 +1,239 @@
+// simplex-nats/queue - Queue Group Support
+//
+// Queue groups allow multiple subscribers to load-balance messages.
+// When multiple subscribers share a queue group name on the same subject,
+// only one member of the group receives each message.
+//
+// # Usage
+//
+// ```simplex
+// use simplex_nats::{nats_connect, nats_queue_subscribe};
+//
+// let conn = nats_connect("localhost", 4222);
+//
+// // Multiple workers in the "workers" queue group
+// nats_queue_subscribe(conn, "tasks.*", 1, "workers");
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn tcp_send(conn: i64, data: i64) -> i64;
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, byte: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_to_bytes(s: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+
+// =============================================================================
+// Connection Accessor
+// =============================================================================
+
+fn queue_conn_tcp(conn: i64) -> i64 {
+    conn % 4294967296
+}
+
+// =============================================================================
+// Queue Group Subscribe
+// =============================================================================
+
+/// Subscribe to a subject with a queue group.
+///
+/// When multiple subscribers share the same queue group name,
+/// the server distributes messages among them (each message
+/// delivered to exactly one member).
+///
+/// # Arguments
+/// * `conn`        - NATS connection descriptor
+/// * `subject`     - Subject pattern
+/// * `sid`         - Subscription ID
+/// * `queue_group` - Queue group name string
+///
+/// # Returns
+/// Bytes sent, or 0 on error
+fn nats_queue_subscribe(conn: i64, subject: i64, sid: i64, queue_group: i64) -> i64 {
+    let tcp: i64 = queue_conn_tcp(conn);
+    let sid_str: i64 = i64_to_string(sid);
+
+    let msg: i64 = "SUB ";
+    let msg: i64 = string_concat(msg, subject);
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, queue_group);
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, sid_str);
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    let msg_bytes: i64 = string_to_bytes(msg);
+    tcp_send(tcp, msg_bytes)
+}
+
+// =============================================================================
+// Queue Group Management
+// =============================================================================
+//
+// Queue group state is tracked as a vec of group descriptors.
+// Each descriptor is a vec: [group_name, subject, member_count, active_flag]
+
+/// Create a new queue group registry
+fn nats_queue_registry_new() -> i64 {
+    vec_new()
+}
+
+/// Register a queue group entry.
+///
+/// # Arguments
+/// * `registry`    - Queue group registry handle
+/// * `group_name`  - Queue group name string
+/// * `subject`     - Subject string
+///
+/// # Returns
+/// Updated registry handle
+fn nats_queue_register(registry: i64, group_name: i64, subject: i64) -> i64 {
+    // Check if group already exists for this subject
+    let count: i64 = vec_len(registry);
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(registry, i);
+        let existing_group: i64 = vec_get(entry, 0);
+        let existing_subject: i64 = vec_get(entry, 1);
+        if intrinsic_string_eq(existing_group, group_name) == 1 {
+            if intrinsic_string_eq(existing_subject, subject) == 1 {
+                // Increment member count
+                let current_members: i64 = vec_get(entry, 2);
+                let new_entry: i64 = vec_new();
+                vec_push(new_entry, group_name);
+                vec_push(new_entry, subject);
+                vec_push(new_entry, current_members + 1);
+                vec_push(new_entry, 1);  // active
+                // Replace entry (simplified: just append, old entry becomes stale)
+                vec_push(registry, new_entry);
+                return registry;
+            }
+        }
+        i = i + 1;
+    }
+
+    // New group
+    let entry: i64 = vec_new();
+    vec_push(entry, group_name);
+    vec_push(entry, subject);
+    vec_push(entry, 1);  // 1 member
+    vec_push(entry, 1);  // active
+    vec_push(registry, entry);
+    registry
+}
+
+/// Get the member count for a queue group on a subject.
+///
+/// # Returns
+/// Member count, or 0 if group not found
+fn nats_queue_member_count(registry: i64, group_name: i64, subject: i64) -> i64 {
+    let count: i64 = vec_len(registry);
+    var best: i64 = 0;
+    var i: i64 = 0;
+
+    // Find the latest entry (in case of updates)
+    while i < count {
+        let entry: i64 = vec_get(registry, i);
+        let eg: i64 = vec_get(entry, 0);
+        let es: i64 = vec_get(entry, 1);
+        if intrinsic_string_eq(eg, group_name) == 1 {
+            if intrinsic_string_eq(es, subject) == 1 {
+                best = vec_get(entry, 2);
+            }
+        }
+        i = i + 1;
+    }
+
+    best
+}
+
+/// Check if a queue group is active.
+///
+/// # Returns
+/// 1 if active, 0 if not found or inactive
+fn nats_queue_is_active(registry: i64, group_name: i64, subject: i64) -> i64 {
+    let count: i64 = vec_len(registry);
+    var result: i64 = 0;
+    var i: i64 = 0;
+
+    while i < count {
+        let entry: i64 = vec_get(registry, i);
+        let eg: i64 = vec_get(entry, 0);
+        let es: i64 = vec_get(entry, 1);
+        if intrinsic_string_eq(eg, group_name) == 1 {
+            if intrinsic_string_eq(es, subject) == 1 {
+                result = vec_get(entry, 3);
+            }
+        }
+        i = i + 1;
+    }
+
+    result
+}
+
+/// List all queue group names in the registry.
+///
+/// # Returns
+/// Vec of unique group name strings
+fn nats_queue_list_groups(registry: i64) -> i64 {
+    let count: i64 = vec_len(registry);
+    let groups: i64 = vec_new();
+    var i: i64 = 0;
+
+    while i < count {
+        let entry: i64 = vec_get(registry, i);
+        let name: i64 = vec_get(entry, 0);
+
+        // Check if already in list
+        let existing: i64 = vec_len(groups);
+        var found: i64 = 0;
+        var j: i64 = 0;
+        while j < existing {
+            if intrinsic_string_eq(vec_get(groups, j), name) == 1 {
+                found = 1;
+                j = existing; // break
+            }
+            j = j + 1;
+        }
+
+        if found == 0 {
+            vec_push(groups, name);
+        }
+        i = i + 1;
+    }
+
+    groups
+}
+
+/// Validate a queue group name.
+///
+/// Rules:
+/// - Must be non-empty
+/// - Cannot contain spaces
+/// - Cannot contain '.' (dot)
+///
+/// # Returns
+/// 1 if valid, 0 if invalid
+fn nats_is_valid_queue_group(name: i64) -> i64 {
+    let len: i64 = string_length(name);
+    if len == 0 { return 0; }
+
+    let bytes: i64 = string_to_bytes(name);
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = vec_get(bytes, i);
+        if ch == 32 { return 0; }   // space
+        if ch == 46 { return 0; }   // dot
+        i = i + 1;
+    }
+    1
+}

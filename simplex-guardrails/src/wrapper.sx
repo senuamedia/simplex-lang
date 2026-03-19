@@ -1,0 +1,206 @@
+// simplex-guardrails::wrapper - Function Wrapping with Guardrails
+//
+// Wraps a function with guardrail checks, optionally retrying on failure.
+//
+// A wrapped function:
+//   1. Calls the inner function to get output
+//   2. Checks the output against guardrail rules
+//   3. If checks fail and action is RETRY, calls inner function again
+//   4. Returns the output along with check results
+//
+// Wrapped result layout (vec of i64):
+//   [0] output       - the (possibly retried) output string handle
+//   [1] check_result - handle to check result from guardrail_check
+//   [2] attempts     - number of attempts made
+//   [3] success      - 1 if final output passed, 0 if all retries failed
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Wrapper Field Offsets
+// =============================================================================
+
+fn WRAP_OUTPUT() -> i64    { 0 }
+fn WRAP_CHECK() -> i64     { 1 }
+fn WRAP_ATTEMPTS() -> i64  { 2 }
+fn WRAP_SUCCESS() -> i64   { 3 }
+
+// =============================================================================
+// Guardrail Wrapper Configuration
+// =============================================================================
+
+/// Guardrail wrapper configuration layout (vec of i64):
+///   [0] rules_vec     - handle to vec of rule handles
+///   [1] max_retries   - maximum number of retries (0 = no retry)
+///   [2] on_fail       - action on final failure: ACTION_REJECT or ACTION_WARN
+
+/// Create a wrapper configuration.
+///
+/// Arguments:
+///   rules       - handle to vec of rule handles
+///   max_retries - number of retries allowed (0 = check once only)
+///
+/// Returns: wrapper config handle
+fn wrapper_config(rules: i64, max_retries: i64) -> i64 {
+    let config = vec_new();
+    vec_push(config, rules);
+    vec_push(config, max_retries);
+    vec_push(config, ACTION_REJECT());
+    config
+}
+
+// =============================================================================
+// Guardrail Wrap (Inline)
+// =============================================================================
+
+/// Wrap an output with guardrail checking and optional retry.
+///
+/// Since Simplex uses i64 function handles which can't be directly invoked
+/// at the library level, this function checks a provided output and returns
+/// the wrapped result. The caller is responsible for calling their function
+/// and passing the output.
+///
+/// Arguments:
+///   output      - output string handle to check
+///   rules_vec   - handle to vec of rule handles
+///   retry_count - max retries (used for tracking, caller handles retries)
+///
+/// Returns: wrapped result [output, check_result, attempts, success]
+fn guardrail_wrap(output: i64, rules_vec: i64, retry_count: i64) -> i64 {
+    let check: i64 = guardrail_check(output, rules_vec);
+    let passed: i64 = vec_get(check, CHECK_PASSED());
+
+    let result = vec_new();
+    vec_push(result, output);        // [0] output
+    vec_push(result, check);         // [1] check_result
+    vec_push(result, 1);             // [2] attempts (first attempt)
+    vec_push(result, passed);        // [3] success
+    result
+}
+
+/// Check if a wrapped result needs retry.
+///
+/// Arguments:
+///   wrapped - wrapped result handle
+///
+/// Returns: 1 if needs retry (failed and under retry limit), 0 otherwise
+fn wrap_needs_retry(wrapped: i64, max_retries: i64) -> i64 {
+    let success: i64 = vec_get(wrapped, WRAP_SUCCESS());
+    if success == 1 { return 0; }  // already passed
+
+    let attempts: i64 = vec_get(wrapped, WRAP_ATTEMPTS());
+    if attempts > max_retries { return 0; }  // exceeded retry limit
+
+    // Check if any failure has RETRY action
+    let check: i64 = vec_get(wrapped, WRAP_CHECK());
+    let failures: i64 = vec_get(check, CHECK_FAILURES());
+    let n_fail: i64 = vec_len(failures);
+
+    var i: i64 = 0;
+    while i < n_fail {
+        let failure: i64 = vec_get(failures, i);
+        let action: i64 = vec_get(failure, 2);  // action field
+        if action == ACTION_RETRY() { return 1; }
+        i = i + 1;
+    }
+
+    0
+}
+
+/// Update a wrapped result with a new retry attempt.
+///
+/// Arguments:
+///   wrapped   - existing wrapped result handle
+///   output    - new output from retry
+///   rules_vec - rules to check against
+///
+/// Returns: updated wrapped result handle
+fn wrap_retry(wrapped: i64, output: i64, rules_vec: i64) -> i64 {
+    let old_attempts: i64 = vec_get(wrapped, WRAP_ATTEMPTS());
+    let check: i64 = guardrail_check(output, rules_vec);
+    let passed: i64 = vec_get(check, CHECK_PASSED());
+
+    let result = vec_new();
+    vec_push(result, output);
+    vec_push(result, check);
+    vec_push(result, old_attempts + 1);
+    vec_push(result, passed);
+    result
+}
+
+// =============================================================================
+// Wrapped Result Accessors
+// =============================================================================
+
+/// Get the output from a wrapped result.
+fn wrap_output(wrapped: i64) -> i64 {
+    vec_get(wrapped, WRAP_OUTPUT())
+}
+
+/// Get the check result from a wrapped result.
+fn wrap_check_result(wrapped: i64) -> i64 {
+    vec_get(wrapped, WRAP_CHECK())
+}
+
+/// Get the number of attempts from a wrapped result.
+fn wrap_attempts(wrapped: i64) -> i64 {
+    vec_get(wrapped, WRAP_ATTEMPTS())
+}
+
+/// Check if a wrapped result succeeded.
+fn wrap_success(wrapped: i64) -> i64 {
+    vec_get(wrapped, WRAP_SUCCESS())
+}
+
+// =============================================================================
+// Pipeline Helper
+// =============================================================================
+
+/// Run a guardrail pipeline: check output, retry if needed, return final.
+///
+/// This is a convenience function that handles the retry loop.
+/// The caller provides a vec of outputs (pre-generated) and the pipeline
+/// tries each one until one passes or all are exhausted.
+///
+/// Arguments:
+///   outputs   - handle to vec of output string handles (primary + retries)
+///   rules_vec - handle to vec of rule handles
+///
+/// Returns: wrapped result for the best (first passing or last) output
+fn guardrail_pipeline(outputs: i64, rules_vec: i64) -> i64 {
+    let n_outputs: i64 = vec_len(outputs);
+    if n_outputs == 0 {
+        let empty_result = vec_new();
+        vec_push(empty_result, 0);
+        vec_push(empty_result, vec_new());
+        vec_push(empty_result, 0);
+        vec_push(empty_result, 0);
+        return empty_result;
+    }
+
+    var attempt: i64 = 0;
+    var last_result: i64 = 0;
+
+    while attempt < n_outputs {
+        let output: i64 = vec_get(outputs, attempt);
+        let check: i64 = guardrail_check(output, rules_vec);
+        let passed: i64 = vec_get(check, CHECK_PASSED());
+
+        let result = vec_new();
+        vec_push(result, output);
+        vec_push(result, check);
+        vec_push(result, attempt + 1);
+        vec_push(result, passed);
+
+        last_result = result;
+
+        if passed == 1 {
+            return result;  // Found a passing output
+        }
+
+        attempt = attempt + 1;
+    }
+
+    last_result
+}

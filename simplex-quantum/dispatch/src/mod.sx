@@ -1,6 +1,6 @@
 // simplex-quantum-dispatch - Cost-Aware Quantum Task Dispatcher
 //
-// Phase 4 of the Simplex Quantum Bridge (v0.15.0).
+// Phase 4 of the Simplex Quantum Bridge (v0.16.0).
 //
 // Routes quantum workloads to the optimal backend by analyzing problem
 // complexity, estimating costs across cloud providers, and enforcing

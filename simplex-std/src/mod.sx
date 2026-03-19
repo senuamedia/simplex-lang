@@ -28,6 +28,13 @@
 // - `http`: Actor-based HTTP server with Hive integration
 // - `http_client`: HTTP client with async support and JSON integration
 // - `json`: JSON parser, builder, and accessor API
+// - `websocket`: WebSocket client/server (RFC 6455)
+// - `csv`: RFC 4180 CSV parser and serializer
+// - `yaml`: YAML 1.2 Core Schema parser and serializer
+// - `xml`: XML parser, builder, and query API
+// - `jwt`: JSON Web Token (JWT) creation, signing, and verification
+// - `oauth`: OAuth 2.0 Authorization Code flow with PKCE
+// - `dotenv`: .env file parser and variable expansion
 //
 // # Example
 //
@@ -80,6 +87,13 @@ pub mod matrix;
 pub mod http;
 pub mod http_client;
 pub mod json;
+pub mod websocket;
+pub mod csv;
+pub mod yaml;
+pub mod xml;
+pub mod jwt;
+pub mod oauth;
+pub mod dotenv;
 
 // =============================================================================
 // Re-exports for convenience
@@ -123,6 +137,16 @@ pub use http_client::{HttpClient, HttpResponse, HttpError, RequestBuilder};
 
 // JSON
 pub use json::{ObjectBuilder, ArrayBuilder};
+
+// JWT
+pub use jwt::{jwt_encode, jwt_decode, jwt_verify, jwt_payload_new, jwt_add_claim};
+pub use jwt::{base64url_encode, base64url_decode, hmac_sha256};
+
+// OAuth
+pub use oauth::{oauth_config_new, oauth_auth_url, oauth_exchange_code, url_encode};
+
+// dotenv
+pub use dotenv::{dotenv_parse, dotenv_load, dotenv_get};
 
 // =============================================================================
 // Core Types (provided by C runtime)

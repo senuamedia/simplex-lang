@@ -1,0 +1,2245 @@
+// simplex-mysql - MySQL Client Library
+//
+// Pure-Simplex implementation of the MySQL client/server protocol.
+// Connects to MySQL/MariaDB servers over TCP and implements the
+// binary protocol for handshake, authentication, and query execution.
+//
+// # Modules
+//
+// - `connection`: TCP connection management, handshake, authentication
+// - `protocol`: MySQL packet encoding/decoding, COM_QUERY, result sets
+// - `query`: Query execution, prepared statements
+// - `types`: Result types, row access, type mapping
+// - `pool`: Connection pooling
+//
+// # Example
+//
+// ```simplex
+// use simplex_mysql::{mysql_connect, mysql_query, mysql_close, MysqlConfig};
+//
+// let config = MysqlConfig::new("localhost", 3306, "mydb", "user", "pass");
+// let conn = mysql_connect(config)?;
+// let result = mysql_query(&mut conn, "SELECT id, name FROM users")?;
+// mysql_close(&mut conn);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+pub mod connection;
+pub mod protocol;
+pub mod query;
+pub mod types;
+pub mod pool;
+
+// =============================================================================
+// Re-exports
+// =============================================================================
+
+pub use connection::{mysql_connect, mysql_close, MysqlConfig, MysqlConnection};
+pub use query::{mysql_query, mysql_execute, mysql_prepare, MysqlPrepared};
+pub use pool::{MysqlPool, mysql_pool_new, mysql_pool_checkout, mysql_pool_return};
+pub use types::{MysqlResult, MysqlRow, MysqlValue, MysqlError};
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// Default MySQL port
+pub const DEFAULT_PORT: i64 = 3306;
+
+/// Maximum packet size (16 MB)
+pub const MAX_PACKET_SIZE: i64 = 16777215;
+
+/// Client capability flags
+pub const CLIENT_LONG_PASSWORD: i64 = 1;
+pub const CLIENT_FOUND_ROWS: i64 = 2;
+pub const CLIENT_LONG_FLAG: i64 = 4;
+pub const CLIENT_CONNECT_WITH_DB: i64 = 8;
+pub const CLIENT_PROTOCOL_41: i64 = 512;
+pub const CLIENT_SECURE_CONNECTION: i64 = 32768;
+pub const CLIENT_PLUGIN_AUTH: i64 = 524288;
+pub const CLIENT_DEPRECATE_EOF: i64 = 16777216;
+
+/// Default client capabilities
+pub const DEFAULT_CLIENT_FLAGS: i64 = 525835;
+    // CLIENT_LONG_PASSWORD | CLIENT_FOUND_ROWS | CLIENT_LONG_FLAG |
+    // CLIENT_CONNECT_WITH_DB | CLIENT_PROTOCOL_41 | CLIENT_SECURE_CONNECTION |
+    // CLIENT_PLUGIN_AUTH
+
+/// MySQL command types
+pub const COM_QUIT: i64 = 1;
+pub const COM_QUERY: i64 = 3;
+pub const COM_STMT_PREPARE: i64 = 22;
+pub const COM_STMT_EXECUTE: i64 = 23;
+pub const COM_STMT_CLOSE: i64 = 25;
+pub const COM_PING: i64 = 14;
+
+/// Response packet markers
+pub const OK_PACKET: i64 = 0x00;
+pub const ERR_PACKET: i64 = 0xFF;
+pub const EOF_PACKET: i64 = 0xFE;
+pub const LOCAL_INFILE: i64 = 0xFB;
+// simplex-mysql/types - Result Types and Type Mapping
+//
+// Defines result set types, row access, and type mapping between
+// MySQL wire format types and Simplex types.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Error Type
+// =============================================================================
+
+/// MySQL client error
+pub enum MysqlError {
+    /// Connection error
+    Connection(String),
+    /// Configuration error
+    Config(String),
+    /// Wire protocol error
+    Protocol(String),
+    /// Server-side error with error code
+    Server {
+        code: i64,
+        message: String,
+    },
+    /// Connection pool error
+    Pool(String),
+}
+
+impl MysqlError {
+    /// Get the error message
+    pub fn message(&self) -> String {
+        match self {
+            MysqlError::Connection(s) => s.clone(),
+            MysqlError::Config(s) => s.clone(),
+            MysqlError::Protocol(s) => s.clone(),
+            MysqlError::Server { message, .. } => message.clone(),
+            MysqlError::Pool(s) => s.clone(),
+        }
+    }
+
+    /// Get the MySQL error code (server errors only)
+    pub fn error_code(&self) -> Option<i64> {
+        match self {
+            MysqlError::Server { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+
+    /// Check if this is a connection error
+    pub fn is_connection_error(&self) -> bool {
+        match self {
+            MysqlError::Connection(_) => true,
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for MysqlError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MysqlError::Connection(s) => write!(f, "mysql connection error: {}", s),
+            MysqlError::Config(s) => write!(f, "mysql config error: {}", s),
+            MysqlError::Protocol(s) => write!(f, "mysql protocol error: {}", s),
+            MysqlError::Server { code, message } => {
+                write!(f, "mysql server error [{}]: {}", code, message)
+            },
+            MysqlError::Pool(s) => write!(f, "mysql pool error: {}", s),
+        }
+    }
+}
+
+// =============================================================================
+// Result Value Types
+// =============================================================================
+
+/// A single value from a MySQL result set
+pub enum MysqlValue {
+    /// NULL value
+    Null,
+    /// Boolean value
+    Bool(bool),
+    /// Integer value
+    Int(i64),
+    /// Floating point value
+    Float(f64),
+    /// Text/string value
+    Text(String),
+    /// Raw bytes (BLOB)
+    Bytes(Vec<i64>),
+}
+
+impl MysqlValue {
+    /// Check if value is NULL
+    pub fn is_null(&self) -> bool {
+        match self {
+            MysqlValue::Null => true,
+            _ => false,
+        }
+    }
+
+    /// Get as bool
+    pub fn as_bool(&self) -> Option<bool> {
+        match self {
+            MysqlValue::Bool(b) => Some(*b),
+            MysqlValue::Int(n) => Some(*n != 0),
+            _ => None,
+        }
+    }
+
+    /// Get as i64
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            MysqlValue::Int(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// Get as f64
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            MysqlValue::Float(f) => Some(*f),
+            MysqlValue::Int(n) => Some(*n as f64),
+            _ => None,
+        }
+    }
+
+    /// Get as String
+    pub fn as_text(&self) -> Option<String> {
+        match self {
+            MysqlValue::Text(s) => Some(s.clone()),
+            MysqlValue::Int(n) => Some(n.to_string()),
+            MysqlValue::Float(f) => Some(f.to_string()),
+            MysqlValue::Bool(b) => Some(if *b { "1" } else { "0" }.to_string()),
+            MysqlValue::Null => None,
+            MysqlValue::Bytes(_) => None,
+        }
+    }
+
+    /// Get as bytes
+    pub fn as_bytes(&self) -> Option<Vec<i64>> {
+        match self {
+            MysqlValue::Bytes(b) => Some(b.clone()),
+            _ => None,
+        }
+    }
+
+    /// Get type name
+    pub fn type_name(&self) -> &str {
+        match self {
+            MysqlValue::Null => "null",
+            MysqlValue::Bool(_) => "bool",
+            MysqlValue::Int(_) => "int",
+            MysqlValue::Float(_) => "float",
+            MysqlValue::Text(_) => "text",
+            MysqlValue::Bytes(_) => "bytes",
+        }
+    }
+}
+
+impl std::fmt::Display for MysqlValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            MysqlValue::Null => write!(f, "NULL"),
+            MysqlValue::Bool(b) => write!(f, "{}", if *b { "true" } else { "false" }),
+            MysqlValue::Int(n) => write!(f, "{}", n),
+            MysqlValue::Float(v) => write!(f, "{}", v),
+            MysqlValue::Text(s) => write!(f, "{}", s),
+            MysqlValue::Bytes(b) => write!(f, "<{} bytes>", b.len()),
+        }
+    }
+}
+
+// =============================================================================
+// Result Row
+// =============================================================================
+
+/// A single row from a MySQL result set
+pub struct MysqlRow {
+    /// Column values in order
+    pub values: Vec<MysqlValue>,
+}
+
+impl MysqlRow {
+    /// Get value by column index
+    pub fn get(&self, index: i64) -> Option<&MysqlValue> {
+        if index >= 0 && index < self.values.len() as i64 {
+            Some(&self.values[index])
+        } else {
+            None
+        }
+    }
+
+    /// Get value as text by column index
+    pub fn get_text(&self, index: i64) -> Option<String> {
+        match self.get(index) {
+            Some(val) => val.as_text(),
+            None => None,
+        }
+    }
+
+    /// Get value as i64 by column index
+    pub fn get_int(&self, index: i64) -> Option<i64> {
+        match self.get(index) {
+            Some(val) => val.as_int(),
+            None => None,
+        }
+    }
+
+    /// Get value as f64 by column index
+    pub fn get_float(&self, index: i64) -> Option<f64> {
+        match self.get(index) {
+            Some(val) => val.as_float(),
+            None => None,
+        }
+    }
+
+    /// Get value as bool by column index
+    pub fn get_bool(&self, index: i64) -> Option<bool> {
+        match self.get(index) {
+            Some(val) => val.as_bool(),
+            None => None,
+        }
+    }
+
+    /// Check if a column is NULL
+    pub fn is_null(&self, index: i64) -> bool {
+        match self.get(index) {
+            Some(val) => val.is_null(),
+            None => true,
+        }
+    }
+
+    /// Number of columns
+    pub fn len(&self) -> i64 {
+        self.values.len() as i64
+    }
+}
+
+// =============================================================================
+// Result Set
+// =============================================================================
+
+/// Complete MySQL query result set
+pub struct MysqlResult {
+    /// Column names
+    pub columns: Vec<String>,
+    /// Result rows
+    pub rows: Vec<MysqlRow>,
+    /// Number of affected rows (INSERT/UPDATE/DELETE)
+    pub affected_rows: i64,
+    /// Last insert ID
+    pub last_insert_id: i64,
+}
+
+impl MysqlResult {
+    /// Number of rows returned
+    pub fn row_count(&self) -> i64 {
+        self.rows.len() as i64
+    }
+
+    /// Number of columns
+    pub fn column_count(&self) -> i64 {
+        self.columns.len() as i64
+    }
+
+    /// Get column index by name
+    pub fn column_index(&self, name: &str) -> i64 {
+        let mut i: i64 = 0;
+        while i < self.columns.len() as i64 {
+            if self.columns[i] == name {
+                return i;
+            }
+            i = i + 1;
+        }
+        -1
+    }
+
+    /// Get a row by index
+    pub fn row(&self, index: i64) -> Option<&MysqlRow> {
+        if index >= 0 && index < self.rows.len() as i64 {
+            Some(&self.rows[index])
+        } else {
+            None
+        }
+    }
+
+    /// Get a value by row and column name
+    pub fn get(&self, row_idx: i64, col_name: &str) -> Option<&MysqlValue> {
+        let col_idx = self.column_index(col_name);
+        if col_idx < 0 {
+            return None;
+        }
+        match self.row(row_idx) {
+            Some(row) => row.get(col_idx),
+            None => None,
+        }
+    }
+
+    /// Check if result is empty
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
+// =============================================================================
+// MySQL Type Constants
+// =============================================================================
+
+/// MySQL type codes
+pub const MYSQL_TYPE_DECIMAL: i64 = 0;
+pub const MYSQL_TYPE_TINY: i64 = 1;
+pub const MYSQL_TYPE_SHORT: i64 = 2;
+pub const MYSQL_TYPE_LONG: i64 = 3;
+pub const MYSQL_TYPE_FLOAT: i64 = 4;
+pub const MYSQL_TYPE_DOUBLE: i64 = 5;
+pub const MYSQL_TYPE_NULL: i64 = 6;
+pub const MYSQL_TYPE_TIMESTAMP: i64 = 7;
+pub const MYSQL_TYPE_LONGLONG: i64 = 8;
+pub const MYSQL_TYPE_INT24: i64 = 9;
+pub const MYSQL_TYPE_DATE: i64 = 10;
+pub const MYSQL_TYPE_TIME: i64 = 11;
+pub const MYSQL_TYPE_DATETIME: i64 = 12;
+pub const MYSQL_TYPE_YEAR: i64 = 13;
+pub const MYSQL_TYPE_BIT: i64 = 16;
+pub const MYSQL_TYPE_JSON: i64 = 245;
+pub const MYSQL_TYPE_NEWDECIMAL: i64 = 246;
+pub const MYSQL_TYPE_BLOB: i64 = 252;
+pub const MYSQL_TYPE_VAR_STRING: i64 = 253;
+pub const MYSQL_TYPE_STRING: i64 = 254;
+
+/// Get the name of a MySQL type
+pub fn mysql_type_name(type_code: i64) -> &str {
+    match type_code {
+        0 => "decimal",
+        1 => "tiny",
+        2 => "short",
+        3 => "long",
+        4 => "float",
+        5 => "double",
+        6 => "null",
+        7 => "timestamp",
+        8 => "longlong",
+        9 => "int24",
+        10 => "date",
+        11 => "time",
+        12 => "datetime",
+        13 => "year",
+        16 => "bit",
+        245 => "json",
+        246 => "newdecimal",
+        252 => "blob",
+        253 => "var_string",
+        254 => "string",
+        _ => "unknown",
+    }
+}
+// simplex-mysql/protocol - MySQL Wire Protocol
+//
+// Implements the MySQL client/server protocol for packet framing,
+// handshake encoding, query messages, and result set parsing.
+//
+// MySQL packets have a 4-byte header:
+//   3 bytes: payload length (little-endian)
+//   1 byte:  sequence ID
+//   N bytes: payload
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Initial Handshake
+// =============================================================================
+
+/// Decoded initial handshake packet from server
+pub struct InitialHandshake {
+    /// Protocol version (always 10)
+    pub protocol_version: i64,
+    /// Server version string
+    pub server_version: String,
+    /// Connection ID
+    pub connection_id: i64,
+    /// Authentication data (challenge)
+    pub auth_data: Vec<i64>,
+    /// Server capability flags
+    pub capability_flags: i64,
+    /// Server character set
+    pub charset: i64,
+    /// Server status flags
+    pub status_flags: i64,
+    /// Authentication plugin name
+    pub auth_plugin: String,
+}
+
+/// Decode the initial handshake packet from the server
+///
+/// Packet format:
+///   1 byte:  protocol version (10)
+///   string:  server version (null-terminated)
+///   4 bytes: connection ID (LE)
+///   8 bytes: auth-plugin-data-part-1
+///   1 byte:  filler (0x00)
+///   2 bytes: capability flags lower (LE)
+///   1 byte:  character set
+///   2 bytes: status flags (LE)
+///   2 bytes: capability flags upper (LE)
+///   1 byte:  auth data length
+///   10 bytes: reserved (zeros)
+///   string:  auth-plugin-data-part-2 (if CLIENT_SECURE_CONNECTION)
+///   string:  auth plugin name (null-terminated)
+pub fn decode_initial_handshake(data: &[i64]) -> InitialHandshake {
+    var offset: i64 = 0;
+
+    // Protocol version
+    let protocol_version = data[offset];
+    offset = offset + 1;
+
+    // Server version (null-terminated)
+    let (server_version, sv_len) = read_null_string(data, offset);
+    offset = offset + sv_len;
+
+    // Connection ID (4 bytes LE)
+    let connection_id = read_u32_le(data, offset);
+    offset = offset + 4;
+
+    // Auth data part 1 (8 bytes)
+    var auth_data: Vec<i64> = Vec::new();
+    let mut i: i64 = 0;
+    while i < 8 {
+        if offset + i < data.len() as i64 {
+            auth_data.push(data[offset + i]);
+        }
+        i = i + 1;
+    }
+    offset = offset + 8;
+
+    // Filler
+    offset = offset + 1;
+
+    // Capability flags lower 2 bytes
+    let cap_lower = read_u16_le(data, offset);
+    offset = offset + 2;
+
+    // Character set
+    let charset = if offset < data.len() as i64 { data[offset] } else { 33 };
+    offset = offset + 1;
+
+    // Status flags
+    let status_flags = read_u16_le(data, offset);
+    offset = offset + 2;
+
+    // Capability flags upper 2 bytes
+    let cap_upper = read_u16_le(data, offset);
+    offset = offset + 2;
+
+    let capability_flags = cap_lower | (cap_upper << 16);
+
+    // Auth data length or 0
+    let auth_data_len = if offset < data.len() as i64 { data[offset] } else { 0 };
+    offset = offset + 1;
+
+    // Reserved 10 bytes
+    offset = offset + 10;
+
+    // Auth data part 2 (max(13, auth_data_len - 8) bytes)
+    if (capability_flags & 32768) != 0 { // CLIENT_SECURE_CONNECTION
+        let part2_len = if auth_data_len > 8 { auth_data_len - 8 } else { 13 };
+        i = 0;
+        while i < part2_len - 1 && offset + i < data.len() as i64 {
+            auth_data.push(data[offset + i]);
+            i = i + 1;
+        }
+        offset = offset + part2_len;
+    }
+
+    // Auth plugin name
+    var auth_plugin = String::from("mysql_native_password");
+    if (capability_flags & 524288) != 0 { // CLIENT_PLUGIN_AUTH
+        let (plugin, _) = read_null_string(data, offset);
+        if !plugin.is_empty() {
+            auth_plugin = plugin;
+        }
+    }
+
+    InitialHandshake {
+        protocol_version,
+        server_version,
+        connection_id,
+        auth_data,
+        capability_flags,
+        charset,
+        status_flags,
+        auth_plugin,
+    }
+}
+
+// =============================================================================
+// Handshake Response
+// =============================================================================
+
+/// Encode the client handshake response
+///
+/// Packet format:
+///   4 bytes: client capability flags (LE)
+///   4 bytes: max packet size (LE)
+///   1 byte:  character set
+///   23 bytes: reserved (zeros)
+///   string:  username (null-terminated)
+///   length-encoded: auth response
+///   string:  database (null-terminated, if CLIENT_CONNECT_WITH_DB)
+///   string:  auth plugin name (null-terminated, if CLIENT_PLUGIN_AUTH)
+pub fn encode_handshake_response(
+    user: &str,
+    password: &str,
+    database: &str,
+    auth_data: &[i64],
+    client_flags: i64,
+    charset: i64,
+) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+
+    // Client capability flags (4 bytes LE)
+    write_u32_le(&mut buf, client_flags);
+
+    // Max packet size (16 MB)
+    write_u32_le(&mut buf, 16777215);
+
+    // Character set
+    buf.push(charset & 0xFF);
+
+    // Reserved 23 bytes of zeros
+    let mut i: i64 = 0;
+    while i < 23 {
+        buf.push(0);
+        i = i + 1;
+    }
+
+    // Username (null-terminated)
+    write_null_string(&mut buf, user);
+
+    // Auth response (mysql_native_password: SHA1 based)
+    if password.is_empty() {
+        buf.push(0); // zero-length auth response
+    } else {
+        let auth_response = mysql_native_auth(password, auth_data);
+        buf.push(auth_response.len() as i64); // length prefix
+        i = 0;
+        while i < auth_response.len() as i64 {
+            buf.push(auth_response[i]);
+            i = i + 1;
+        }
+    }
+
+    // Database (null-terminated, if CLIENT_CONNECT_WITH_DB)
+    if (client_flags & 8) != 0 && !database.is_empty() {
+        write_null_string(&mut buf, database);
+    }
+
+    // Auth plugin name
+    if (client_flags & 524288) != 0 {
+        write_null_string(&mut buf, "mysql_native_password");
+    }
+
+    buf
+}
+
+/// Compute mysql_native_password authentication response
+///
+/// Algorithm: SHA1(password) XOR SHA1(scramble + SHA1(SHA1(password)))
+fn mysql_native_auth(password: &str, scramble: &[i64]) -> Vec<i64> {
+    let pw_bytes = password.as_bytes();
+    var pw_data: Vec<i64> = Vec::new();
+    let mut i: i64 = 0;
+    while i < pw_bytes.len() as i64 {
+        pw_data.push(pw_bytes[i] as i64);
+        i = i + 1;
+    }
+
+    // SHA1(password)
+    let hash1 = sha1_digest(&pw_data);
+
+    // SHA1(SHA1(password))
+    let hash2 = sha1_digest(&hash1);
+
+    // SHA1(scramble + SHA1(SHA1(password)))
+    var concat_data: Vec<i64> = Vec::new();
+    i = 0;
+    while i < scramble.len() as i64 {
+        concat_data.push(scramble[i]);
+        i = i + 1;
+    }
+    i = 0;
+    while i < hash2.len() as i64 {
+        concat_data.push(hash2[i]);
+        i = i + 1;
+    }
+    let hash3 = sha1_digest(&concat_data);
+
+    // XOR hash1 with hash3
+    var result: Vec<i64> = Vec::new();
+    i = 0;
+    while i < 20 {
+        result.push((hash1[i] ^ hash3[i]) & 0xFF);
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Query Protocol
+// =============================================================================
+
+/// Encode a COM_QUERY packet
+///
+/// Format: 1 byte COM_QUERY (0x03) + SQL string
+pub fn encode_com_query(sql: &str) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+    buf.push(3); // COM_QUERY
+
+    let bytes = sql.as_bytes();
+    let mut i: i64 = 0;
+    while i < bytes.len() as i64 {
+        buf.push(bytes[i] as i64);
+        i = i + 1;
+    }
+
+    buf
+}
+
+/// Encode a COM_STMT_PREPARE packet
+pub fn encode_com_prepare(sql: &str) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+    buf.push(22); // COM_STMT_PREPARE
+
+    let bytes = sql.as_bytes();
+    let mut i: i64 = 0;
+    while i < bytes.len() as i64 {
+        buf.push(bytes[i] as i64);
+        i = i + 1;
+    }
+
+    buf
+}
+
+/// Encode a COM_STMT_EXECUTE packet
+///
+/// Format:
+///   1 byte:  COM_STMT_EXECUTE (0x17)
+///   4 bytes: statement ID (LE)
+///   1 byte:  flags (0 = CURSOR_TYPE_NO_CURSOR)
+///   4 bytes: iteration count (always 1)
+///   [NULL bitmap, parameter types, parameter values if num_params > 0]
+pub fn encode_com_execute(stmt_id: i64, params: &[String], num_params: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+    buf.push(23); // COM_STMT_EXECUTE
+
+    // Statement ID (4 bytes LE)
+    write_u32_le(&mut buf, stmt_id);
+
+    // Flags: no cursor
+    buf.push(0);
+
+    // Iteration count: always 1
+    write_u32_le(&mut buf, 1);
+
+    if num_params > 0 {
+        // NULL bitmap: (num_params + 7) / 8 bytes
+        let null_bitmap_len = (num_params + 7) / 8;
+        var null_bitmap: Vec<i64> = Vec::new();
+        let mut i: i64 = 0;
+        while i < null_bitmap_len {
+            null_bitmap.push(0); // no NULLs for now
+            i = i + 1;
+        }
+        i = 0;
+        while i < null_bitmap_len {
+            buf.push(null_bitmap[i]);
+            i = i + 1;
+        }
+
+        // New params bound flag
+        buf.push(1);
+
+        // Parameter types (2 bytes each: type + unsigned flag)
+        i = 0;
+        while i < num_params {
+            buf.push(253); // MYSQL_TYPE_VAR_STRING
+            buf.push(0);   // not unsigned
+            i = i + 1;
+        }
+
+        // Parameter values (length-encoded strings)
+        i = 0;
+        while i < num_params && i < params.len() as i64 {
+            let param = &params[i];
+            let param_bytes = param.as_bytes();
+            let param_len = param_bytes.len() as i64;
+
+            // Length-encoded integer
+            write_lenenc_int(&mut buf, param_len);
+
+            // String data
+            let mut j: i64 = 0;
+            while j < param_len {
+                buf.push(param_bytes[j] as i64);
+                j = j + 1;
+            }
+
+            i = i + 1;
+        }
+    }
+
+    buf
+}
+
+/// Encode a COM_STMT_CLOSE packet
+pub fn encode_com_close(stmt_id: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::new();
+    buf.push(25); // COM_STMT_CLOSE
+    write_u32_le(&mut buf, stmt_id);
+    buf
+}
+
+// =============================================================================
+// Result Set Decoding
+// =============================================================================
+
+/// Column definition from result set metadata
+pub struct MysqlColumnDef {
+    /// Catalog (always "def")
+    pub catalog: String,
+    /// Schema (database) name
+    pub schema: String,
+    /// Table name
+    pub table: String,
+    /// Original table name
+    pub org_table: String,
+    /// Column name
+    pub name: String,
+    /// Original column name
+    pub org_name: String,
+    /// Character set
+    pub charset: i64,
+    /// Column length
+    pub column_length: i64,
+    /// Column type
+    pub column_type: i64,
+    /// Flags
+    pub flags: i64,
+    /// Decimals
+    pub decimals: i64,
+}
+
+/// Decode a column definition packet
+pub fn decode_column_def(data: &[i64]) -> MysqlColumnDef {
+    var offset: i64 = 0;
+
+    let (catalog, cat_len) = read_lenenc_string(data, offset);
+    offset = offset + cat_len;
+
+    let (schema, sch_len) = read_lenenc_string(data, offset);
+    offset = offset + sch_len;
+
+    let (table, tab_len) = read_lenenc_string(data, offset);
+    offset = offset + tab_len;
+
+    let (org_table, ot_len) = read_lenenc_string(data, offset);
+    offset = offset + ot_len;
+
+    let (name, name_len) = read_lenenc_string(data, offset);
+    offset = offset + name_len;
+
+    let (org_name, on_len) = read_lenenc_string(data, offset);
+    offset = offset + on_len;
+
+    // Fixed-length fields (preceded by 0x0C length)
+    offset = offset + 1; // skip 0x0C
+
+    let charset = read_u16_le(data, offset);
+    offset = offset + 2;
+
+    let column_length = read_u32_le(data, offset);
+    offset = offset + 4;
+
+    let column_type = if offset < data.len() as i64 { data[offset] } else { 253 };
+    offset = offset + 1;
+
+    let flags = read_u16_le(data, offset);
+    offset = offset + 2;
+
+    let decimals = if offset < data.len() as i64 { data[offset] } else { 0 };
+
+    MysqlColumnDef {
+        catalog,
+        schema,
+        table,
+        org_table,
+        name,
+        org_name,
+        charset,
+        column_length,
+        column_type,
+        flags,
+        decimals,
+    }
+}
+
+/// Decode a text result row packet
+///
+/// Each column value is a length-encoded string, or 0xFB for NULL
+pub fn decode_text_row(data: &[i64], num_columns: i64) -> Vec<Option<String>> {
+    var values: Vec<Option<String>> = Vec::new();
+    var offset: i64 = 0;
+
+    let mut i: i64 = 0;
+    while i < num_columns && offset < data.len() as i64 {
+        if data[offset] == 0xFB {
+            // NULL value
+            values.push(None);
+            offset = offset + 1;
+        } else {
+            let (val, val_len) = read_lenenc_string(data, offset);
+            values.push(Some(val));
+            offset = offset + val_len;
+        }
+        i = i + 1;
+    }
+
+    values
+}
+
+/// Decode an OK packet
+///
+/// Returns (affected_rows, last_insert_id)
+pub fn decode_ok_packet(data: &[i64]) -> (i64, i64) {
+    if data.is_empty() || data[0] != 0x00 {
+        return (0, 0);
+    }
+
+    var offset: i64 = 1;
+
+    let (affected_rows, ar_len) = read_lenenc_int(data, offset);
+    offset = offset + ar_len;
+
+    let (last_insert_id, _) = read_lenenc_int(data, offset);
+
+    (affected_rows, last_insert_id)
+}
+
+/// Decode an ERR packet
+///
+/// Returns (error_code, error_message)
+pub fn decode_err_packet(data: &[i64]) -> (i64, String) {
+    if data.is_empty() || data[0] != 0xFF {
+        return (0, "unknown error".to_string());
+    }
+
+    let error_code = read_u16_le(data, 1);
+
+    // Skip SQL state marker '#' and 5-char state
+    var offset: i64 = 3;
+    if offset < data.len() as i64 && data[offset] == 35 { // '#'
+        offset = offset + 6; // '#' + 5 char state
+    }
+
+    // Rest is error message
+    var msg = String::new();
+    while offset < data.len() as i64 {
+        msg.push(data[offset] as u8 as char);
+        offset = offset + 1;
+    }
+
+    (error_code, msg)
+}
+
+/// Check if a packet is an EOF packet
+pub fn is_eof_packet(data: &[i64]) -> bool {
+    if data.is_empty() {
+        return false;
+    }
+    data[0] == 0xFE && data.len() < 9
+}
+
+// =============================================================================
+// Packet I/O
+// =============================================================================
+
+/// Read a MySQL packet from the TCP stream
+///
+/// Returns the payload (without the 4-byte header).
+pub fn read_packet(handle: i64, seq_id: &mut i64) -> Vec<i64> {
+    // Read 4-byte header
+    let header = tcp_recv(handle, 4);
+    if header.len() < 4 {
+        return Vec::new();
+    }
+
+    let payload_len = (header[0] & 0xFF)
+        | ((header[1] & 0xFF) << 8)
+        | ((header[2] & 0xFF) << 16);
+    *seq_id = header[3] & 0xFF;
+
+    if payload_len == 0 {
+        return Vec::new();
+    }
+
+    // Read payload
+    var payload: Vec<i64> = Vec::new();
+    var remaining = payload_len;
+
+    while remaining > 0 {
+        let chunk = tcp_recv(handle, remaining);
+        if chunk.is_empty() {
+            break;
+        }
+        let mut i: i64 = 0;
+        while i < chunk.len() as i64 {
+            payload.push(chunk[i]);
+            i = i + 1;
+        }
+        remaining = remaining - chunk.len() as i64;
+    }
+
+    payload
+}
+
+/// Write a MySQL packet to the TCP stream
+///
+/// Prepends the 4-byte header (length + sequence ID).
+pub fn write_packet(handle: i64, payload: &[i64], seq_id: &mut i64) {
+    let payload_len = payload.len() as i64;
+
+    var packet: Vec<i64> = Vec::with_capacity(payload_len + 4);
+
+    // 3-byte length (little-endian)
+    packet.push(payload_len & 0xFF);
+    packet.push((payload_len >> 8) & 0xFF);
+    packet.push((payload_len >> 16) & 0xFF);
+
+    // Sequence ID
+    packet.push(*seq_id & 0xFF);
+    *seq_id = (*seq_id + 1) & 0xFF;
+
+    // Payload
+    let mut i: i64 = 0;
+    while i < payload_len {
+        packet.push(payload[i]);
+        i = i + 1;
+    }
+
+    tcp_send(handle, &packet);
+}
+
+// =============================================================================
+// Integer/String Encoding Helpers
+// =============================================================================
+
+/// Read a little-endian 16-bit unsigned integer
+pub fn read_u16_le(data: &[i64], offset: i64) -> i64 {
+    if offset + 2 > data.len() as i64 {
+        return 0;
+    }
+    (data[offset] & 0xFF) | ((data[offset + 1] & 0xFF) << 8)
+}
+
+/// Read a little-endian 32-bit unsigned integer
+pub fn read_u32_le(data: &[i64], offset: i64) -> i64 {
+    if offset + 4 > data.len() as i64 {
+        return 0;
+    }
+    (data[offset] & 0xFF)
+        | ((data[offset + 1] & 0xFF) << 8)
+        | ((data[offset + 2] & 0xFF) << 16)
+        | ((data[offset + 3] & 0xFF) << 24)
+}
+
+/// Write a little-endian 16-bit integer
+pub fn write_u16_le(buf: &mut Vec<i64>, val: i64) {
+    buf.push(val & 0xFF);
+    buf.push((val >> 8) & 0xFF);
+}
+
+/// Write a little-endian 32-bit integer
+pub fn write_u32_le(buf: &mut Vec<i64>, val: i64) {
+    buf.push(val & 0xFF);
+    buf.push((val >> 8) & 0xFF);
+    buf.push((val >> 16) & 0xFF);
+    buf.push((val >> 24) & 0xFF);
+}
+
+/// Read a length-encoded integer
+///
+/// Returns (value, bytes_consumed)
+pub fn read_lenenc_int(data: &[i64], offset: i64) -> (i64, i64) {
+    if offset >= data.len() as i64 {
+        return (0, 0);
+    }
+
+    let first = data[offset] & 0xFF;
+
+    if first < 251 {
+        (first, 1)
+    } else if first == 252 {
+        // 2-byte integer follows
+        let val = read_u16_le(data, offset + 1);
+        (val, 3)
+    } else if first == 253 {
+        // 3-byte integer follows
+        let val = (data[offset + 1] & 0xFF)
+            | ((data[offset + 2] & 0xFF) << 8)
+            | ((data[offset + 3] & 0xFF) << 16);
+        (val, 4)
+    } else if first == 254 {
+        // 8-byte integer follows
+        let val = read_u32_le(data, offset + 1);
+        (val, 9) // simplified: only read lower 4 bytes
+    } else {
+        // 251 = NULL, 255 = error
+        (0, 1)
+    }
+}
+
+/// Write a length-encoded integer
+pub fn write_lenenc_int(buf: &mut Vec<i64>, val: i64) {
+    if val < 251 {
+        buf.push(val);
+    } else if val < 65536 {
+        buf.push(252);
+        write_u16_le(buf, val);
+    } else if val < 16777216 {
+        buf.push(253);
+        buf.push(val & 0xFF);
+        buf.push((val >> 8) & 0xFF);
+        buf.push((val >> 16) & 0xFF);
+    } else {
+        buf.push(254);
+        write_u32_le(buf, val);
+        write_u32_le(buf, 0);
+    }
+}
+
+/// Read a length-encoded string
+///
+/// Returns (string, total_bytes_consumed)
+pub fn read_lenenc_string(data: &[i64], offset: i64) -> (String, i64) {
+    let (str_len, len_bytes) = read_lenenc_int(data, offset);
+    if str_len == 0 {
+        return (String::new(), len_bytes);
+    }
+
+    var s = String::new();
+    let start = offset + len_bytes;
+    let mut i: i64 = 0;
+    while i < str_len && start + i < data.len() as i64 {
+        s.push(data[start + i] as u8 as char);
+        i = i + 1;
+    }
+
+    (s, len_bytes + str_len)
+}
+
+/// Read a null-terminated string
+///
+/// Returns (string, bytes_consumed_including_null)
+fn read_null_string(data: &[i64], offset: i64) -> (String, i64) {
+    var s = String::new();
+    var i: i64 = offset;
+    while i < data.len() as i64 {
+        if data[i] == 0 {
+            return (s, i - offset + 1);
+        }
+        s.push(data[i] as u8 as char);
+        i = i + 1;
+    }
+    (s, i - offset)
+}
+
+/// Write a null-terminated string
+fn write_null_string(buf: &mut Vec<i64>, s: &str) {
+    let bytes = s.as_bytes();
+    let mut i: i64 = 0;
+    while i < bytes.len() as i64 {
+        buf.push(bytes[i] as i64);
+        i = i + 1;
+    }
+    buf.push(0);
+}
+
+// =============================================================================
+// SHA-1 Implementation (for mysql_native_password)
+// =============================================================================
+
+/// Compute SHA-1 digest (20 bytes)
+fn sha1_digest(data: &[i64]) -> Vec<i64> {
+    // Initial hash values
+    var h0: i64 = 0x67452301;
+    var h1: i64 = 0xEFCDAB89;
+    var h2: i64 = 0x98BADCFE;
+    var h3: i64 = 0x10325476;
+    var h4: i64 = 0xC3D2E1F0;
+
+    // Pre-processing: pad to 512-bit blocks
+    let orig_len_bits = data.len() as i64 * 8;
+    var msg: Vec<i64> = Vec::new();
+    let mut i: i64 = 0;
+    while i < data.len() as i64 {
+        msg.push(data[i] & 0xFF);
+        i = i + 1;
+    }
+    msg.push(0x80);
+    while (msg.len() as i64 % 64) != 56 {
+        msg.push(0);
+    }
+    // Append length as 64-bit big-endian
+    msg.push(0); msg.push(0); msg.push(0); msg.push(0);
+    msg.push((orig_len_bits >> 24) & 0xFF);
+    msg.push((orig_len_bits >> 16) & 0xFF);
+    msg.push((orig_len_bits >> 8) & 0xFF);
+    msg.push(orig_len_bits & 0xFF);
+
+    // Process each 64-byte block
+    var block: i64 = 0;
+    while block < msg.len() as i64 {
+        // Build 80-word schedule
+        var w: Vec<i64> = Vec::with_capacity(80);
+        let mut t: i64 = 0;
+        while t < 16 {
+            let idx = block + t * 4;
+            let word = ((msg[idx] & 0xFF) << 24)
+                | ((msg[idx + 1] & 0xFF) << 16)
+                | ((msg[idx + 2] & 0xFF) << 8)
+                | (msg[idx + 3] & 0xFF);
+            w.push(word & 0xFFFFFFFF);
+            t = t + 1;
+        }
+        while t < 80 {
+            let val = w[t - 3] ^ w[t - 8] ^ w[t - 14] ^ w[t - 16];
+            w.push(sha1_rotl(val, 1));
+            t = t + 1;
+        }
+
+        var a = h0;
+        var b = h1;
+        var c = h2;
+        var d = h3;
+        var e = h4;
+
+        t = 0;
+        while t < 80 {
+            var f: i64 = 0;
+            var k: i64 = 0;
+            if t < 20 {
+                f = (b & c) | ((!b) & d);
+                k = 0x5A827999;
+            } else if t < 40 {
+                f = b ^ c ^ d;
+                k = 0x6ED9EBA1;
+            } else if t < 60 {
+                f = (b & c) | (b & d) | (c & d);
+                k = 0x8F1BBCDC;
+            } else {
+                f = b ^ c ^ d;
+                k = 0xCA62C1D6;
+            }
+
+            let temp = (sha1_rotl(a, 5) + (f & 0xFFFFFFFF) + e + k + w[t]) & 0xFFFFFFFF;
+            e = d;
+            d = c;
+            c = sha1_rotl(b, 30);
+            b = a;
+            a = temp;
+
+            t = t + 1;
+        }
+
+        h0 = (h0 + a) & 0xFFFFFFFF;
+        h1 = (h1 + b) & 0xFFFFFFFF;
+        h2 = (h2 + c) & 0xFFFFFFFF;
+        h3 = (h3 + d) & 0xFFFFFFFF;
+        h4 = (h4 + e) & 0xFFFFFFFF;
+
+        block = block + 64;
+    }
+
+    // Produce 20-byte digest (big-endian)
+    var digest: Vec<i64> = Vec::with_capacity(20);
+    digest.push((h0 >> 24) & 0xFF); digest.push((h0 >> 16) & 0xFF);
+    digest.push((h0 >> 8) & 0xFF); digest.push(h0 & 0xFF);
+    digest.push((h1 >> 24) & 0xFF); digest.push((h1 >> 16) & 0xFF);
+    digest.push((h1 >> 8) & 0xFF); digest.push(h1 & 0xFF);
+    digest.push((h2 >> 24) & 0xFF); digest.push((h2 >> 16) & 0xFF);
+    digest.push((h2 >> 8) & 0xFF); digest.push(h2 & 0xFF);
+    digest.push((h3 >> 24) & 0xFF); digest.push((h3 >> 16) & 0xFF);
+    digest.push((h3 >> 8) & 0xFF); digest.push(h3 & 0xFF);
+    digest.push((h4 >> 24) & 0xFF); digest.push((h4 >> 16) & 0xFF);
+    digest.push((h4 >> 8) & 0xFF); digest.push(h4 & 0xFF);
+    digest
+}
+
+/// Left-rotate a 32-bit value
+fn sha1_rotl(x: i64, n: i64) -> i64 {
+    let masked = x & 0xFFFFFFFF;
+    ((masked << n) | (masked >> (32 - n))) & 0xFFFFFFFF
+}
+
+// =============================================================================
+// TCP Runtime Helpers
+// =============================================================================
+
+fn tcp_send(handle: i64, data: &[i64]) {
+    unsafe { net_tcp_send(handle, data.as_ptr(), data.len() as i64) }
+}
+
+fn tcp_recv(handle: i64, max_len: i64) -> Vec<i64> {
+    var buf: Vec<i64> = Vec::with_capacity(max_len);
+    let n = unsafe { net_tcp_recv(handle, buf.as_mut_ptr(), max_len) };
+    if n > 0 {
+        unsafe { buf.set_len(n as i64) };
+    }
+    buf
+}
+
+extern fn net_tcp_send(handle: i64, data: i64, len: i64) -> i64;
+extern fn net_tcp_recv(handle: i64, buf: i64, max_len: i64) -> i64;
+// simplex-mysql/connection - TCP Connection Management
+//
+// Manages TCP connections to MySQL servers. Handles the initial
+// handshake packet, authentication (mysql_native_password), and
+// connection lifecycle.
+//
+// MySQL Handshake Sequence:
+// 1. Server sends initial handshake packet (protocol version, auth data)
+// 2. Client sends handshake response (capabilities, auth response, database)
+// 3. Server sends OK or ERR packet
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::protocol::{
+    read_packet, write_packet, encode_handshake_response,
+    decode_initial_handshake, decode_ok_packet, decode_err_packet,
+    read_u16_le, read_u32_le, write_u16_le, write_u32_le,
+    InitialHandshake,
+};
+use crate::types::MysqlError;
+
+// =============================================================================
+// Connection Configuration
+// =============================================================================
+
+/// MySQL connection configuration
+pub struct MysqlConfig {
+    /// Server hostname or IP
+    pub host: String,
+    /// Server port (default 3306)
+    pub port: i64,
+    /// Database name
+    pub database: String,
+    /// Username
+    pub user: String,
+    /// Password
+    pub password: String,
+    /// Client capability flags
+    pub client_flags: i64,
+    /// Connection timeout in milliseconds
+    pub connect_timeout_ms: i64,
+    /// Read timeout in milliseconds
+    pub read_timeout_ms: i64,
+    /// Character set (default UTF-8 = 33)
+    pub charset: i64,
+}
+
+impl MysqlConfig {
+    /// Create a new connection configuration
+    pub fn new(host: &str, port: i64, database: &str, user: &str, password: &str) -> Self {
+        MysqlConfig {
+            host: host.to_string(),
+            port,
+            database: database.to_string(),
+            user: user.to_string(),
+            password: password.to_string(),
+            client_flags: 525835, // DEFAULT_CLIENT_FLAGS
+            connect_timeout_ms: 5000,
+            read_timeout_ms: 30000,
+            charset: 33, // utf8_general_ci
+        }
+    }
+
+    /// Create from a connection string
+    /// Format: "mysql://user:pass@host:port/database"
+    pub fn from_url(url: &str) -> Result<Self, MysqlError> {
+        // Strip protocol prefix
+        let rest = if url.starts_with("mysql://") {
+            &url[8..]
+        } else {
+            url
+        };
+
+        // Split user:pass@host:port/database
+        var user = String::new();
+        var password = String::new();
+        var host = "localhost".to_string();
+        var port: i64 = 3306;
+        var database = String::new();
+
+        // Find @ separator
+        let parts: Vec<&str> = rest.splitn(2, '@');
+        var host_part: &str = rest;
+
+        if parts.len() == 2 {
+            let auth = parts[0];
+            host_part = parts[1];
+
+            let auth_parts: Vec<&str> = auth.splitn(2, ':');
+            user = auth_parts[0].to_string();
+            if auth_parts.len() == 2 {
+                password = auth_parts[1].to_string();
+            }
+        }
+
+        // Find / separator for database
+        let host_db: Vec<&str> = host_part.splitn(2, '/');
+        let host_port_str = host_db[0];
+        if host_db.len() == 2 {
+            database = host_db[1].to_string();
+        }
+
+        // Parse host:port
+        let hp: Vec<&str> = host_port_str.rsplitn(2, ':');
+        if hp.len() == 2 {
+            host = hp[1].to_string();
+            port = hp[0].parse::<i64>()
+                .map_err(|_| MysqlError::Config("invalid port".to_string()))?;
+        } else {
+            host = host_port_str.to_string();
+        }
+
+        Ok(MysqlConfig::new(&host, port, &database, &user, &password))
+    }
+
+    /// Set connection timeout
+    pub fn with_connect_timeout(mut self, ms: i64) -> Self {
+        self.connect_timeout_ms = ms;
+        self
+    }
+
+    /// Set read timeout
+    pub fn with_read_timeout(mut self, ms: i64) -> Self {
+        self.read_timeout_ms = ms;
+        self
+    }
+
+    /// Get TCP address string
+    pub fn addr_string(&self) -> String {
+        var s = self.host.clone();
+        s.push(':');
+        s.push_str(&self.port.to_string());
+        s
+    }
+}
+
+// =============================================================================
+// Connection
+// =============================================================================
+
+/// Represents an active MySQL connection
+pub struct MysqlConnection {
+    /// TCP stream handle
+    pub stream_handle: i64,
+    /// Connection state: 0=disconnected, 1=ready, 2=in_query, 3=failed
+    pub state: i64,
+    /// Server version string
+    pub server_version: String,
+    /// Connection ID assigned by server
+    pub connection_id: i64,
+    /// Server capability flags
+    pub server_capabilities: i64,
+    /// Current sequence ID for packet numbering
+    pub sequence_id: i64,
+    /// Server character set
+    pub server_charset: i64,
+    /// Server status flags
+    pub server_status: i64,
+    /// Auth plugin name
+    pub auth_plugin: String,
+    /// Configuration
+    pub config: MysqlConfig,
+    /// Transaction depth for nested transactions
+    pub txn_depth: i64,
+}
+
+impl MysqlConnection {
+    /// Check if connection is ready
+    pub fn is_ready(&self) -> bool {
+        self.state == 1
+    }
+
+    /// Check if in a transaction
+    pub fn is_in_transaction(&self) -> bool {
+        (self.server_status & 1) != 0 // SERVER_STATUS_IN_TRANS
+    }
+
+    /// Reset sequence ID (for new command)
+    pub fn reset_sequence(&mut self) {
+        self.sequence_id = 0;
+    }
+
+    /// Get next sequence ID
+    pub fn next_sequence(&mut self) -> i64 {
+        let seq = self.sequence_id;
+        self.sequence_id = (self.sequence_id + 1) & 0xFF;
+        seq
+    }
+}
+
+// =============================================================================
+// Connection Functions
+// =============================================================================
+
+/// Connect to a MySQL server
+///
+/// Establishes TCP connection, performs handshake, and authenticates.
+///
+/// # Arguments
+/// * `config` - Connection configuration
+pub fn mysql_connect(config: MysqlConfig) -> Result<MysqlConnection, MysqlError> {
+    let addr = config.addr_string();
+
+    let stream_handle = tcp_connect(&addr, config.connect_timeout_ms);
+    if stream_handle < 0 {
+        return Err(MysqlError::Connection(
+            "failed to establish TCP connection".to_string()
+        ));
+    }
+
+    var conn = MysqlConnection {
+        stream_handle,
+        state: 0,
+        server_version: String::new(),
+        connection_id: 0,
+        server_capabilities: 0,
+        sequence_id: 0,
+        server_charset: 0,
+        server_status: 0,
+        auth_plugin: String::new(),
+        config,
+        txn_depth: 0,
+    };
+
+    // Read initial handshake packet from server
+    let handshake_data = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    if handshake_data.is_empty() {
+        tcp_close(conn.stream_handle);
+        return Err(MysqlError::Connection("no handshake received".to_string()));
+    }
+
+    let handshake = decode_initial_handshake(&handshake_data);
+    conn.server_version = handshake.server_version.clone();
+    conn.connection_id = handshake.connection_id;
+    conn.server_capabilities = handshake.capability_flags;
+    conn.server_charset = handshake.charset;
+    conn.server_status = handshake.status_flags;
+    conn.auth_plugin = handshake.auth_plugin.clone();
+
+    // Build and send handshake response
+    let response = encode_handshake_response(
+        &conn.config.user,
+        &conn.config.password,
+        &conn.config.database,
+        &handshake.auth_data,
+        conn.config.client_flags,
+        conn.config.charset,
+    );
+    conn.sequence_id = 1;
+    write_packet(conn.stream_handle, &response, &mut conn.sequence_id);
+
+    // Read auth result
+    let result_data = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    if result_data.is_empty() {
+        tcp_close(conn.stream_handle);
+        return Err(MysqlError::Connection("no auth response".to_string()));
+    }
+
+    // Check first byte for OK/ERR
+    if result_data[0] == 0xFF { // ERR
+        let err = decode_err_packet(&result_data);
+        tcp_close(conn.stream_handle);
+        return Err(MysqlError::Server {
+            code: err.0,
+            message: err.1,
+        });
+    }
+
+    if result_data[0] != 0x00 && result_data[0] != 0xFE {
+        tcp_close(conn.stream_handle);
+        return Err(MysqlError::Protocol("unexpected auth response".to_string()));
+    }
+
+    conn.state = 1; // ready
+    Ok(conn)
+}
+
+/// Close a MySQL connection
+///
+/// Sends COM_QUIT and closes the TCP connection.
+pub fn mysql_close(conn: &mut MysqlConnection) {
+    if conn.state != 0 && conn.state != 3 {
+        // Send COM_QUIT
+        conn.reset_sequence();
+        var quit_cmd: Vec<i64> = Vec::new();
+        quit_cmd.push(1); // COM_QUIT
+        write_packet(conn.stream_handle, &quit_cmd, &mut conn.sequence_id);
+    }
+    tcp_close(conn.stream_handle);
+    conn.state = 0;
+}
+
+/// Ping the server to check if connection is alive
+pub fn mysql_ping(conn: &mut MysqlConnection) -> Result<(), MysqlError> {
+    if conn.state != 1 {
+        return Err(MysqlError::Connection("connection not ready".to_string()));
+    }
+
+    conn.reset_sequence();
+    var ping_cmd: Vec<i64> = Vec::new();
+    ping_cmd.push(14); // COM_PING
+    write_packet(conn.stream_handle, &ping_cmd, &mut conn.sequence_id);
+
+    let result = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    if result.is_empty() {
+        conn.state = 3;
+        return Err(MysqlError::Connection("connection lost".to_string()));
+    }
+
+    if result[0] == 0x00 {
+        Ok(())
+    } else {
+        conn.state = 3;
+        Err(MysqlError::Connection("ping failed".to_string()))
+    }
+}
+
+// =============================================================================
+// TCP Runtime Helpers
+// =============================================================================
+
+fn tcp_connect(addr: &str, timeout_ms: i64) -> i64 {
+    unsafe { net_tcp_connect(addr, timeout_ms) }
+}
+
+fn tcp_close(handle: i64) {
+    unsafe { net_tcp_close(handle) }
+}
+
+extern fn net_tcp_connect(addr: i64, timeout_ms: i64) -> i64;
+extern fn net_tcp_close(handle: i64) -> i64;
+// simplex-mysql/query - Query Execution
+//
+// Provides query execution functions including simple text queries,
+// prepared statements, and parameterized execution.
+//
+// MySQL Query Flow (COM_QUERY):
+// 1. Client sends COM_QUERY packet with SQL text
+// 2. Server responds with:
+//    - OK packet (for non-SELECT statements)
+//    - Column count + column definitions + rows + EOF (for SELECT)
+//    - ERR packet (on error)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::MysqlConnection;
+use crate::protocol::{
+    read_packet, write_packet, encode_com_query, encode_com_prepare,
+    encode_com_execute, encode_com_close, decode_column_def, decode_text_row,
+    decode_ok_packet, decode_err_packet, is_eof_packet,
+    read_lenenc_int, MysqlColumnDef,
+};
+use crate::types::{MysqlResult, MysqlRow, MysqlValue, MysqlError};
+
+// =============================================================================
+// Simple Query
+// =============================================================================
+
+/// Execute a SQL query using the text protocol
+///
+/// # Arguments
+/// * `conn` - Active MySQL connection
+/// * `sql` - SQL query string
+///
+/// # Example
+/// ```simplex
+/// let result = mysql_query(&mut conn, "SELECT id, name FROM users")?;
+/// for row in result.rows.iter() {
+///     println(format!("{}: {}", row.get_int(0).unwrap(), row.get_text(1).unwrap()));
+/// }
+/// ```
+pub fn mysql_query(conn: &mut MysqlConnection, sql: &str) -> Result<MysqlResult, MysqlError> {
+    if !conn.is_ready() {
+        return Err(MysqlError::Connection("connection not ready".to_string()));
+    }
+
+    conn.state = 2; // in_query
+    conn.reset_sequence();
+
+    // Send COM_QUERY
+    let query_packet = encode_com_query(sql);
+    write_packet(conn.stream_handle, &query_packet, &mut conn.sequence_id);
+
+    // Read first response packet
+    let first = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    if first.is_empty() {
+        conn.state = 3;
+        return Err(MysqlError::Connection("connection lost during query".to_string()));
+    }
+
+    // Check packet type
+    if first[0] == 0xFF {
+        // ERR packet
+        let (code, msg) = decode_err_packet(&first);
+        conn.state = 1;
+        return Err(MysqlError::Server { code, message: msg });
+    }
+
+    if first[0] == 0x00 {
+        // OK packet (INSERT/UPDATE/DELETE/DDL)
+        let (affected_rows, last_insert_id) = decode_ok_packet(&first);
+        conn.state = 1;
+        return Ok(MysqlResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            affected_rows,
+            last_insert_id,
+        });
+    }
+
+    // Column count (length-encoded integer)
+    let (column_count, _) = read_lenenc_int(&first, 0);
+
+    // Read column definitions
+    var column_defs: Vec<MysqlColumnDef> = Vec::new();
+    var col_names: Vec<String> = Vec::new();
+    let mut i: i64 = 0;
+    while i < column_count {
+        let col_data = read_packet(conn.stream_handle, &mut conn.sequence_id);
+        if col_data.is_empty() {
+            conn.state = 3;
+            return Err(MysqlError::Connection("connection lost reading columns".to_string()));
+        }
+        let col_def = decode_column_def(&col_data);
+        col_names.push(col_def.name.clone());
+        column_defs.push(col_def);
+        i = i + 1;
+    }
+
+    // Read EOF packet after column definitions
+    let eof1 = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    if !is_eof_packet(&eof1) && eof1[0] == 0xFF {
+        let (code, msg) = decode_err_packet(&eof1);
+        conn.state = 1;
+        return Err(MysqlError::Server { code, message: msg });
+    }
+
+    // Read data rows until EOF
+    var rows: Vec<MysqlRow> = Vec::new();
+    loop {
+        let row_data = read_packet(conn.stream_handle, &mut conn.sequence_id);
+        if row_data.is_empty() {
+            conn.state = 3;
+            return Err(MysqlError::Connection("connection lost reading rows".to_string()));
+        }
+
+        // Check for EOF or ERR
+        if is_eof_packet(&row_data) {
+            break;
+        }
+        if row_data[0] == 0xFF {
+            let (code, msg) = decode_err_packet(&row_data);
+            conn.state = 1;
+            return Err(MysqlError::Server { code, message: msg });
+        }
+
+        // Decode text row
+        let text_values = decode_text_row(&row_data, column_count);
+        let row = convert_text_row(&column_defs, &text_values);
+        rows.push(row);
+    }
+
+    conn.state = 1;
+
+    Ok(MysqlResult {
+        columns: col_names,
+        rows,
+        affected_rows: 0,
+        last_insert_id: 0,
+    })
+}
+
+/// Execute a SQL statement that does not return rows
+///
+/// Returns the number of affected rows.
+pub fn mysql_execute(conn: &mut MysqlConnection, sql: &str) -> Result<i64, MysqlError> {
+    let result = mysql_query(conn, sql)?;
+    Ok(result.affected_rows)
+}
+
+// =============================================================================
+// Prepared Statements
+// =============================================================================
+
+/// Prepared statement handle
+pub struct MysqlPrepared {
+    /// Statement ID assigned by server
+    pub stmt_id: i64,
+    /// Original SQL text
+    pub sql: String,
+    /// Number of parameters
+    pub num_params: i64,
+    /// Number of columns in result
+    pub num_columns: i64,
+    /// Column definitions
+    pub columns: Vec<MysqlColumnDef>,
+}
+
+/// Prepare a SQL statement for parameterized execution
+///
+/// # Arguments
+/// * `conn` - Active MySQL connection
+/// * `sql` - SQL with ? placeholders
+///
+/// # Example
+/// ```simplex
+/// let stmt = mysql_prepare(&mut conn, "SELECT * FROM users WHERE id = ?")?;
+/// ```
+pub fn mysql_prepare(
+    conn: &mut MysqlConnection,
+    sql: &str,
+) -> Result<MysqlPrepared, MysqlError> {
+    if !conn.is_ready() {
+        return Err(MysqlError::Connection("connection not ready".to_string()));
+    }
+
+    conn.state = 2;
+    conn.reset_sequence();
+
+    // Send COM_STMT_PREPARE
+    let prep_packet = encode_com_prepare(sql);
+    write_packet(conn.stream_handle, &prep_packet, &mut conn.sequence_id);
+
+    // Read response
+    let resp = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    if resp.is_empty() {
+        conn.state = 3;
+        return Err(MysqlError::Connection("connection lost during prepare".to_string()));
+    }
+
+    if resp[0] == 0xFF {
+        let (code, msg) = decode_err_packet(&resp);
+        conn.state = 1;
+        return Err(MysqlError::Server { code, message: msg });
+    }
+
+    // Parse COM_STMT_PREPARE response
+    // Format: status(1) + stmt_id(4) + num_columns(2) + num_params(2) + reserved(1) + warning_count(2)
+    if resp[0] != 0x00 || resp.len() < 12 {
+        conn.state = 1;
+        return Err(MysqlError::Protocol("invalid prepare response".to_string()));
+    }
+
+    let stmt_id = (resp[1] & 0xFF)
+        | ((resp[2] & 0xFF) << 8)
+        | ((resp[3] & 0xFF) << 16)
+        | ((resp[4] & 0xFF) << 24);
+    let num_columns = (resp[5] & 0xFF) | ((resp[6] & 0xFF) << 8);
+    let num_params = (resp[7] & 0xFF) | ((resp[8] & 0xFF) << 8);
+
+    // Read parameter definitions (if any)
+    if num_params > 0 {
+        let mut i: i64 = 0;
+        while i < num_params {
+            let _ = read_packet(conn.stream_handle, &mut conn.sequence_id);
+            i = i + 1;
+        }
+        // EOF after params
+        let _ = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    }
+
+    // Read column definitions (if any)
+    var columns: Vec<MysqlColumnDef> = Vec::new();
+    if num_columns > 0 {
+        let mut i: i64 = 0;
+        while i < num_columns {
+            let col_data = read_packet(conn.stream_handle, &mut conn.sequence_id);
+            if !col_data.is_empty() && col_data[0] != 0xFE {
+                columns.push(decode_column_def(&col_data));
+            }
+            i = i + 1;
+        }
+        // EOF after columns
+        let _ = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    }
+
+    conn.state = 1;
+
+    Ok(MysqlPrepared {
+        stmt_id,
+        sql: sql.to_string(),
+        num_params,
+        num_columns,
+        columns,
+    })
+}
+
+/// Execute a prepared statement with parameters
+///
+/// # Arguments
+/// * `conn` - Active MySQL connection
+/// * `stmt` - Prepared statement
+/// * `params` - Parameter values as strings
+pub fn mysql_execute_prepared(
+    conn: &mut MysqlConnection,
+    stmt: &MysqlPrepared,
+    params: &[String],
+) -> Result<MysqlResult, MysqlError> {
+    if !conn.is_ready() {
+        return Err(MysqlError::Connection("connection not ready".to_string()));
+    }
+
+    if params.len() as i64 != stmt.num_params {
+        return Err(MysqlError::Protocol("parameter count mismatch".to_string()));
+    }
+
+    conn.state = 2;
+    conn.reset_sequence();
+
+    // Send COM_STMT_EXECUTE
+    let exec_packet = encode_com_execute(stmt.stmt_id, params, stmt.num_params);
+    write_packet(conn.stream_handle, &exec_packet, &mut conn.sequence_id);
+
+    // Read response
+    let first = read_packet(conn.stream_handle, &mut conn.sequence_id);
+    if first.is_empty() {
+        conn.state = 3;
+        return Err(MysqlError::Connection("connection lost during execute".to_string()));
+    }
+
+    if first[0] == 0xFF {
+        let (code, msg) = decode_err_packet(&first);
+        conn.state = 1;
+        return Err(MysqlError::Server { code, message: msg });
+    }
+
+    if first[0] == 0x00 {
+        let (affected_rows, last_insert_id) = decode_ok_packet(&first);
+        conn.state = 1;
+        return Ok(MysqlResult {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            affected_rows,
+            last_insert_id,
+        });
+    }
+
+    // Result set: column count
+    let (column_count, _) = read_lenenc_int(&first, 0);
+
+    // Read column definitions
+    var col_names: Vec<String> = Vec::new();
+    var column_defs: Vec<MysqlColumnDef> = Vec::new();
+    let mut i: i64 = 0;
+    while i < column_count {
+        let col_data = read_packet(conn.stream_handle, &mut conn.sequence_id);
+        let col_def = decode_column_def(&col_data);
+        col_names.push(col_def.name.clone());
+        column_defs.push(col_def);
+        i = i + 1;
+    }
+
+    // EOF after columns
+    let _ = read_packet(conn.stream_handle, &mut conn.sequence_id);
+
+    // Read rows (binary protocol uses different row format, but we
+    // read text rows for simplicity as MySQL sends them in text format
+    // when using COM_QUERY fallback)
+    var rows: Vec<MysqlRow> = Vec::new();
+    loop {
+        let row_data = read_packet(conn.stream_handle, &mut conn.sequence_id);
+        if row_data.is_empty() || is_eof_packet(&row_data) {
+            break;
+        }
+        if row_data[0] == 0xFF {
+            let (code, msg) = decode_err_packet(&row_data);
+            conn.state = 1;
+            return Err(MysqlError::Server { code, message: msg });
+        }
+
+        let text_values = decode_text_row(&row_data, column_count);
+        let row = convert_text_row(&column_defs, &text_values);
+        rows.push(row);
+    }
+
+    conn.state = 1;
+
+    Ok(MysqlResult {
+        columns: col_names,
+        rows,
+        affected_rows: 0,
+        last_insert_id: 0,
+    })
+}
+
+/// Close a prepared statement
+pub fn mysql_close_stmt(conn: &mut MysqlConnection, stmt: &MysqlPrepared) {
+    if conn.is_ready() {
+        conn.reset_sequence();
+        let close_packet = encode_com_close(stmt.stmt_id);
+        write_packet(conn.stream_handle, &close_packet, &mut conn.sequence_id);
+        // COM_STMT_CLOSE has no response
+    }
+}
+
+// =============================================================================
+// Transaction Helpers
+// =============================================================================
+
+/// Begin a transaction
+pub fn mysql_begin(conn: &mut MysqlConnection) -> Result<(), MysqlError> {
+    mysql_execute(conn, "START TRANSACTION")?;
+    conn.txn_depth = 1;
+    Ok(())
+}
+
+/// Commit a transaction
+pub fn mysql_commit(conn: &mut MysqlConnection) -> Result<(), MysqlError> {
+    mysql_execute(conn, "COMMIT")?;
+    conn.txn_depth = 0;
+    Ok(())
+}
+
+/// Rollback a transaction
+pub fn mysql_rollback(conn: &mut MysqlConnection) -> Result<(), MysqlError> {
+    mysql_execute(conn, "ROLLBACK")?;
+    conn.txn_depth = 0;
+    Ok(())
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/// Convert text row values to typed MysqlRow using column definitions
+fn convert_text_row(
+    columns: &[MysqlColumnDef],
+    values: &[Option<String>],
+) -> MysqlRow {
+    var row_values: Vec<MysqlValue> = Vec::new();
+
+    let mut i: i64 = 0;
+    while i < values.len() as i64 {
+        match &values[i] {
+            None => {
+                row_values.push(MysqlValue::Null);
+            },
+            Some(text) => {
+                if i < columns.len() as i64 {
+                    let col_type = columns[i].column_type;
+                    let typed_val = convert_mysql_value(text, col_type);
+                    row_values.push(typed_val);
+                } else {
+                    row_values.push(MysqlValue::Text(text.clone()));
+                }
+            },
+        }
+        i = i + 1;
+    }
+
+    MysqlRow { values: row_values }
+}
+
+/// Convert a text value to a typed MysqlValue based on MySQL type code
+fn convert_mysql_value(text: &str, col_type: i64) -> MysqlValue {
+    match col_type {
+        // TINY, SHORT, LONG, LONGLONG, INT24
+        1 | 2 | 3 | 8 | 9 => {
+            match text.parse::<i64>() {
+                Ok(n) => MysqlValue::Int(n),
+                Err(_) => MysqlValue::Text(text.to_string()),
+            }
+        },
+        // FLOAT, DOUBLE, DECIMAL, NEWDECIMAL
+        4 | 5 | 0 | 246 => {
+            match text.parse::<f64>() {
+                Ok(f) => MysqlValue::Float(f),
+                Err(_) => MysqlValue::Text(text.to_string()),
+            }
+        },
+        // BIT
+        16 => {
+            if text == "1" || text == "\x01" {
+                MysqlValue::Bool(true)
+            } else {
+                MysqlValue::Bool(false)
+            }
+        },
+        // VARCHAR, VAR_STRING, STRING, BLOB, TINY_BLOB, MEDIUM_BLOB, LONG_BLOB
+        15 | 253 | 254 | 252 | 249 | 250 | 251 => {
+            MysqlValue::Text(text.to_string())
+        },
+        // DATE, DATETIME, TIMESTAMP, TIME, YEAR
+        10 | 12 | 7 | 11 | 13 => {
+            MysqlValue::Text(text.to_string())
+        },
+        // Default: text
+        _ => MysqlValue::Text(text.to_string()),
+    }
+}
+// simplex-mysql/pool - Connection Pooling
+//
+// Provides a simple connection pool that manages a set of MySQL
+// connections for reuse.
+//
+// # Usage
+//
+// ```simplex
+// let pool = mysql_pool_new(config, 5);
+// let conn = mysql_pool_checkout(&mut pool)?;
+// let result = mysql_query(&mut conn, "SELECT 1")?;
+// mysql_pool_return(&mut pool, conn);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+use crate::connection::{MysqlConfig, MysqlConnection, mysql_connect, mysql_close};
+use crate::types::MysqlError;
+
+// =============================================================================
+// Connection Pool
+// =============================================================================
+
+/// MySQL connection pool
+pub struct MysqlPool {
+    /// Pool configuration
+    pub config: MysqlConfig,
+    /// Maximum connections
+    pub max_size: i64,
+    /// Available idle connections
+    pub available: Vec<MysqlConnection>,
+    /// Number of connections checked out
+    pub checked_out: i64,
+    /// Total connections created
+    pub total_created: i64,
+    /// Whether the pool is closed
+    pub closed: bool,
+}
+
+/// Create a new connection pool
+///
+/// # Arguments
+/// * `config` - MySQL connection configuration
+/// * `max_size` - Maximum number of connections
+pub fn mysql_pool_new(config: MysqlConfig, max_size: i64) -> MysqlPool {
+    MysqlPool {
+        config,
+        max_size,
+        available: Vec::new(),
+        checked_out: 0,
+        total_created: 0,
+        closed: false,
+    }
+}
+
+/// Check out a connection from the pool
+///
+/// Returns an idle connection if available, otherwise creates a new one.
+pub fn mysql_pool_checkout(pool: &mut MysqlPool) -> Result<MysqlConnection, MysqlError> {
+    if pool.closed {
+        return Err(MysqlError::Pool("pool is closed".to_string()));
+    }
+
+    // Try to reuse an available connection
+    if !pool.available.is_empty() {
+        let conn = pool.available.pop().unwrap();
+        if conn.is_ready() {
+            pool.checked_out = pool.checked_out + 1;
+            return Ok(conn);
+        }
+        // Dead connection, discard
+    }
+
+    // Check capacity
+    let total = pool.available.len() as i64 + pool.checked_out;
+    if total >= pool.max_size {
+        return Err(MysqlError::Pool("pool exhausted".to_string()));
+    }
+
+    // Create new connection
+    let new_config = MysqlConfig {
+        host: pool.config.host.clone(),
+        port: pool.config.port,
+        database: pool.config.database.clone(),
+        user: pool.config.user.clone(),
+        password: pool.config.password.clone(),
+        client_flags: pool.config.client_flags,
+        connect_timeout_ms: pool.config.connect_timeout_ms,
+        read_timeout_ms: pool.config.read_timeout_ms,
+        charset: pool.config.charset,
+    };
+
+    let conn = mysql_connect(new_config)?;
+    pool.checked_out = pool.checked_out + 1;
+    pool.total_created = pool.total_created + 1;
+    Ok(conn)
+}
+
+/// Return a connection to the pool
+pub fn mysql_pool_return(pool: &mut MysqlPool, mut conn: MysqlConnection) {
+    pool.checked_out = pool.checked_out - 1;
+
+    if pool.closed {
+        mysql_close(&mut conn);
+        return;
+    }
+
+    if conn.is_ready() {
+        pool.available.push(conn);
+    } else {
+        mysql_close(&mut conn);
+    }
+}
+
+/// Close all connections in the pool
+pub fn mysql_pool_close(pool: &mut MysqlPool) {
+    pool.closed = true;
+    while !pool.available.is_empty() {
+        var conn = pool.available.pop().unwrap();
+        mysql_close(&mut conn);
+    }
+}
+
+/// Get pool statistics
+pub fn mysql_pool_stats(pool: &MysqlPool) -> MysqlPoolStats {
+    MysqlPoolStats {
+        max_size: pool.max_size,
+        available: pool.available.len() as i64,
+        checked_out: pool.checked_out,
+        total_created: pool.total_created,
+    }
+}
+
+/// Pool statistics
+pub struct MysqlPoolStats {
+    pub max_size: i64,
+    pub available: i64,
+    pub checked_out: i64,
+    pub total_created: i64,
+}
+
+impl MysqlPoolStats {
+    pub fn total_active(&self) -> i64 {
+        self.available + self.checked_out
+    }
+}

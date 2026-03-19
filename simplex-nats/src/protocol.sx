@@ -1,0 +1,540 @@
+// simplex-nats/protocol - NATS Text Protocol Parser and Builder
+//
+// Implements the NATS text protocol commands:
+// PUB, SUB, UNSUB, MSG, PING, PONG, +OK, -ERR
+//
+// All protocol messages are terminated with \r\n (CRLF).
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, byte: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_slice(v: i64, start: i64, end: i64) -> i64;
+extern fn string_to_bytes(s: i64) -> i64;
+extern fn bytes_to_string(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+
+// =============================================================================
+// Protocol Command Constants
+// =============================================================================
+
+fn CMD_INFO() -> i64 { 1 }
+fn CMD_CONNECT() -> i64 { 2 }
+fn CMD_PUB() -> i64 { 3 }
+fn CMD_SUB() -> i64 { 4 }
+fn CMD_UNSUB() -> i64 { 5 }
+fn CMD_MSG() -> i64 { 6 }
+fn CMD_PING() -> i64 { 7 }
+fn CMD_PONG() -> i64 { 8 }
+fn CMD_OK() -> i64 { 9 }
+fn CMD_ERR() -> i64 { 10 }
+
+// =============================================================================
+// PUB Message Building
+// =============================================================================
+
+/// Build a PUB protocol message.
+///
+/// Format: PUB <subject> [reply-to] <#bytes>\r\n[payload]\r\n
+///
+/// # Arguments
+/// * `subject`  - Subject string
+/// * `reply_to` - Reply-to subject string (0 for none)
+/// * `payload`  - Payload string handle
+///
+/// # Returns
+/// String handle of the complete PUB message (ready to send as bytes)
+fn nats_build_pub(subject: i64, reply_to: i64, payload: i64) -> i64 {
+    let payload_bytes: i64 = string_to_bytes(payload);
+    let payload_len: i64 = vec_len(payload_bytes);
+    let len_str: i64 = i64_to_string(payload_len);
+
+    let msg: i64 = "PUB ";
+    let msg: i64 = string_concat(msg, subject);
+
+    if reply_to != 0 {
+        let msg: i64 = string_concat(msg, " ");
+        let msg: i64 = string_concat(msg, reply_to);
+    }
+
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, len_str);
+    let msg: i64 = string_concat(msg, "\r\n");
+    let msg: i64 = string_concat(msg, payload);
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    msg
+}
+
+/// Build a PUB message with empty payload
+fn nats_build_pub_empty(subject: i64) -> i64 {
+    let msg: i64 = "PUB ";
+    let msg: i64 = string_concat(msg, subject);
+    let msg: i64 = string_concat(msg, " 0\r\n\r\n");
+    msg
+}
+
+// =============================================================================
+// SUB Message Building
+// =============================================================================
+
+/// Build a SUB protocol message.
+///
+/// Format: SUB <subject> [queue group] <sid>\r\n
+///
+/// # Arguments
+/// * `subject`     - Subject to subscribe to (supports wildcards: *, >)
+/// * `sid`         - Subscription ID (unique integer)
+/// * `queue_group` - Queue group name (0 for none)
+///
+/// # Returns
+/// String handle of the SUB message
+fn nats_build_sub(subject: i64, sid: i64, queue_group: i64) -> i64 {
+    let sid_str: i64 = i64_to_string(sid);
+
+    let msg: i64 = "SUB ";
+    let msg: i64 = string_concat(msg, subject);
+
+    if queue_group != 0 {
+        let msg: i64 = string_concat(msg, " ");
+        let msg: i64 = string_concat(msg, queue_group);
+    }
+
+    let msg: i64 = string_concat(msg, " ");
+    let msg: i64 = string_concat(msg, sid_str);
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    msg
+}
+
+// =============================================================================
+// UNSUB Message Building
+// =============================================================================
+
+/// Build an UNSUB protocol message.
+///
+/// Format: UNSUB <sid> [max_msgs]\r\n
+///
+/// # Arguments
+/// * `sid`      - Subscription ID to unsubscribe
+/// * `max_msgs` - Auto-unsubscribe after N messages (0 for immediate unsub)
+///
+/// # Returns
+/// String handle of the UNSUB message
+fn nats_build_unsub(sid: i64, max_msgs: i64) -> i64 {
+    let sid_str: i64 = i64_to_string(sid);
+
+    let msg: i64 = "UNSUB ";
+    let msg: i64 = string_concat(msg, sid_str);
+
+    if max_msgs > 0 {
+        let msg: i64 = string_concat(msg, " ");
+        let msg: i64 = string_concat(msg, i64_to_string(max_msgs));
+    }
+
+    let msg: i64 = string_concat(msg, "\r\n");
+
+    msg
+}
+
+// =============================================================================
+// MSG Parsing
+// =============================================================================
+
+/// Parse a MSG protocol line (header only, not payload).
+///
+/// Format: MSG <subject> <sid> [reply-to] <#bytes>\r\n
+///
+/// # Arguments
+/// * `line` - The MSG header line (without trailing \r\n)
+///
+/// # Returns
+/// Vec handle: [subject, sid, reply_to, payload_len]
+/// reply_to is 0 if not present
+fn nats_parse_msg_header(line: i64) -> i64 {
+    let line_bytes: i64 = string_to_bytes(line);
+    let line_len: i64 = vec_len(line_bytes);
+
+    // Skip "MSG " prefix (4 bytes)
+    let prefix: i64 = string_substring(line, 0, 4);
+    if intrinsic_string_eq(prefix, "MSG ") != 1 {
+        return 0;
+    }
+
+    // Tokenize by spaces
+    let tokens: i64 = nats_tokenize(line, 4);
+    let token_count: i64 = vec_len(tokens);
+
+    if token_count < 3 {
+        return 0;  // Minimum: subject sid #bytes
+    }
+
+    let subject: i64 = vec_get(tokens, 0);
+    let sid_str: i64 = vec_get(tokens, 1);
+
+    var reply_to: i64 = 0;
+    var len_str: i64 = 0;
+
+    if token_count == 3 {
+        // MSG <subject> <sid> <#bytes>
+        len_str = vec_get(tokens, 2);
+    } else if token_count >= 4 {
+        // MSG <subject> <sid> <reply-to> <#bytes>
+        reply_to = vec_get(tokens, 2);
+        len_str = vec_get(tokens, 3);
+    }
+
+    let sid: i64 = nats_str_to_i64(sid_str);
+    let payload_len: i64 = nats_str_to_i64(len_str);
+
+    let result: i64 = vec_new();
+    vec_push(result, subject);
+    vec_push(result, sid);
+    vec_push(result, reply_to);
+    vec_push(result, payload_len);
+
+    result
+}
+
+/// Get subject from parsed MSG header
+fn nats_msg_subject(parsed: i64) -> i64 { vec_get(parsed, 0); }
+
+/// Get subscription ID from parsed MSG header
+fn nats_msg_sid(parsed: i64) -> i64 { vec_get(parsed, 1); }
+
+/// Get reply-to from parsed MSG header (0 if none)
+fn nats_msg_reply_to(parsed: i64) -> i64 { vec_get(parsed, 2); }
+
+/// Get payload length from parsed MSG header
+fn nats_msg_payload_len(parsed: i64) -> i64 { vec_get(parsed, 3); }
+
+// =============================================================================
+// Protocol Line Identification
+// =============================================================================
+
+/// Identify the command type of a protocol line.
+///
+/// # Returns
+/// Command constant (CMD_INFO, CMD_MSG, CMD_PING, etc.) or 0 for unknown
+fn nats_identify_command(line: i64) -> i64 {
+    let len: i64 = string_length(line);
+    if len < 2 { return 0; }
+
+    // Check for +OK
+    let first_two: i64 = string_substring(line, 0, 2);
+    if intrinsic_string_eq(first_two, "+O") == 1 { return CMD_OK(); }
+
+    // Check for -ERR
+    if intrinsic_string_eq(first_two, "-E") == 1 { return CMD_ERR(); }
+
+    if len < 3 { return 0; }
+    let first_three: i64 = string_substring(line, 0, 3);
+
+    // PUB
+    if intrinsic_string_eq(first_three, "PUB") == 1 { return CMD_PUB(); }
+
+    // SUB
+    if intrinsic_string_eq(first_three, "SUB") == 1 { return CMD_SUB(); }
+
+    // MSG
+    if intrinsic_string_eq(first_three, "MSG") == 1 { return CMD_MSG(); }
+
+    if len < 4 { return 0; }
+    let first_four: i64 = string_substring(line, 0, 4);
+
+    // INFO
+    if intrinsic_string_eq(first_four, "INFO") == 1 { return CMD_INFO(); }
+
+    // PING
+    if intrinsic_string_eq(first_four, "PING") == 1 { return CMD_PING(); }
+
+    // PONG
+    if intrinsic_string_eq(first_four, "PONG") == 1 { return CMD_PONG(); }
+
+    if len < 5 { return 0; }
+    let first_five: i64 = string_substring(line, 0, 5);
+
+    // UNSUB
+    if intrinsic_string_eq(first_five, "UNSUB") == 1 { return CMD_UNSUB(); }
+
+    if len < 7 { return 0; }
+    let first_seven: i64 = string_substring(line, 0, 7);
+
+    // CONNECT
+    if intrinsic_string_eq(first_seven, "CONNECT") == 1 { return CMD_CONNECT(); }
+
+    0
+}
+
+// =============================================================================
+// Tokenizer
+// =============================================================================
+
+/// Tokenize a string by spaces starting at offset.
+///
+/// # Returns
+/// Vec of string handles (tokens)
+fn nats_tokenize(s: i64, start_offset: i64) -> i64 {
+    let bytes: i64 = string_to_bytes(s);
+    let len: i64 = vec_len(bytes);
+    let tokens: i64 = vec_new();
+    var pos: i64 = start_offset;
+
+    // Skip leading spaces
+    while pos < len {
+        if vec_get(bytes, pos) != 32 {
+            pos = len + 1; // break
+        }
+        pos = pos + 1;
+    }
+
+    // Re-scan from start
+    pos = start_offset;
+    while pos < len {
+        // Skip spaces
+        while pos < len {
+            if vec_get(bytes, pos) != 32 {
+                // Not a space, start of token
+                var token_start: i64 = pos;
+                // Find end of token
+                while pos < len {
+                    if vec_get(bytes, pos) == 32 {
+                        pos = len + 1; // break
+                    } else if vec_get(bytes, pos) == 13 {
+                        pos = len + 1; // CR - break
+                    } else if vec_get(bytes, pos) == 10 {
+                        pos = len + 1; // LF - break
+                    }
+                    pos = pos + 1;
+                }
+                // Re-scan for actual end
+                var actual_end: i64 = token_start;
+                while actual_end < len {
+                    let ch: i64 = vec_get(bytes, actual_end);
+                    if ch == 32 {
+                        let token: i64 = bytes_to_string(vec_slice(bytes, token_start, actual_end));
+                        vec_push(tokens, token);
+                        pos = actual_end + 1;
+                        actual_end = len + 1; // break
+                    } else if ch == 13 {
+                        let token: i64 = bytes_to_string(vec_slice(bytes, token_start, actual_end));
+                        vec_push(tokens, token);
+                        return tokens;
+                    } else if ch == 10 {
+                        let token: i64 = bytes_to_string(vec_slice(bytes, token_start, actual_end));
+                        vec_push(tokens, token);
+                        return tokens;
+                    } else {
+                        actual_end = actual_end + 1;
+                    }
+                }
+                // If we reached end of string
+                if actual_end == len {
+                    let token: i64 = bytes_to_string(vec_slice(bytes, token_start, len));
+                    vec_push(tokens, token);
+                    return tokens;
+                }
+                token_start = pos; // continue
+            }
+            pos = pos + 1;
+        }
+    }
+
+    tokens
+}
+
+// =============================================================================
+// String to Number Conversion
+// =============================================================================
+
+/// Parse a decimal number string to i64
+fn nats_str_to_i64(s: i64) -> i64 {
+    let bytes: i64 = string_to_bytes(s);
+    let len: i64 = vec_len(bytes);
+    var result: i64 = 0;
+    var i: i64 = 0;
+
+    while i < len {
+        let ch: i64 = vec_get(bytes, i);
+        let digit: i64 = ch - 48;
+        if digit >= 0 {
+            if digit <= 9 {
+                result = result * 10 + digit;
+            }
+        }
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Line Splitting
+// =============================================================================
+
+/// Find the next CRLF-terminated line in data starting at offset.
+///
+/// # Returns
+/// Vec handle: [line_string, new_offset] or 0 if no complete line
+fn nats_read_line(data: i64, offset: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    var pos: i64 = offset;
+
+    while pos < data_len - 1 {
+        if vec_get(data, pos) == 13 {      // CR
+            if vec_get(data, pos + 1) == 10 {  // LF
+                let line_bytes: i64 = vec_slice(data, offset, pos);
+                let line: i64 = bytes_to_string(line_bytes);
+                let result: i64 = vec_new();
+                vec_push(result, line);
+                vec_push(result, pos + 2);
+                return result;
+            }
+        }
+        pos = pos + 1;
+    }
+
+    0  // No complete line found
+}
+
+// =============================================================================
+// Subject Validation
+// =============================================================================
+
+/// Validate a NATS subject name.
+///
+/// Rules:
+/// - Must be non-empty
+/// - Cannot contain spaces
+/// - Tokens separated by '.'
+/// - '*' matches a single token
+/// - '>' matches one or more tokens (must be last)
+///
+/// # Returns
+/// 1 if valid, 0 if invalid
+fn nats_is_valid_subject(subject: i64) -> i64 {
+    let len: i64 = string_length(subject);
+    if len == 0 { return 0; }
+
+    let bytes: i64 = string_to_bytes(subject);
+    var i: i64 = 0;
+    var last_was_dot: i64 = 0;
+    var found_gt: i64 = 0;
+
+    while i < len {
+        let ch: i64 = vec_get(bytes, i);
+
+        // No spaces allowed
+        if ch == 32 { return 0; }
+
+        // '>' must be last token
+        if found_gt == 1 { return 0; }
+
+        if ch == 46 {  // '.'
+            // No empty tokens (consecutive dots)
+            if last_was_dot == 1 { return 0; }
+            // Cannot start with dot
+            if i == 0 { return 0; }
+            last_was_dot = 1;
+        } else {
+            if ch == 62 {  // '>'
+                // Must be preceded by dot or be at start
+                if i > 0 {
+                    if last_was_dot != 1 { return 0; }
+                }
+                found_gt = 1;
+            }
+            last_was_dot = 0;
+        }
+
+        i = i + 1;
+    }
+
+    // Cannot end with dot
+    if last_was_dot == 1 { return 0; }
+
+    1
+}
+
+/// Check if a subject matches a pattern (with wildcards).
+///
+/// '*' matches exactly one token.
+/// '>' matches one or more tokens (must be last).
+///
+/// # Returns
+/// 1 if matches, 0 if not
+fn nats_subject_matches(subject: i64, pattern: i64) -> i64 {
+    let sub_tokens: i64 = nats_split_subject(subject);
+    let pat_tokens: i64 = nats_split_subject(pattern);
+    let sub_count: i64 = vec_len(sub_tokens);
+    let pat_count: i64 = vec_len(pat_tokens);
+
+    var si: i64 = 0;
+    var pi: i64 = 0;
+
+    while pi < pat_count {
+        let pat_token: i64 = vec_get(pat_tokens, pi);
+
+        // '>' matches rest
+        if intrinsic_string_eq(pat_token, ">") == 1 {
+            if si < sub_count { return 1; }
+            return 0;
+        }
+
+        // Must have corresponding subject token
+        if si >= sub_count { return 0; }
+
+        let sub_token: i64 = vec_get(sub_tokens, si);
+
+        // '*' matches any single token
+        if intrinsic_string_eq(pat_token, "*") != 1 {
+            // Literal match
+            if intrinsic_string_eq(sub_token, pat_token) != 1 {
+                return 0;
+            }
+        }
+
+        si = si + 1;
+        pi = pi + 1;
+    }
+
+    // Both must be exhausted
+    if si == sub_count { 1 } else { 0 }
+}
+
+/// Split a subject into tokens by '.'
+fn nats_split_subject(subject: i64) -> i64 {
+    let bytes: i64 = string_to_bytes(subject);
+    let len: i64 = vec_len(bytes);
+    let tokens: i64 = vec_new();
+    var start: i64 = 0;
+    var pos: i64 = 0;
+
+    while pos < len {
+        if vec_get(bytes, pos) == 46 {  // '.'
+            let token: i64 = bytes_to_string(vec_slice(bytes, start, pos));
+            vec_push(tokens, token);
+            start = pos + 1;
+        }
+        pos = pos + 1;
+    }
+
+    // Last token
+    if start < len {
+        let token: i64 = bytes_to_string(vec_slice(bytes, start, len));
+        vec_push(tokens, token);
+    }
+
+    tokens
+}

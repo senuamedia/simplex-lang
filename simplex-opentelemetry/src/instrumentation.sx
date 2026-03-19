@@ -1,0 +1,359 @@
+// simplex-opentelemetry::instrumentation - Auto-Instrumentation Helpers
+//
+// Provides convenience functions for instrumenting common Simplex patterns:
+// - Actor message handling
+// - SLM (Small Language Model) inference
+// - HTTP request/response
+// - Hive operations
+// - Timer-based operations
+//
+// These helpers create properly attributed spans with semantic conventions.
+//
+// # Example
+//
+// ```simplex
+// let trace = otel_generate_trace_id();
+// let hi = otel_trace_id_hi(trace);
+// let lo = otel_trace_id_lo(trace);
+//
+// // Instrument an HTTP request
+// let span = otel_instrument_http("GET", "/api/users", hi, lo);
+// // ... do work ...
+// otel_finish_http(span, 200);
+//
+// // Instrument SLM inference
+// let span = otel_instrument_slm("classify", "sentiment-v2", hi, lo);
+// // ... run inference ...
+// otel_finish_slm(span, 42);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn time_now_ms() -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+// =============================================================================
+// Span Creation (inline, to avoid cross-module dependency issues)
+// =============================================================================
+
+/// Create a span internally (mirrors otel_start_span).
+fn create_span(name: i64, trace_hi: i64, trace_lo: i64, parent_id: i64) -> i64 {
+    let span: i64 = vec_new();
+    vec_push(span, trace_hi);            // [0]
+    vec_push(span, trace_lo);            // [1]
+    let now: i64 = time_now_ms();
+    let sid: i64 = now ^ (trace_lo * 2654435761);
+    if sid < 0 {
+        let sid: i64 = 0 - sid;
+    }
+    vec_push(span, sid);                 // [2] = span_id
+    vec_push(span, parent_id);           // [3]
+    vec_push(span, name);                // [4]
+    vec_push(span, now);                 // [5] = start_time
+    vec_push(span, 0);                   // [6] = end_time
+    vec_push(span, 0);                   // [7] = status
+    vec_push(span, "");                  // [8] = status_message
+    let attrs: i64 = vec_new();
+    vec_push(span, attrs);               // [9] = attributes
+    let events: i64 = vec_new();
+    vec_push(span, events);              // [10] = events
+    vec_push(span, 0);                   // [11] = kind
+    vec_push(span, 0);                   // [12] = ended
+    span
+}
+
+/// Set an attribute on a span.
+fn set_attr(span: i64, key: i64, value: i64) -> i64 {
+    let attrs: i64 = vec_get(span, 9);
+    vec_push(attrs, key);
+    vec_push(attrs, value);
+    0
+}
+
+/// Add an event to a span.
+fn add_evt(span: i64, event_name: i64) -> i64 {
+    let events: i64 = vec_get(span, 10);
+    let event: i64 = vec_new();
+    vec_push(event, event_name);
+    let now: i64 = time_now_ms();
+    vec_push(event, now);
+    let attrs: i64 = vec_new();
+    vec_push(event, attrs);
+    vec_push(events, event);
+    0
+}
+
+/// End a span.
+fn end_span(span: i64) -> i64 {
+    let ended: i64 = vec_get(span, 12);
+    if ended == 1 {
+        return 0;
+    }
+    let now: i64 = time_now_ms();
+    vec_set(span, 6, now);
+    vec_set(span, 12, 1);
+    0
+}
+
+// =============================================================================
+// HTTP Instrumentation
+// =============================================================================
+
+/// Start an instrumented HTTP request span.
+///
+/// Creates a span with HTTP semantic convention attributes:
+/// - http.method
+/// - http.target
+/// - http.scheme
+///
+/// Span kind is set to SERVER (1).
+///
+/// # Arguments
+/// - `method`: HTTP method (string handle, e.g., "GET")
+/// - `target`: Request path (string handle, e.g., "/api/users")
+/// - `trace_hi`: High bits of trace ID
+/// - `trace_lo`: Low bits of trace ID
+///
+/// # Returns
+/// Span vec handle
+pub fn otel_instrument_http(method: i64, target: i64, trace_hi: i64, trace_lo: i64) -> i64 {
+    let name: i64 = string_concat(method, " ");
+    let name: i64 = string_concat(name, target);
+    let span: i64 = create_span(name, trace_hi, trace_lo, 0);
+    vec_set(span, 11, 1);  // SPAN_SERVER
+
+    set_attr(span, "http.method", method);
+    set_attr(span, "http.target", target);
+    set_attr(span, "http.scheme", "http");
+
+    span
+}
+
+/// Start an instrumented HTTP client request span.
+///
+/// Span kind is set to CLIENT (2).
+///
+/// # Arguments
+/// - `method`: HTTP method
+/// - `url`: Request URL
+/// - `trace_hi`: High bits of trace ID
+/// - `trace_lo`: Low bits of trace ID
+///
+/// # Returns
+/// Span vec handle
+pub fn otel_instrument_http_client(method: i64, url: i64, trace_hi: i64, trace_lo: i64) -> i64 {
+    let name: i64 = string_concat("HTTP ", method);
+    let span: i64 = create_span(name, trace_hi, trace_lo, 0);
+    vec_set(span, 11, 2);  // SPAN_CLIENT
+
+    set_attr(span, "http.method", method);
+    set_attr(span, "http.url", url);
+
+    span
+}
+
+/// Finish an HTTP span with a status code.
+///
+/// Sets the http.status_code attribute and determines span status
+/// based on the HTTP status code (>= 400 is error).
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `status_code`: HTTP response status code (i64)
+pub fn otel_finish_http(span: i64, status_code: i64) -> i64 {
+    set_attr(span, "http.status_code", i64_to_string(status_code));
+
+    if status_code >= 400 {
+        vec_set(span, 7, 2);  // SPAN_ERROR
+    } else {
+        vec_set(span, 7, 1);  // SPAN_OK
+    }
+
+    end_span(span)
+}
+
+// =============================================================================
+// SLM (Small Language Model) Instrumentation
+// =============================================================================
+
+/// Start an instrumented SLM inference span.
+///
+/// Creates a span with SLM-specific attributes:
+/// - slm.operation
+/// - slm.model_name
+///
+/// # Arguments
+/// - `operation`: Operation type (string handle, e.g., "classify", "generate")
+/// - `model_name`: Model name (string handle, e.g., "sentiment-v2")
+/// - `trace_hi`: High bits of trace ID
+/// - `trace_lo`: Low bits of trace ID
+///
+/// # Returns
+/// Span vec handle
+pub fn otel_instrument_slm(operation: i64, model_name: i64, trace_hi: i64, trace_lo: i64) -> i64 {
+    let name: i64 = string_concat("slm.", operation);
+    let span: i64 = create_span(name, trace_hi, trace_lo, 0);
+
+    set_attr(span, "slm.operation", operation);
+    set_attr(span, "slm.model_name", model_name);
+    add_evt(span, "inference.start");
+
+    span
+}
+
+/// Finish an SLM inference span.
+///
+/// Records the number of tokens processed and ends the span.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `tokens`: Number of tokens processed (i64)
+pub fn otel_finish_slm(span: i64, tokens: i64) -> i64 {
+    set_attr(span, "slm.tokens", i64_to_string(tokens));
+    add_evt(span, "inference.complete");
+    vec_set(span, 7, 1);  // SPAN_OK
+    end_span(span)
+}
+
+/// Finish an SLM inference span with error.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `error_msg`: Error message (string handle)
+pub fn otel_finish_slm_error(span: i64, error_msg: i64) -> i64 {
+    set_attr(span, "slm.error", error_msg);
+    add_evt(span, "inference.error");
+    vec_set(span, 7, 2);  // SPAN_ERROR
+    vec_set(span, 8, error_msg);
+    end_span(span)
+}
+
+// =============================================================================
+// Actor Instrumentation
+// =============================================================================
+
+/// Start an instrumented actor message-handling span.
+///
+/// Creates a span tracking an actor processing a message.
+///
+/// # Arguments
+/// - `actor_name`: Actor name (string handle)
+/// - `message_type`: Type of message being handled (string handle)
+/// - `trace_hi`: High bits of trace ID
+/// - `trace_lo`: Low bits of trace ID
+///
+/// # Returns
+/// Span vec handle
+pub fn otel_instrument_actor(actor_name: i64, message_type: i64, trace_hi: i64, trace_lo: i64) -> i64 {
+    let name: i64 = string_concat(actor_name, ".");
+    let name: i64 = string_concat(name, message_type);
+    let span: i64 = create_span(name, trace_hi, trace_lo, 0);
+
+    set_attr(span, "actor.name", actor_name);
+    set_attr(span, "actor.message_type", message_type);
+    add_evt(span, "message.received");
+
+    span
+}
+
+/// Finish an actor message-handling span.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+pub fn otel_finish_actor(span: i64) -> i64 {
+    add_evt(span, "message.processed");
+    vec_set(span, 7, 1);  // SPAN_OK
+    end_span(span)
+}
+
+/// Finish an actor span with error.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `error_msg`: Error message (string handle)
+pub fn otel_finish_actor_error(span: i64, error_msg: i64) -> i64 {
+    add_evt(span, "message.error");
+    set_attr(span, "actor.error", error_msg);
+    vec_set(span, 7, 2);  // SPAN_ERROR
+    vec_set(span, 8, error_msg);
+    end_span(span)
+}
+
+// =============================================================================
+// Hive Instrumentation
+// =============================================================================
+
+/// Start an instrumented Hive operation span.
+///
+/// Creates a span for tracking cognitive hive operations.
+///
+/// # Arguments
+/// - `hive_name`: Hive name (string handle)
+/// - `operation`: Operation name (string handle, e.g., "route", "consensus")
+/// - `trace_hi`: High bits of trace ID
+/// - `trace_lo`: Low bits of trace ID
+///
+/// # Returns
+/// Span vec handle
+pub fn otel_instrument_hive(hive_name: i64, operation: i64, trace_hi: i64, trace_lo: i64) -> i64 {
+    let name: i64 = string_concat("hive.", operation);
+    let span: i64 = create_span(name, trace_hi, trace_lo, 0);
+
+    set_attr(span, "hive.name", hive_name);
+    set_attr(span, "hive.operation", operation);
+
+    span
+}
+
+/// Finish a Hive operation span with specialist count.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+/// - `specialists`: Number of specialists involved (i64)
+pub fn otel_finish_hive(span: i64, specialists: i64) -> i64 {
+    set_attr(span, "hive.specialists", i64_to_string(specialists));
+    vec_set(span, 7, 1);  // SPAN_OK
+    end_span(span)
+}
+
+// =============================================================================
+// Timer-Based Instrumentation
+// =============================================================================
+
+/// Start a timed operation span.
+///
+/// A simple span that just records timing for a named operation.
+///
+/// # Arguments
+/// - `name`: Operation name (string handle)
+/// - `trace_hi`: High bits of trace ID
+/// - `trace_lo`: Low bits of trace ID
+///
+/// # Returns
+/// Span vec handle
+pub fn otel_instrument_timer(name: i64, trace_hi: i64, trace_lo: i64) -> i64 {
+    create_span(name, trace_hi, trace_lo, 0)
+}
+
+/// Finish a timed operation span.
+///
+/// Records the duration as an attribute.
+///
+/// # Arguments
+/// - `span`: Span vec handle
+pub fn otel_finish_timer(span: i64) -> i64 {
+    let start: i64 = vec_get(span, 5);
+    let now: i64 = time_now_ms();
+    let duration: i64 = now - start;
+    set_attr(span, "duration_ms", i64_to_string(duration));
+    vec_set(span, 7, 1);  // SPAN_OK
+    end_span(span)
+}

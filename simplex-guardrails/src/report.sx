@@ -1,0 +1,131 @@
+// simplex-guardrails::report - Check Result Formatting
+//
+// Formats guardrail check results into human-readable reports.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Report Generation
+// =============================================================================
+
+/// Format a check result as a human-readable report string.
+///
+/// Arguments:
+///   result - check result handle from guardrail_check
+///
+/// Returns: formatted report string handle
+fn guardrail_report(result: i64) -> i64 {
+    let passed: i64 = vec_get(result, CHECK_PASSED());
+    let failures: i64 = vec_get(result, CHECK_FAILURES());
+    let n_rules: i64 = vec_get(result, CHECK_N_RULES());
+    let n_passed: i64 = vec_get(result, CHECK_N_PASSED());
+
+    var report: i64 = string_from("=== Guardrail Report ===\n");
+
+    // Status line
+    if passed == 1 {
+        report = string_concat(report, string_from("Status: PASSED\n"));
+    } else {
+        report = string_concat(report, string_from("Status: FAILED\n"));
+    }
+
+    // Summary
+    report = string_concat(report, string_from("Rules checked: "));
+    report = string_concat(report, i64_to_string(n_rules));
+    report = string_concat(report, string_from("\n"));
+
+    report = string_concat(report, string_from("Rules passed:  "));
+    report = string_concat(report, i64_to_string(n_passed));
+    report = string_concat(report, string_from("\n"));
+
+    let n_failed: i64 = n_rules - n_passed;
+    report = string_concat(report, string_from("Rules failed:  "));
+    report = string_concat(report, i64_to_string(n_failed));
+    report = string_concat(report, string_from("\n"));
+
+    // Failure details
+    if n_failed > 0 {
+        report = string_concat(report, string_from("\nFailures:\n"));
+
+        let n_failures: i64 = vec_len(failures);
+        var i: i64 = 0;
+        while i < n_failures {
+            let failure: i64 = vec_get(failures, i);
+            let rule_type: i64 = vec_get(failure, 0);
+            let rule_msg: i64 = vec_get(failure, 1);
+            let rule_action: i64 = vec_get(failure, 2);
+            let rule_idx: i64 = vec_get(failure, 3);
+
+            report = string_concat(report, string_from("  ["));
+            report = string_concat(report, i64_to_string(rule_idx + 1));
+            report = string_concat(report, string_from("] "));
+
+            // Rule type name
+            let type_name: i64 = rule_type_name(rule_type);
+            report = string_concat(report, type_name);
+            report = string_concat(report, string_from(": "));
+            report = string_concat(report, rule_msg);
+
+            // Action
+            report = string_concat(report, string_from(" ("));
+            let action_name: i64 = action_type_name(rule_action);
+            report = string_concat(report, action_name);
+            report = string_concat(report, string_from(")\n"));
+
+            i = i + 1;
+        }
+    }
+
+    report = string_concat(report, string_from("========================\n"));
+    report
+}
+
+// =============================================================================
+// Wrapped Result Report
+// =============================================================================
+
+/// Format a wrapped result (from guardrail_wrap) as a report.
+fn wrapped_report(wrapped: i64) -> i64 {
+    let output: i64 = vec_get(wrapped, WRAP_OUTPUT());
+    let check: i64 = vec_get(wrapped, WRAP_CHECK());
+    let attempts: i64 = vec_get(wrapped, WRAP_ATTEMPTS());
+    let success: i64 = vec_get(wrapped, WRAP_SUCCESS());
+
+    var report: i64 = guardrail_report(check);
+    report = string_concat(report, string_from("Attempts: "));
+    report = string_concat(report, i64_to_string(attempts));
+    report = string_concat(report, string_from("\n"));
+
+    if success == 1 {
+        report = string_concat(report, string_from("Final: ACCEPTED\n"));
+    } else {
+        report = string_concat(report, string_from("Final: REJECTED\n"));
+    }
+
+    report
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+/// Get the human-readable name of a rule type.
+fn rule_type_name(rule_type: i64) -> i64 {
+    if rule_type == RULE_MAX_LENGTH() { return string_from("MAX_LENGTH"); }
+    if rule_type == RULE_MIN_LENGTH() { return string_from("MIN_LENGTH"); }
+    if rule_type == RULE_MUST_CONTAIN() { return string_from("MUST_CONTAIN"); }
+    if rule_type == RULE_MUST_NOT_CONTAIN() { return string_from("MUST_NOT_CONTAIN"); }
+    if rule_type == RULE_JSON_VALID() { return string_from("JSON_VALID"); }
+    if rule_type == RULE_NO_PII() { return string_from("NO_PII"); }
+    if rule_type == RULE_CUSTOM() { return string_from("CUSTOM"); }
+    string_from("UNKNOWN")
+}
+
+/// Get the human-readable name of an action type.
+fn action_type_name(action: i64) -> i64 {
+    if action == ACTION_REJECT() { return string_from("REJECT"); }
+    if action == ACTION_WARN() { return string_from("WARN"); }
+    if action == ACTION_RETRY() { return string_from("RETRY"); }
+    string_from("UNKNOWN")
+}

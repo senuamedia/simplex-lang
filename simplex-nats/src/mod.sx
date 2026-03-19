@@ -1,0 +1,101 @@
+// simplex-nats - NATS Messaging Client
+//
+// Pure Simplex implementation of the NATS text protocol.
+// Provides pub/sub messaging, request/reply patterns, and queue groups.
+//
+// # NATS Protocol Overview
+//
+// NATS uses a simple text-based protocol over TCP:
+// - INFO: Server sends connection metadata
+// - CONNECT: Client sends configuration
+// - PUB: Publish a message to a subject
+// - SUB: Subscribe to a subject
+// - UNSUB: Unsubscribe
+// - MSG: Server delivers a message to subscriber
+// - PING/PONG: Keepalive
+// - +OK/-ERR: Acknowledgment/error
+//
+// # Example
+//
+// ```simplex
+// use simplex_nats::{nats_connect, nats_publish, nats_subscribe};
+//
+// let conn = nats_connect("localhost", 4222);
+// nats_subscribe(conn, "events.>", 1, 0);
+// nats_publish(conn, "events.user.login", "user123");
+// let msg = nats_next_msg(conn);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Public Module Exports
+// =============================================================================
+
+pub mod connection;
+pub mod protocol;
+pub mod pubsub;
+pub mod queue;
+
+// =============================================================================
+// NATS Protocol Constants
+// =============================================================================
+
+/// Default NATS port
+fn NATS_DEFAULT_PORT() -> i64 { 4222 }
+
+/// Maximum payload size (default 1MB)
+fn NATS_MAX_PAYLOAD() -> i64 { 1048576 }
+
+/// Protocol version
+fn NATS_PROTOCOL_VERSION() -> i64 { 1 }
+
+// =============================================================================
+// Connection State Constants
+// =============================================================================
+
+/// Connection is initializing
+fn NATS_STATE_INIT() -> i64 { 0 }
+
+/// Connection is established and ready
+fn NATS_STATE_CONNECTED() -> i64 { 1 }
+
+/// Connection is draining (graceful close)
+fn NATS_STATE_DRAINING() -> i64 { 2 }
+
+/// Connection is closed
+fn NATS_STATE_CLOSED() -> i64 { 3 }
+
+/// Connection encountered an error
+fn NATS_STATE_ERROR() -> i64 { 4 }
+
+/// Connection is reconnecting
+fn NATS_STATE_RECONNECTING() -> i64 { 5 }
+
+// =============================================================================
+// Message Type Constants
+// =============================================================================
+
+/// Regular published message
+fn NATS_MSG_PUB() -> i64 { 1 }
+
+/// Request message (has reply-to)
+fn NATS_MSG_REQUEST() -> i64 { 2 }
+
+/// Response message (reply to a request)
+fn NATS_MSG_RESPONSE() -> i64 { 3 }
+
+// =============================================================================
+// Error Constants
+// =============================================================================
+
+fn NATS_OK() -> i64 { 0 }
+fn NATS_ERR_CONNECT() -> i64 { 1 }
+fn NATS_ERR_TIMEOUT() -> i64 { 2 }
+fn NATS_ERR_PROTOCOL() -> i64 { 3 }
+fn NATS_ERR_AUTH() -> i64 { 4 }
+fn NATS_ERR_MAX_PAYLOAD() -> i64 { 5 }
+fn NATS_ERR_CLOSED() -> i64 { 6 }
+fn NATS_ERR_STALE_CONNECTION() -> i64 { 7 }
+fn NATS_ERR_INVALID_SUBJECT() -> i64 { 8 }

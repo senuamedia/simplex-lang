@@ -1,0 +1,99 @@
+// simplex-vectordb - Vector Database for Simplex
+//
+// High-performance vector storage and similarity search for hive intelligence.
+// Supports flat (brute-force) and HNSW (approximate) indexing strategies.
+//
+// # Modules
+//
+// - `store`:      Vector store creation, insertion, search, deletion
+// - `distance`:   Distance/similarity metrics (cosine, euclidean, dot product)
+// - `flat_index`: Brute-force exact nearest neighbor search
+// - `hnsw`:       Hierarchical Navigable Small World approximate search
+// - `persist`:    Serialize/deserialize index to/from files
+// - `filter`:     Metadata filtering alongside vector search
+//
+// # Data Model
+//
+// All vectors are stored as vec handles containing f64_to_bits values.
+// Stores are represented as i64 handles to runtime-managed vec objects.
+//
+// # Example
+//
+// ```simplex
+// let store = vdb_create("embeddings", 128);
+// let emb = vec_new();  // 128-dimensional embedding
+// vdb_insert(store, 1, emb, 0);
+// let results = vdb_search(store, query_vec, 10);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn vec_push(v: i64, value: i64) -> i64;
+extern fn vec_pop(v: i64) -> i64;
+extern fn vec_get(v: i64, index: i64) -> i64;
+extern fn vec_set(v: i64, index: i64, value: i64) -> i64;
+
+extern fn string_from(s: &str) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_len(s: i64) -> i64;
+extern fn string_cmp(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+
+extern fn print(s: i64) -> i64;
+extern fn println(s: i64) -> i64;
+extern fn print_i64(n: i64) -> i64;
+
+extern fn file_open_read(path: i64) -> i64;
+extern fn file_open_write(path: i64) -> i64;
+extern fn file_read_all(handle: i64) -> i64;
+extern fn file_write_all(handle: i64, data: i64) -> i64;
+extern fn file_close(handle: i64) -> i64;
+extern fn file_exists(path: i64) -> i64;
+
+extern fn time_now() -> i64;
+
+// =============================================================================
+// f64 bit conversion helpers
+// =============================================================================
+
+fn f64_to_bits(value: f64) -> i64 { value as i64 }
+fn bits_to_f64(bits: i64) -> f64 { bits as f64 }
+
+// =============================================================================
+// Index Type Constants
+// =============================================================================
+
+/// Flat (brute-force) index type
+fn INDEX_FLAT() -> i64 { 1 }
+
+/// HNSW approximate index type
+fn INDEX_HNSW() -> i64 { 2 }
+
+// =============================================================================
+// Store Field Offsets
+// =============================================================================
+
+fn STORE_NAME() -> i64        { 0 }
+fn STORE_DIMENSION() -> i64   { 1 }
+fn STORE_N_VECTORS() -> i64   { 2 }
+fn STORE_IDS() -> i64         { 3 }
+fn STORE_EMBEDDINGS() -> i64  { 4 }
+fn STORE_METADATA() -> i64    { 5 }
+fn STORE_INDEX() -> i64       { 6 }
+fn STORE_INDEX_TYPE() -> i64  { 7 }
+fn STORE_FIELDS() -> i64      { 8 }
+
+// =============================================================================
+// Search Result Field Offsets
+// =============================================================================
+
+fn RESULT_IDS() -> i64    { 0 }
+fn RESULT_SCORES() -> i64 { 1 }
+fn RESULT_COUNT() -> i64  { 2 }

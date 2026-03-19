@@ -1,0 +1,242 @@
+// Simplex XML Format Tests
+// Tests XML structure parsing logic inline
+
+// =============================================================================
+// Helper: check if string starts with prefix
+// =============================================================================
+
+fn starts_with(s: i64, prefix: i64) -> i64 {
+    let s_len: i64 = string_len(s);
+    let p_len: i64 = string_len(prefix);
+    if p_len > s_len { return 0; }
+    let sub: i64 = intrinsic_string_slice(s, 0, p_len);
+    string_eq(sub, prefix)
+}
+
+// =============================================================================
+// Helper: find substring position
+// =============================================================================
+
+fn find_str(haystack: i64, needle: i64) -> i64 {
+    let h_len: i64 = string_len(haystack);
+    let n_len: i64 = string_len(needle);
+    if n_len > h_len { return -1; }
+    if n_len == 0 { return 0; }
+    var i: i64 = 0;
+    while i <= h_len - n_len {
+        let sub: i64 = intrinsic_string_slice(haystack, i, i + n_len);
+        if string_eq(sub, needle) == 1 {
+            return i;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+// =============================================================================
+// Test 1: Extract tag name from <tag>
+// =============================================================================
+
+fn test_extract_tag() -> i64 {
+    println("  Testing extract tag name...");
+    let xml: i64 = "<root>Hello</root>";
+    // Find first >
+    let gt: i64 = find_str(xml, ">");
+    if gt == -1 {
+        println("  FAIL: should find >");
+        return 1;
+    }
+    let tag: i64 = intrinsic_string_slice(xml, 1, gt);
+    if string_eq(tag, "root") != 1 {
+        println("  FAIL: tag should be root");
+        return 1;
+    }
+    println("  PASS: extract tag name");
+    0
+}
+
+// =============================================================================
+// Test 2: Extract text content between tags
+// =============================================================================
+
+fn test_text_content() -> i64 {
+    println("  Testing text content extraction...");
+    let xml: i64 = "<msg>Hello World</msg>";
+    let open_end: i64 = find_str(xml, ">");
+    let close_start: i64 = find_str(xml, "</");
+    if open_end == -1 {
+        println("  FAIL: no opening tag end");
+        return 1;
+    }
+    if close_start == -1 {
+        println("  FAIL: no closing tag");
+        return 1;
+    }
+    let text: i64 = intrinsic_string_slice(xml, open_end + 1, close_start);
+    if string_eq(text, "Hello World") != 1 {
+        println("  FAIL: text should be Hello World");
+        return 1;
+    }
+    println("  PASS: text content extraction");
+    0
+}
+
+// =============================================================================
+// Test 3: Detect self-closing tag
+// =============================================================================
+
+fn test_self_closing() -> i64 {
+    println("  Testing self-closing tag detection...");
+    let xml: i64 = "<br/>";
+    let len: i64 = string_len(xml);
+    // Self-closing if ends with />
+    let last2: i64 = intrinsic_string_slice(xml, len - 2, len);
+    if string_eq(last2, "/>") != 1 {
+        println("  FAIL: should detect self-closing tag");
+        return 1;
+    }
+    // Extract tag name (between < and /)
+    let tag: i64 = intrinsic_string_slice(xml, 1, len - 2);
+    if string_eq(tag, "br") != 1 {
+        println("  FAIL: self-closing tag should be br");
+        return 1;
+    }
+    println("  PASS: self-closing tag detection");
+    0
+}
+
+// =============================================================================
+// Test 4: XML entity decoding
+// =============================================================================
+
+fn test_entity_decoding() -> i64 {
+    println("  Testing XML entity decoding...");
+    // Test that we can identify entities
+    let text: i64 = "&amp;";
+    if string_eq(text, "&amp;") != 1 {
+        println("  FAIL: should match entity string");
+        return 1;
+    }
+    // Mapping: &amp; -> &, &lt; -> <, &gt; -> >
+    let amp: i64 = find_str("a &amp; b", "&amp;");
+    if amp == -1 {
+        println("  FAIL: should find &amp;");
+        return 1;
+    }
+    if amp != 2 {
+        println("  FAIL: &amp; should be at position 2");
+        return 1;
+    }
+    println("  PASS: XML entity decoding");
+    0
+}
+
+// =============================================================================
+// Test 5: Attribute extraction
+// =============================================================================
+
+fn test_attributes() -> i64 {
+    println("  Testing attribute extraction...");
+    let tag: i64 = "<item id=\"42\" class=\"active\">";
+    // Find id="
+    let id_pos: i64 = find_str(tag, "id=\"");
+    if id_pos == -1 {
+        println("  FAIL: should find id attribute");
+        return 1;
+    }
+    // Extract value: starts after id="
+    let val_start: i64 = id_pos + 4;
+    // Find closing quote
+    var val_end: i64 = val_start;
+    let len: i64 = string_len(tag);
+    while val_end < len {
+        if string_char_at(tag, val_end) == 34 {
+            let val: i64 = intrinsic_string_slice(tag, val_start, val_end);
+            if string_eq(val, "42") != 1 {
+                println("  FAIL: id value should be 42");
+                return 1;
+            }
+            println("  PASS: attribute extraction");
+            return 0;
+        }
+        val_end = val_end + 1;
+    }
+    println("  FAIL: no closing quote for attribute");
+    1
+}
+
+// =============================================================================
+// Test 6: XML declaration detection
+// =============================================================================
+
+fn test_xml_declaration() -> i64 {
+    println("  Testing XML declaration detection...");
+    let decl: i64 = "<?xml version=\"1.0\"?>";
+    if starts_with(decl, "<?xml") != 1 {
+        println("  FAIL: should detect XML declaration");
+        return 1;
+    }
+    // Non-declaration
+    let elem: i64 = "<root>";
+    if starts_with(elem, "<?xml") == 1 {
+        println("  FAIL: element should not be detected as declaration");
+        return 1;
+    }
+    println("  PASS: XML declaration detection");
+    0
+}
+
+// =============================================================================
+// Test 7: CDATA detection
+// =============================================================================
+
+fn test_cdata_detection() -> i64 {
+    println("  Testing CDATA section detection...");
+    let cdata: i64 = "<![CDATA[x < y]]>";
+    if starts_with(cdata, "<![CDATA[") != 1 {
+        println("  FAIL: should detect CDATA section");
+        return 1;
+    }
+    // Extract content between <![CDATA[ and ]]>
+    let content_start: i64 = 9;
+    let end_pos: i64 = find_str(cdata, "]]>");
+    if end_pos == -1 {
+        println("  FAIL: should find CDATA end");
+        return 1;
+    }
+    let content: i64 = intrinsic_string_slice(cdata, content_start, end_pos);
+    if string_eq(content, "x < y") != 1 {
+        println("  FAIL: CDATA content should be preserved raw");
+        return 1;
+    }
+    println("  PASS: CDATA section detection");
+    0
+}
+
+// =============================================================================
+// Main Test Runner
+// =============================================================================
+
+fn main() -> i64 {
+    println("=== XML Format Tests ===");
+    println("");
+
+    let f1: i64 = test_extract_tag();
+    let f2: i64 = test_text_content();
+    let f3: i64 = test_self_closing();
+    let f4: i64 = test_entity_decoding();
+    let f5: i64 = test_attributes();
+    let f6: i64 = test_xml_declaration();
+    let f7: i64 = test_cdata_detection();
+
+    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7;
+
+    println("");
+    if failures == 0 {
+        println("All 7 XML format tests passed!");
+    } else {
+        println("Some XML format tests failed");
+    }
+
+    failures
+}

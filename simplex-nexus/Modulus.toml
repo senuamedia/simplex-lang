@@ -16,14 +16,14 @@
 
 [package]
 name = "simplex-nexus"
-version = "0.15.0"
+version = "0.16.0"
 description = "High-performance hive-to-hive communication protocol"
 authors = ["Rod Higgins", "Simplex Team"]
 license = "AGPL-3.0"
 repository = "https://github.com/anthropics/simplex-lang"
 
 [dependencies]
-simplex-std = "0.15.0"
+simplex-std = "0.16.0"
 
 [features]
 default = ["tcp", "websocket"]

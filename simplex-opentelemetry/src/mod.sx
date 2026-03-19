@@ -1,0 +1,100 @@
+// simplex-opentelemetry - OpenTelemetry Distributed Tracing for Simplex
+//
+// Provides W3C-compatible distributed tracing, including span creation,
+// context propagation, batch processing, and multiple export formats.
+//
+// # Modules
+//
+// - `span`: Span creation, attributes, events, and status
+// - `context`: W3C Trace Context propagation (traceparent header)
+// - `exporter`: Stdout and JSON span exporters
+// - `processor`: Batch span processor with buffering
+// - `trace_id`: Trace ID and span ID generation
+// - `instrumentation`: Auto-instrumentation helpers for actors and SLM
+//
+// # Example
+//
+// ```simplex
+// use simplex_opentelemetry::span::*;
+// use simplex_opentelemetry::context::*;
+// use simplex_opentelemetry::exporter::*;
+//
+// fn main() {
+//     let trace_id = otel_generate_trace_id();
+//     let span = otel_start_span("my-operation", trace_id, 0);
+//     otel_set_attribute(span, "http.method", "GET");
+//     otel_add_event(span, "processing started");
+//     otel_set_status(span, SPAN_OK());
+//     otel_end_span(span);
+//     otel_export_stdout(span);
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Public API - Module Exports
+// =============================================================================
+
+pub mod span;
+pub mod context;
+pub mod exporter;
+pub mod processor;
+pub mod trace_id;
+pub mod instrumentation;
+
+// =============================================================================
+// Span Status Constants
+// =============================================================================
+
+// Span status codes (OpenTelemetry StatusCode)
+// Use functions instead of const
+
+/// Span status: Unset (default, no status set)
+pub fn SPAN_UNSET() -> i64 { 0 }
+
+/// Span status: OK (operation completed successfully)
+pub fn SPAN_OK() -> i64 { 1 }
+
+/// Span status: Error (operation failed)
+pub fn SPAN_ERROR() -> i64 { 2 }
+
+// =============================================================================
+// Span Kind Constants
+// =============================================================================
+
+/// Internal span (default)
+pub fn SPAN_INTERNAL() -> i64 { 0 }
+
+/// Server span (incoming request)
+pub fn SPAN_SERVER() -> i64 { 1 }
+
+/// Client span (outgoing request)
+pub fn SPAN_CLIENT() -> i64 { 2 }
+
+/// Producer span (message producer)
+pub fn SPAN_PRODUCER() -> i64 { 3 }
+
+/// Consumer span (message consumer)
+pub fn SPAN_CONSUMER() -> i64 { 4 }
+
+// =============================================================================
+// Common Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_from(s: &str) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn time_now() -> i64;
+extern fn time_now_ms() -> i64;
+extern fn print_i64(n: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;

@@ -1,0 +1,301 @@
+// simplex-protobuf/schema - Schema Definition and Field Type Mapping
+//
+// Provides a lightweight schema representation for proto3 messages.
+// Schemas map field numbers to field types, enabling type-aware
+// encoding and decoding.
+//
+// # Usage
+//
+// ```simplex
+// let schema = proto_schema_new();
+// proto_schema_add_field(schema, 1, PROTO_TYPE_STRING(), "name");
+// proto_schema_add_field(schema, 2, PROTO_TYPE_INT64(), "age");
+// proto_schema_add_field(schema, 3, PROTO_TYPE_BOOL(), "active");
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, byte: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+
+// =============================================================================
+// Field Type Constants (re-exported from mod.sx)
+// =============================================================================
+
+fn SCHEMA_TYPE_INT32() -> i64 { 1 }
+fn SCHEMA_TYPE_INT64() -> i64 { 2 }
+fn SCHEMA_TYPE_UINT32() -> i64 { 3 }
+fn SCHEMA_TYPE_UINT64() -> i64 { 4 }
+fn SCHEMA_TYPE_SINT32() -> i64 { 5 }
+fn SCHEMA_TYPE_SINT64() -> i64 { 6 }
+fn SCHEMA_TYPE_BOOL() -> i64 { 7 }
+fn SCHEMA_TYPE_ENUM() -> i64 { 8 }
+fn SCHEMA_TYPE_FIXED64() -> i64 { 9 }
+fn SCHEMA_TYPE_SFIXED64() -> i64 { 10 }
+fn SCHEMA_TYPE_DOUBLE() -> i64 { 11 }
+fn SCHEMA_TYPE_STRING() -> i64 { 12 }
+fn SCHEMA_TYPE_BYTES() -> i64 { 13 }
+fn SCHEMA_TYPE_MESSAGE() -> i64 { 14 }
+fn SCHEMA_TYPE_FIXED32() -> i64 { 15 }
+fn SCHEMA_TYPE_SFIXED32() -> i64 { 16 }
+fn SCHEMA_TYPE_FLOAT() -> i64 { 17 }
+
+// =============================================================================
+// Field Flags
+// =============================================================================
+
+/// Field is optional (proto3 default)
+fn FIELD_OPTIONAL() -> i64 { 0 }
+
+/// Field is repeated
+fn FIELD_REPEATED() -> i64 { 1 }
+
+/// Field is a map entry
+fn FIELD_MAP() -> i64 { 2 }
+
+/// Field is a oneof member
+fn FIELD_ONEOF() -> i64 { 3 }
+
+// =============================================================================
+// Schema Data Structure
+// =============================================================================
+//
+// A schema is a vec of field descriptors.
+// Each field descriptor is a vec: [field_num, field_type, field_name, flags]
+//
+// The schema vec itself holds these field descriptor vecs.
+
+/// Create a new empty schema
+fn proto_schema_new() -> i64 {
+    vec_new()
+}
+
+/// Add a field definition to a schema.
+///
+/// # Arguments
+/// * `schema`     - Schema handle
+/// * `field_num`  - Proto field number
+/// * `field_type` - Field type constant (SCHEMA_TYPE_*)
+/// * `name`       - Field name (string handle)
+///
+/// # Returns
+/// The schema handle (unchanged, field added in place)
+fn proto_schema_add_field(schema: i64, field_num: i64, field_type: i64, name: i64) -> i64 {
+    let descriptor: i64 = vec_new();
+    vec_push(descriptor, field_num);
+    vec_push(descriptor, field_type);
+    vec_push(descriptor, name);
+    vec_push(descriptor, FIELD_OPTIONAL());  // Default flag
+    vec_push(schema, descriptor);
+    schema
+}
+
+/// Add a repeated field to a schema
+fn proto_schema_add_repeated(schema: i64, field_num: i64, field_type: i64, name: i64) -> i64 {
+    let descriptor: i64 = vec_new();
+    vec_push(descriptor, field_num);
+    vec_push(descriptor, field_type);
+    vec_push(descriptor, name);
+    vec_push(descriptor, FIELD_REPEATED());
+    vec_push(schema, descriptor);
+    schema
+}
+
+/// Add a map field to a schema (encoded as repeated message with key/value)
+fn proto_schema_add_map(schema: i64, field_num: i64, key_type: i64, value_type: i64, name: i64) -> i64 {
+    let descriptor: i64 = vec_new();
+    vec_push(descriptor, field_num);
+    vec_push(descriptor, SCHEMA_TYPE_MESSAGE());
+    vec_push(descriptor, name);
+    vec_push(descriptor, FIELD_MAP());
+    vec_push(descriptor, key_type);
+    vec_push(descriptor, value_type);
+    vec_push(schema, descriptor);
+    schema
+}
+
+/// Add a oneof member field
+fn proto_schema_add_oneof(schema: i64, field_num: i64, field_type: i64, name: i64, oneof_group: i64) -> i64 {
+    let descriptor: i64 = vec_new();
+    vec_push(descriptor, field_num);
+    vec_push(descriptor, field_type);
+    vec_push(descriptor, name);
+    vec_push(descriptor, FIELD_ONEOF());
+    vec_push(descriptor, oneof_group);
+    vec_push(schema, descriptor);
+    schema
+}
+
+// =============================================================================
+// Schema Queries
+// =============================================================================
+
+/// Get the number of fields in the schema
+fn proto_schema_field_count(schema: i64) -> i64 {
+    vec_len(schema)
+}
+
+/// Look up a field descriptor by field number.
+///
+/// # Returns
+/// Field descriptor vec [field_num, field_type, name, flags], or 0 if not found
+fn proto_schema_find(schema: i64, field_num: i64) -> i64 {
+    let count: i64 = vec_len(schema);
+    var i: i64 = 0;
+    while i < count {
+        let desc: i64 = vec_get(schema, i);
+        if vec_get(desc, 0) == field_num {
+            return desc;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Look up a field descriptor by name.
+///
+/// # Returns
+/// Field descriptor vec, or 0 if not found
+fn proto_schema_find_by_name(schema: i64, name: i64) -> i64 {
+    let count: i64 = vec_len(schema);
+    var i: i64 = 0;
+    while i < count {
+        let desc: i64 = vec_get(schema, i);
+        if intrinsic_string_eq(vec_get(desc, 2), name) == 1 {
+            return desc;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Get the field type for a given field number
+fn proto_schema_field_type(schema: i64, field_num: i64) -> i64 {
+    let desc: i64 = proto_schema_find(schema, field_num);
+    if desc == 0 { return -1; }
+    vec_get(desc, 1)
+}
+
+/// Get the field name for a given field number
+fn proto_schema_field_name(schema: i64, field_num: i64) -> i64 {
+    let desc: i64 = proto_schema_find(schema, field_num);
+    if desc == 0 { return 0; }
+    vec_get(desc, 2)
+}
+
+/// Get the flags for a given field number
+fn proto_schema_field_flags(schema: i64, field_num: i64) -> i64 {
+    let desc: i64 = proto_schema_find(schema, field_num);
+    if desc == 0 { return -1; }
+    vec_get(desc, 3)
+}
+
+/// Check if a field is repeated
+fn proto_schema_is_repeated(schema: i64, field_num: i64) -> i64 {
+    let flags: i64 = proto_schema_field_flags(schema, field_num);
+    if flags == FIELD_REPEATED() { 1 } else { 0 }
+}
+
+/// Check if a field is a map
+fn proto_schema_is_map(schema: i64, field_num: i64) -> i64 {
+    let flags: i64 = proto_schema_field_flags(schema, field_num);
+    if flags == FIELD_MAP() { 1 } else { 0 }
+}
+
+// =============================================================================
+// Wire Type Resolution from Schema
+// =============================================================================
+
+/// Get the expected wire type for a field based on its schema type
+fn proto_schema_wire_type(schema: i64, field_num: i64) -> i64 {
+    let field_type: i64 = proto_schema_field_type(schema, field_num);
+    if field_type < 0 { return -1; }
+
+    // Varint types
+    if field_type == SCHEMA_TYPE_INT32() { return 0; }
+    if field_type == SCHEMA_TYPE_INT64() { return 0; }
+    if field_type == SCHEMA_TYPE_UINT32() { return 0; }
+    if field_type == SCHEMA_TYPE_UINT64() { return 0; }
+    if field_type == SCHEMA_TYPE_SINT32() { return 0; }
+    if field_type == SCHEMA_TYPE_SINT64() { return 0; }
+    if field_type == SCHEMA_TYPE_BOOL() { return 0; }
+    if field_type == SCHEMA_TYPE_ENUM() { return 0; }
+
+    // 64-bit types
+    if field_type == SCHEMA_TYPE_FIXED64() { return 1; }
+    if field_type == SCHEMA_TYPE_SFIXED64() { return 1; }
+    if field_type == SCHEMA_TYPE_DOUBLE() { return 1; }
+
+    // Length-delimited types
+    if field_type == SCHEMA_TYPE_STRING() { return 2; }
+    if field_type == SCHEMA_TYPE_BYTES() { return 2; }
+    if field_type == SCHEMA_TYPE_MESSAGE() { return 2; }
+
+    // 32-bit types
+    if field_type == SCHEMA_TYPE_FIXED32() { return 5; }
+    if field_type == SCHEMA_TYPE_SFIXED32() { return 5; }
+    if field_type == SCHEMA_TYPE_FLOAT() { return 5; }
+
+    -1
+}
+
+// =============================================================================
+// Schema Validation
+// =============================================================================
+
+/// Validate that a decoded field matches the schema.
+///
+/// # Arguments
+/// * `schema`    - Schema handle
+/// * `field_num` - Decoded field number
+/// * `wire_type` - Decoded wire type
+///
+/// # Returns
+/// 1 if valid, 0 if invalid or unknown field
+fn proto_schema_validate_field(schema: i64, field_num: i64, wire_type: i64) -> i64 {
+    let expected_wt: i64 = proto_schema_wire_type(schema, field_num);
+    if expected_wt < 0 { return 0; }  // Unknown field
+
+    // For repeated packed fields, wire type 2 is also valid for varint/fixed types
+    let flags: i64 = proto_schema_field_flags(schema, field_num);
+    if flags == FIELD_REPEATED() {
+        if wire_type == 2 { return 1; }  // Packed encoding
+    }
+
+    if wire_type == expected_wt { 1 } else { 0 }
+}
+
+/// Get the field descriptor at index
+fn proto_schema_field_at(schema: i64, index: i64) -> i64 {
+    if index < 0 { return 0; }
+    if index >= vec_len(schema) { return 0; }
+    vec_get(schema, index)
+}
+
+/// Get field number from a descriptor
+fn proto_descriptor_field_num(desc: i64) -> i64 {
+    vec_get(desc, 0)
+}
+
+/// Get field type from a descriptor
+fn proto_descriptor_field_type(desc: i64) -> i64 {
+    vec_get(desc, 1)
+}
+
+/// Get field name from a descriptor
+fn proto_descriptor_name(desc: i64) -> i64 {
+    vec_get(desc, 2)
+}
+
+/// Get field flags from a descriptor
+fn proto_descriptor_flags(desc: i64) -> i64 {
+    vec_get(desc, 3)
+}

@@ -1,0 +1,173 @@
+// simplex-eval::suite - Evaluation Suite Management
+//
+// Create, populate, and run evaluation suites.
+//
+// Suite layout (vec of i64):
+//   [0] name          - string handle for suite name
+//   [1] inputs_vec    - handle to vec of input string handles
+//   [2] expected_vec  - handle to vec of expected output string handles
+//   [3] count         - number of test cases
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Suite Creation
+// =============================================================================
+
+/// Create a new evaluation suite.
+///
+/// Arguments:
+///   name - string handle for the suite name
+///
+/// Returns: handle to suite vec
+fn eval_suite_new(name: i64) -> i64 {
+    let suite = vec_new();
+    vec_push(suite, name);          // [0] name
+    vec_push(suite, vec_new());     // [1] inputs_vec
+    vec_push(suite, vec_new());     // [2] expected_vec
+    vec_push(suite, 0);             // [3] count
+    suite
+}
+
+// =============================================================================
+// Adding Test Cases
+// =============================================================================
+
+/// Add a test case to an evaluation suite.
+///
+/// Arguments:
+///   suite    - suite handle
+///   input    - input string handle
+///   expected - expected output string handle
+///
+/// Returns: the updated case count
+fn eval_add_case(suite: i64, input: i64, expected: i64) -> i64 {
+    let inputs: i64 = vec_get(suite, SUITE_INPUTS());
+    let expecteds: i64 = vec_get(suite, SUITE_EXPECTED());
+
+    vec_push(inputs, input);
+    vec_push(expecteds, expected);
+
+    let count: i64 = vec_get(suite, SUITE_COUNT());
+    vec_set(suite, SUITE_COUNT(), count + 1);
+
+    count + 1
+}
+
+// =============================================================================
+// Running Evaluation
+// =============================================================================
+
+/// Run an evaluation suite with pre-computed outputs.
+///
+/// Since Simplex function handles can't be directly invoked at the library
+/// level, this function takes a vec of pre-computed outputs and compares
+/// them against expected outputs.
+///
+/// Arguments:
+///   suite   - suite handle
+///   outputs - handle to vec of output string handles (one per test case)
+///
+/// Returns: handle to result vec
+fn eval_run_with_outputs(suite: i64, outputs: i64) -> i64 {
+    let name: i64 = vec_get(suite, SUITE_NAME());
+    let inputs: i64 = vec_get(suite, SUITE_INPUTS());
+    let expecteds: i64 = vec_get(suite, SUITE_EXPECTED());
+    let count: i64 = vec_get(suite, SUITE_COUNT());
+
+    let scores = vec_new();
+    var total_score: f64 = 0.0;
+    var n_scored: i64 = 0;
+
+    var i: i64 = 0;
+    while i < count {
+        let output: i64 = vec_get(outputs, i);
+        let expected: i64 = vec_get(expecteds, i);
+
+        // Compute exact match score
+        let em: i64 = metric_exact_match(output, expected);
+        let em_f: f64 = 0.0 + em;
+
+        // Compute contains score
+        let cont: i64 = metric_contains(output, expected);
+        let cont_f: f64 = 0.0 + cont;
+
+        // Combined score: weighted average
+        let score: f64 = em_f * 0.7 + cont_f * 0.3;
+        vec_push(scores, f64_to_bits(score));
+        total_score = total_score + score;
+        n_scored = n_scored + 1;
+
+        i = i + 1;
+    }
+
+    // Average score
+    var avg: f64 = 0.0;
+    if n_scored > 0 {
+        let n_f: f64 = 0.0 + n_scored;
+        avg = total_score / n_f;
+    }
+
+    let result = vec_new();
+    vec_push(result, name);                // [0] suite name
+    vec_push(result, scores);              // [1] scores (f64_bits)
+    vec_push(result, outputs);             // [2] outputs
+    vec_push(result, expecteds);           // [3] expected
+    vec_push(result, inputs);              // [4] inputs
+    vec_push(result, count);               // [5] count
+    vec_push(result, f64_to_bits(avg));    // [6] avg_score
+    result
+}
+
+/// Run an evaluation suite using a function handle.
+///
+/// The fn_handle should be a function that takes a string handle (input)
+/// and returns a string handle (output). Since we can't invoke function
+/// handles directly in library code, this generates outputs by calling
+/// the function on each input.
+///
+/// Arguments:
+///   suite     - suite handle
+///   fn_handle - function handle (not invocable in library; kept for API compat)
+///
+/// Returns: handle to result vec (scores will be 0 since fn can't be called)
+fn eval_run(suite: i64, fn_handle: i64) -> i64 {
+    let count: i64 = vec_get(suite, SUITE_COUNT());
+    let empty_outputs = vec_new();
+
+    // Generate placeholder outputs since we can't invoke fn_handle
+    var i: i64 = 0;
+    while i < count {
+        vec_push(empty_outputs, string_from(""));
+        i = i + 1;
+    }
+
+    eval_run_with_outputs(suite, empty_outputs)
+}
+
+// =============================================================================
+// Suite Info
+// =============================================================================
+
+/// Get the name of a suite.
+fn eval_suite_name(suite: i64) -> i64 {
+    vec_get(suite, SUITE_NAME())
+}
+
+/// Get the number of cases in a suite.
+fn eval_suite_count(suite: i64) -> i64 {
+    vec_get(suite, SUITE_COUNT())
+}
+
+/// Get the input for a specific case.
+fn eval_case_input(suite: i64, idx: i64) -> i64 {
+    let inputs: i64 = vec_get(suite, SUITE_INPUTS());
+    vec_get(inputs, idx)
+}
+
+/// Get the expected output for a specific case.
+fn eval_case_expected(suite: i64, idx: i64) -> i64 {
+    let expecteds: i64 = vec_get(suite, SUITE_EXPECTED());
+    vec_get(expecteds, idx)
+}

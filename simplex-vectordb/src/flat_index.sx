@@ -1,0 +1,230 @@
+// simplex-vectordb::flat_index - Brute-Force Exact Search
+//
+// Linear scan through all vectors computing similarity, then return top-k.
+// Simple and exact, suitable for small to medium datasets.
+//
+// Time complexity: O(n * d) per search where n = vectors, d = dimension.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Flat Search
+// =============================================================================
+
+/// Perform brute-force nearest neighbor search.
+///
+/// Iterates all vectors in the store, computes cosine similarity with
+/// the query, and returns the top-k most similar vectors.
+///
+/// Arguments:
+///   store     - store handle
+///   query_vec - handle to vec of f64_to_bits values
+///   top_k     - number of results to return
+///
+/// Returns: handle to result vec [ids_vec, scores_vec, count]
+fn flat_search(store: i64, query_vec: i64, top_k: i64) -> i64 {
+    let dimension: i64 = vec_get(store, STORE_DIMENSION());
+    let ids: i64 = vec_get(store, STORE_IDS());
+    let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+    let n_slots: i64 = vec_len(ids);
+
+    // Collect all similarities
+    let all_scores = vec_new();    // vec of f64_to_bits
+    let all_indices = vec_new();   // vec of internal indices
+    var n_active: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n_slots {
+        let id: i64 = vec_get(ids, i);
+        if id != -1 {
+            let emb: i64 = vec_get(embeddings, i);
+            if emb != 0 {
+                let sim: i64 = cosine_similarity(query_vec, emb, dimension);
+                vec_push(all_scores, sim);
+                vec_push(all_indices, i);
+                n_active = n_active + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // Determine how many results to return
+    var k: i64 = top_k;
+    if k > n_active { k = n_active; }
+
+    // Selection sort to find top-k (descending by score)
+    let result_ids = vec_new();
+    let result_scores = vec_new();
+
+    var found: i64 = 0;
+    while found < k {
+        // Find the maximum score among remaining
+        var best_j: i64 = -1;
+        var best_score_bits: i64 = f64_to_bits(-999999.0);
+        var best_score: f64 = -999999.0;
+
+        var j: i64 = 0;
+        while j < n_active {
+            let score_bits: i64 = vec_get(all_scores, j);
+            let score: f64 = bits_to_f64(score_bits);
+            if score > best_score {
+                best_score = score;
+                best_score_bits = score_bits;
+                best_j = j;
+            }
+            j = j + 1;
+        }
+
+        if best_j == -1 {
+            // No more valid vectors
+            found = k;  // break
+        } else {
+            let internal_idx: i64 = vec_get(all_indices, best_j);
+            let original_id: i64 = vec_get(ids, internal_idx);
+
+            vec_push(result_ids, original_id);
+            vec_push(result_scores, best_score_bits);
+
+            // Mark as used by setting score to very low
+            vec_set(all_scores, best_j, f64_to_bits(-1000000.0));
+
+            found = found + 1;
+        }
+    }
+
+    // Build result
+    let result = vec_new();
+    vec_push(result, result_ids);     // [0] ids_vec
+    vec_push(result, result_scores);  // [1] scores_vec
+    vec_push(result, found);          // [2] count
+    result
+}
+
+// =============================================================================
+// Flat Range Search
+// =============================================================================
+
+/// Search for all vectors within a similarity threshold.
+///
+/// Arguments:
+///   store      - store handle
+///   query_vec  - handle to vec of f64_to_bits values
+///   min_score  - minimum cosine similarity threshold (as i64 f64_to_bits)
+///
+/// Returns: handle to result vec [ids_vec, scores_vec, count]
+fn flat_range_search(store: i64, query_vec: i64, min_score: i64) -> i64 {
+    let dimension: i64 = vec_get(store, STORE_DIMENSION());
+    let ids: i64 = vec_get(store, STORE_IDS());
+    let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+    let n_slots: i64 = vec_len(ids);
+    let threshold: f64 = bits_to_f64(min_score);
+
+    let result_ids = vec_new();
+    let result_scores = vec_new();
+    var count: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n_slots {
+        let id: i64 = vec_get(ids, i);
+        if id != -1 {
+            let emb: i64 = vec_get(embeddings, i);
+            if emb != 0 {
+                let sim_bits: i64 = cosine_similarity(query_vec, emb, dimension);
+                let sim: f64 = bits_to_f64(sim_bits);
+                if sim >= threshold {
+                    vec_push(result_ids, id);
+                    vec_push(result_scores, sim_bits);
+                    count = count + 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+
+    let result = vec_new();
+    vec_push(result, result_ids);
+    vec_push(result, result_scores);
+    vec_push(result, count);
+    result
+}
+
+// =============================================================================
+// Flat KNN with Distance
+// =============================================================================
+
+/// Flat search using euclidean distance instead of cosine similarity.
+/// Lower distance = more similar.
+///
+/// Arguments:
+///   store     - store handle
+///   query_vec - handle to vec of f64_to_bits values
+///   top_k     - number of results to return
+///
+/// Returns: handle to result vec [ids_vec, distances_vec, count]
+fn flat_search_euclidean(store: i64, query_vec: i64, top_k: i64) -> i64 {
+    let dimension: i64 = vec_get(store, STORE_DIMENSION());
+    let ids: i64 = vec_get(store, STORE_IDS());
+    let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+    let n_slots: i64 = vec_len(ids);
+
+    let all_dists = vec_new();
+    let all_indices = vec_new();
+    var n_active: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n_slots {
+        let id: i64 = vec_get(ids, i);
+        if id != -1 {
+            let emb: i64 = vec_get(embeddings, i);
+            if emb != 0 {
+                let dist: i64 = euclidean_distance(query_vec, emb, dimension);
+                vec_push(all_dists, dist);
+                vec_push(all_indices, i);
+                n_active = n_active + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    var k: i64 = top_k;
+    if k > n_active { k = n_active; }
+
+    let result_ids = vec_new();
+    let result_dists = vec_new();
+
+    var found: i64 = 0;
+    while found < k {
+        var best_j: i64 = -1;
+        var best_dist: f64 = 999999999.0;
+
+        var j: i64 = 0;
+        while j < n_active {
+            let dist: f64 = bits_to_f64(vec_get(all_dists, j));
+            if dist < best_dist {
+                best_dist = dist;
+                best_j = j;
+            }
+            j = j + 1;
+        }
+
+        if best_j == -1 {
+            found = k;
+        } else {
+            let internal_idx: i64 = vec_get(all_indices, best_j);
+            let original_id: i64 = vec_get(ids, internal_idx);
+
+            vec_push(result_ids, original_id);
+            vec_push(result_dists, f64_to_bits(best_dist));
+
+            vec_set(all_dists, best_j, f64_to_bits(999999999.0));
+            found = found + 1;
+        }
+    }
+
+    let result = vec_new();
+    vec_push(result, result_ids);
+    vec_push(result, result_dists);
+    vec_push(result, found);
+    result
+}

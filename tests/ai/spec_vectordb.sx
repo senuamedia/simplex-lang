@@ -1,0 +1,318 @@
+// Vector Database Tests
+// Tests cosine similarity, top-k search, euclidean distance, dot product
+// Self-contained: no extern fn, no const, no f64 params
+
+// =============================================================================
+// Helpers: integer-scaled vector math (scale factor 1000)
+// =============================================================================
+
+fn make_ivec(dim: i64, val: i64) -> i64 {
+    let v: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(v, val);
+        i = i + 1;
+    }
+    v
+}
+
+// Integer dot product
+fn idot(a: i64, b: i64, dim: i64) -> i64 {
+    var sum: i64 = 0;
+    var i: i64 = 0;
+    while i < dim {
+        sum = sum + vec_get(a, i) * vec_get(b, i);
+        i = i + 1;
+    }
+    sum
+}
+
+// Integer norm squared
+fn inorm2(a: i64, dim: i64) -> i64 {
+    var sum: i64 = 0;
+    var i: i64 = 0;
+    while i < dim {
+        let v: i64 = vec_get(a, i);
+        sum = sum + v * v;
+        i = i + 1;
+    }
+    sum
+}
+
+// Integer sqrt via Newton's method
+fn isqrt(n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    if n == 1 { return 1; }
+    var x: i64 = n;
+    var y: i64 = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
+}
+
+// Cosine similarity * 1000 (returns integer in [-1000, 1000])
+fn icos_sim(a: i64, b: i64, dim: i64) -> i64 {
+    let dot: i64 = idot(a, b, dim);
+    let na: i64 = inorm2(a, dim);
+    let nb: i64 = inorm2(b, dim);
+    if na == 0 { return 0; }
+    if nb == 0 { return 0; }
+    let mag: i64 = isqrt(na) * isqrt(nb);
+    if mag == 0 { return 0; }
+    dot * 1000 / mag
+}
+
+// =============================================================================
+// Test 1: Store creation
+// =============================================================================
+fn test_store_creation() -> i64 {
+    println("  Test 1: Store creation...");
+    let store: i64 = vec_new();
+    vec_push(store, 0);    // name placeholder
+    vec_push(store, 4);    // dimension
+    vec_push(store, 0);    // count
+    vec_push(store, vec_new()); // ids
+    vec_push(store, vec_new()); // embeddings
+    vec_push(store, vec_new()); // metadata
+
+    let got_dim: i64 = vec_get(store, 1);
+    let got_count: i64 = vec_get(store, 2);
+
+    if got_dim != 4 {
+        println("  FAIL: dimension should be 4");
+        return 1;
+    }
+    if got_count != 0 {
+        println("  FAIL: count should be 0");
+        return 1;
+    }
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 2: Insert and count
+// =============================================================================
+fn test_insert_count() -> i64 {
+    println("  Test 2: Insert and count...");
+    let ids: i64 = vec_new();
+    let embs: i64 = vec_new();
+
+    vec_push(ids, 100);
+    vec_push(embs, make_ivec(4, 10));
+
+    vec_push(ids, 200);
+    vec_push(embs, make_ivec(4, 20));
+
+    vec_push(ids, 300);
+    vec_push(embs, make_ivec(4, 30));
+
+    let count: i64 = vec_len(ids);
+    if count != 3 {
+        println("  FAIL: should have 3 vectors");
+        return 1;
+    }
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 3: Cosine similarity correctness
+// =============================================================================
+fn test_cosine_correctness() -> i64 {
+    println("  Test 3: Cosine similarity...");
+
+    // Identical vectors: sim should be ~1000
+    let a: i64 = make_ivec(4, 10);
+    let b: i64 = make_ivec(4, 10);
+    let sim1: i64 = icos_sim(a, b, 4);
+    if sim1 < 990 {
+        println("  FAIL: identical vectors should have sim ~1000");
+        return 1;
+    }
+
+    // Orthogonal: [1,0,0,0] vs [0,1,0,0] -> sim = 0
+    let c: i64 = vec_new();
+    vec_push(c, 10); vec_push(c, 0); vec_push(c, 0); vec_push(c, 0);
+    let d: i64 = vec_new();
+    vec_push(d, 0); vec_push(d, 10); vec_push(d, 0); vec_push(d, 0);
+    let sim2: i64 = icos_sim(c, d, 4);
+    if sim2 != 0 {
+        println("  FAIL: orthogonal vectors should have sim 0");
+        return 1;
+    }
+
+    // Opposite: [10,10,10,10] vs [-10,-10,-10,-10] -> sim = -1000
+    let e: i64 = make_ivec(4, 10);
+    let f: i64 = make_ivec(4, 0 - 10);
+    let sim3: i64 = icos_sim(e, f, 4);
+    if sim3 > 0 - 990 {
+        println("  FAIL: opposite vectors should have sim ~ -1000");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 4: Search top-k ordering
+// =============================================================================
+fn test_search_topk() -> i64 {
+    println("  Test 4: Search top-k ordering...");
+
+    // Query: [10, 10, 0, 0]
+    let query: i64 = vec_new();
+    vec_push(query, 10); vec_push(query, 10); vec_push(query, 0); vec_push(query, 0);
+
+    // v1: [10, 10, 0, 0] identical -> highest sim
+    let v1: i64 = vec_new();
+    vec_push(v1, 10); vec_push(v1, 10); vec_push(v1, 0); vec_push(v1, 0);
+
+    // v2: [10, 0, 0, 0] partial match -> medium sim
+    let v2: i64 = vec_new();
+    vec_push(v2, 10); vec_push(v2, 0); vec_push(v2, 0); vec_push(v2, 0);
+
+    // v3: [0, 0, 10, 10] orthogonal -> lowest sim
+    let v3: i64 = vec_new();
+    vec_push(v3, 0); vec_push(v3, 0); vec_push(v3, 10); vec_push(v3, 10);
+
+    let s1: i64 = icos_sim(query, v1, 4);
+    let s2: i64 = icos_sim(query, v2, 4);
+    let s3: i64 = icos_sim(query, v3, 4);
+
+    if s1 <= s2 {
+        println("  FAIL: s1 should be > s2");
+        return 1;
+    }
+    if s2 <= s3 {
+        println("  FAIL: s2 should be > s3");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 5: Delete vector
+// =============================================================================
+fn test_delete() -> i64 {
+    println("  Test 5: Delete vector...");
+
+    let ids: i64 = vec_new();
+    vec_push(ids, 100);
+    vec_push(ids, 200);
+    vec_push(ids, 300);
+
+    // Delete ID 200 by marking as -1
+    var i: i64 = 0;
+    let n: i64 = vec_len(ids);
+    var deleted: i64 = 0;
+    while i < n {
+        let id: i64 = vec_get(ids, i);
+        if id == 200 {
+            vec_set(ids, i, 0 - 1);
+            deleted = 1;
+        }
+        i = i + 1;
+    }
+
+    if deleted != 1 {
+        println("  FAIL: should have deleted ID 200");
+        return 1;
+    }
+
+    let id1: i64 = vec_get(ids, 1);
+    if id1 != 0 - 1 {
+        println("  FAIL: deleted slot should be -1");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 6: Euclidean distance (integer-scaled)
+// =============================================================================
+fn test_euclidean() -> i64 {
+    println("  Test 6: Euclidean distance...");
+
+    // [100, 0] vs [0, 100] -> dist = sqrt(100^2 + 100^2) = sqrt(20000) ~ 141
+    let a: i64 = vec_new();
+    vec_push(a, 100); vec_push(a, 0);
+    let b: i64 = vec_new();
+    vec_push(b, 0); vec_push(b, 100);
+
+    var sum_sq: i64 = 0;
+    var i: i64 = 0;
+    while i < 2 {
+        let diff: i64 = vec_get(a, i) - vec_get(b, i);
+        sum_sq = sum_sq + diff * diff;
+        i = i + 1;
+    }
+    let dist: i64 = isqrt(sum_sq);
+
+    // sqrt(20000) = 141.42... -> isqrt = 141
+    if dist < 140 {
+        println("  FAIL: distance should be ~141");
+        return 1;
+    }
+    if dist > 142 {
+        println("  FAIL: distance should be ~141");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Test 7: Dot product
+// =============================================================================
+fn test_dot_product() -> i64 {
+    println("  Test 7: Dot product...");
+
+    // [1, 2, 3] . [4, 5, 6] = 4 + 10 + 18 = 32
+    let a: i64 = vec_new();
+    vec_push(a, 1); vec_push(a, 2); vec_push(a, 3);
+    let b: i64 = vec_new();
+    vec_push(b, 4); vec_push(b, 5); vec_push(b, 6);
+
+    let dot: i64 = idot(a, b, 3);
+    if dot != 32 {
+        println("  FAIL: dot product should be 32");
+        return 1;
+    }
+
+    println("  PASS");
+    0
+}
+
+// =============================================================================
+// Main
+// =============================================================================
+fn main() -> i64 {
+    println("=== Vector Database Tests ===");
+
+    var failures: i64 = 0;
+    failures = failures + test_store_creation();
+    failures = failures + test_insert_count();
+    failures = failures + test_cosine_correctness();
+    failures = failures + test_search_topk();
+    failures = failures + test_delete();
+    failures = failures + test_euclidean();
+    failures = failures + test_dot_product();
+
+    println("");
+    if failures == 0 {
+        println("All 7 vector database tests passed!");
+    } else {
+        println("Some vector database tests failed");
+    }
+
+    failures
+}

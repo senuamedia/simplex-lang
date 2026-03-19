@@ -1,0 +1,235 @@
+// simplex-opentelemetry::processor - Batch Span Processor
+//
+// Buffers completed spans and flushes them in batches to an exporter.
+// This reduces overhead by batching export operations.
+//
+// # Processor Vec Layout
+//   [0] = buffer (vec of span handles)
+//   [1] = max_batch_size (i64)
+//   [2] = total_exported (i64, running count)
+//   [3] = total_dropped (i64, dropped due to buffer overflow)
+//   [4] = max_buffer_size (i64, maximum number of buffered spans)
+//   [5] = export_format (i64, 0=stdout, 1=json)
+//   [6] = last_flush_time_ms (i64)
+//   [7] = flush_interval_ms (i64, auto-flush interval)
+//
+// # Example
+//
+// ```simplex
+// let proc = otel_processor_new(100, 1000);
+// otel_processor_on_end(proc, span);
+// let batch = otel_processor_flush(proc);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn i64_to_string(n: i64) -> i64;
+extern fn time_now_ms() -> i64;
+
+// =============================================================================
+// Processor Creation
+// =============================================================================
+
+/// Create a new batch span processor.
+///
+/// # Arguments
+/// - `max_batch_size`: Maximum spans per flush batch
+/// - `max_buffer_size`: Maximum buffered spans before dropping
+///
+/// # Returns
+/// Processor vec handle (i64)
+pub fn otel_processor_new(max_batch_size: i64, max_buffer_size: i64) -> i64 {
+    let proc: i64 = vec_new();
+    let buffer: i64 = vec_new();
+    vec_push(proc, buffer);               // [0] = buffer
+    vec_push(proc, max_batch_size);       // [1] = max_batch_size
+    vec_push(proc, 0);                    // [2] = total_exported
+    vec_push(proc, 0);                    // [3] = total_dropped
+    vec_push(proc, max_buffer_size);      // [4] = max_buffer_size
+    vec_push(proc, 0);                    // [5] = export_format (stdout)
+    let now: i64 = time_now_ms();
+    vec_push(proc, now);                  // [6] = last_flush_time
+    vec_push(proc, 5000);                 // [7] = flush_interval_ms (5s default)
+    proc
+}
+
+/// Create a processor with a custom flush interval.
+///
+/// # Arguments
+/// - `max_batch_size`: Maximum spans per flush batch
+/// - `max_buffer_size`: Maximum buffered spans
+/// - `flush_interval_ms`: Auto-flush interval in milliseconds
+///
+/// # Returns
+/// Processor vec handle (i64)
+pub fn otel_processor_new_interval(max_batch_size: i64, max_buffer_size: i64, flush_interval_ms: i64) -> i64 {
+    let proc: i64 = otel_processor_new(max_batch_size, max_buffer_size);
+    vec_set(proc, 7, flush_interval_ms);
+    proc
+}
+
+// =============================================================================
+// Processor Operations
+// =============================================================================
+
+/// Called when a span ends. Adds the span to the buffer.
+///
+/// If the buffer is full, the span is dropped and the drop counter incremented.
+///
+/// # Arguments
+/// - `proc`: Processor vec handle
+/// - `span`: Completed span vec handle
+///
+/// # Returns
+/// 0 if buffered, 1 if dropped
+pub fn otel_processor_on_end(proc: i64, span: i64) -> i64 {
+    let buffer: i64 = vec_get(proc, 0);
+    let max_buf: i64 = vec_get(proc, 4);
+    let current: i64 = vec_len(buffer);
+
+    if current >= max_buf {
+        // Buffer full, drop span
+        let dropped: i64 = vec_get(proc, 3);
+        vec_set(proc, 3, dropped + 1);
+        return 1;
+    }
+
+    vec_push(buffer, span);
+
+    // Check if we should auto-flush (batch size reached)
+    let max_batch: i64 = vec_get(proc, 1);
+    let new_len: i64 = vec_len(buffer);
+    if new_len >= max_batch {
+        // Auto-flush would happen here in a real async runtime
+        // For now, the caller should check otel_processor_should_flush()
+    }
+
+    0
+}
+
+/// Check if the processor should be flushed.
+///
+/// Returns true if either:
+/// - Buffer has reached max_batch_size
+/// - Time since last flush exceeds flush_interval_ms
+///
+/// # Arguments
+/// - `proc`: Processor vec handle
+///
+/// # Returns
+/// 1 if should flush, 0 otherwise
+pub fn otel_processor_should_flush(proc: i64) -> i64 {
+    let buffer: i64 = vec_get(proc, 0);
+    let buf_len: i64 = vec_len(buffer);
+    let max_batch: i64 = vec_get(proc, 1);
+
+    // Check batch size threshold
+    if buf_len >= max_batch {
+        return 1;
+    }
+
+    // Check time threshold
+    let last_flush: i64 = vec_get(proc, 6);
+    let interval: i64 = vec_get(proc, 7);
+    let now: i64 = time_now_ms();
+    if now - last_flush >= interval {
+        if buf_len > 0 {
+            return 1;
+        }
+    }
+
+    0
+}
+
+/// Flush the processor buffer.
+///
+/// Returns a vec of all buffered spans and clears the buffer.
+/// Updates the exported count and last flush time.
+///
+/// # Arguments
+/// - `proc`: Processor vec handle
+///
+/// # Returns
+/// Vec of span handles (the flushed batch)
+pub fn otel_processor_flush(proc: i64) -> i64 {
+    let buffer: i64 = vec_get(proc, 0);
+    let n: i64 = vec_len(buffer);
+
+    // Copy spans to output batch
+    let batch: i64 = vec_new();
+    let i: i64 = 0;
+    loop {
+        if i >= n {
+            break;
+        }
+        let span: i64 = vec_get(buffer, i);
+        vec_push(batch, span);
+        let i: i64 = i + 1;
+    }
+
+    // Update exported count
+    let exported: i64 = vec_get(proc, 2);
+    vec_set(proc, 2, exported + n);
+
+    // Replace buffer with a new empty one
+    let new_buffer: i64 = vec_new();
+    vec_set(proc, 0, new_buffer);
+
+    // Update last flush time
+    let now: i64 = time_now_ms();
+    vec_set(proc, 6, now);
+
+    batch
+}
+
+// =============================================================================
+// Processor Statistics
+// =============================================================================
+
+/// Get the number of spans currently buffered.
+pub fn otel_processor_buffered(proc: i64) -> i64 {
+    let buffer: i64 = vec_get(proc, 0);
+    vec_len(buffer)
+}
+
+/// Get the total number of spans exported so far.
+pub fn otel_processor_total_exported(proc: i64) -> i64 {
+    vec_get(proc, 2)
+}
+
+/// Get the total number of spans dropped due to buffer overflow.
+pub fn otel_processor_total_dropped(proc: i64) -> i64 {
+    vec_get(proc, 3)
+}
+
+/// Get the max batch size.
+pub fn otel_processor_max_batch(proc: i64) -> i64 {
+    vec_get(proc, 1)
+}
+
+/// Get the max buffer size.
+pub fn otel_processor_max_buffer(proc: i64) -> i64 {
+    vec_get(proc, 4)
+}
+
+/// Set the export format.
+///
+/// # Arguments
+/// - `proc`: Processor vec handle
+/// - `format`: 0 = stdout, 1 = json
+pub fn otel_processor_set_format(proc: i64, format: i64) -> i64 {
+    vec_set(proc, 5, format);
+    0
+}
+
+/// Get the export format.
+pub fn otel_processor_get_format(proc: i64) -> i64 {
+    vec_get(proc, 5)
+}

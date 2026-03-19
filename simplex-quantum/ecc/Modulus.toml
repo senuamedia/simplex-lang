@@ -3,7 +3,7 @@
 
 [package]
 name = "simplex-quantum-ecc"
-version = "0.15.0"
+version = "0.16.0"
 description = "Quantum error correction codes -- bit-flip, Shor, Steane, surface code"
 authors = ["Rod Higgins"]
 license = "AGPL-3.0"

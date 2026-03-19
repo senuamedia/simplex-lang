@@ -1,0 +1,210 @@
+// simplex-vectordb::persist - Index Persistence
+//
+// Serialize/deserialize vector stores to/from files.
+// Uses a simple binary format: header + flat array of i64 values.
+//
+// File format:
+//   [0] magic number (0x53585644 = "SXVD")
+//   [1] version (1)
+//   [2] dimension
+//   [3] n_vectors (active count)
+//   [4] n_slots (total slots including deleted)
+//   [5..5+n_slots] ids
+//   [5+n_slots..] embeddings (n_slots * dimension values, f64_to_bits)
+//   [...] metadata handles (n_slots values)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+fn VDB_MAGIC() -> i64    { 1398034244 }  // 0x53585644
+fn VDB_VERSION() -> i64  { 1 }
+
+// =============================================================================
+// Save
+// =============================================================================
+
+/// Serialize a vector store to a binary vec for writing.
+///
+/// Arguments:
+///   store - store handle
+///
+/// Returns: handle to vec of i64 values representing the serialized store
+fn vdb_serialize(store: i64) -> i64 {
+    let dimension: i64 = vec_get(store, STORE_DIMENSION());
+    let n_vectors: i64 = vec_get(store, STORE_N_VECTORS());
+    let ids: i64 = vec_get(store, STORE_IDS());
+    let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+    let metadata_vec: i64 = vec_get(store, STORE_METADATA());
+    let n_slots: i64 = vec_len(ids);
+
+    let data = vec_new();
+
+    // Header
+    vec_push(data, VDB_MAGIC());
+    vec_push(data, VDB_VERSION());
+    vec_push(data, dimension);
+    vec_push(data, n_vectors);
+    vec_push(data, n_slots);
+
+    // IDs
+    var i: i64 = 0;
+    while i < n_slots {
+        vec_push(data, vec_get(ids, i));
+        i = i + 1;
+    }
+
+    // Embeddings (flattened: n_slots * dimension values)
+    i = 0;
+    while i < n_slots {
+        let id: i64 = vec_get(ids, i);
+        if id != -1 {
+            let emb: i64 = vec_get(embeddings, i);
+            var d: i64 = 0;
+            while d < dimension {
+                vec_push(data, vec_get(emb, d));
+                d = d + 1;
+            }
+        } else {
+            // Deleted: write zeros
+            var d: i64 = 0;
+            while d < dimension {
+                vec_push(data, 0);
+                d = d + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // Metadata
+    i = 0;
+    while i < n_slots {
+        vec_push(data, vec_get(metadata_vec, i));
+        i = i + 1;
+    }
+
+    data
+}
+
+// =============================================================================
+// Load
+// =============================================================================
+
+/// Deserialize a vector store from a binary vec.
+///
+/// Arguments:
+///   data - handle to vec of i64 values (serialized store)
+///   name - string handle for the restored store name
+///
+/// Returns: store handle, or 0 on error (bad magic/version)
+fn vdb_deserialize(data: i64, name: i64) -> i64 {
+    let data_len: i64 = vec_len(data);
+    if data_len < 5 { return 0; }
+
+    // Validate header
+    let magic: i64 = vec_get(data, 0);
+    if magic != VDB_MAGIC() { return 0; }
+
+    let version: i64 = vec_get(data, 1);
+    if version != VDB_VERSION() { return 0; }
+
+    let dimension: i64 = vec_get(data, 2);
+    let n_vectors: i64 = vec_get(data, 3);
+    let n_slots: i64 = vec_get(data, 4);
+
+    // Create store
+    let store = vdb_create(name, dimension);
+
+    // Read IDs
+    let ids: i64 = vec_get(store, STORE_IDS());
+    var i: i64 = 0;
+    while i < n_slots {
+        let id: i64 = vec_get(data, 5 + i);
+        vec_push(ids, id);
+        i = i + 1;
+    }
+
+    // Read embeddings
+    let embeddings: i64 = vec_get(store, STORE_EMBEDDINGS());
+    let emb_offset: i64 = 5 + n_slots;
+    i = 0;
+    while i < n_slots {
+        let id: i64 = vec_get(ids, i);
+        let emb = vec_new();
+        var d: i64 = 0;
+        while d < dimension {
+            let val: i64 = vec_get(data, emb_offset + i * dimension + d);
+            vec_push(emb, val);
+            d = d + 1;
+        }
+        vec_push(embeddings, emb);
+        i = i + 1;
+    }
+
+    // Read metadata
+    let metadata_store: i64 = vec_get(store, STORE_METADATA());
+    let meta_offset: i64 = emb_offset + n_slots * dimension;
+    i = 0;
+    while i < n_slots {
+        let meta: i64 = vec_get(data, meta_offset + i);
+        vec_push(metadata_store, meta);
+        i = i + 1;
+    }
+
+    // Set count
+    vec_set(store, STORE_N_VECTORS(), n_vectors);
+
+    store
+}
+
+// =============================================================================
+// Save to File
+// =============================================================================
+
+/// Save a vector store to a file.
+///
+/// Arguments:
+///   store - store handle
+///   path  - file path (string handle)
+///
+/// Returns: 1 on success, 0 on failure
+fn vdb_save(store: i64, path: i64) -> i64 {
+    let data: i64 = vdb_serialize(store);
+    let fh: i64 = file_open_write(path);
+    if fh == 0 { return 0; }
+
+    let result: i64 = file_write_all(fh, data);
+    file_close(fh);
+
+    if result == 0 { return 0; }
+    1
+}
+
+// =============================================================================
+// Load from File
+// =============================================================================
+
+/// Load a vector store from a file.
+///
+/// Arguments:
+///   path - file path (string handle)
+///   name - name for the restored store (string handle)
+///
+/// Returns: store handle, or 0 on failure
+fn vdb_load(path: i64, name: i64) -> i64 {
+    let exists: i64 = file_exists(path);
+    if exists == 0 { return 0; }
+
+    let fh: i64 = file_open_read(path);
+    if fh == 0 { return 0; }
+
+    let data: i64 = file_read_all(fh);
+    file_close(fh);
+
+    if data == 0 { return 0; }
+
+    vdb_deserialize(data, name)
+}

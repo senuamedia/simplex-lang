@@ -1,0 +1,1690 @@
+// Simplex YAML Library
+// YAML 1.2 Core Schema parser and serializer
+//
+// Provides pure Simplex YAML manipulation using vec handles (i64) for all
+// data structures. Supports mappings, sequences, scalars, multi-line strings
+// (literal | and folded >), flow style ({} and []), and comments (#).
+//
+// # Usage
+//
+// ```simplex
+// use simplex_std::yaml::{yaml_parse, yaml_stringify, yaml_get};
+//
+// let doc = yaml_parse("name: Alice\nage: 30\ntags:\n  - admin\n  - user");
+// let name = yaml_get(doc, "name");
+// let val = yaml_scalar_value(name);
+// let output = yaml_stringify(doc);
+// ```
+//
+// # Data Model
+//
+// All YAML values are stored as tagged vecs:
+//   - Mapping:  [TYPE_MAPPING, keys_vec, values_vec]
+//   - Sequence: [TYPE_SEQUENCE, items_vec]
+//   - Scalar:   [TYPE_SCALAR, string_handle]
+//   - Null:     [TYPE_NULL]
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn vec_new() -> i64;
+extern fn vec_push(v: i64, val: i64) -> i64;
+extern fn vec_get(v: i64, idx: i64) -> i64;
+extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
+extern fn vec_len(v: i64) -> i64;
+
+extern fn string_concat(a: i64, b: i64) -> i64;
+extern fn string_length(s: i64) -> i64;
+extern fn string_char_at(s: i64, idx: i64) -> i64;
+extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
+extern fn string_from_char(c: i64) -> i64;
+extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
+extern fn string_find(s: i64, needle: i64, start: i64) -> i64;
+extern fn string_trim(s: i64) -> i64;
+
+extern fn sb_new() -> i64;
+extern fn sb_append(sb: i64, s: i64);
+extern fn sb_append_char(sb: i64, c: i64);
+extern fn sb_to_string(sb: i64) -> i64;
+
+extern fn println(s: i64);
+extern fn int_to_string(n: i64) -> i64;
+
+// =============================================================================
+// Type Tag Constants
+// =============================================================================
+
+/// Mapping type tag (key-value pairs)
+fn TYPE_MAPPING() -> i64 { 1 }
+
+/// Sequence type tag (ordered list)
+fn TYPE_SEQUENCE() -> i64 { 2 }
+
+/// Scalar type tag (string value)
+fn TYPE_SCALAR() -> i64 { 3 }
+
+/// Null type tag
+fn TYPE_NULL() -> i64 { 4 }
+
+// Character constants
+fn CH_LF() -> i64 { 10 }
+fn CH_CR() -> i64 { 13 }
+fn CH_SPACE() -> i64 { 32 }
+fn CH_TAB() -> i64 { 9 }
+fn CH_HASH() -> i64 { 35 }
+fn CH_COLON() -> i64 { 58 }
+fn CH_DASH() -> i64 { 45 }
+fn CH_LBRACE() -> i64 { 123 }
+fn CH_RBRACE() -> i64 { 125 }
+fn CH_LBRACKET() -> i64 { 91 }
+fn CH_RBRACKET() -> i64 { 93 }
+fn CH_COMMA() -> i64 { 44 }
+fn CH_PIPE() -> i64 { 124 }
+fn CH_GT() -> i64 { 62 }
+fn CH_DQUOTE() -> i64 { 34 }
+fn CH_SQUOTE() -> i64 { 39 }
+fn CH_BACKSLASH() -> i64 { 92 }
+
+// =============================================================================
+// Value Constructors
+// =============================================================================
+
+/// Create a YAML null value
+pub fn yaml_null_value() -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, TYPE_NULL());
+    v
+}
+
+/// Create a YAML scalar value from a string
+pub fn yaml_scalar(s: i64) -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, TYPE_SCALAR());
+    vec_push(v, s);
+    v
+}
+
+/// Create an empty YAML mapping
+pub fn yaml_mapping_new() -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, TYPE_MAPPING());
+    vec_push(v, vec_new());   // keys
+    vec_push(v, vec_new());   // values
+    v
+}
+
+/// Create an empty YAML sequence
+pub fn yaml_sequence_new() -> i64 {
+    let v: i64 = vec_new();
+    vec_push(v, TYPE_SEQUENCE());
+    vec_push(v, vec_new());   // items
+    v
+}
+
+// =============================================================================
+// Type Checking API
+// =============================================================================
+
+/// Check if a YAML value is a mapping
+pub fn yaml_is_mapping(value: i64) -> i64 {
+    if value == 0 { return 0; }
+    if vec_len(value) < 1 { return 0; }
+    if vec_get(value, 0) == TYPE_MAPPING() { 1 } else { 0 }
+}
+
+/// Check if a YAML value is a sequence
+pub fn yaml_is_sequence(value: i64) -> i64 {
+    if value == 0 { return 0; }
+    if vec_len(value) < 1 { return 0; }
+    if vec_get(value, 0) == TYPE_SEQUENCE() { 1 } else { 0 }
+}
+
+/// Check if a YAML value is a scalar
+pub fn yaml_is_scalar(value: i64) -> i64 {
+    if value == 0 { return 0; }
+    if vec_len(value) < 1 { return 0; }
+    if vec_get(value, 0) == TYPE_SCALAR() { 1 } else { 0 }
+}
+
+/// Check if a YAML value is null
+pub fn yaml_is_null(value: i64) -> i64 {
+    if value == 0 { return 1; }
+    if vec_len(value) < 1 { return 1; }
+    if vec_get(value, 0) == TYPE_NULL() { 1 } else { 0 }
+}
+
+// =============================================================================
+// Accessor API
+// =============================================================================
+
+/// Get the string content of a scalar value
+pub fn yaml_scalar_value(value: i64) -> i64 {
+    if yaml_is_scalar(value) == 0 { return ""; }
+    vec_get(value, 1)
+}
+
+/// Access a mapping by key string. Returns the value, or a null node.
+pub fn yaml_get(value: i64, key: i64) -> i64 {
+    if yaml_is_mapping(value) == 0 { return yaml_null_value(); }
+    let keys: i64 = vec_get(value, 1);
+    let vals: i64 = vec_get(value, 2);
+    let count: i64 = vec_len(keys);
+    var i: i64 = 0;
+    while i < count {
+        let k: i64 = vec_get(keys, i);
+        if intrinsic_string_eq(k, key) == 1 {
+            return vec_get(vals, i);
+        }
+        i = i + 1;
+    }
+    yaml_null_value()
+}
+
+/// Access a sequence by index. Returns the value, or a null node.
+pub fn yaml_get_index(value: i64, index: i64) -> i64 {
+    if yaml_is_sequence(value) == 0 { return yaml_null_value(); }
+    let items: i64 = vec_get(value, 1);
+    if index < 0 { return yaml_null_value(); }
+    if index >= vec_len(items) { return yaml_null_value(); }
+    vec_get(items, index)
+}
+
+/// Get the number of items in a sequence
+pub fn yaml_sequence_len(value: i64) -> i64 {
+    if yaml_is_sequence(value) == 0 { return 0; }
+    let items: i64 = vec_get(value, 1);
+    vec_len(items)
+}
+
+/// Get the number of keys in a mapping
+pub fn yaml_mapping_len(value: i64) -> i64 {
+    if yaml_is_mapping(value) == 0 { return 0; }
+    let keys: i64 = vec_get(value, 1);
+    vec_len(keys)
+}
+
+/// Get the key at a given index in a mapping
+pub fn yaml_mapping_key_at(value: i64, index: i64) -> i64 {
+    if yaml_is_mapping(value) == 0 { return ""; }
+    let keys: i64 = vec_get(value, 1);
+    if index < 0 { return ""; }
+    if index >= vec_len(keys) { return ""; }
+    vec_get(keys, index)
+}
+
+/// Get the value at a given index in a mapping
+pub fn yaml_mapping_value_at(value: i64, index: i64) -> i64 {
+    if yaml_is_mapping(value) == 0 { return yaml_null_value(); }
+    let vals: i64 = vec_get(value, 2);
+    if index < 0 { return yaml_null_value(); }
+    if index >= vec_len(vals) { return yaml_null_value(); }
+    vec_get(vals, index)
+}
+
+// =============================================================================
+// Mapping / Sequence Mutation
+// =============================================================================
+
+/// Set a key-value pair in a mapping
+pub fn yaml_set(mapping: i64, key: i64, value: i64) -> i64 {
+    if yaml_is_mapping(mapping) == 0 { return mapping; }
+    let keys: i64 = vec_get(mapping, 1);
+    let vals: i64 = vec_get(mapping, 2);
+
+    // Check for existing key
+    let count: i64 = vec_len(keys);
+    var i: i64 = 0;
+    while i < count {
+        let k: i64 = vec_get(keys, i);
+        if intrinsic_string_eq(k, key) == 1 {
+            vec_set(vals, i, value);
+            return mapping;
+        }
+        i = i + 1;
+    }
+    // New key
+    vec_push(keys, key);
+    vec_push(vals, value);
+    mapping
+}
+
+/// Append an item to a sequence
+pub fn yaml_push(sequence: i64, item: i64) -> i64 {
+    if yaml_is_sequence(sequence) == 0 { return sequence; }
+    let items: i64 = vec_get(sequence, 1);
+    vec_push(items, item);
+    sequence
+}
+
+// =============================================================================
+// Internal Parser State
+// =============================================================================
+
+/// Split input into lines, returning a vec of line strings.
+fn yaml_split_lines(input: i64) -> i64 {
+    let lines: i64 = vec_new();
+    let len: i64 = string_length(input);
+    var start: i64 = 0;
+    var i: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(input, i);
+        if c == CH_LF() {
+            let line: i64 = string_substring(input, start, i - start);
+            vec_push(lines, line);
+            start = i + 1;
+            i = i + 1;
+        } else if c == CH_CR() {
+            let line: i64 = string_substring(input, start, i - start);
+            vec_push(lines, line);
+            i = i + 1;
+            if i < len {
+                if string_char_at(input, i) == CH_LF() {
+                    i = i + 1;
+                }
+            }
+            start = i;
+        } else {
+            i = i + 1;
+        }
+    }
+
+    // Last line (may have no trailing newline)
+    if start < len {
+        let line: i64 = string_substring(input, start, len - start);
+        vec_push(lines, line);
+    }
+
+    lines
+}
+
+/// Count leading spaces in a line
+fn line_indent(line: i64) -> i64 {
+    let len: i64 = string_length(line);
+    var i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(line, i);
+        if c != CH_SPACE() {
+            return i;
+        }
+        i = i + 1;
+    }
+    i
+}
+
+/// Check if a line is blank or comment-only
+fn is_blank_or_comment(line: i64) -> i64 {
+    let trimmed: i64 = string_trim(line);
+    let len: i64 = string_length(trimmed);
+    if len == 0 { return 1; }
+    if string_char_at(trimmed, 0) == CH_HASH() { return 1; }
+    0
+}
+
+/// Strip inline comment from a value string.
+/// Only strips comments preceded by a space + #
+fn strip_inline_comment(s: i64) -> i64 {
+    let len: i64 = string_length(s);
+    var i: i64 = 0;
+    var in_dquote: i64 = 0;
+    var in_squote: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if in_dquote == 1 {
+            if c == CH_DQUOTE() {
+                in_dquote = 0;
+            }
+        } else if in_squote == 1 {
+            if c == CH_SQUOTE() {
+                in_squote = 0;
+            }
+        } else if c == CH_DQUOTE() {
+            in_dquote = 1;
+        } else if c == CH_SQUOTE() {
+            in_squote = 1;
+        } else if c == CH_HASH() {
+            if i > 0 {
+                let prev: i64 = string_char_at(s, i - 1);
+                if prev == CH_SPACE() {
+                    let result: i64 = string_substring(s, 0, i - 1);
+                    return string_trim(result);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    s
+}
+
+/// Unquote a YAML string value (remove surrounding quotes and handle escapes)
+fn yaml_unquote(s: i64) -> i64 {
+    let len: i64 = string_length(s);
+    if len < 2 { return s; }
+
+    let first: i64 = string_char_at(s, 0);
+    let last: i64 = string_char_at(s, len - 1);
+
+    // Double-quoted string
+    if first == CH_DQUOTE() {
+        if last == CH_DQUOTE() {
+            let inner: i64 = string_substring(s, 1, len - 2);
+            return yaml_unescape_dquote(inner);
+        }
+    }
+
+    // Single-quoted string
+    if first == CH_SQUOTE() {
+        if last == CH_SQUOTE() {
+            let inner: i64 = string_substring(s, 1, len - 2);
+            return yaml_unescape_squote(inner);
+        }
+    }
+
+    s
+}
+
+/// Unescape a double-quoted YAML string (handles \n, \t, \\, \")
+fn yaml_unescape_dquote(s: i64) -> i64 {
+    let len: i64 = string_length(s);
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c == CH_BACKSLASH() {
+            let next_i: i64 = i + 1;
+            if next_i < len {
+                let nc: i64 = string_char_at(s, next_i);
+                if nc == 110 {  // 'n'
+                    sb_append_char(sb, CH_LF());
+                    i = i + 2;
+                } else if nc == 116 {  // 't'
+                    sb_append_char(sb, CH_TAB());
+                    i = i + 2;
+                } else if nc == CH_BACKSLASH() {
+                    sb_append_char(sb, CH_BACKSLASH());
+                    i = i + 2;
+                } else if nc == CH_DQUOTE() {
+                    sb_append_char(sb, CH_DQUOTE());
+                    i = i + 2;
+                } else {
+                    sb_append_char(sb, c);
+                    i = i + 1;
+                }
+            } else {
+                sb_append_char(sb, c);
+                i = i + 1;
+            }
+        } else {
+            sb_append_char(sb, c);
+            i = i + 1;
+        }
+    }
+    sb_to_string(sb)
+}
+
+/// Unescape a single-quoted YAML string (only '' -> ')
+fn yaml_unescape_squote(s: i64) -> i64 {
+    let len: i64 = string_length(s);
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c == CH_SQUOTE() {
+            let next_i: i64 = i + 1;
+            if next_i < len {
+                if string_char_at(s, next_i) == CH_SQUOTE() {
+                    sb_append_char(sb, CH_SQUOTE());
+                    i = i + 2;
+                } else {
+                    sb_append_char(sb, c);
+                    i = i + 1;
+                }
+            } else {
+                sb_append_char(sb, c);
+                i = i + 1;
+            }
+        } else {
+            sb_append_char(sb, c);
+            i = i + 1;
+        }
+    }
+    sb_to_string(sb)
+}
+
+/// Check if a scalar string represents null
+fn is_null_scalar(s: i64) -> i64 {
+    if intrinsic_string_eq(s, "null") == 1 { return 1; }
+    if intrinsic_string_eq(s, "Null") == 1 { return 1; }
+    if intrinsic_string_eq(s, "NULL") == 1 { return 1; }
+    if intrinsic_string_eq(s, "~") == 1 { return 1; }
+    if string_length(s) == 0 { return 1; }
+    0
+}
+
+// =============================================================================
+// Flow Style Parser
+// =============================================================================
+
+/// Parse a flow-style mapping: {key: value, key2: value2}
+/// Returns vec: [yaml_value, end_position]
+fn parse_flow_mapping(s: i64, start: i64) -> i64 {
+    let mapping: i64 = yaml_mapping_new();
+    let len: i64 = string_length(s);
+    var i: i64 = start;  // position after '{'
+
+    // Skip whitespace
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c != CH_SPACE() {
+            if c != CH_TAB() {
+                if c == CH_RBRACE() {
+                    // empty mapping
+                    let result: i64 = vec_new();
+                    vec_push(result, mapping);
+                    vec_push(result, i + 1);
+                    return result;
+                }
+                // start parsing key-value pairs
+                break;
+            }
+        }
+        i = i + 1;
+    }
+
+    var done: i64 = 0;
+    while done == 0 {
+        if i >= len {
+            done = 1;
+        } else {
+            // Skip whitespace
+            while i < len {
+                let c: i64 = string_char_at(s, i);
+                if c != CH_SPACE() {
+                    if c != CH_TAB() { break; }
+                }
+                i = i + 1;
+            }
+
+            if i >= len { done = 1; }
+            else {
+                let c: i64 = string_char_at(s, i);
+                if c == CH_RBRACE() {
+                    i = i + 1;
+                    done = 1;
+                } else {
+                    // Parse key (up to ':')
+                    let key_result: i64 = parse_flow_value_until(s, i, CH_COLON());
+                    let key_str: i64 = string_trim(vec_get(key_result, 0));
+                    i = vec_get(key_result, 1);
+
+                    // Skip colon
+                    if i < len {
+                        if string_char_at(s, i) == CH_COLON() {
+                            i = i + 1;
+                        }
+                    }
+
+                    // Skip whitespace after colon
+                    while i < len {
+                        let wc: i64 = string_char_at(s, i);
+                        if wc != CH_SPACE() {
+                            if wc != CH_TAB() { break; }
+                        }
+                        i = i + 1;
+                    }
+
+                    // Parse value
+                    if i < len {
+                        let vc: i64 = string_char_at(s, i);
+                        if vc == CH_LBRACE() {
+                            let sub: i64 = parse_flow_mapping(s, i + 1);
+                            let sub_val: i64 = vec_get(sub, 0);
+                            i = vec_get(sub, 1);
+                            yaml_set(mapping, yaml_unquote(key_str), sub_val);
+                        } else if vc == CH_LBRACKET() {
+                            let sub: i64 = parse_flow_sequence(s, i + 1);
+                            let sub_val: i64 = vec_get(sub, 0);
+                            i = vec_get(sub, 1);
+                            yaml_set(mapping, yaml_unquote(key_str), sub_val);
+                        } else {
+                            // Scalar value - read until comma or closing brace
+                            let val_result: i64 = parse_flow_scalar(s, i);
+                            let val_str: i64 = string_trim(vec_get(val_result, 0));
+                            i = vec_get(val_result, 1);
+                            let unquoted_key: i64 = yaml_unquote(key_str);
+                            let unquoted_val: i64 = yaml_unquote(val_str);
+
+                            if is_null_scalar(unquoted_val) == 1 {
+                                yaml_set(mapping, unquoted_key, yaml_null_value());
+                            } else {
+                                yaml_set(mapping, unquoted_key, yaml_scalar(unquoted_val));
+                            }
+                        }
+                    }
+
+                    // Skip whitespace, then expect comma or closing brace
+                    while i < len {
+                        let wc: i64 = string_char_at(s, i);
+                        if wc != CH_SPACE() {
+                            if wc != CH_TAB() { break; }
+                        }
+                        i = i + 1;
+                    }
+                    if i < len {
+                        let nc: i64 = string_char_at(s, i);
+                        if nc == CH_COMMA() {
+                            i = i + 1;
+                        } else if nc == CH_RBRACE() {
+                            i = i + 1;
+                            done = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, mapping);
+    vec_push(result, i);
+    result
+}
+
+/// Parse a flow-style sequence: [item1, item2, item3]
+/// Returns vec: [yaml_value, end_position]
+fn parse_flow_sequence(s: i64, start: i64) -> i64 {
+    let seq: i64 = yaml_sequence_new();
+    let len: i64 = string_length(s);
+    var i: i64 = start;  // position after '['
+
+    // Skip whitespace
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c != CH_SPACE() {
+            if c != CH_TAB() {
+                if c == CH_RBRACKET() {
+                    let result: i64 = vec_new();
+                    vec_push(result, seq);
+                    vec_push(result, i + 1);
+                    return result;
+                }
+                break;
+            }
+        }
+        i = i + 1;
+    }
+
+    var done: i64 = 0;
+    while done == 0 {
+        if i >= len {
+            done = 1;
+        } else {
+            // Skip whitespace
+            while i < len {
+                let c: i64 = string_char_at(s, i);
+                if c != CH_SPACE() {
+                    if c != CH_TAB() { break; }
+                }
+                i = i + 1;
+            }
+
+            if i >= len { done = 1; }
+            else {
+                let c: i64 = string_char_at(s, i);
+                if c == CH_RBRACKET() {
+                    i = i + 1;
+                    done = 1;
+                } else if c == CH_LBRACE() {
+                    let sub: i64 = parse_flow_mapping(s, i + 1);
+                    yaml_push(seq, vec_get(sub, 0));
+                    i = vec_get(sub, 1);
+                } else if c == CH_LBRACKET() {
+                    let sub: i64 = parse_flow_sequence(s, i + 1);
+                    yaml_push(seq, vec_get(sub, 0));
+                    i = vec_get(sub, 1);
+                } else {
+                    // Scalar value
+                    let val_result: i64 = parse_flow_scalar(s, i);
+                    let val_str: i64 = string_trim(vec_get(val_result, 0));
+                    i = vec_get(val_result, 1);
+                    let unquoted: i64 = yaml_unquote(val_str);
+
+                    if is_null_scalar(unquoted) == 1 {
+                        yaml_push(seq, yaml_null_value());
+                    } else {
+                        yaml_push(seq, yaml_scalar(unquoted));
+                    }
+                }
+
+                // Skip whitespace, then expect comma or closing bracket
+                while i < len {
+                    let wc: i64 = string_char_at(s, i);
+                    if wc != CH_SPACE() {
+                        if wc != CH_TAB() { break; }
+                    }
+                    i = i + 1;
+                }
+                if i < len {
+                    if done == 0 {
+                        let nc: i64 = string_char_at(s, i);
+                        if nc == CH_COMMA() {
+                            i = i + 1;
+                        } else if nc == CH_RBRACKET() {
+                            i = i + 1;
+                            done = 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, seq);
+    vec_push(result, i);
+    result
+}
+
+/// Parse a flow scalar value (stops at comma, closing brace/bracket).
+/// Handles quoted strings properly.
+/// Returns vec: [string_value, end_position]
+fn parse_flow_scalar(s: i64, start: i64) -> i64 {
+    let len: i64 = string_length(s);
+    var i: i64 = start;
+
+    // Check for quoted string
+    if i < len {
+        let first: i64 = string_char_at(s, i);
+        if first == CH_DQUOTE() {
+            return parse_flow_quoted(s, i, CH_DQUOTE());
+        }
+        if first == CH_SQUOTE() {
+            return parse_flow_quoted(s, i, CH_SQUOTE());
+        }
+    }
+
+    // Unquoted scalar - read until delimiter
+    let sb: i64 = sb_new();
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c == CH_COMMA() { break; }
+        if c == CH_RBRACE() { break; }
+        if c == CH_RBRACKET() { break; }
+        sb_append_char(sb, c);
+        i = i + 1;
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, sb_to_string(sb));
+    vec_push(result, i);
+    result
+}
+
+/// Parse a flow-style quoted string
+fn parse_flow_quoted(s: i64, start: i64, quote: i64) -> i64 {
+    let len: i64 = string_length(s);
+    let sb: i64 = sb_new();
+    sb_append_char(sb, quote);
+    var i: i64 = start + 1;  // skip opening quote
+
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c == quote {
+            sb_append_char(sb, quote);
+            i = i + 1;
+            let result: i64 = vec_new();
+            vec_push(result, sb_to_string(sb));
+            vec_push(result, i);
+            return result;
+        }
+        if c == CH_BACKSLASH() {
+            sb_append_char(sb, c);
+            i = i + 1;
+            if i < len {
+                sb_append_char(sb, string_char_at(s, i));
+                i = i + 1;
+            }
+        } else {
+            sb_append_char(sb, c);
+            i = i + 1;
+        }
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, sb_to_string(sb));
+    vec_push(result, i);
+    result
+}
+
+/// Parse a value until a specific delimiter char (unquoted)
+fn parse_flow_value_until(s: i64, start: i64, delim: i64) -> i64 {
+    let len: i64 = string_length(s);
+    let sb: i64 = sb_new();
+    var i: i64 = start;
+
+    // Handle quoted key
+    if i < len {
+        let first: i64 = string_char_at(s, i);
+        if first == CH_DQUOTE() {
+            let qr: i64 = parse_flow_quoted(s, i, CH_DQUOTE());
+            let qs: i64 = vec_get(qr, 0);
+            i = vec_get(qr, 1);
+            // Skip to delimiter
+            while i < len {
+                let c: i64 = string_char_at(s, i);
+                if c == delim { break; }
+                i = i + 1;
+            }
+            let result: i64 = vec_new();
+            vec_push(result, qs);
+            vec_push(result, i);
+            return result;
+        }
+        if first == CH_SQUOTE() {
+            let qr: i64 = parse_flow_quoted(s, i, CH_SQUOTE());
+            let qs: i64 = vec_get(qr, 0);
+            i = vec_get(qr, 1);
+            while i < len {
+                let c: i64 = string_char_at(s, i);
+                if c == delim { break; }
+                i = i + 1;
+            }
+            let result: i64 = vec_new();
+            vec_push(result, qs);
+            vec_push(result, i);
+            return result;
+        }
+    }
+
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c == delim { break; }
+        sb_append_char(sb, c);
+        i = i + 1;
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, sb_to_string(sb));
+    vec_push(result, i);
+    result
+}
+
+// =============================================================================
+// Block Style Parser
+// =============================================================================
+
+/// Find the colon position in a mapping line (first ': ' or trailing ':')
+fn find_colon_sep(line: i64, indent: i64) -> i64 {
+    let len: i64 = string_length(line);
+    var i: i64 = indent;
+    var in_dquote: i64 = 0;
+    var in_squote: i64 = 0;
+
+    while i < len {
+        let c: i64 = string_char_at(line, i);
+        if in_dquote == 1 {
+            if c == CH_BACKSLASH() {
+                i = i + 1;  // skip escaped char
+            } else if c == CH_DQUOTE() {
+                in_dquote = 0;
+            }
+        } else if in_squote == 1 {
+            if c == CH_SQUOTE() {
+                in_squote = 0;
+            }
+        } else if c == CH_DQUOTE() {
+            in_dquote = 1;
+        } else if c == CH_SQUOTE() {
+            in_squote = 1;
+        } else if c == CH_COLON() {
+            // Check for ': ' or colon at end
+            let next_i: i64 = i + 1;
+            if next_i >= len {
+                return i;
+            }
+            let nc: i64 = string_char_at(line, next_i);
+            if nc == CH_SPACE() {
+                return i;
+            }
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+/// Parse block-style YAML from an array of lines.
+/// lines: vec of line strings
+/// line_idx: current line index (passed as vec[0] for mutability)
+/// min_indent: minimum indentation for this block
+/// Returns the parsed YAML value.
+fn parse_block(lines: i64, line_idx_ref: i64, min_indent: i64) -> i64 {
+    let line_count: i64 = vec_len(lines);
+
+    // Skip blank/comment lines
+    var idx: i64 = vec_get(line_idx_ref, 0);
+    while idx < line_count {
+        let line: i64 = vec_get(lines, idx);
+        if is_blank_or_comment(line) == 1 {
+            idx = idx + 1;
+            vec_set(line_idx_ref, 0, idx);
+        } else {
+            break;
+        }
+    }
+
+    if idx >= line_count {
+        return yaml_null_value();
+    }
+
+    let first_line: i64 = vec_get(lines, idx);
+    let indent: i64 = line_indent(first_line);
+
+    // Check if indentation is less than minimum
+    if indent < min_indent {
+        return yaml_null_value();
+    }
+
+    let len: i64 = string_length(first_line);
+
+    // Check first non-space character
+    let first_char: i64 = string_char_at(first_line, indent);
+
+    // Flow mapping
+    if first_char == CH_LBRACE() {
+        let content: i64 = string_substring(first_line, indent, len - indent);
+        let flow_result: i64 = parse_flow_mapping(content, 1);
+        idx = idx + 1;
+        vec_set(line_idx_ref, 0, idx);
+        return vec_get(flow_result, 0);
+    }
+
+    // Flow sequence
+    if first_char == CH_LBRACKET() {
+        let content: i64 = string_substring(first_line, indent, len - indent);
+        let flow_result: i64 = parse_flow_sequence(content, 1);
+        idx = idx + 1;
+        vec_set(line_idx_ref, 0, idx);
+        return vec_get(flow_result, 0);
+    }
+
+    // Block sequence (starts with '- ')
+    if first_char == CH_DASH() {
+        let has_space_after: i64 = 0;
+        if indent + 1 < len {
+            if string_char_at(first_line, indent + 1) == CH_SPACE() {
+                return parse_block_sequence(lines, line_idx_ref, indent);
+            }
+        }
+        // Single dash at end of line - also a sequence item
+        if indent + 1 >= len {
+            return parse_block_sequence(lines, line_idx_ref, indent);
+        }
+    }
+
+    // Block mapping (has ': ' or trailing ':')
+    let colon_pos: i64 = find_colon_sep(first_line, indent);
+    if colon_pos >= 0 {
+        return parse_block_mapping(lines, line_idx_ref, indent);
+    }
+
+    // Literal block scalar (| or >)
+    if first_char == CH_PIPE() {
+        return parse_literal_block(lines, line_idx_ref, indent);
+    }
+    if first_char == CH_GT() {
+        return parse_folded_block(lines, line_idx_ref, indent);
+    }
+
+    // Plain scalar
+    let content: i64 = string_substring(first_line, indent, len - indent);
+    let stripped: i64 = strip_inline_comment(content);
+    let unquoted: i64 = yaml_unquote(string_trim(stripped));
+    idx = idx + 1;
+    vec_set(line_idx_ref, 0, idx);
+
+    if is_null_scalar(unquoted) == 1 {
+        return yaml_null_value();
+    }
+    yaml_scalar(unquoted)
+}
+
+/// Parse a block mapping
+fn parse_block_mapping(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64 {
+    let mapping: i64 = yaml_mapping_new();
+    let line_count: i64 = vec_len(lines);
+
+    var done: i64 = 0;
+    while done == 0 {
+        var idx: i64 = vec_get(line_idx_ref, 0);
+
+        // Skip blank/comment lines
+        while idx < line_count {
+            let line: i64 = vec_get(lines, idx);
+            if is_blank_or_comment(line) == 1 {
+                idx = idx + 1;
+                vec_set(line_idx_ref, 0, idx);
+            } else {
+                break;
+            }
+        }
+        idx = vec_get(line_idx_ref, 0);
+
+        if idx >= line_count {
+            done = 1;
+        } else {
+            let line: i64 = vec_get(lines, idx);
+            let indent: i64 = line_indent(line);
+
+            if indent < block_indent {
+                done = 1;
+            } else if indent > block_indent {
+                // Part of a nested value from previous key, skip
+                idx = idx + 1;
+                vec_set(line_idx_ref, 0, idx);
+            } else {
+                // Same indent level - must be a key: value pair
+                let colon_pos: i64 = find_colon_sep(line, indent);
+                if colon_pos < 0 {
+                    // Not a mapping entry, stop
+                    done = 1;
+                } else {
+                    let key_str: i64 = string_substring(line, indent, colon_pos - indent);
+                    let key_trimmed: i64 = string_trim(key_str);
+                    let key_unquoted: i64 = yaml_unquote(key_trimmed);
+
+                    let line_len: i64 = string_length(line);
+                    let after_colon: i64 = colon_pos + 1;
+
+                    // Check for value on same line
+                    var has_inline_value: i64 = 0;
+                    if after_colon < line_len {
+                        if string_char_at(line, after_colon) == CH_SPACE() {
+                            let val_start: i64 = after_colon + 1;
+                            if val_start < line_len {
+                                let val_part: i64 = string_substring(line, val_start, line_len - val_start);
+                                let val_trimmed: i64 = string_trim(val_part);
+
+                                if string_length(val_trimmed) > 0 {
+                                    let first_vc: i64 = string_char_at(val_trimmed, 0);
+
+                                    // Flow mapping inline
+                                    if first_vc == CH_LBRACE() {
+                                        let fr: i64 = parse_flow_mapping(val_trimmed, 1);
+                                        yaml_set(mapping, key_unquoted, vec_get(fr, 0));
+                                        has_inline_value = 1;
+                                    } else if first_vc == CH_LBRACKET() {
+                                        let fr: i64 = parse_flow_sequence(val_trimmed, 1);
+                                        yaml_set(mapping, key_unquoted, vec_get(fr, 0));
+                                        has_inline_value = 1;
+                                    } else if first_vc == CH_PIPE() {
+                                        // Literal block scalar - parse from next lines
+                                        idx = idx + 1;
+                                        vec_set(line_idx_ref, 0, idx);
+                                        let block_val: i64 = parse_literal_block_content(lines, line_idx_ref, block_indent);
+                                        yaml_set(mapping, key_unquoted, block_val);
+                                        has_inline_value = 1;
+                                    } else if first_vc == CH_GT() {
+                                        idx = idx + 1;
+                                        vec_set(line_idx_ref, 0, idx);
+                                        let block_val: i64 = parse_folded_block_content(lines, line_idx_ref, block_indent);
+                                        yaml_set(mapping, key_unquoted, block_val);
+                                        has_inline_value = 1;
+                                    } else {
+                                        // Inline scalar
+                                        let stripped: i64 = strip_inline_comment(val_trimmed);
+                                        let unquoted: i64 = yaml_unquote(string_trim(stripped));
+                                        if is_null_scalar(unquoted) == 1 {
+                                            yaml_set(mapping, key_unquoted, yaml_null_value());
+                                        } else {
+                                            yaml_set(mapping, key_unquoted, yaml_scalar(unquoted));
+                                        }
+                                        has_inline_value = 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    idx = idx + 1;
+                    vec_set(line_idx_ref, 0, idx);
+
+                    if has_inline_value == 0 {
+                        // Value is on subsequent lines (nested block)
+                        let nested_val: i64 = parse_block(lines, line_idx_ref, block_indent + 1);
+                        yaml_set(mapping, key_unquoted, nested_val);
+                    }
+                }
+            }
+        }
+    }
+
+    mapping
+}
+
+/// Parse a block sequence
+fn parse_block_sequence(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64 {
+    let seq: i64 = yaml_sequence_new();
+    let line_count: i64 = vec_len(lines);
+
+    var done: i64 = 0;
+    while done == 0 {
+        var idx: i64 = vec_get(line_idx_ref, 0);
+
+        // Skip blank/comment lines
+        while idx < line_count {
+            let line: i64 = vec_get(lines, idx);
+            if is_blank_or_comment(line) == 1 {
+                idx = idx + 1;
+                vec_set(line_idx_ref, 0, idx);
+            } else {
+                break;
+            }
+        }
+        idx = vec_get(line_idx_ref, 0);
+
+        if idx >= line_count {
+            done = 1;
+        } else {
+            let line: i64 = vec_get(lines, idx);
+            let indent: i64 = line_indent(line);
+
+            if indent < block_indent {
+                done = 1;
+            } else if indent > block_indent {
+                // Continuation of previous item
+                idx = idx + 1;
+                vec_set(line_idx_ref, 0, idx);
+            } else {
+                // Check for '- '
+                let line_len: i64 = string_length(line);
+                if string_char_at(line, indent) != CH_DASH() {
+                    done = 1;
+                } else {
+                    let after_dash: i64 = indent + 1;
+
+                    if after_dash >= line_len {
+                        // Bare dash - null item
+                        yaml_push(seq, yaml_null_value());
+                        idx = idx + 1;
+                        vec_set(line_idx_ref, 0, idx);
+                    } else if string_char_at(line, after_dash) != CH_SPACE() {
+                        // Not a sequence item (e.g., negative number as key)
+                        done = 1;
+                    } else {
+                        let val_start: i64 = after_dash + 1;
+                        if val_start >= line_len {
+                            // Dash with space but no content - nested block
+                            idx = idx + 1;
+                            vec_set(line_idx_ref, 0, idx);
+                            let nested: i64 = parse_block(lines, line_idx_ref, block_indent + 2);
+                            yaml_push(seq, nested);
+                        } else {
+                            let val_part: i64 = string_substring(line, val_start, line_len - val_start);
+                            let val_trimmed: i64 = string_trim(val_part);
+
+                            if string_length(val_trimmed) == 0 {
+                                yaml_push(seq, yaml_null_value());
+                                idx = idx + 1;
+                                vec_set(line_idx_ref, 0, idx);
+                            } else {
+                                let first_vc: i64 = string_char_at(val_trimmed, 0);
+
+                                if first_vc == CH_LBRACE() {
+                                    let fr: i64 = parse_flow_mapping(val_trimmed, 1);
+                                    yaml_push(seq, vec_get(fr, 0));
+                                    idx = idx + 1;
+                                    vec_set(line_idx_ref, 0, idx);
+                                } else if first_vc == CH_LBRACKET() {
+                                    let fr: i64 = parse_flow_sequence(val_trimmed, 1);
+                                    yaml_push(seq, vec_get(fr, 0));
+                                    idx = idx + 1;
+                                    vec_set(line_idx_ref, 0, idx);
+                                } else {
+                                    // Check if this is a nested mapping (has colon)
+                                    let colon_pos: i64 = find_colon_sep(line, val_start);
+                                    if colon_pos >= 0 {
+                                        // Inline mapping item: - key: value
+                                        // Re-parse from val_start as a mapping with indent = val_start
+                                        // We create a temporary line view
+                                        let nested_mapping: i64 = yaml_mapping_new();
+                                        let key_str: i64 = string_substring(line, val_start, colon_pos - val_start);
+                                        let key_t: i64 = string_trim(key_str);
+                                        let key_uq: i64 = yaml_unquote(key_t);
+
+                                        let after_col: i64 = colon_pos + 1;
+                                        var has_inline: i64 = 0;
+
+                                        if after_col < line_len {
+                                            if string_char_at(line, after_col) == CH_SPACE() {
+                                                let vstart: i64 = after_col + 1;
+                                                if vstart < line_len {
+                                                    let vstr: i64 = string_substring(line, vstart, line_len - vstart);
+                                                    let vt: i64 = string_trim(vstr);
+                                                    let stripped: i64 = strip_inline_comment(vt);
+                                                    let uq: i64 = yaml_unquote(string_trim(stripped));
+                                                    if is_null_scalar(uq) == 1 {
+                                                        yaml_set(nested_mapping, key_uq, yaml_null_value());
+                                                    } else {
+                                                        yaml_set(nested_mapping, key_uq, yaml_scalar(uq));
+                                                    }
+                                                    has_inline = 1;
+                                                }
+                                            }
+                                        }
+
+                                        idx = idx + 1;
+                                        vec_set(line_idx_ref, 0, idx);
+
+                                        if has_inline == 0 {
+                                            let nested: i64 = parse_block(lines, line_idx_ref, val_start + 1);
+                                            yaml_set(nested_mapping, key_uq, nested);
+                                        }
+
+                                        // Continue parsing more keys at the same or deeper indent
+                                        var more_keys: i64 = 1;
+                                        while more_keys == 1 {
+                                            let ci: i64 = vec_get(line_idx_ref, 0);
+                                            // Skip blanks
+                                            while ci < line_count {
+                                                if is_blank_or_comment(vec_get(lines, ci)) == 1 {
+                                                    ci = ci + 1;
+                                                    vec_set(line_idx_ref, 0, ci);
+                                                } else {
+                                                    break;
+                                                }
+                                            }
+                                            ci = vec_get(line_idx_ref, 0);
+
+                                            if ci >= line_count {
+                                                more_keys = 0;
+                                            } else {
+                                                let nl: i64 = vec_get(lines, ci);
+                                                let ni: i64 = line_indent(nl);
+                                                if ni <= block_indent {
+                                                    more_keys = 0;
+                                                } else if ni < val_start {
+                                                    more_keys = 0;
+                                                } else {
+                                                    // Parse as continuation of this mapping
+                                                    let nc: i64 = find_colon_sep(nl, ni);
+                                                    if nc < 0 {
+                                                        more_keys = 0;
+                                                    } else {
+                                                        let nk: i64 = string_substring(nl, ni, nc - ni);
+                                                        let nkt: i64 = yaml_unquote(string_trim(nk));
+                                                        let nl_len: i64 = string_length(nl);
+                                                        let nac: i64 = nc + 1;
+                                                        var nhas_inline: i64 = 0;
+
+                                                        if nac < nl_len {
+                                                            if string_char_at(nl, nac) == CH_SPACE() {
+                                                                let nvs: i64 = nac + 1;
+                                                                if nvs < nl_len {
+                                                                    let nvstr: i64 = string_substring(nl, nvs, nl_len - nvs);
+                                                                    let nvt: i64 = string_trim(nvstr);
+                                                                    let nstripped: i64 = strip_inline_comment(nvt);
+                                                                    let nuq: i64 = yaml_unquote(string_trim(nstripped));
+                                                                    if is_null_scalar(nuq) == 1 {
+                                                                        yaml_set(nested_mapping, nkt, yaml_null_value());
+                                                                    } else {
+                                                                        yaml_set(nested_mapping, nkt, yaml_scalar(nuq));
+                                                                    }
+                                                                    nhas_inline = 1;
+                                                                }
+                                                            }
+                                                        }
+
+                                                        ci = ci + 1;
+                                                        vec_set(line_idx_ref, 0, ci);
+
+                                                        if nhas_inline == 0 {
+                                                            let nv: i64 = parse_block(lines, line_idx_ref, ni + 1);
+                                                            yaml_set(nested_mapping, nkt, nv);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        yaml_push(seq, nested_mapping);
+                                    } else {
+                                        // Plain scalar item
+                                        let stripped: i64 = strip_inline_comment(val_trimmed);
+                                        let unquoted: i64 = yaml_unquote(string_trim(stripped));
+                                        if is_null_scalar(unquoted) == 1 {
+                                            yaml_push(seq, yaml_null_value());
+                                        } else {
+                                            yaml_push(seq, yaml_scalar(unquoted));
+                                        }
+                                        idx = idx + 1;
+                                        vec_set(line_idx_ref, 0, idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    seq
+}
+
+/// Parse a literal block scalar (|)
+fn parse_literal_block(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64 {
+    var idx: i64 = vec_get(line_idx_ref, 0);
+    idx = idx + 1;  // skip the line with |
+    vec_set(line_idx_ref, 0, idx);
+    parse_literal_block_content(lines, line_idx_ref, block_indent)
+}
+
+/// Parse literal block content lines
+fn parse_literal_block_content(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64 {
+    let line_count: i64 = vec_len(lines);
+    let sb: i64 = sb_new();
+    var idx: i64 = vec_get(line_idx_ref, 0);
+    var content_indent: i64 = -1;
+    var first_content: i64 = 1;
+
+    while idx < line_count {
+        let line: i64 = vec_get(lines, idx);
+        let indent: i64 = line_indent(line);
+        let line_len: i64 = string_length(line);
+
+        // Blank line within block
+        if line_len == 0 {
+            if first_content == 0 {
+                sb_append_char(sb, CH_LF());
+            }
+            idx = idx + 1;
+            vec_set(line_idx_ref, 0, idx);
+        } else if indent <= block_indent {
+            // End of block
+            break;
+        } else {
+            if content_indent < 0 {
+                content_indent = indent;
+            }
+            if first_content == 0 {
+                sb_append_char(sb, CH_LF());
+            }
+            // Keep indentation beyond content_indent
+            if indent > content_indent {
+                var si: i64 = 0;
+                while si < indent - content_indent {
+                    sb_append_char(sb, CH_SPACE());
+                    si = si + 1;
+                }
+            }
+            let content: i64 = string_substring(line, content_indent, line_len - content_indent);
+            sb_append(sb, content);
+            first_content = 0;
+            idx = idx + 1;
+            vec_set(line_idx_ref, 0, idx);
+        }
+    }
+
+    // Literal blocks keep trailing newline
+    sb_append_char(sb, CH_LF());
+    yaml_scalar(sb_to_string(sb))
+}
+
+/// Parse a folded block scalar (>)
+fn parse_folded_block(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64 {
+    var idx: i64 = vec_get(line_idx_ref, 0);
+    idx = idx + 1;  // skip the line with >
+    vec_set(line_idx_ref, 0, idx);
+    parse_folded_block_content(lines, line_idx_ref, block_indent)
+}
+
+/// Parse folded block content lines
+fn parse_folded_block_content(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64 {
+    let line_count: i64 = vec_len(lines);
+    let sb: i64 = sb_new();
+    var idx: i64 = vec_get(line_idx_ref, 0);
+    var content_indent: i64 = -1;
+    var first_content: i64 = 1;
+    var prev_blank: i64 = 0;
+
+    while idx < line_count {
+        let line: i64 = vec_get(lines, idx);
+        let indent: i64 = line_indent(line);
+        let line_len: i64 = string_length(line);
+
+        if line_len == 0 {
+            prev_blank = 1;
+            idx = idx + 1;
+            vec_set(line_idx_ref, 0, idx);
+        } else if indent <= block_indent {
+            break;
+        } else {
+            if content_indent < 0 {
+                content_indent = indent;
+            }
+
+            if prev_blank == 1 {
+                sb_append_char(sb, CH_LF());
+                prev_blank = 0;
+            } else if first_content == 0 {
+                sb_append_char(sb, CH_SPACE());
+            }
+
+            let content: i64 = string_substring(line, content_indent, line_len - content_indent);
+            sb_append(sb, content);
+            first_content = 0;
+            idx = idx + 1;
+            vec_set(line_idx_ref, 0, idx);
+        }
+    }
+
+    sb_append_char(sb, CH_LF());
+    yaml_scalar(sb_to_string(sb))
+}
+
+// =============================================================================
+// Public Parse API
+// =============================================================================
+
+/// Parse a YAML string into a value tree.
+///
+/// Returns a tagged vec representing the YAML document.
+/// Supports block mappings, sequences, flow style, multi-line strings,
+/// and comments.
+///
+/// # Example
+/// ```simplex
+/// let doc = yaml_parse("name: Alice\nage: 30");
+/// let name = yaml_get(doc, "name");
+/// ```
+pub fn yaml_parse(input: i64) -> i64 {
+    let lines: i64 = yaml_split_lines(input);
+    if vec_len(lines) == 0 {
+        return yaml_null_value();
+    }
+
+    // Check for document separator (---)
+    let first: i64 = vec_get(lines, 0);
+    let trimmed: i64 = string_trim(first);
+    var start_line: i64 = 0;
+    if intrinsic_string_eq(trimmed, "---") == 1 {
+        start_line = 1;
+    }
+
+    let line_idx_ref: i64 = vec_new();
+    vec_push(line_idx_ref, start_line);
+
+    let result: i64 = parse_block(lines, line_idx_ref, 0);
+    result
+}
+
+// =============================================================================
+// Serialization API
+// =============================================================================
+
+/// Serialize a YAML value to a string with default indentation (2 spaces).
+///
+/// # Example
+/// ```simplex
+/// let output = yaml_stringify(doc);
+/// ```
+pub fn yaml_stringify(value: i64) -> i64 {
+    yaml_stringify_pretty(value, 2)
+}
+
+/// Serialize a YAML value to a string with custom indentation.
+///
+/// # Example
+/// ```simplex
+/// let output = yaml_stringify_pretty(doc, 4);
+/// ```
+pub fn yaml_stringify_pretty(value: i64, indent: i64) -> i64 {
+    let sb: i64 = sb_new();
+    yaml_serialize_value(sb, value, 0, indent, 0);
+    sb_to_string(sb)
+}
+
+/// Internal: serialize a value at a given depth
+fn yaml_serialize_value(sb: i64, value: i64, depth: i64, indent_size: i64, inline_mode: i64) -> i64 {
+    if yaml_is_null(value) == 1 {
+        sb_append(sb, "null");
+        if inline_mode == 0 {
+            sb_append_char(sb, CH_LF());
+        }
+        return 0;
+    }
+
+    if yaml_is_scalar(value) == 1 {
+        let s: i64 = yaml_scalar_value(value);
+        let needs_quote: i64 = yaml_needs_quoting(s);
+        if needs_quote == 1 {
+            yaml_write_quoted(sb, s);
+        } else {
+            sb_append(sb, s);
+        }
+        if inline_mode == 0 {
+            sb_append_char(sb, CH_LF());
+        }
+        return 0;
+    }
+
+    if yaml_is_mapping(value) == 1 {
+        let keys: i64 = vec_get(value, 1);
+        let vals: i64 = vec_get(value, 2);
+        let count: i64 = vec_len(keys);
+
+        if count == 0 {
+            sb_append(sb, "{}");
+            if inline_mode == 0 {
+                sb_append_char(sb, CH_LF());
+            }
+            return 0;
+        }
+
+        if inline_mode == 1 {
+            sb_append_char(sb, CH_LF());
+        }
+
+        var i: i64 = 0;
+        while i < count {
+            yaml_write_indent(sb, depth, indent_size);
+            let key: i64 = vec_get(keys, i);
+            sb_append(sb, key);
+            sb_append(sb, ": ");
+
+            let val: i64 = vec_get(vals, i);
+            if yaml_is_mapping(val) == 1 {
+                if yaml_mapping_len(val) > 0 {
+                    sb_append_char(sb, CH_LF());
+                    yaml_serialize_value(sb, val, depth + 1, indent_size, 0);
+                } else {
+                    sb_append(sb, "{}");
+                    sb_append_char(sb, CH_LF());
+                }
+            } else if yaml_is_sequence(val) == 1 {
+                if yaml_sequence_len(val) > 0 {
+                    sb_append_char(sb, CH_LF());
+                    yaml_serialize_value(sb, val, depth + 1, indent_size, 0);
+                } else {
+                    sb_append(sb, "[]");
+                    sb_append_char(sb, CH_LF());
+                }
+            } else {
+                yaml_serialize_value(sb, val, depth, indent_size, 0);
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    if yaml_is_sequence(value) == 1 {
+        let items: i64 = vec_get(value, 1);
+        let count: i64 = vec_len(items);
+
+        if count == 0 {
+            sb_append(sb, "[]");
+            if inline_mode == 0 {
+                sb_append_char(sb, CH_LF());
+            }
+            return 0;
+        }
+
+        if inline_mode == 1 {
+            sb_append_char(sb, CH_LF());
+        }
+
+        var i: i64 = 0;
+        while i < count {
+            yaml_write_indent(sb, depth, indent_size);
+            sb_append(sb, "- ");
+
+            let item: i64 = vec_get(items, i);
+            if yaml_is_mapping(item) == 1 {
+                if yaml_mapping_len(item) > 0 {
+                    // First key inline after dash
+                    let mk: i64 = vec_get(vec_get(item, 1), 0);
+                    let mv: i64 = vec_get(vec_get(item, 2), 0);
+                    sb_append(sb, mk);
+                    sb_append(sb, ": ");
+                    if yaml_is_scalar(mv) == 1 {
+                        yaml_serialize_value(sb, mv, depth + 1, indent_size, 0);
+                    } else if yaml_is_null(mv) == 1 {
+                        yaml_serialize_value(sb, mv, depth + 1, indent_size, 0);
+                    } else {
+                        sb_append_char(sb, CH_LF());
+                        yaml_serialize_value(sb, mv, depth + 2, indent_size, 0);
+                    }
+                    // Remaining keys
+                    let mcount: i64 = yaml_mapping_len(item);
+                    var mi: i64 = 1;
+                    while mi < mcount {
+                        yaml_write_indent(sb, depth + 1, indent_size);
+                        let rk: i64 = vec_get(vec_get(item, 1), mi);
+                        let rv: i64 = vec_get(vec_get(item, 2), mi);
+                        sb_append(sb, rk);
+                        sb_append(sb, ": ");
+                        if yaml_is_mapping(rv) == 1 {
+                            sb_append_char(sb, CH_LF());
+                            yaml_serialize_value(sb, rv, depth + 2, indent_size, 0);
+                        } else if yaml_is_sequence(rv) == 1 {
+                            sb_append_char(sb, CH_LF());
+                            yaml_serialize_value(sb, rv, depth + 2, indent_size, 0);
+                        } else {
+                            yaml_serialize_value(sb, rv, depth + 1, indent_size, 0);
+                        }
+                        mi = mi + 1;
+                    }
+                } else {
+                    sb_append(sb, "{}");
+                    sb_append_char(sb, CH_LF());
+                }
+            } else if yaml_is_sequence(item) == 1 {
+                sb_append_char(sb, CH_LF());
+                yaml_serialize_value(sb, item, depth + 1, indent_size, 0);
+            } else {
+                yaml_serialize_value(sb, item, depth, indent_size, 0);
+            }
+            i = i + 1;
+        }
+        return 0;
+    }
+
+    // Fallback
+    sb_append(sb, "null");
+    if inline_mode == 0 {
+        sb_append_char(sb, CH_LF());
+    }
+    0
+}
+
+/// Write indentation spaces
+fn yaml_write_indent(sb: i64, depth: i64, indent_size: i64) -> i64 {
+    let total: i64 = depth * indent_size;
+    var i: i64 = 0;
+    while i < total {
+        sb_append_char(sb, CH_SPACE());
+        i = i + 1;
+    }
+    0
+}
+
+/// Check if a scalar string needs quoting in YAML output
+fn yaml_needs_quoting(s: i64) -> i64 {
+    let len: i64 = string_length(s);
+    if len == 0 { return 1; }
+
+    // Check for reserved words
+    if intrinsic_string_eq(s, "true") == 1 { return 1; }
+    if intrinsic_string_eq(s, "false") == 1 { return 1; }
+    if intrinsic_string_eq(s, "null") == 1 { return 1; }
+    if intrinsic_string_eq(s, "True") == 1 { return 1; }
+    if intrinsic_string_eq(s, "False") == 1 { return 1; }
+    if intrinsic_string_eq(s, "Null") == 1 { return 1; }
+    if intrinsic_string_eq(s, "~") == 1 { return 1; }
+
+    // Check first char for special meaning
+    let first: i64 = string_char_at(s, 0);
+    if first == CH_DASH() { return 1; }
+    if first == CH_LBRACE() { return 1; }
+    if first == CH_LBRACKET() { return 1; }
+    if first == CH_HASH() { return 1; }
+    if first == CH_PIPE() { return 1; }
+    if first == CH_GT() { return 1; }
+
+    // Check for characters that need quoting
+    var i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c == CH_COLON() {
+            let ni: i64 = i + 1;
+            if ni < len {
+                if string_char_at(s, ni) == CH_SPACE() { return 1; }
+            }
+        }
+        if c == CH_HASH() {
+            if i > 0 {
+                if string_char_at(s, i - 1) == CH_SPACE() { return 1; }
+            }
+        }
+        if c == CH_LF() { return 1; }
+        if c == CH_CR() { return 1; }
+        if c == CH_DQUOTE() { return 1; }
+        i = i + 1;
+    }
+    0
+}
+
+/// Write a double-quoted YAML string
+fn yaml_write_quoted(sb: i64, s: i64) -> i64 {
+    sb_append_char(sb, CH_DQUOTE());
+    let len: i64 = string_length(s);
+    var i: i64 = 0;
+    while i < len {
+        let c: i64 = string_char_at(s, i);
+        if c == CH_DQUOTE() {
+            sb_append_char(sb, CH_BACKSLASH());
+            sb_append_char(sb, CH_DQUOTE());
+        } else if c == CH_BACKSLASH() {
+            sb_append_char(sb, CH_BACKSLASH());
+            sb_append_char(sb, CH_BACKSLASH());
+        } else if c == CH_LF() {
+            sb_append_char(sb, CH_BACKSLASH());
+            sb_append_char(sb, 110);  // 'n'
+        } else if c == CH_TAB() {
+            sb_append_char(sb, CH_BACKSLASH());
+            sb_append_char(sb, 116);  // 't'
+        } else {
+            sb_append_char(sb, c);
+        }
+        i = i + 1;
+    }
+    sb_append_char(sb, CH_DQUOTE());
+    0
+}
