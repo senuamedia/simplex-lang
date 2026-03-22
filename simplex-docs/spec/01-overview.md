@@ -1,12 +1,22 @@
 # Simplex Overview and Philosophy
 
-**Version 0.16.0**
+**Version 0.17.0**
 
 ---
 
 ## Vision
 
 Simplex is built on a singular premise: modern software runs on distributed, ephemeral infrastructure and increasingly relies on AI capabilities. The language should embrace these realities as first-class concerns, not afterthoughts.
+
+---
+
+## What's New in v0.17.0
+
+### Cloud Infrastructure, Developer Tools & Mathematical Intelligence
+
+v0.17.0 adds cloud infrastructure libraries (AWS, SQS, DynamoDB), developer experience tools (REPL, test framework), and advanced mathematical intelligence modules (causal inference, mixture of experts, state space models, information geometry, KAN, neural ODEs, liquid networks, hyperbolic embeddings, neuro-symbolic engine, Hopfield memory, tensor networks, equivariant layers, sparse distributed memory, diffusion generation).
+
+See [RELEASE-0.17.0.md](../RELEASE-0.17.0.md) for complete release notes.
 
 ---
 
@@ -133,7 +143,7 @@ Native forward-mode automatic differentiation:
 let x: dual = dual::variable(3.0)
 let y = x * x + x.sin()
 print(y.val)  // f(3) = 9.1411...
-print(y.der)  // f'(3) = 6.9899... (exact, not numerical)
+print(y.der)  // f'(3) = 6.9899... (analytical, not numerical approximation)
 ```
 
 ### llama.cpp Integration

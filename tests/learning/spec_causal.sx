@@ -1,0 +1,63 @@
+use causal;
+
+fn main() -> i64 {
+    println(string_from("=== Causal Inference Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Build a simple DAG: 0 -> 2, 1 -> 2, 2 -> 3
+    // (treatment=0, confounder=1, mediator=2, outcome=3)
+    let g: i64 = causal_graph_new(4);
+    causal_add_edge(g, 0, 2);
+    causal_add_edge(g, 1, 2);
+    causal_add_edge(g, 2, 3);
+
+    // Test 1: Edge count
+    let n_edges: i64 = causal_edge_count(g);
+    if n_edges != 3 {
+        println(string_from("FAIL: edge count should be 3"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: causal_add_edge / edge_count"));
+    }
+
+    // Test 2: Parents of node 2
+    let parents: i64 = causal_parents(g, 2);
+    if vec_len(parents) != 2 {
+        println(string_from("FAIL: node 2 should have 2 parents"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: causal_parents"));
+    }
+
+    // Test 3: Children of node 2
+    let children: i64 = causal_children(g, 2);
+    if vec_len(children) != 1 {
+        println(string_from("FAIL: node 2 should have 1 child"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: causal_children"));
+    }
+
+    // Test 4: Topological sort
+    let sorted: i64 = causal_topological_sort(g);
+    if vec_len(sorted) != 4 {
+        println(string_from("FAIL: topo sort should have 4 nodes"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: causal_topological_sort"));
+    }
+
+    // Test 5: DAG check
+    let is_dag: i64 = causal_is_dag(g);
+    if is_dag != 1 {
+        println(string_from("FAIL: should be a valid DAG"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: causal_is_dag"));
+    }
+
+    if failures == 0 {
+        println(string_from("All causal tests passed"));
+    }
+    failures
+}

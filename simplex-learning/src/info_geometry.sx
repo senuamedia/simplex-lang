@@ -1,0 +1,1160 @@
+// simplex-learning::info_geometry - Information Geometry & Natural Gradients
+//
+// Provides tools for second-order optimization using information geometry:
+//
+// - Fisher Information Matrix (diagonal and empirical approximations)
+// - Natural gradient descent (preconditioned by the Fisher metric)
+// - K-FAC (Kronecker-Factored Approximate Curvature)
+// - KL divergence (discrete and Gaussian)
+//
+// All values stored as i64 vec handles. Floats are stored via f64_to_bits.
+//
+// # Background
+//
+// In information geometry, the parameter space of a model is a Riemannian
+// manifold where the metric tensor is the Fisher Information Matrix (FIM).
+// The natural gradient uses this metric to produce updates that are
+// invariant to reparameterization, leading to faster convergence.
+//
+// # References
+//
+// - Amari (1998): Natural Gradient Works Efficiently in Learning
+// - Martens & Grosse (2015): Optimizing Neural Networks with K-FAC
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Internal helpers
+// =============================================================================
+
+/// Multiply two f64-as-bits values, return bits.
+fn ig_fmul(a_bits: i64, b_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    let b: f64 = bits_to_f64(b_bits);
+    f64_to_bits(a * b)
+}
+
+/// Add two f64-as-bits values, return bits.
+fn ig_fadd(a_bits: i64, b_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    let b: f64 = bits_to_f64(b_bits);
+    f64_to_bits(a + b)
+}
+
+/// Subtract two f64-as-bits values, return bits.
+fn ig_fsub(a_bits: i64, b_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    let b: f64 = bits_to_f64(b_bits);
+    f64_to_bits(a - b)
+}
+
+/// Divide two f64-as-bits values, return bits.
+fn ig_fdiv(a_bits: i64, b_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    let b: f64 = bits_to_f64(b_bits);
+    f64_to_bits(a / b)
+}
+
+/// Negate f64-as-bits.
+fn ig_fneg(a_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    f64_to_bits(0.0 - a)
+}
+
+/// f64 zero as bits.
+fn ig_zero() -> i64 {
+    f64_to_bits(0.0)
+}
+
+/// f64 one as bits.
+fn ig_one() -> i64 {
+    f64_to_bits(1.0)
+}
+
+/// Convert i64 to f64 bits.
+fn ig_i2f(n: i64) -> i64 {
+    f64_to_bits(0.0 + n)
+}
+
+/// Natural log using the runtime's ln_f64 builtin.
+fn ig_ln(x_bits: i64) -> i64 {
+    let x: f64 = bits_to_f64(x_bits);
+    if x <= 0.0 { return f64_to_bits(-999999.0); }
+    if x < 0.000001 { return f64_to_bits(-999999.0); }
+    ln_f64(x_bits)
+}
+
+/// Exponential via Taylor series.
+fn ig_exp(x_bits: i64) -> i64 {
+    let x: f64 = bits_to_f64(x_bits);
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 12 {
+        let fi: f64 = 0.0 + i;
+        term = term * x / fi;
+        result = result + term;
+        i = i + 1;
+    }
+    f64_to_bits(result)
+}
+
+/// Square root via Newton's method.
+fn ig_sqrt(x_bits: i64) -> i64 {
+    let x: f64 = bits_to_f64(x_bits);
+    if x <= 0.0 { return ig_zero(); }
+    var guess: f64 = x / 2.0;
+    if guess < 1.0 { guess = 1.0; }
+    var i: i64 = 0;
+    while i < 20 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    f64_to_bits(guess)
+}
+
+/// Create a float vector of given size, initialized to zero.
+fn ig_fvec_new(size: i64) -> i64 {
+    let v: i64 = vec_new();
+    let zero: i64 = ig_zero();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(v, zero);
+        i = i + 1;
+    }
+    v
+}
+
+/// Copy a float vector.
+fn ig_fvec_copy(src: i64, size: i64) -> i64 {
+    let dst: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    dst
+}
+
+/// Element-wise addition.
+fn ig_fvec_add(a: i64, b: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ig_fadd(vec_get(a, i), vec_get(b, i)));
+        i = i + 1;
+    }
+    out
+}
+
+/// Element-wise subtraction.
+fn ig_fvec_sub(a: i64, b: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ig_fsub(vec_get(a, i), vec_get(b, i)));
+        i = i + 1;
+    }
+    out
+}
+
+/// Element-wise multiplication.
+fn ig_fvec_mul(a: i64, b: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ig_fmul(vec_get(a, i), vec_get(b, i)));
+        i = i + 1;
+    }
+    out
+}
+
+/// Scale a float vector.
+fn ig_fvec_scale(v: i64, scalar_bits: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ig_fmul(vec_get(v, i), scalar_bits));
+        i = i + 1;
+    }
+    out
+}
+
+/// Dot product of two float vectors.
+fn ig_fvec_dot(a: i64, b: i64, size: i64) -> i64 {
+    var sum: i64 = ig_zero();
+    var i: i64 = 0;
+    while i < size {
+        sum = ig_fadd(sum, ig_fmul(vec_get(a, i), vec_get(b, i)));
+        i = i + 1;
+    }
+    sum
+}
+
+/// Matrix-vector multiply: M (rows x cols) * v (cols) -> out (rows).
+fn ig_mat_vec_mul(mat: i64, v: i64, rows: i64, cols: i64) -> i64 {
+    let out: i64 = vec_new();
+    var r: i64 = 0;
+    while r < rows {
+        var sum: i64 = ig_zero();
+        var c: i64 = 0;
+        while c < cols {
+            sum = ig_fadd(sum, ig_fmul(vec_get(mat, r * cols + c), vec_get(v, c)));
+            c = c + 1;
+        }
+        vec_push(out, sum);
+        r = r + 1;
+    }
+    out
+}
+
+/// Outer product: a (m) x b (n) -> flat matrix (m * n).
+fn ig_outer(a: i64, b: i64, m: i64, n: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < m {
+        let ai: i64 = vec_get(a, i);
+        var j: i64 = 0;
+        while j < n {
+            vec_push(out, ig_fmul(ai, vec_get(b, j)));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    out
+}
+
+/// Matrix addition (flat, same dimensions).
+fn ig_mat_add(a: i64, b: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ig_fadd(vec_get(a, i), vec_get(b, i)));
+        i = i + 1;
+    }
+    out
+}
+
+/// Matrix scale (flat).
+fn ig_mat_scale(m: i64, scalar: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ig_fmul(vec_get(m, i), scalar));
+        i = i + 1;
+    }
+    out
+}
+
+// =============================================================================
+// Fisher Information Matrix - Diagonal Approximation
+// =============================================================================
+
+/// Compute the diagonal Fisher Information Matrix (FIM) approximation.
+///
+/// The diagonal FIM is approximated as:
+///   F_ii ≈ E[g_i²]
+///
+/// where g_i is the gradient of the loss with respect to parameter i.
+/// Given a single gradient vector, this returns the element-wise square.
+///
+/// For a running estimate, call this repeatedly and use an exponential
+/// moving average.
+///
+/// Arguments:
+///   model_params - not used directly (for API consistency), pass 0
+///   loss_grad    - gradient vector (n elements, f64 bits)
+///
+/// Returns: diagonal FIM vector (n elements, f64 bits) — all non-negative
+fn fisher_diagonal(model_params: i64, loss_grad: i64) -> i64 {
+    let n: i64 = vec_len(loss_grad);
+    let fim: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let g: i64 = vec_get(loss_grad, i);
+        vec_push(fim, ig_fmul(g, g));
+        i = i + 1;
+    }
+    fim
+}
+
+/// Compute the empirical Fisher Information Matrix from multiple gradient samples.
+///
+/// Given k gradient samples of dimension n:
+///   F_ii = (1/k) * sum_j(g_j_i²)
+///
+/// Arguments:
+///   gradients  - vec of gradient vectors (each is a vec of f64 bits)
+///   n_samples  - number of gradient samples (should equal vec_len(gradients))
+///
+/// Returns: diagonal FIM vector (n elements, f64 bits)
+fn fisher_empirical(gradients: i64, n_samples: i64) -> i64 {
+    if n_samples <= 0 { return vec_new(); }
+
+    let first_grad: i64 = vec_get(gradients, 0);
+    let n: i64 = vec_len(first_grad);
+
+    // Accumulate squared gradients
+    let acc: i64 = ig_fvec_new(n);
+
+    var s: i64 = 0;
+    while s < n_samples {
+        let grad: i64 = vec_get(gradients, s);
+        var i: i64 = 0;
+        while i < n {
+            let g: i64 = vec_get(grad, i);
+            let g_sq: i64 = ig_fmul(g, g);
+            let old: i64 = vec_get(acc, i);
+            vec_set(acc, i, ig_fadd(old, g_sq));
+            i = i + 1;
+        }
+        s = s + 1;
+    }
+
+    // Average: F_ii = acc_i / n_samples
+    let inv_k: i64 = ig_fdiv(ig_one(), ig_i2f(n_samples));
+    let fim: i64 = ig_fvec_scale(acc, inv_k, n);
+    fim
+}
+
+/// Update a running diagonal Fisher estimate with exponential moving average.
+///
+/// F_new = (1 - decay) * F_old + decay * g²
+///
+/// Arguments:
+///   fisher_old - current FIM estimate (n elements, f64 bits)
+///   gradient   - new gradient sample (n elements, f64 bits)
+///   decay_bits - EMA decay factor as f64 bits (e.g., 0.01)
+///
+/// Returns: updated diagonal FIM (n elements, f64 bits)
+fn fisher_ema_update(fisher_old: i64, gradient: i64, decay_bits: i64) -> i64 {
+    let n: i64 = vec_len(fisher_old);
+    let decay: f64 = bits_to_f64(decay_bits);
+    let keep: f64 = 1.0 - decay;
+
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let f_old: f64 = bits_to_f64(vec_get(fisher_old, i));
+        let g: f64 = bits_to_f64(vec_get(gradient, i));
+        let g_sq: f64 = g * g;
+        let f_new: f64 = keep * f_old + decay * g_sq;
+        vec_push(out, f64_to_bits(f_new));
+        i = i + 1;
+    }
+    out
+}
+
+// =============================================================================
+// Natural Gradient
+// =============================================================================
+
+/// Compute the natural gradient using diagonal Fisher preconditioning.
+///
+/// The natural gradient is:
+///   ng_i = g_i / (F_ii + damping)
+///
+/// where g_i is the Euclidean gradient and F_ii is the diagonal Fisher.
+/// The damping term prevents division by zero and regularizes the update.
+///
+/// Arguments:
+///   gradient    - Euclidean gradient (n elements, f64 bits)
+///   fisher_diag - diagonal FIM (n elements, f64 bits)
+///   damping     - damping factor as f64 bits (e.g., 1e-4)
+///
+/// Returns: natural gradient vector (n elements, f64 bits)
+fn natural_gradient(gradient: i64, fisher_diag: i64, damping: i64) -> i64 {
+    let n: i64 = vec_len(gradient);
+    let damp_f: f64 = bits_to_f64(damping);
+    let out: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < n {
+        let g_i: f64 = bits_to_f64(vec_get(gradient, i));
+        let f_i: f64 = bits_to_f64(vec_get(fisher_diag, i));
+        let ng_i: f64 = g_i / (f_i + damp_f);
+        vec_push(out, f64_to_bits(ng_i));
+        i = i + 1;
+    }
+    out
+}
+
+/// Apply a natural gradient step to parameters.
+///
+/// params_new = params - lr * nat_grad
+///
+/// Arguments:
+///   params   - current parameters (n elements, f64 bits)
+///   nat_grad - natural gradient (n elements, f64 bits)
+///   lr       - learning rate as f64 bits
+///
+/// Returns: updated parameters (n elements, f64 bits)
+fn natural_gradient_step(params: i64, nat_grad: i64, lr: i64) -> i64 {
+    let n: i64 = vec_len(params);
+    let lr_f: f64 = bits_to_f64(lr);
+    let out: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < n {
+        let p_i: f64 = bits_to_f64(vec_get(params, i));
+        let ng_i: f64 = bits_to_f64(vec_get(nat_grad, i));
+        let p_new: f64 = p_i - lr_f * ng_i;
+        vec_push(out, f64_to_bits(p_new));
+        i = i + 1;
+    }
+    out
+}
+
+/// Full natural gradient descent step (convenience function).
+///
+/// Combines Fisher estimation, natural gradient computation, and parameter update.
+///
+/// Arguments:
+///   params      - current parameters (n elements, f64 bits)
+///   gradient    - Euclidean gradient (n elements, f64 bits)
+///   damping     - damping factor as f64 bits
+///   lr          - learning rate as f64 bits
+///
+/// Returns: updated parameters (n elements, f64 bits)
+fn natural_gradient_full_step(params: i64, gradient: i64, damping: i64, lr: i64) -> i64 {
+    let fisher: i64 = fisher_diagonal(0, gradient);
+    let nat_grad: i64 = natural_gradient(gradient, fisher, damping);
+    natural_gradient_step(params, nat_grad, lr)
+}
+
+// =============================================================================
+// K-FAC (Kronecker-Factored Approximate Curvature)
+// =============================================================================
+//
+// K-FAC layer layout (vec handle):
+//   [0] input_dim
+//   [1] output_dim
+//   [2] A_cov handle  - input covariance matrix (input_dim x input_dim), flat
+//   [3] G_cov handle  - gradient covariance matrix (output_dim x output_dim), flat
+//   [4] n_updates     - number of updates accumulated
+//   [5] A_inv handle  - cached inverse of (A + damping*I), flat
+//   [6] G_inv handle  - cached inverse of (G + damping*I), flat
+//   [7] inv_valid     - 1 if cached inverses are valid, 0 otherwise
+
+/// Create a new K-FAC layer tracker.
+///
+/// Arguments:
+///   input_dim  - dimension of the layer's input
+///   output_dim - dimension of the layer's output
+///
+/// Returns: K-FAC layer handle
+fn kfac_layer_new(input_dim: i64, output_dim: i64) -> i64 {
+    let layer: i64 = vec_new();
+
+    // [0] input_dim
+    vec_push(layer, input_dim);
+    // [1] output_dim
+    vec_push(layer, output_dim);
+
+    // [2] A_cov: input covariance, initialized to identity * small_val
+    let a_size: i64 = input_dim * input_dim;
+    let a_cov: i64 = ig_fvec_new(a_size);
+    var i: i64 = 0;
+    while i < input_dim {
+        vec_set(a_cov, i * input_dim + i, f64_to_bits(0.001));
+        i = i + 1;
+    }
+    vec_push(layer, a_cov);
+
+    // [3] G_cov: gradient covariance, initialized to identity * small_val
+    let g_size: i64 = output_dim * output_dim;
+    let g_cov: i64 = ig_fvec_new(g_size);
+    i = 0;
+    while i < output_dim {
+        vec_set(g_cov, i * output_dim + i, f64_to_bits(0.001));
+        i = i + 1;
+    }
+    vec_push(layer, g_cov);
+
+    // [4] n_updates
+    vec_push(layer, 0);
+
+    // [5] A_inv: placeholder
+    let a_inv: i64 = ig_fvec_new(a_size);
+    vec_push(layer, a_inv);
+
+    // [6] G_inv: placeholder
+    let g_inv: i64 = ig_fvec_new(g_size);
+    vec_push(layer, g_inv);
+
+    // [7] inv_valid
+    vec_push(layer, 0);
+
+    layer
+}
+
+/// Get input dimension of K-FAC layer.
+fn kfac_input_dim(layer: i64) -> i64 {
+    vec_get(layer, 0)
+}
+
+/// Get output dimension of K-FAC layer.
+fn kfac_output_dim(layer: i64) -> i64 {
+    vec_get(layer, 1)
+}
+
+/// Update K-FAC statistics with a new (input, grad_output) pair.
+///
+/// Maintains running averages:
+///   A = E[a * a^T]  (input outer product)
+///   G = E[g * g^T]  (output gradient outer product)
+///
+/// Uses exponential moving average with decay = 1 / (n_updates + 1).
+///
+/// Arguments:
+///   layer       - K-FAC layer handle
+///   input       - layer input activation (input_dim elements, f64 bits)
+///   grad_output - gradient w.r.t. layer output (output_dim elements, f64 bits)
+///
+/// Returns: 0 on success
+fn kfac_update_stats(layer: i64, input: i64, grad_output: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, 0);
+    let out_dim: i64 = vec_get(layer, 1);
+    let a_cov: i64 = vec_get(layer, 2);
+    let g_cov: i64 = vec_get(layer, 3);
+    let n: i64 = vec_get(layer, 4);
+
+    // Decay factor: as more samples arrive, weight new samples less
+    let n_f: f64 = 0.0 + n + 1.0;
+    let decay: f64 = 1.0 / n_f;
+    let keep: f64 = 1.0 - decay;
+
+    // Update A_cov: A = keep * A + decay * (input ⊗ input)
+    var i: i64 = 0;
+    while i < in_dim {
+        let ai: f64 = bits_to_f64(vec_get(input, i));
+        var j: i64 = 0;
+        while j < in_dim {
+            let aj: f64 = bits_to_f64(vec_get(input, j));
+            let idx: i64 = i * in_dim + j;
+            let old_val: f64 = bits_to_f64(vec_get(a_cov, idx));
+            let new_val: f64 = keep * old_val + decay * ai * aj;
+            vec_set(a_cov, idx, f64_to_bits(new_val));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Update G_cov: G = keep * G + decay * (grad_output ⊗ grad_output)
+    i = 0;
+    while i < out_dim {
+        let gi: f64 = bits_to_f64(vec_get(grad_output, i));
+        var j: i64 = 0;
+        while j < out_dim {
+            let gj: f64 = bits_to_f64(vec_get(grad_output, j));
+            let idx: i64 = i * out_dim + j;
+            let old_val: f64 = bits_to_f64(vec_get(g_cov, idx));
+            let new_val: f64 = keep * old_val + decay * gi * gj;
+            vec_set(g_cov, idx, f64_to_bits(new_val));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Increment update count
+    vec_set(layer, 4, n + 1);
+    // Invalidate cached inverses
+    vec_set(layer, 7, 0);
+
+    0
+}
+
+/// Compute the inverse of a small symmetric matrix (n x n) with damping.
+///
+/// Uses Gauss-Jordan elimination on (M + damping * I).
+///
+/// Arguments:
+///   mat     - flat matrix (n x n, f64 bits)
+///   n       - dimension
+///   damping - damping factor as f64 bits
+///
+/// Returns: flat inverse matrix (n x n, f64 bits)
+fn ig_mat_inv_damped(mat: i64, n: i64, damping: i64) -> i64 {
+    let damp_f: f64 = bits_to_f64(damping);
+
+    // Build augmented matrix [M + dI | I]
+    let aug_cols: i64 = 2 * n;
+    let aug: i64 = ig_fvec_new(n * aug_cols);
+
+    // Fill left half with M + dI, right half with I
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < n {
+            var val: f64 = bits_to_f64(vec_get(mat, i * n + j));
+            if i == j { val = val + damp_f; }
+            vec_set(aug, i * aug_cols + j, f64_to_bits(val));
+            j = j + 1;
+        }
+        // Right half: identity
+        vec_set(aug, i * aug_cols + n + i, ig_one());
+        i = i + 1;
+    }
+
+    // Gauss-Jordan elimination
+    i = 0;
+    while i < n {
+        // Find pivot (partial pivoting)
+        var max_val: f64 = 0.0;
+        var max_row: i64 = i;
+        var r: i64 = i;
+        while r < n {
+            var pv: f64 = bits_to_f64(vec_get(aug, r * aug_cols + i));
+            if pv < 0.0 { pv = 0.0 - pv; }
+            if pv > max_val {
+                max_val = pv;
+                max_row = r;
+            }
+            r = r + 1;
+        }
+
+        // Swap rows if needed
+        if max_row != i {
+            var c: i64 = 0;
+            while c < aug_cols {
+                let tmp: i64 = vec_get(aug, i * aug_cols + c);
+                vec_set(aug, i * aug_cols + c, vec_get(aug, max_row * aug_cols + c));
+                vec_set(aug, max_row * aug_cols + c, tmp);
+                c = c + 1;
+            }
+        }
+
+        // Scale pivot row
+        let pivot: f64 = bits_to_f64(vec_get(aug, i * aug_cols + i));
+        if pivot > 0.0000001 {
+            let inv_pivot: f64 = 1.0 / pivot;
+            var c: i64 = 0;
+            while c < aug_cols {
+                let val: f64 = bits_to_f64(vec_get(aug, i * aug_cols + c));
+                vec_set(aug, i * aug_cols + c, f64_to_bits(val * inv_pivot));
+                c = c + 1;
+            }
+        }
+        if pivot < -0.0000001 {
+            let inv_pivot: f64 = 1.0 / pivot;
+            var c: i64 = 0;
+            while c < aug_cols {
+                let val: f64 = bits_to_f64(vec_get(aug, i * aug_cols + c));
+                vec_set(aug, i * aug_cols + c, f64_to_bits(val * inv_pivot));
+                c = c + 1;
+            }
+        }
+
+        // Eliminate column
+        r = 0;
+        while r < n {
+            if r != i {
+                let factor: f64 = bits_to_f64(vec_get(aug, r * aug_cols + i));
+                var c: i64 = 0;
+                while c < aug_cols {
+                    let val: f64 = bits_to_f64(vec_get(aug, r * aug_cols + c));
+                    let pivot_val: f64 = bits_to_f64(vec_get(aug, i * aug_cols + c));
+                    vec_set(aug, r * aug_cols + c, f64_to_bits(val - factor * pivot_val));
+                    c = c + 1;
+                }
+            }
+            r = r + 1;
+        }
+
+        i = i + 1;
+    }
+
+    // Extract right half as inverse
+    let inv: i64 = vec_new();
+    i = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < n {
+            vec_push(inv, vec_get(aug, i * aug_cols + n + j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    inv
+}
+
+/// Precondition a gradient using K-FAC.
+///
+/// The K-FAC preconditioned gradient is:
+///   g_kfac = (A + λI)^{-1} * G_mat * (G_cov + λI)^{-1}
+///
+/// where G_mat is the gradient reshaped as (output_dim x input_dim).
+///
+/// More precisely, for weight gradient W_grad (output_dim x input_dim):
+///   W_kfac = G_inv * W_grad * A_inv
+///
+/// This is equivalent to the Kronecker product inverse:
+///   vec(W_kfac) = (A^{-1} ⊗ G^{-1}) * vec(W_grad)
+///
+/// Arguments:
+///   layer    - K-FAC layer handle
+///   gradient - flat weight gradient (output_dim * input_dim elements, f64 bits)
+///   damping  - damping factor as f64 bits
+///
+/// Returns: preconditioned gradient (output_dim * input_dim elements, f64 bits)
+fn kfac_precondition(layer: i64, gradient: i64, damping: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, 0);
+    let out_dim: i64 = vec_get(layer, 1);
+    let a_cov: i64 = vec_get(layer, 2);
+    let g_cov: i64 = vec_get(layer, 3);
+
+    // Compute inverses (or use cached)
+    let inv_valid: i64 = vec_get(layer, 7);
+    var a_inv: i64 = vec_get(layer, 5);
+    var g_inv: i64 = vec_get(layer, 6);
+
+    if inv_valid == 0 {
+        a_inv = ig_mat_inv_damped(a_cov, in_dim, damping);
+        g_inv = ig_mat_inv_damped(g_cov, out_dim, damping);
+        // Cache
+        vec_set(layer, 5, a_inv);
+        vec_set(layer, 6, g_inv);
+        vec_set(layer, 7, 1);
+    }
+
+    // Preconditioned gradient: G_inv * gradient_matrix * A_inv
+    // gradient is (out_dim x in_dim), row-major
+    //
+    // Step 1: tmp = gradient * A_inv  (out_dim x in_dim) * (in_dim x in_dim) = (out_dim x in_dim)
+    let tmp: i64 = vec_new();
+    var r: i64 = 0;
+    while r < out_dim {
+        var c: i64 = 0;
+        while c < in_dim {
+            var sum: f64 = 0.0;
+            var k: i64 = 0;
+            while k < in_dim {
+                let g_rk: f64 = bits_to_f64(vec_get(gradient, r * in_dim + k));
+                let a_kc: f64 = bits_to_f64(vec_get(a_inv, k * in_dim + c));
+                sum = sum + g_rk * a_kc;
+                k = k + 1;
+            }
+            vec_push(tmp, f64_to_bits(sum));
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    // Step 2: result = G_inv * tmp  (out_dim x out_dim) * (out_dim x in_dim) = (out_dim x in_dim)
+    let result: i64 = vec_new();
+    r = 0;
+    while r < out_dim {
+        var c: i64 = 0;
+        while c < in_dim {
+            var sum: f64 = 0.0;
+            var k: i64 = 0;
+            while k < out_dim {
+                let g_rk: f64 = bits_to_f64(vec_get(g_inv, r * out_dim + k));
+                let t_kc: f64 = bits_to_f64(vec_get(tmp, k * in_dim + c));
+                sum = sum + g_rk * t_kc;
+                k = k + 1;
+            }
+            vec_push(result, f64_to_bits(sum));
+            c = c + 1;
+        }
+        r = r + 1;
+    }
+
+    result
+}
+
+/// Get the number of updates accumulated in a K-FAC layer.
+fn kfac_n_updates(layer: i64) -> i64 {
+    vec_get(layer, 4)
+}
+
+/// Get the input covariance matrix from a K-FAC layer.
+fn kfac_get_A(layer: i64) -> i64 {
+    vec_get(layer, 2)
+}
+
+/// Get the gradient covariance matrix from a K-FAC layer.
+fn kfac_get_G(layer: i64) -> i64 {
+    vec_get(layer, 3)
+}
+
+// =============================================================================
+// KL Divergence
+// =============================================================================
+
+/// Compute KL divergence KL(P || Q) for discrete distributions.
+///
+/// KL(P || Q) = sum_i P(i) * log(P(i) / Q(i))
+///
+/// Both P and Q must be proper probability distributions (sum to 1, all >= 0).
+/// If Q(i) = 0 where P(i) > 0, returns a large value.
+///
+/// Arguments:
+///   p - distribution P (n elements, f64 bits)
+///   q - distribution Q (n elements, f64 bits)
+///   n - number of elements
+///
+/// Returns: KL divergence as f64 bits (non-negative)
+fn kl_divergence(p: i64, q: i64, n: i64) -> i64 {
+    var kl: f64 = 0.0;
+    let eps: f64 = 0.0000000001;
+
+    var i: i64 = 0;
+    while i < n {
+        let p_i: f64 = bits_to_f64(vec_get(p, i));
+        let q_i: f64 = bits_to_f64(vec_get(q, i));
+
+        if p_i > eps {
+            // Clamp q_i to avoid log(0)
+            var q_safe: f64 = q_i;
+            if q_safe < eps { q_safe = eps; }
+
+            // KL += p_i * log(p_i / q_safe)
+            let ratio: f64 = p_i / q_safe;
+            let ln_ratio: f64 = bits_to_f64(ig_ln(f64_to_bits(ratio)));
+            kl = kl + p_i * ln_ratio;
+        }
+        i = i + 1;
+    }
+
+    // Clamp to non-negative (numerical errors can produce tiny negatives)
+    if kl < 0.0 { kl = 0.0; }
+
+    f64_to_bits(kl)
+}
+
+/// Compute KL divergence between two univariate Gaussians.
+///
+/// KL(N(μ₁, σ₁²) || N(μ₂, σ₂²)) = log(σ₂/σ₁) + (σ₁² + (μ₁-μ₂)²) / (2σ₂²) - 1/2
+///
+/// Arguments:
+///   mu1  - mean of P as f64 bits
+///   var1 - variance of P as f64 bits (must be > 0)
+///   mu2  - mean of Q as f64 bits
+///   var2 - variance of Q as f64 bits (must be > 0)
+///
+/// Returns: KL divergence as f64 bits (non-negative)
+fn kl_gaussian(mu1: i64, var1: i64, mu2: i64, var2: i64) -> i64 {
+    let m1: f64 = bits_to_f64(mu1);
+    let v1: f64 = bits_to_f64(var1);
+    let m2: f64 = bits_to_f64(mu2);
+    let v2: f64 = bits_to_f64(var2);
+
+    // Clamp variances to avoid division by zero
+    var v1_safe: f64 = v1;
+    var v2_safe: f64 = v2;
+    if v1_safe < 0.0000001 { v1_safe = 0.0000001; }
+    if v2_safe < 0.0000001 { v2_safe = 0.0000001; }
+
+    // log(σ₂/σ₁) = 0.5 * log(v2/v1)
+    let ratio: f64 = v2_safe / v1_safe;
+    let ln_ratio: f64 = bits_to_f64(ig_ln(f64_to_bits(ratio)));
+    let log_term: f64 = 0.5 * ln_ratio;
+
+    // (σ₁² + (μ₁-μ₂)²) / (2σ₂²)
+    let mu_diff: f64 = m1 - m2;
+    let trace_term: f64 = (v1_safe + mu_diff * mu_diff) / (2.0 * v2_safe);
+
+    // KL = log(σ₂/σ₁) + (σ₁² + (μ₁-μ₂)²) / (2σ₂²) - 1/2
+    var kl: f64 = log_term + trace_term - 0.5;
+
+    // Clamp to non-negative
+    if kl < 0.0 { kl = 0.0; }
+
+    f64_to_bits(kl)
+}
+
+/// Compute symmetric KL divergence (Jensen-Shannon-like):
+///   SKL(P, Q) = (KL(P||Q) + KL(Q||P)) / 2
+///
+/// Arguments:
+///   p - distribution P (n elements, f64 bits)
+///   q - distribution Q (n elements, f64 bits)
+///   n - number of elements
+///
+/// Returns: symmetric KL divergence as f64 bits
+fn kl_symmetric(p: i64, q: i64, n: i64) -> i64 {
+    let kl_pq: f64 = bits_to_f64(kl_divergence(p, q, n));
+    let kl_qp: f64 = bits_to_f64(kl_divergence(q, p, n));
+    f64_to_bits((kl_pq + kl_qp) / 2.0)
+}
+
+/// Compute Jensen-Shannon divergence:
+///   JSD(P, Q) = (KL(P||M) + KL(Q||M)) / 2
+///   where M = (P + Q) / 2
+///
+/// Arguments:
+///   p - distribution P (n elements, f64 bits)
+///   q - distribution Q (n elements, f64 bits)
+///   n - number of elements
+///
+/// Returns: JSD as f64 bits (range [0, ln(2)])
+fn js_divergence(p: i64, q: i64, n: i64) -> i64 {
+    // Compute M = (P + Q) / 2
+    let m: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let pi: f64 = bits_to_f64(vec_get(p, i));
+        let qi: f64 = bits_to_f64(vec_get(q, i));
+        vec_push(m, f64_to_bits((pi + qi) / 2.0));
+        i = i + 1;
+    }
+
+    let kl_pm: f64 = bits_to_f64(kl_divergence(p, m, n));
+    let kl_qm: f64 = bits_to_f64(kl_divergence(q, m, n));
+    f64_to_bits((kl_pm + kl_qm) / 2.0)
+}
+
+// =============================================================================
+// Entropy
+// =============================================================================
+
+/// Compute Shannon entropy of a discrete distribution.
+///
+/// H(P) = -sum_i P(i) * log(P(i))
+///
+/// Arguments:
+///   p - distribution P (n elements, f64 bits)
+///   n - number of elements
+///
+/// Returns: entropy as f64 bits (non-negative)
+fn entropy(p: i64, n: i64) -> i64 {
+    var h: f64 = 0.0;
+    let eps: f64 = 0.0000000001;
+
+    var i: i64 = 0;
+    while i < n {
+        let p_i: f64 = bits_to_f64(vec_get(p, i));
+        if p_i > eps {
+            let ln_pi: f64 = bits_to_f64(ig_ln(f64_to_bits(p_i)));
+            h = h - p_i * ln_pi;
+        }
+        i = i + 1;
+    }
+
+    if h < 0.0 { h = 0.0; }
+    f64_to_bits(h)
+}
+
+/// Compute cross-entropy between P and Q.
+///
+/// H(P, Q) = -sum_i P(i) * log(Q(i))
+///
+/// Arguments:
+///   p - true distribution (n elements, f64 bits)
+///   q - predicted distribution (n elements, f64 bits)
+///   n - number of elements
+///
+/// Returns: cross-entropy as f64 bits
+fn cross_entropy(p: i64, q: i64, n: i64) -> i64 {
+    var h: f64 = 0.0;
+    let eps: f64 = 0.0000000001;
+
+    var i: i64 = 0;
+    while i < n {
+        let p_i: f64 = bits_to_f64(vec_get(p, i));
+        let q_i: f64 = bits_to_f64(vec_get(q, i));
+        if p_i > eps {
+            var q_safe: f64 = q_i;
+            if q_safe < eps { q_safe = eps; }
+            let ln_qi: f64 = bits_to_f64(ig_ln(f64_to_bits(q_safe)));
+            h = h - p_i * ln_qi;
+        }
+        i = i + 1;
+    }
+    f64_to_bits(h)
+}
+
+// =============================================================================
+// Information Geometric Utilities
+// =============================================================================
+
+/// Compute the geodesic distance on the Fisher manifold (diagonal approximation).
+///
+/// For diagonal Fisher, the geodesic distance is:
+///   d(θ₁, θ₂) = sqrt(sum_i F_ii * (θ₁_i - θ₂_i)²)
+///
+/// Arguments:
+///   params1     - first parameter point (n elements, f64 bits)
+///   params2     - second parameter point (n elements, f64 bits)
+///   fisher_diag - diagonal Fisher at midpoint (n elements, f64 bits)
+///
+/// Returns: geodesic distance as f64 bits
+fn geodesic_distance(params1: i64, params2: i64, fisher_diag: i64) -> i64 {
+    let n: i64 = vec_len(params1);
+    var sum: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < n {
+        let p1: f64 = bits_to_f64(vec_get(params1, i));
+        let p2: f64 = bits_to_f64(vec_get(params2, i));
+        let f_i: f64 = bits_to_f64(vec_get(fisher_diag, i));
+        let diff: f64 = p1 - p2;
+        sum = sum + f_i * diff * diff;
+        i = i + 1;
+    }
+
+    ig_sqrt(f64_to_bits(sum))
+}
+
+/// Trust region check: determine if a proposed update stays within the
+/// trust region defined by the Fisher metric.
+///
+/// Returns 1 if ||update||_F <= radius, 0 otherwise.
+///
+/// Arguments:
+///   update      - proposed parameter update (n elements, f64 bits)
+///   fisher_diag - diagonal Fisher (n elements, f64 bits)
+///   radius      - trust region radius as f64 bits
+///
+/// Returns: 1 if within trust region, 0 otherwise
+fn trust_region_check(update: i64, fisher_diag: i64, radius: i64) -> i64 {
+    let n: i64 = vec_len(update);
+    let radius_f: f64 = bits_to_f64(radius);
+    var norm_sq: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < n {
+        let u_i: f64 = bits_to_f64(vec_get(update, i));
+        let f_i: f64 = bits_to_f64(vec_get(fisher_diag, i));
+        norm_sq = norm_sq + f_i * u_i * u_i;
+        i = i + 1;
+    }
+
+    let norm: f64 = bits_to_f64(ig_sqrt(f64_to_bits(norm_sq)));
+    if norm <= radius_f { return 1; }
+    0
+}
+
+/// Scale an update to fit within the trust region.
+///
+/// If ||update||_F > radius, scales it down to exactly radius.
+///
+/// Arguments:
+///   update      - proposed parameter update (n elements, f64 bits)
+///   fisher_diag - diagonal Fisher (n elements, f64 bits)
+///   radius      - trust region radius as f64 bits
+///
+/// Returns: (possibly scaled) update vector (n elements, f64 bits)
+fn trust_region_clip(update: i64, fisher_diag: i64, radius: i64) -> i64 {
+    let n: i64 = vec_len(update);
+    let radius_f: f64 = bits_to_f64(radius);
+    var norm_sq: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < n {
+        let u_i: f64 = bits_to_f64(vec_get(update, i));
+        let f_i: f64 = bits_to_f64(vec_get(fisher_diag, i));
+        norm_sq = norm_sq + f_i * u_i * u_i;
+        i = i + 1;
+    }
+
+    let norm: f64 = bits_to_f64(ig_sqrt(f64_to_bits(norm_sq)));
+
+    if norm <= radius_f {
+        // Already within trust region, return copy
+        return ig_fvec_copy(update, n);
+    }
+
+    // Scale down: update * (radius / norm)
+    let scale: f64 = radius_f / norm;
+    let out: i64 = vec_new();
+    i = 0;
+    while i < n {
+        let u_i: f64 = bits_to_f64(vec_get(update, i));
+        vec_push(out, f64_to_bits(u_i * scale));
+        i = i + 1;
+    }
+    out
+}
+
+// =============================================================================
+// Multivariate Gaussian KL
+// =============================================================================
+
+/// Compute KL divergence between two multivariate diagonal Gaussians.
+///
+/// KL(N(μ₁, diag(σ₁²)) || N(μ₂, diag(σ₂²)))
+///   = 0.5 * sum_i [log(σ₂ᵢ²/σ₁ᵢ²) + σ₁ᵢ²/σ₂ᵢ² + (μ₁ᵢ-μ₂ᵢ)²/σ₂ᵢ² - 1]
+///
+/// Arguments:
+///   mu1  - mean of P (d elements, f64 bits)
+///   var1 - diagonal variance of P (d elements, f64 bits)
+///   mu2  - mean of Q (d elements, f64 bits)
+///   var2 - diagonal variance of Q (d elements, f64 bits)
+///   d    - dimensionality
+///
+/// Returns: KL divergence as f64 bits
+fn kl_gaussian_diag(mu1: i64, var1: i64, mu2: i64, var2: i64, d: i64) -> i64 {
+    var kl: f64 = 0.0;
+    let eps: f64 = 0.0000001;
+
+    var i: i64 = 0;
+    while i < d {
+        let m1: f64 = bits_to_f64(vec_get(mu1, i));
+        var v1: f64 = bits_to_f64(vec_get(var1, i));
+        let m2: f64 = bits_to_f64(vec_get(mu2, i));
+        var v2: f64 = bits_to_f64(vec_get(var2, i));
+
+        if v1 < eps { v1 = eps; }
+        if v2 < eps { v2 = eps; }
+
+        let ratio: f64 = v2 / v1;
+        let ln_ratio: f64 = bits_to_f64(ig_ln(f64_to_bits(ratio)));
+        let mu_diff: f64 = m1 - m2;
+
+        kl = kl + ln_ratio + v1 / v2 + mu_diff * mu_diff / v2 - 1.0;
+        i = i + 1;
+    }
+
+    kl = kl * 0.5;
+    if kl < 0.0 { kl = 0.0; }
+    f64_to_bits(kl)
+}
+
+// =============================================================================
+// Softmax (utility for distributions)
+// =============================================================================
+
+/// Compute softmax of a vector of logits.
+///
+/// softmax(x)_i = exp(x_i - max(x)) / sum_j exp(x_j - max(x))
+///
+/// Arguments:
+///   logits - input logits (n elements, f64 bits)
+///   n      - number of elements
+///
+/// Returns: probability distribution (n elements, f64 bits, sums to 1)
+fn ig_softmax(logits: i64, n: i64) -> i64 {
+    // Find max for numerical stability
+    var max_val: f64 = bits_to_f64(vec_get(logits, 0));
+    var i: i64 = 1;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    // Compute exp(x_i - max) and sum
+    let exps: i64 = vec_new();
+    var sum: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        let e: f64 = bits_to_f64(ig_exp(f64_to_bits(v - max_val)));
+        vec_push(exps, f64_to_bits(e));
+        sum = sum + e;
+        i = i + 1;
+    }
+
+    // Normalize
+    let out: i64 = vec_new();
+    i = 0;
+    while i < n {
+        let e: f64 = bits_to_f64(vec_get(exps, i));
+        vec_push(out, f64_to_bits(e / sum));
+        i = i + 1;
+    }
+    out
+}

@@ -1,0 +1,1199 @@
+// simplex-learning::moe - Mixture of Experts
+//
+// Implements a sparse Mixture of Experts (MoE) layer where a gating
+// network routes each input to the top-k experts out of N total.
+// Only the selected experts run, giving the model capacity of N
+// experts at the computational cost of k.
+//
+// Key ideas from Switch Transformer (Fedus et al. 2021) and
+// GShard (Lepikhin et al. 2020):
+//   - Learned router selects top-k experts per token
+//   - Load balancing auxiliary loss prevents expert collapse
+//   - Capacity factor limits per-expert token count
+//
+// All f64 values are stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set.
+//
+// Exports:
+//   moe_layer_new            - construct a MoE layer
+//   moe_forward              - route input through top-k experts
+//   moe_router_logits        - raw router scores
+//   moe_top_k_indices        - find top-k expert indices
+//   moe_softmax_weights      - softmax over selected experts
+//   moe_expert_forward       - single expert linear transform
+//   moe_load_balance_loss    - auxiliary loss for load balancing
+//   moe_expert_utilization   - per-expert usage counts
+//   moe_set_capacity         - set capacity factor
+//   moe_init_experts         - re-initialize expert weights
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn my_exp(x: f64) -> f64 {
+    var arg: f64 = x;
+    if arg > 20.0 { arg = 20.0; }
+    if arg < 0.0 - 20.0 { arg = 0.0 - 20.0; }
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 30 {
+        term = term * arg / (i as f64);
+        result = result + term;
+        i = i + 1;
+    }
+    result
+}
+
+fn my_sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    // Newton's method
+    var guess: f64 = x;
+    if guess > 1.0 { guess = guess / 2.0; }
+    var i: i64 = 0;
+    while i < 30 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    guess
+}
+
+// =============================================================================
+// MoE Layer Layout
+// =============================================================================
+//
+// A MoE layer is stored as a vec with the following fields:
+//
+//   [0] n_experts          i64
+//   [1] input_dim          i64
+//   [2] output_dim         i64
+//   [3] top_k              i64
+//   [4] router_weights     i64 (handle to vec: n_experts * input_dim f64-as-bits)
+//   [5] expert_weights     i64 (handle to vec of vecs, each is input_dim * output_dim f64-as-bits)
+//   [6] expert_biases      i64 (handle to vec of vecs, each is output_dim f64-as-bits)
+//   [7] load_balance_loss  f64-as-bits
+//   [8] utilization_counts i64 (handle to vec of i64 counts, one per expert)
+//   [9] capacity_factor    f64-as-bits
+//   [10] total_forwards    i64
+//   [11] router_bias       i64 (handle to vec of n_experts f64-as-bits)
+
+fn MOE_N_EXPERTS() -> i64       { 0 }
+fn MOE_INPUT_DIM() -> i64       { 1 }
+fn MOE_OUTPUT_DIM() -> i64      { 2 }
+fn MOE_TOP_K() -> i64           { 3 }
+fn MOE_ROUTER_W() -> i64        { 4 }
+fn MOE_EXPERT_W() -> i64        { 5 }
+fn MOE_EXPERT_B() -> i64        { 6 }
+fn MOE_LB_LOSS() -> i64         { 7 }
+fn MOE_UTIL() -> i64            { 8 }
+fn MOE_CAPACITY() -> i64        { 9 }
+fn MOE_TOTAL_FWD() -> i64       { 10 }
+fn MOE_ROUTER_B() -> i64        { 11 }
+fn MOE_FIELDS() -> i64          { 12 }
+
+// =============================================================================
+// Deterministic Pseudo-Random Initialization
+// =============================================================================
+
+// Generate a deterministic pseudo-random float in [-scale, scale]
+// using a simple LCG hash of the seed.
+fn prng_float(seed: i64, scale: f64) -> f64 {
+    // LCG: (seed * 6364136223846793005 + 1442695040888963407) mod 2^63
+    var s: i64 = seed;
+    if s < 0 { s = 0 - s; }
+    // Use sin-based hash for simplicity
+    let t: f64 = sin((s as f64) * 12.9898 + 78.233) * 43758.5453;
+    // Fractional part
+    var frac: f64 = t - ((t as i64) as f64);
+    if frac < 0.0 { frac = frac + 1.0; }
+    // Map [0, 1) to [-scale, scale)
+    (frac * 2.0 - 1.0) * scale
+}
+
+// =============================================================================
+// Constructor
+// =============================================================================
+
+// Create a new Mixture of Experts layer.
+//
+// Initializes router weights and expert weights with small random values
+// using Xavier/Glorot initialization scale = sqrt(2/(fan_in + fan_out)).
+//
+// Arguments:
+//   n_experts  - number of expert networks
+//   input_dim  - input dimensionality
+//   output_dim - output dimensionality per expert
+//   top_k      - number of experts to route each input to
+//
+// Returns: handle to MoE layer vec
+fn moe_layer_new(n_experts: i64, input_dim: i64, output_dim: i64, top_k: i64) -> i64 {
+    let layer = vec_new();
+
+    // Basic fields
+    vec_push(layer, n_experts);     // [0]
+    vec_push(layer, input_dim);     // [1]
+    vec_push(layer, output_dim);    // [2]
+    vec_push(layer, top_k);         // [3]
+
+    // Xavier scale for router: sqrt(2 / (input_dim + n_experts))
+    let router_scale: f64 = my_sqrt(2.0 / ((input_dim + n_experts) as f64));
+
+    // Router weights: flat array of n_experts * input_dim
+    let router_w = vec_new();
+    var i: i64 = 0;
+    let rw_size: i64 = n_experts * input_dim;
+    while i < rw_size {
+        let val: f64 = prng_float(i + 1, router_scale);
+        vec_push(router_w, f64_to_bits(val));
+        i = i + 1;
+    }
+    vec_push(layer, router_w);      // [4]
+
+    // Expert weights: vec of vecs, each input_dim * output_dim
+    let expert_scale: f64 = my_sqrt(2.0 / ((input_dim + output_dim) as f64));
+    let expert_ws = vec_new();
+    var e: i64 = 0;
+    while e < n_experts {
+        let ew = vec_new();
+        var j: i64 = 0;
+        let ew_size: i64 = input_dim * output_dim;
+        while j < ew_size {
+            let seed: i64 = e * ew_size + j + rw_size + 1;
+            let val: f64 = prng_float(seed, expert_scale);
+            vec_push(ew, f64_to_bits(val));
+            j = j + 1;
+        }
+        vec_push(expert_ws, ew);
+        e = e + 1;
+    }
+    vec_push(layer, expert_ws);     // [5]
+
+    // Expert biases: vec of vecs, each output_dim (initialized to zero)
+    let expert_bs = vec_new();
+    e = 0;
+    while e < n_experts {
+        let eb = vec_new();
+        var j: i64 = 0;
+        while j < output_dim {
+            vec_push(eb, f64_to_bits(0.0));
+            j = j + 1;
+        }
+        vec_push(expert_bs, eb);
+        e = e + 1;
+    }
+    vec_push(layer, expert_bs);     // [6]
+
+    // Load balance loss (initially 0)
+    vec_push(layer, f64_to_bits(0.0)); // [7]
+
+    // Utilization counts (one per expert, all zero)
+    let util = vec_new();
+    e = 0;
+    while e < n_experts {
+        vec_push(util, 0);
+        e = e + 1;
+    }
+    vec_push(layer, util);          // [8]
+
+    // Capacity factor (default 1.25)
+    vec_push(layer, f64_to_bits(1.25)); // [9]
+
+    // Total forward count
+    vec_push(layer, 0);             // [10]
+
+    // Router bias (initialized to zero)
+    let router_b = vec_new();
+    e = 0;
+    while e < n_experts {
+        vec_push(router_b, f64_to_bits(0.0));
+        e = e + 1;
+    }
+    vec_push(layer, router_b);      // [11]
+
+    layer
+}
+
+// =============================================================================
+// Router
+// =============================================================================
+
+// Compute raw router logits for an input.
+//
+// logit_e = sum_d(router_weights[e * input_dim + d] * input[d]) + router_bias[e]
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//   input - handle to vec of f64-as-bits input values (length = input_dim)
+//
+// Returns: handle to vec of f64-as-bits logits (length = n_experts)
+fn moe_router_logits(layer: i64, input: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let input_dim: i64 = vec_get(layer, MOE_INPUT_DIM());
+    let router_w: i64 = vec_get(layer, MOE_ROUTER_W());
+    let router_b: i64 = vec_get(layer, MOE_ROUTER_B());
+    let in_len: i64 = vec_len(input);
+
+    let logits = vec_new();
+    var e: i64 = 0;
+    while e < n_experts {
+        var sum: f64 = 0.0;
+        var d: i64 = 0;
+        while d < input_dim {
+            if d < in_len {
+                let w: f64 = bits_to_f64(vec_get(router_w, e * input_dim + d));
+                let x: f64 = bits_to_f64(vec_get(input, d));
+                sum = sum + w * x;
+            }
+            d = d + 1;
+        }
+        // Add bias
+        let bias: f64 = bits_to_f64(vec_get(router_b, e));
+        sum = sum + bias;
+        vec_push(logits, f64_to_bits(sum));
+        e = e + 1;
+    }
+
+    logits
+}
+
+// =============================================================================
+// Top-K Selection
+// =============================================================================
+
+// Find the indices of the top-k largest values in a vec of f64-as-bits.
+//
+// Uses repeated argmax with masking (simple and correct for small k).
+//
+// Arguments:
+//   logits - handle to vec of f64-as-bits values
+//   k      - number of top indices to return
+//
+// Returns: handle to vec of i64 indices (sorted by logit value, descending)
+fn moe_top_k_indices(logits: i64, k: i64) -> i64 {
+    let n: i64 = vec_len(logits);
+    let result = vec_new();
+
+    // Track which indices have been selected
+    let used = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(used, 0);
+        i = i + 1;
+    }
+
+    var found: i64 = 0;
+    while found < k {
+        if found >= n { return result; } // k > n
+
+        // Find argmax among unused indices
+        var best_idx: i64 = 0 - 1;
+        var best_val: f64 = 0.0 - 999999.0;
+
+        i = 0;
+        while i < n {
+            if vec_get(used, i) == 0 {
+                let v: f64 = bits_to_f64(vec_get(logits, i));
+                if best_idx < 0 {
+                    best_idx = i;
+                    best_val = v;
+                } else {
+                    if v > best_val {
+                        best_idx = i;
+                        best_val = v;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+
+        if best_idx >= 0 {
+            vec_push(result, best_idx);
+            vec_set(used, best_idx, 1);
+        }
+        found = found + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Softmax Over Selected Experts
+// =============================================================================
+
+// Compute softmax weights over the selected expert indices only.
+// This gives the gating weights for combining expert outputs.
+//
+// Arguments:
+//   logits  - handle to vec of f64-as-bits full router logits
+//   indices - handle to vec of i64 selected expert indices
+//
+// Returns: handle to vec of f64-as-bits softmax weights (same length as indices)
+fn moe_softmax_weights(logits: i64, indices: i64) -> i64 {
+    let k: i64 = vec_len(indices);
+    let result = vec_new();
+    if k == 0 { return result; }
+
+    // Find max among selected for numerical stability
+    var max_val: f64 = bits_to_f64(vec_get(logits, vec_get(indices, 0)));
+    var i: i64 = 1;
+    while i < k {
+        let idx: i64 = vec_get(indices, i);
+        let v: f64 = bits_to_f64(vec_get(logits, idx));
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    // Sum of exp(logit - max)
+    var sum: f64 = 0.0;
+    let exps = vec_new();
+    i = 0;
+    while i < k {
+        let idx: i64 = vec_get(indices, i);
+        let v: f64 = bits_to_f64(vec_get(logits, idx));
+        let e: f64 = my_exp(v - max_val);
+        vec_push(exps, f64_to_bits(e));
+        sum = sum + e;
+        i = i + 1;
+    }
+
+    // Normalize
+    if sum <= 0.0 { sum = 1.0; }
+    i = 0;
+    while i < k {
+        let e: f64 = bits_to_f64(vec_get(exps, i));
+        vec_push(result, f64_to_bits(e / sum));
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Single Expert Forward
+// =============================================================================
+
+// Run a single expert's linear transformation on the input.
+//
+// output[j] = sum_d(weights[d * output_dim + j] * input[d]) + bias[j]
+//
+// Arguments:
+//   layer     - handle to MoE layer vec
+//   expert_id - which expert (0..n_experts-1)
+//   input     - handle to vec of f64-as-bits input values
+//
+// Returns: handle to vec of f64-as-bits output values (length = output_dim)
+fn moe_expert_forward(layer: i64, expert_id: i64, input: i64) -> i64 {
+    let input_dim: i64 = vec_get(layer, MOE_INPUT_DIM());
+    let output_dim: i64 = vec_get(layer, MOE_OUTPUT_DIM());
+    let expert_ws: i64 = vec_get(layer, MOE_EXPERT_W());
+    let expert_bs: i64 = vec_get(layer, MOE_EXPERT_B());
+    let in_len: i64 = vec_len(input);
+
+    let weights: i64 = vec_get(expert_ws, expert_id);
+    let biases: i64 = vec_get(expert_bs, expert_id);
+
+    let output = vec_new();
+    var j: i64 = 0;
+    while j < output_dim {
+        var sum: f64 = 0.0;
+        var d: i64 = 0;
+        while d < input_dim {
+            if d < in_len {
+                let w: f64 = bits_to_f64(vec_get(weights, d * output_dim + j));
+                let x: f64 = bits_to_f64(vec_get(input, d));
+                sum = sum + w * x;
+            }
+            d = d + 1;
+        }
+        // Add bias
+        let b: f64 = bits_to_f64(vec_get(biases, j));
+        sum = sum + b;
+
+        // ReLU activation
+        if sum < 0.0 { sum = 0.0; }
+
+        vec_push(output, f64_to_bits(sum));
+        j = j + 1;
+    }
+
+    output
+}
+
+// =============================================================================
+// Full Forward Pass
+// =============================================================================
+
+// Route input through the MoE layer.
+//
+// 1. Compute router logits
+// 2. Select top-k experts
+// 3. Compute softmax gating weights
+// 4. Run selected experts
+// 5. Combine outputs with gating weights
+// 6. Update utilization counts and load balance loss
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//   input - handle to vec of f64-as-bits input values
+//
+// Returns: handle to vec of f64-as-bits output (length = output_dim)
+fn moe_forward(layer: i64, input: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let output_dim: i64 = vec_get(layer, MOE_OUTPUT_DIM());
+    let top_k: i64 = vec_get(layer, MOE_TOP_K());
+
+    // Step 1: Router logits
+    let logits: i64 = moe_router_logits(layer, input);
+
+    // Step 2: Top-k selection
+    let indices: i64 = moe_top_k_indices(logits, top_k);
+
+    // Step 3: Softmax gating weights
+    let weights: i64 = moe_softmax_weights(logits, indices);
+
+    // Step 4 & 5: Run experts and combine
+    // Initialize output to zeros
+    let output = vec_new();
+    var j: i64 = 0;
+    while j < output_dim {
+        vec_push(output, f64_to_bits(0.0));
+        j = j + 1;
+    }
+
+    let k: i64 = vec_len(indices);
+    var i: i64 = 0;
+    while i < k {
+        let expert_id: i64 = vec_get(indices, i);
+        let gate_weight: f64 = bits_to_f64(vec_get(weights, i));
+
+        // Run expert
+        let expert_out: i64 = moe_expert_forward(layer, expert_id, input);
+
+        // Accumulate weighted output
+        j = 0;
+        while j < output_dim {
+            let cur: f64 = bits_to_f64(vec_get(output, j));
+            let expert_val: f64 = bits_to_f64(vec_get(expert_out, j));
+            vec_set(output, j, f64_to_bits(cur + gate_weight * expert_val));
+            j = j + 1;
+        }
+
+        // Update utilization count
+        let util: i64 = vec_get(layer, MOE_UTIL());
+        let old_count: i64 = vec_get(util, expert_id);
+        vec_set(util, expert_id, old_count + 1);
+
+        i = i + 1;
+    }
+
+    // Update total forward count
+    let old_fwd: i64 = vec_get(layer, MOE_TOTAL_FWD());
+    vec_set(layer, MOE_TOTAL_FWD(), old_fwd + 1);
+
+    // Step 6: Compute load balance loss
+    // Switch Transformer auxiliary loss:
+    //   L_balance = n_experts * sum_e(f_e * P_e)
+    // where f_e = fraction of tokens routed to expert e
+    //       P_e = average router probability for expert e
+    let total_fwd: i64 = vec_get(layer, MOE_TOTAL_FWD());
+    if total_fwd > 0 {
+        let util_vec: i64 = vec_get(layer, MOE_UTIL());
+
+        // Compute full softmax for router probabilities
+        let router_probs: i64 = softmax_full(logits);
+
+        var lb_loss: f64 = 0.0;
+        var e: i64 = 0;
+        while e < n_experts {
+            let count_e: i64 = vec_get(util_vec, e);
+            let f_e: f64 = (count_e as f64) / (total_fwd as f64);
+            let p_e: f64 = bits_to_f64(vec_get(router_probs, e));
+            lb_loss = lb_loss + f_e * p_e;
+            e = e + 1;
+        }
+        lb_loss = lb_loss * (n_experts as f64);
+
+        vec_set(layer, MOE_LB_LOSS(), f64_to_bits(lb_loss));
+    }
+
+    output
+}
+
+// =============================================================================
+// Softmax (full, over all experts)
+// =============================================================================
+
+fn softmax_full(logits: i64) -> i64 {
+    let n: i64 = vec_len(logits);
+    let result = vec_new();
+    if n == 0 { return result; }
+
+    var max_val: f64 = bits_to_f64(vec_get(logits, 0));
+    var i: i64 = 1;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    var sum: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        sum = sum + my_exp(v - max_val);
+        i = i + 1;
+    }
+
+    if sum <= 0.0 { sum = 1.0; }
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        let p: f64 = my_exp(v - max_val) / sum;
+        vec_push(result, f64_to_bits(p));
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Load Balancing
+// =============================================================================
+
+// Get the current load balance auxiliary loss.
+//
+// This loss should be added to the main training loss with a small
+// coefficient (e.g., 0.01) to encourage balanced expert utilization.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//
+// Returns: load balance loss as f64-as-bits
+fn moe_load_balance_loss(layer: i64) -> i64 {
+    vec_get(layer, MOE_LB_LOSS())
+}
+
+// Get per-expert utilization counts.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//
+// Returns: handle to vec of i64 counts (one per expert)
+fn moe_expert_utilization(layer: i64) -> i64 {
+    vec_get(layer, MOE_UTIL())
+}
+
+// Get the utilization fraction for each expert (count / total_forwards).
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//
+// Returns: handle to vec of f64-as-bits fractions
+fn moe_utilization_fractions(layer: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let total_fwd: i64 = vec_get(layer, MOE_TOTAL_FWD());
+    let util: i64 = vec_get(layer, MOE_UTIL());
+    let result = vec_new();
+
+    var e: i64 = 0;
+    while e < n_experts {
+        var frac: f64 = 0.0;
+        if total_fwd > 0 {
+            frac = (vec_get(util, e) as f64) / (total_fwd as f64);
+        }
+        vec_push(result, f64_to_bits(frac));
+        e = e + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Capacity Factor
+// =============================================================================
+
+// Set the capacity factor for expert token limits.
+//
+// The capacity factor determines the maximum number of tokens each
+// expert can process: max_tokens = capacity_factor * (total_tokens / n_experts).
+// Default is 1.25.
+//
+// Arguments:
+//   layer  - handle to MoE layer vec
+//   factor - capacity factor as f64-as-bits
+//
+// Returns: handle to same layer (mutated)
+fn moe_set_capacity(layer: i64, factor: i64) -> i64 {
+    vec_set(layer, MOE_CAPACITY(), factor);
+    layer
+}
+
+// Get the capacity factor.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//
+// Returns: capacity factor as f64-as-bits
+fn moe_get_capacity(layer: i64) -> i64 {
+    vec_get(layer, MOE_CAPACITY())
+}
+
+// =============================================================================
+// Expert Initialization
+// =============================================================================
+
+// Re-initialize expert weights with a new seed.
+//
+// Useful for resetting collapsed experts during training.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//   seed  - seed for deterministic initialization
+//
+// Returns: handle to same layer (mutated)
+fn moe_init_experts(layer: i64, seed: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let input_dim: i64 = vec_get(layer, MOE_INPUT_DIM());
+    let output_dim: i64 = vec_get(layer, MOE_OUTPUT_DIM());
+    let expert_ws: i64 = vec_get(layer, MOE_EXPERT_W());
+
+    let scale: f64 = my_sqrt(2.0 / ((input_dim + output_dim) as f64));
+    let ew_size: i64 = input_dim * output_dim;
+
+    var e: i64 = 0;
+    while e < n_experts {
+        let ew: i64 = vec_get(expert_ws, e);
+        var j: i64 = 0;
+        while j < ew_size {
+            let s: i64 = seed + e * ew_size + j;
+            let val: f64 = prng_float(s, scale);
+            vec_set(ew, j, f64_to_bits(val));
+            j = j + 1;
+        }
+        e = e + 1;
+    }
+
+    // Reset utilization counts
+    let util: i64 = vec_get(layer, MOE_UTIL());
+    e = 0;
+    while e < n_experts {
+        vec_set(util, e, 0);
+        e = e + 1;
+    }
+    vec_set(layer, MOE_TOTAL_FWD(), 0);
+    vec_set(layer, MOE_LB_LOSS(), f64_to_bits(0.0));
+
+    layer
+}
+
+// =============================================================================
+// Batch Forward
+// =============================================================================
+
+// Run a batch of inputs through the MoE layer.
+//
+// Arguments:
+//   layer  - handle to MoE layer vec
+//   inputs - handle to vec of vecs (each inner vec is f64-as-bits input)
+//
+// Returns: handle to vec of vecs (each inner vec is f64-as-bits output)
+fn moe_batch_forward(layer: i64, inputs: i64) -> i64 {
+    let n: i64 = vec_len(inputs);
+    let results = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let input: i64 = vec_get(inputs, i);
+        let output: i64 = moe_forward(layer, input);
+        vec_push(results, output);
+        i = i + 1;
+    }
+    results
+}
+
+// =============================================================================
+// Expert Analysis
+// =============================================================================
+
+// Compute the router entropy for an input.
+// Higher entropy means more uniform routing (good for load balance).
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//   input - handle to vec of f64-as-bits input
+//
+// Returns: router entropy as f64-as-bits
+fn moe_router_entropy(layer: i64, input: i64) -> i64 {
+    let logits: i64 = moe_router_logits(layer, input);
+    let probs: i64 = softmax_full(logits);
+    let n: i64 = vec_len(probs);
+
+    var entropy: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let p: f64 = bits_to_f64(vec_get(probs, i));
+        if p > 0.000000001 {
+            entropy = entropy - p * approx_ln(p);
+        }
+        i = i + 1;
+    }
+
+    f64_to_bits(entropy)
+}
+
+fn approx_ln(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 - 30.0; }
+    let ln2: f64 = 0.6931471805599453;
+    var m: f64 = x;
+    var k: i64 = 0;
+    while m >= 1.0 {
+        m = m / 2.0;
+        k = k + 1;
+    }
+    while m < 0.5 {
+        m = m * 2.0;
+        k = k - 1;
+    }
+    let t: f64 = (m - 1.0) / (m + 1.0);
+    let t2: f64 = t * t;
+    let ln_m: f64 = 2.0 * t * (1.0 + t2 / 3.0 + t2 * t2 / 5.0);
+    ln_m + (k as f64) * ln2
+}
+
+// Which expert would be selected first for this input?
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//   input - handle to vec of f64-as-bits input
+//
+// Returns: index of the top-1 expert (i64)
+fn moe_primary_expert(layer: i64, input: i64) -> i64 {
+    let logits: i64 = moe_router_logits(layer, input);
+    let indices: i64 = moe_top_k_indices(logits, 1);
+    if vec_len(indices) == 0 { return 0; }
+    vec_get(indices, 0)
+}
+
+// =============================================================================
+// Expert Gradient (simple finite-difference)
+// =============================================================================
+
+// Compute approximate gradient of expert output w.r.t. input using
+// finite differences. Useful for understanding expert sensitivity.
+//
+// Arguments:
+//   layer     - handle to MoE layer vec
+//   expert_id - which expert
+//   input     - handle to vec of f64-as-bits input
+//   epsilon   - perturbation size as f64-as-bits
+//
+// Returns: handle to vec of vecs (Jacobian: output_dim x input_dim, f64-as-bits)
+fn moe_expert_gradient(layer: i64, expert_id: i64, input: i64, epsilon: i64) -> i64 {
+    let input_dim: i64 = vec_get(layer, MOE_INPUT_DIM());
+    let output_dim: i64 = vec_get(layer, MOE_OUTPUT_DIM());
+    let eps: f64 = bits_to_f64(epsilon);
+    let in_len: i64 = vec_len(input);
+
+    // Base output
+    let base_out: i64 = moe_expert_forward(layer, expert_id, input);
+
+    let jacobian = vec_new();
+    var d: i64 = 0;
+    while d < input_dim {
+        if d < in_len {
+            // Perturb input[d]
+            let orig: f64 = bits_to_f64(vec_get(input, d));
+            vec_set(input, d, f64_to_bits(orig + eps));
+            let pert_out: i64 = moe_expert_forward(layer, expert_id, input);
+            vec_set(input, d, f64_to_bits(orig)); // restore
+
+            // Gradient for each output dimension
+            let grad_row = vec_new();
+            var j: i64 = 0;
+            while j < output_dim {
+                let base_val: f64 = bits_to_f64(vec_get(base_out, j));
+                let pert_val: f64 = bits_to_f64(vec_get(pert_out, j));
+                let g: f64 = (pert_val - base_val) / eps;
+                vec_push(grad_row, f64_to_bits(g));
+                j = j + 1;
+            }
+            vec_push(jacobian, grad_row);
+        }
+        d = d + 1;
+    }
+
+    jacobian
+}
+
+// =============================================================================
+// Router Weight Access
+// =============================================================================
+
+// Get the router weight matrix for inspection or external optimization.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//
+// Returns: handle to vec of f64-as-bits (flat: n_experts * input_dim)
+fn moe_get_router_weights(layer: i64) -> i64 {
+    vec_get(layer, MOE_ROUTER_W())
+}
+
+// Set a specific router weight.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//   idx   - flat index into router weight array
+//   value - new weight as f64-as-bits
+//
+// Returns: handle to same layer (mutated)
+fn moe_set_router_weight(layer: i64, idx: i64, value: i64) -> i64 {
+    let router_w: i64 = vec_get(layer, MOE_ROUTER_W());
+    vec_set(router_w, idx, value);
+    layer
+}
+
+// =============================================================================
+// Expert Weight Access
+// =============================================================================
+
+// Get the weight matrix for a specific expert.
+//
+// Arguments:
+//   layer     - handle to MoE layer vec
+//   expert_id - which expert
+//
+// Returns: handle to vec of f64-as-bits (flat: input_dim * output_dim)
+fn moe_get_expert_weights(layer: i64, expert_id: i64) -> i64 {
+    let expert_ws: i64 = vec_get(layer, MOE_EXPERT_W());
+    vec_get(expert_ws, expert_id)
+}
+
+// Set a specific expert weight.
+//
+// Arguments:
+//   layer     - handle to MoE layer vec
+//   expert_id - which expert
+//   idx       - flat index into weight array
+//   value     - new weight as f64-as-bits
+//
+// Returns: handle to same layer (mutated)
+fn moe_set_expert_weight(layer: i64, expert_id: i64, idx: i64, value: i64) -> i64 {
+    let expert_ws: i64 = vec_get(layer, MOE_EXPERT_W());
+    let ew: i64 = vec_get(expert_ws, expert_id);
+    vec_set(ew, idx, value);
+    layer
+}
+
+// =============================================================================
+// Statistics and Summary
+// =============================================================================
+
+// Get summary statistics for the MoE layer.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//
+// Returns: handle to vec:
+//   [0] n_experts           i64
+//   [1] input_dim           i64
+//   [2] output_dim          i64
+//   [3] top_k               i64
+//   [4] total_forwards      i64
+//   [5] load_balance_loss   f64-as-bits
+//   [6] max_util_fraction   f64-as-bits
+//   [7] min_util_fraction   f64-as-bits
+fn moe_summary(layer: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let total_fwd: i64 = vec_get(layer, MOE_TOTAL_FWD());
+    let util: i64 = vec_get(layer, MOE_UTIL());
+
+    let result = vec_new();
+    vec_push(result, vec_get(layer, MOE_N_EXPERTS()));
+    vec_push(result, vec_get(layer, MOE_INPUT_DIM()));
+    vec_push(result, vec_get(layer, MOE_OUTPUT_DIM()));
+    vec_push(result, vec_get(layer, MOE_TOP_K()));
+    vec_push(result, total_fwd);
+    vec_push(result, vec_get(layer, MOE_LB_LOSS()));
+
+    // Max and min utilization fractions
+    var max_frac: f64 = 0.0;
+    var min_frac: f64 = 1.0;
+    if total_fwd > 0 {
+        var e: i64 = 0;
+        while e < n_experts {
+            let frac: f64 = (vec_get(util, e) as f64) / (total_fwd as f64);
+            if frac > max_frac { max_frac = frac; }
+            if frac < min_frac { min_frac = frac; }
+            e = e + 1;
+        }
+    } else {
+        min_frac = 0.0;
+    }
+    vec_push(result, f64_to_bits(max_frac));
+    vec_push(result, f64_to_bits(min_frac));
+
+    result
+}
+
+// Reset all utilization counters and loss.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//
+// Returns: handle to same layer (mutated)
+fn moe_reset_stats(layer: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let util: i64 = vec_get(layer, MOE_UTIL());
+    var e: i64 = 0;
+    while e < n_experts {
+        vec_set(util, e, 0);
+        e = e + 1;
+    }
+    vec_set(layer, MOE_TOTAL_FWD(), 0);
+    vec_set(layer, MOE_LB_LOSS(), f64_to_bits(0.0));
+    layer
+}
+
+// =============================================================================
+// Noisy Top-K Gating (for exploration during training)
+// =============================================================================
+
+// Compute router logits with additive noise for exploration.
+// The noise encourages exploring different experts during training.
+//
+// noise_logit_e = logit_e + noise_scale * prng_float(step * n_experts + e)
+//
+// Arguments:
+//   layer       - handle to MoE layer vec
+//   input       - handle to vec of f64-as-bits input
+//   noise_scale - noise magnitude as f64-as-bits
+//
+// Returns: handle to vec of f64-as-bits noisy logits
+fn moe_noisy_router_logits(layer: i64, input: i64, noise_scale: i64) -> i64 {
+    let logits: i64 = moe_router_logits(layer, input);
+    let n: i64 = vec_len(logits);
+    let scale: f64 = bits_to_f64(noise_scale);
+    let step: i64 = vec_get(layer, MOE_TOTAL_FWD());
+
+    var i: i64 = 0;
+    while i < n {
+        let orig: f64 = bits_to_f64(vec_get(logits, i));
+        let noise: f64 = prng_float(step * n + i + 7919, scale);
+        vec_set(logits, i, f64_to_bits(orig + noise));
+        i = i + 1;
+    }
+
+    logits
+}
+
+// Forward pass with noisy gating (for training exploration).
+//
+// Arguments:
+//   layer       - handle to MoE layer vec
+//   input       - handle to vec of f64-as-bits input
+//   noise_scale - noise magnitude as f64-as-bits
+//
+// Returns: handle to vec of f64-as-bits output
+fn moe_noisy_forward(layer: i64, input: i64, noise_scale: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let output_dim: i64 = vec_get(layer, MOE_OUTPUT_DIM());
+    let top_k: i64 = vec_get(layer, MOE_TOP_K());
+
+    let logits: i64 = moe_noisy_router_logits(layer, input, noise_scale);
+    let indices: i64 = moe_top_k_indices(logits, top_k);
+    let weights: i64 = moe_softmax_weights(logits, indices);
+
+    let output = vec_new();
+    var j: i64 = 0;
+    while j < output_dim {
+        vec_push(output, f64_to_bits(0.0));
+        j = j + 1;
+    }
+
+    let k: i64 = vec_len(indices);
+    var i: i64 = 0;
+    while i < k {
+        let expert_id: i64 = vec_get(indices, i);
+        let gate_weight: f64 = bits_to_f64(vec_get(weights, i));
+        let expert_out: i64 = moe_expert_forward(layer, expert_id, input);
+
+        j = 0;
+        while j < output_dim {
+            let cur: f64 = bits_to_f64(vec_get(output, j));
+            let ev: f64 = bits_to_f64(vec_get(expert_out, j));
+            vec_set(output, j, f64_to_bits(cur + gate_weight * ev));
+            j = j + 1;
+        }
+
+        let util: i64 = vec_get(layer, MOE_UTIL());
+        let old_count: i64 = vec_get(util, expert_id);
+        vec_set(util, expert_id, old_count + 1);
+
+        i = i + 1;
+    }
+
+    let old_fwd: i64 = vec_get(layer, MOE_TOTAL_FWD());
+    vec_set(layer, MOE_TOTAL_FWD(), old_fwd + 1);
+
+    output
+}
+
+// =============================================================================
+// Expert Pruning
+// =============================================================================
+
+// Identify underutilized experts that could be pruned or re-initialized.
+//
+// Arguments:
+//   layer     - handle to MoE layer vec
+//   threshold - minimum utilization fraction as f64-as-bits
+//
+// Returns: handle to vec of i64 indices of underutilized experts
+fn moe_underutilized_experts(layer: i64, threshold: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let total_fwd: i64 = vec_get(layer, MOE_TOTAL_FWD());
+    let util: i64 = vec_get(layer, MOE_UTIL());
+    let thresh: f64 = bits_to_f64(threshold);
+    let result = vec_new();
+
+    if total_fwd == 0 { return result; }
+
+    var e: i64 = 0;
+    while e < n_experts {
+        let frac: f64 = (vec_get(util, e) as f64) / (total_fwd as f64);
+        if frac < thresh {
+            vec_push(result, e);
+        }
+        e = e + 1;
+    }
+
+    result
+}
+
+// Re-initialize specific experts (e.g., collapsed or underutilized ones).
+//
+// Arguments:
+//   layer      - handle to MoE layer vec
+//   expert_ids - handle to vec of i64 expert indices to re-initialize
+//   seed       - seed for initialization
+//
+// Returns: handle to same layer (mutated)
+fn moe_reinit_experts(layer: i64, expert_ids: i64, seed: i64) -> i64 {
+    let input_dim: i64 = vec_get(layer, MOE_INPUT_DIM());
+    let output_dim: i64 = vec_get(layer, MOE_OUTPUT_DIM());
+    let expert_ws: i64 = vec_get(layer, MOE_EXPERT_W());
+    let expert_bs: i64 = vec_get(layer, MOE_EXPERT_B());
+
+    let scale: f64 = my_sqrt(2.0 / ((input_dim + output_dim) as f64));
+    let ew_size: i64 = input_dim * output_dim;
+    let n_reinit: i64 = vec_len(expert_ids);
+
+    var idx: i64 = 0;
+    while idx < n_reinit {
+        let e: i64 = vec_get(expert_ids, idx);
+        let ew: i64 = vec_get(expert_ws, e);
+        let eb: i64 = vec_get(expert_bs, e);
+
+        // Re-initialize weights
+        var j: i64 = 0;
+        while j < ew_size {
+            let s: i64 = seed + e * ew_size + j + idx * 10007;
+            let val: f64 = prng_float(s, scale);
+            vec_set(ew, j, f64_to_bits(val));
+            j = j + 1;
+        }
+
+        // Reset biases to zero
+        j = 0;
+        while j < output_dim {
+            vec_set(eb, j, f64_to_bits(0.0));
+            j = j + 1;
+        }
+
+        idx = idx + 1;
+    }
+
+    layer
+}
+
+// =============================================================================
+// Expert Similarity
+// =============================================================================
+
+// Compute cosine similarity between two experts' weight matrices.
+// Useful for detecting expert collapse (identical experts).
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//   e1    - first expert index
+//   e2    - second expert index
+//
+// Returns: cosine similarity as f64-as-bits (1.0 = identical, 0.0 = orthogonal)
+fn moe_expert_similarity(layer: i64, e1: i64, e2: i64) -> i64 {
+    let expert_ws: i64 = vec_get(layer, MOE_EXPERT_W());
+    let w1: i64 = vec_get(expert_ws, e1);
+    let w2: i64 = vec_get(expert_ws, e2);
+    let n: i64 = vec_len(w1);
+
+    var dot: f64 = 0.0;
+    var norm1: f64 = 0.0;
+    var norm2: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < n {
+        let a: f64 = bits_to_f64(vec_get(w1, i));
+        let b: f64 = bits_to_f64(vec_get(w2, i));
+        dot = dot + a * b;
+        norm1 = norm1 + a * a;
+        norm2 = norm2 + b * b;
+        i = i + 1;
+    }
+
+    let denom: f64 = my_sqrt(norm1) * my_sqrt(norm2);
+    if denom < 0.000000001 {
+        return f64_to_bits(0.0);
+    }
+
+    f64_to_bits(dot / denom)
+}
+
+// Compute pairwise similarity matrix for all experts.
+//
+// Arguments:
+//   layer - handle to MoE layer vec
+//
+// Returns: handle to flat vec of f64-as-bits (n_experts * n_experts)
+fn moe_similarity_matrix(layer: i64) -> i64 {
+    let n_experts: i64 = vec_get(layer, MOE_N_EXPERTS());
+    let result = vec_new();
+
+    var i: i64 = 0;
+    while i < n_experts {
+        var j: i64 = 0;
+        while j < n_experts {
+            if i == j {
+                vec_push(result, f64_to_bits(1.0));
+            } else {
+                let sim: i64 = moe_expert_similarity(layer, i, j);
+                vec_push(result, sim);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Entry Point (smoke test)
+// =============================================================================
+

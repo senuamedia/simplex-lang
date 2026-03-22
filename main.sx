@@ -852,7 +852,7 @@ fn repl_state_vars(state: i64) -> i64 {
 
 // Run the REPL
 fn run_repl() -> i64 {
-    println("Simplex REPL v0.3.0");
+    println("Simplex REPL v0.17.0");
     println("Type expressions to evaluate. Type 'exit' or Ctrl-D to quit.");
     println("");
 

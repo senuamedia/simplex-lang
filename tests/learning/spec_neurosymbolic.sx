@@ -1,0 +1,58 @@
+use neurosymbolic;
+
+fn main() -> i64 {
+    println(string_from("=== Neuro-Symbolic Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create knowledge base
+    let kb: i64 = kb_new();
+    if kb_fact_count(kb) != 0 {
+        println(string_from("FAIL: new KB should have 0 facts"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kb_new"));
+    }
+
+    // Test 2: Add facts
+    kb_add_fact(kb, 1, 10, 100);
+    kb_add_fact(kb, 2, 10, 100);
+    kb_add_fact(kb, 3, 20, 200);
+    if kb_fact_count(kb) != 3 {
+        println(string_from("FAIL: should have 3 facts"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kb_add_fact"));
+    }
+
+    // Test 3: Query facts by subject and predicate
+    let results: i64 = kb_query(kb, 1, 10);
+    if vec_len(results) < 1 {
+        println(string_from("FAIL: query should find at least 1 result"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kb_query"));
+    }
+
+    // Test 4: Check fact existence
+    let has: i64 = kb_has_fact(kb, 2, 10, 100);
+    if has != 1 {
+        println(string_from("FAIL: fact (2,10,100) should exist"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kb_has_fact"));
+    }
+
+    // Test 5: Non-existent fact
+    let no_fact: i64 = kb_has_fact(kb, 99, 10, 100);
+    if no_fact != 0 {
+        println(string_from("FAIL: fact (99,10,100) should not exist"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kb_has_fact negative"));
+    }
+
+    if failures == 0 {
+        println(string_from("All neurosymbolic tests passed"));
+    }
+    failures
+}

@@ -36,6 +36,7 @@ Thumbs.db
 # Test artifacts
 /tests/*.ll
 /tests/*.o
+/tests/.module_cache/
 
 # Temporary files
 *.tmp
@@ -62,3 +63,16 @@ checkpoint-*/
 # Jupyter notebooks
 .ipynb_checkpoints/
 *.ipynb
+
+# Post-0.17.0 tasks (pending recalibration)
+tasks/TASK-05[2-9]-*
+tasks/TASK-06*-*
+tasks/TASK-07*-*
+
+# Post-0.17.0 release notes (pending recalibration)
+simplex-docs/RELEASE-0.18*.md
+simplex-docs/RELEASE-0.19*.md
+simplex-docs/RELEASE-0.2*.md
+
+# Roadmap (maintained in dev repo only)
+roadmap/

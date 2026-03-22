@@ -65,7 +65,7 @@ By the end of this tutorial, you'll understand:
 
 | Chapter | Topic | What You'll Learn |
 |---------|-------|-------------------|
-| [13](13-dual-numbers.md) | Dual Numbers | Automatic differentiation, exact derivatives, gradients |
+| [13](13-dual-numbers.md) | Dual Numbers | Automatic differentiation, analytical derivatives, gradients |
 | [14](14-self-learning-annealing.md) | Self-Learning Annealing | Meta-gradients, adaptive temperature schedules, neurosymbolic transition |
 | [15](15-quantum-error-mitigation.md) | Quantum Error Mitigation | Noise models, ZNE, error correction, circuit optimization |
 

@@ -1,0 +1,1535 @@
+// simplex-learning::liquid - Liquid Neural Networks
+//
+// Liquid Neural Networks (Hasani et al., MIT CSAIL 2021) are continuous-time
+// recurrent networks where neuron dynamics are governed by ODEs with dynamic
+// (state-dependent) synaptic weights. This makes them naturally adaptive to
+// time-varying inputs and dramatically more parameter-efficient than LSTMs.
+//
+// # Architecture
+//
+// Each liquid neuron has a time constant tau and evolves via:
+//   tau_i * dx_i/dt = -x_i + f(sum_j w_ij(x_j) * x_j + I_i)
+//
+// The key innovation is *dynamic weights*:
+//   w_ij(x_j) = w_base + w_mod * sigmoid(x_j)
+//
+// Neural Circuit Policies (NCPs) wire these neurons in biologically-inspired
+// sparse connectivity patterns (sensory -> inter -> command -> motor).
+//
+// Closed-form Continuous-time (CfC) cells provide an analytical solution to
+// the ODE, avoiding numerical integration entirely.
+//
+// # Data Layout (vec handles)
+//
+// All floating-point values stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set / vec_len.
+//
+// LiquidNeuron layout:
+//   [0] tau_bits       i64 (f64-as-bits, time constant)
+//   [1] state_bits     i64 (f64-as-bits, current activation)
+//   [2] n_inputs       i64
+//   [3] weights_vec    i64 (handle: base weights, f64-as-bits)
+//   [4] bias_bits      i64 (f64-as-bits)
+//   [5] mod_weights    i64 (handle: modulation weights, f64-as-bits)
+//
+// NCP layout:
+//   [0] n_neurons      i64
+//   [1] n_inputs       i64
+//   [2] n_outputs      i64
+//   [3] neurons_vec    i64 (handle: vec of neuron handles)
+//   [4] conn_matrix    i64 (handle: flat n_neurons x (n_neurons + n_inputs), f64-as-bits)
+//   [5] mod_matrix     i64 (handle: modulation weights, same layout)
+//   [6] output_map     i64 (handle: indices of output neurons)
+//
+// LiquidLayer layout:
+//   [0] input_dim      i64
+//   [1] hidden_dim     i64
+//   [2] output_dim     i64
+//   [3] ncp_handle     i64 (handle to NCP)
+//   [4] output_weights i64 (handle: output_dim x hidden_dim, f64-as-bits)
+//   [5] output_bias    i64 (handle: output_dim, f64-as-bits)
+//
+// CfC cell layout:
+//   [0] input_dim      i64
+//   [1] hidden_dim     i64
+//   [2] w_input        i64 (handle: hidden_dim x input_dim, f64-as-bits)
+//   [3] w_hidden       i64 (handle: hidden_dim x hidden_dim, f64-as-bits)
+//   [4] b_hidden       i64 (handle: hidden_dim, f64-as-bits)
+//   [5] w_tau          i64 (handle: hidden_dim x input_dim, f64-as-bits)
+//   [6] b_tau          i64 (handle: hidden_dim, f64-as-bits)
+//   [7] w_gate         i64 (handle: hidden_dim x (input_dim + hidden_dim), f64-as-bits)
+//   [8] b_gate         i64 (handle: hidden_dim, f64-as-bits)
+//
+// # References
+//
+// Hasani et al. "Liquid Time-constant Networks" (AAAI 2021)
+// Hasani et al. "Closed-form Continuous-time Neural Networks" (Nature Machine Intelligence 2022)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+
+// =============================================================================
+// Neuron field indices
+// =============================================================================
+
+fn LN_TAU() -> i64       { 0 }
+fn LN_STATE() -> i64     { 1 }
+fn LN_N_INPUTS() -> i64  { 2 }
+fn LN_WEIGHTS() -> i64   { 3 }
+fn LN_BIAS() -> i64      { 4 }
+fn LN_MOD_W() -> i64     { 5 }
+fn LN_FIELDS() -> i64    { 6 }
+
+// NCP field indices
+fn NCP_N_NEURONS() -> i64  { 0 }
+fn NCP_N_INPUTS() -> i64   { 1 }
+fn NCP_N_OUTPUTS() -> i64  { 2 }
+fn NCP_NEURONS() -> i64    { 3 }
+fn NCP_CONN() -> i64       { 4 }
+fn NCP_MOD() -> i64        { 5 }
+fn NCP_OUT_MAP() -> i64    { 6 }
+fn NCP_FIELDS() -> i64     { 7 }
+
+// Liquid layer field indices
+fn LL_INPUT_DIM() -> i64    { 0 }
+fn LL_HIDDEN_DIM() -> i64   { 1 }
+fn LL_OUTPUT_DIM() -> i64   { 2 }
+fn LL_NCP() -> i64          { 3 }
+fn LL_OUT_W() -> i64        { 4 }
+fn LL_OUT_B() -> i64        { 5 }
+fn LL_FIELDS() -> i64       { 6 }
+
+// CfC cell field indices
+fn CFC_INPUT_DIM() -> i64   { 0 }
+fn CFC_HIDDEN_DIM() -> i64  { 1 }
+fn CFC_W_INPUT() -> i64     { 2 }
+fn CFC_W_HIDDEN() -> i64    { 3 }
+fn CFC_B_HIDDEN() -> i64    { 4 }
+fn CFC_W_TAU() -> i64       { 5 }
+fn CFC_B_TAU() -> i64       { 6 }
+fn CFC_W_GATE() -> i64      { 7 }
+fn CFC_B_GATE() -> i64      { 8 }
+fn CFC_FIELDS() -> i64      { 9 }
+
+// =============================================================================
+// Float helpers
+// =============================================================================
+
+fn lq_abs(x: f64) -> f64 {
+    if x < 0.0 { 0.0 - x } else { x }
+}
+
+fn lq_max(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
+
+fn lq_min(a: f64, b: f64) -> f64 {
+    if a < b { a } else { b }
+}
+
+fn lq_sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    var guess: f64 = x;
+    if guess > 1.0 { guess = guess / 2.0; }
+    if guess < 0.001 { guess = 0.001; }
+    var i: i64 = 0;
+    while i < 30 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    guess
+}
+
+fn lq_sigmoid(x: f64) -> f64 {
+    // sigmoid(x) = 1 / (1 + exp(-x))
+    // For numerical stability, clamp input
+    let clamped: f64 = lq_max(0.0 - 15.0, lq_min(15.0, x));
+    let e: f64 = exp(0.0 - clamped);
+    1.0 / (1.0 + e)
+}
+
+fn lq_tanh(x: f64) -> f64 {
+    let clamped: f64 = lq_max(0.0 - 15.0, lq_min(15.0, x));
+    let e2x: f64 = exp(2.0 * clamped);
+    (e2x - 1.0) / (e2x + 1.0)
+}
+
+// =============================================================================
+// Simple PRNG for weight initialization
+// =============================================================================
+
+fn lq_prng(seed: i64) -> i64 {
+    // xorshift64
+    var s: i64 = seed;
+    if s == 0 { s = 123456789; }
+    s = s ^ (s * 8192);      // s ^= s << 13 (approx)
+    if s < 0 { s = 0 - s; }
+    s = s ^ (s / 131072);    // s ^= s >> 17 (approx)
+    s = s ^ (s * 32);        // s ^= s << 5 (approx)
+    if s < 0 { s = 0 - s; }
+    s
+}
+
+// Generate a small random float in [-scale, scale] from a seed
+fn lq_rand_weight(seed: i64, scale: i64) -> i64 {
+    let s: f64 = bits_to_f64(scale);
+    let r: i64 = lq_prng(seed);
+    // Map to [0, 1)
+    let frac: f64 = bits_to_f64(f64_to_bits(r % 1000000)) / 1000000.0;
+    // Map to [-scale, scale]
+    let val: f64 = (frac * 2.0 - 1.0) * s;
+    f64_to_bits(val)
+}
+
+// =============================================================================
+// Liquid Neuron
+// =============================================================================
+
+/// Create a new liquid neuron with given time constant and number of inputs.
+///
+/// The neuron's ODE is: tau * dx/dt = -x + f(sum w_i * x_i + bias)
+/// where f = tanh and weights are dynamic (state-dependent).
+///
+/// Arguments:
+///   tau      - time constant (f64-as-bits); larger tau = slower dynamics
+///   n_inputs - number of input connections
+///
+/// Returns: handle to neuron vec
+fn liquid_neuron_new(tau: i64, n_inputs: i64) -> i64 {
+    let neuron: i64 = vec_new();
+
+    // [0] tau_bits
+    vec_push(neuron, tau);
+
+    // [1] state_bits - initial state is zero
+    vec_push(neuron, f64_to_bits(0.0));
+
+    // [2] n_inputs
+    vec_push(neuron, n_inputs);
+
+    // [3] weights_vec - base weights initialized to zero
+    let weights: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_inputs {
+        vec_push(weights, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(neuron, weights);
+
+    // [4] bias_bits
+    vec_push(neuron, f64_to_bits(0.0));
+
+    // [5] mod_weights - modulation weights initialized to zero
+    let mod_w: i64 = vec_new();
+    i = 0;
+    while i < n_inputs {
+        vec_push(mod_w, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(neuron, mod_w);
+
+    neuron
+}
+
+/// Get the current state (activation) of a liquid neuron.
+///
+/// Returns: state as f64-as-bits
+fn liquid_neuron_state(neuron: i64) -> i64 {
+    vec_get(neuron, LN_STATE())
+}
+
+/// Set the state of a liquid neuron.
+fn liquid_neuron_set_state(neuron: i64, state: i64) -> i64 {
+    vec_set(neuron, LN_STATE(), state);
+    0
+}
+
+/// Reset a liquid neuron's state to zero.
+fn liquid_neuron_reset(neuron: i64) -> i64 {
+    vec_set(neuron, LN_STATE(), f64_to_bits(0.0));
+    0
+}
+
+// =============================================================================
+// Dynamic Weights
+// =============================================================================
+
+/// Compute a dynamic (state-dependent) synaptic weight.
+///
+/// w_ij(x_j) = w_base + w_mod * sigmoid(x_j)
+///
+/// This is the key innovation: weights modulate based on presynaptic activity.
+/// When x_j is large and positive, sigmoid(x_j) -> 1, so weight -> w_base + w_mod.
+/// When x_j is large and negative, sigmoid(x_j) -> 0, so weight -> w_base.
+///
+/// Arguments:
+///   pre_activation - presynaptic neuron state (f64-as-bits)
+///   weight_base    - base weight (f64-as-bits)
+///   modulation     - modulation weight (f64-as-bits)
+///
+/// Returns: dynamic weight value (f64-as-bits)
+fn liquid_dynamic_weight(pre_activation: i64, weight_base: i64, modulation: i64) -> i64 {
+    let x: f64 = bits_to_f64(pre_activation);
+    let wb: f64 = bits_to_f64(weight_base);
+    let wm: f64 = bits_to_f64(modulation);
+    let sig: f64 = lq_sigmoid(x);
+    f64_to_bits(wb + wm * sig)
+}
+
+// =============================================================================
+// Neural Circuit Policy (NCP)
+// =============================================================================
+
+/// Create a new Neural Circuit Policy.
+///
+/// An NCP wires liquid neurons with sparse, biologically-inspired connectivity.
+/// The architecture has implicit sensory/inter/command/motor layers.
+///
+/// Arguments:
+///   n_neurons  - total number of liquid neurons in the circuit
+///   n_inputs   - dimensionality of external input
+///   n_outputs  - dimensionality of circuit output
+///
+/// Returns: handle to NCP vec
+fn ncp_new(n_neurons: i64, n_inputs: i64, n_outputs: i64) -> i64 {
+    let ncp: i64 = vec_new();
+
+    // [0] n_neurons
+    vec_push(ncp, n_neurons);
+
+    // [1] n_inputs
+    vec_push(ncp, n_inputs);
+
+    // [2] n_outputs
+    vec_push(ncp, n_outputs);
+
+    // [3] neurons_vec - create n_neurons liquid neurons
+    let neurons: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_neurons {
+        // Default tau = 1.0 for all neurons
+        let neuron: i64 = liquid_neuron_new(f64_to_bits(1.0), n_inputs + n_neurons);
+        vec_push(neurons, neuron);
+        i = i + 1;
+    }
+    vec_push(ncp, neurons);
+
+    // [4] conn_matrix - connectivity weights (n_neurons x (n_neurons + n_inputs))
+    // Flat storage: row i, col j => index i * (n_neurons + n_inputs) + j
+    let total_cols: i64 = n_neurons + n_inputs;
+    let conn: i64 = vec_new();
+    i = 0;
+    let total_entries: i64 = n_neurons * total_cols;
+    while i < total_entries {
+        vec_push(conn, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(ncp, conn);
+
+    // [5] mod_matrix - modulation weights, same layout
+    let mod_m: i64 = vec_new();
+    i = 0;
+    while i < total_entries {
+        vec_push(mod_m, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(ncp, mod_m);
+
+    // [6] output_map - last n_outputs neurons serve as output
+    let out_map: i64 = vec_new();
+    i = 0;
+    while i < n_outputs {
+        let idx: i64 = n_neurons - n_outputs + i;
+        vec_push(out_map, idx);
+        i = i + 1;
+    }
+    vec_push(ncp, out_map);
+
+    ncp
+}
+
+/// Initialize NCP weights with small random values.
+///
+/// Arguments:
+///   ncp  - handle to NCP
+///   seed - random seed
+///
+/// Returns: 0
+fn ncp_init(ncp: i64, seed: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let conn: i64 = vec_get(ncp, NCP_CONN());
+    let mod_m: i64 = vec_get(ncp, NCP_MOD());
+    let total_cols: i64 = n_neurons + n_inputs;
+
+    let scale: i64 = f64_to_bits(0.1);
+    var s: i64 = seed;
+    if s == 0 { s = 42; }
+
+    var i: i64 = 0;
+    let total: i64 = n_neurons * total_cols;
+    while i < total {
+        s = lq_prng(s);
+        let w: i64 = lq_rand_weight(s, scale);
+        vec_set(conn, i, w);
+        s = lq_prng(s);
+        let m: i64 = lq_rand_weight(s, scale);
+        vec_set(mod_m, i, m);
+        i = i + 1;
+    }
+
+    // Also set neuron biases
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    i = 0;
+    while i < n_neurons {
+        let neuron: i64 = vec_get(neurons, i);
+        s = lq_prng(s);
+        let b: i64 = lq_rand_weight(s, scale);
+        vec_set(neuron, LN_BIAS(), b);
+
+        // Set varied tau values for richer dynamics
+        s = lq_prng(s);
+        let tau_frac: f64 = bits_to_f64(f64_to_bits(s % 1000)) / 1000.0;
+        let tau_val: f64 = 0.5 + tau_frac * 2.0;  // tau in [0.5, 2.5]
+        vec_set(neuron, LN_TAU(), f64_to_bits(tau_val));
+        i = i + 1;
+    }
+
+    0
+}
+
+/// Perform a single forward step of the NCP.
+///
+/// Implements the liquid ODE with Euler integration:
+///   tau_i * dx_i/dt = -x_i + tanh(sum_j w_ij(x_j) * x_j + sum_k w_ik * u_k + b_i)
+///   x_i(t+dt) = x_i(t) + dt/tau_i * (-x_i + activation)
+///
+/// Arguments:
+///   ncp   - handle to NCP
+///   input - handle to vec of f64-as-bits (external input, length = n_inputs)
+///   dt    - integration time step (f64-as-bits)
+///
+/// Returns: handle to vec of f64-as-bits (output, length = n_outputs)
+fn ncp_forward(ncp: i64, input: i64, dt: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    let conn: i64 = vec_get(ncp, NCP_CONN());
+    let mod_m: i64 = vec_get(ncp, NCP_MOD());
+    let out_map: i64 = vec_get(ncp, NCP_OUT_MAP());
+    let n_outputs: i64 = vec_get(ncp, NCP_N_OUTPUTS());
+    let dt_f: f64 = bits_to_f64(dt);
+    let total_cols: i64 = n_neurons + n_inputs;
+
+    // Gather current neuron states
+    let states: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_neurons {
+        let neuron: i64 = vec_get(neurons, i);
+        vec_push(states, vec_get(neuron, LN_STATE()));
+        i = i + 1;
+    }
+
+    // Update each neuron
+    i = 0;
+    while i < n_neurons {
+        let neuron: i64 = vec_get(neurons, i);
+        let tau: f64 = bits_to_f64(vec_get(neuron, LN_TAU()));
+        let x_i: f64 = bits_to_f64(vec_get(neuron, LN_STATE()));
+        let bias: f64 = bits_to_f64(vec_get(neuron, LN_BIAS()));
+
+        // Compute weighted input sum with dynamic weights
+        var sum: f64 = bias;
+
+        // From other neurons (columns 0..n_neurons)
+        var j: i64 = 0;
+        while j < n_neurons {
+            let w_base: f64 = bits_to_f64(vec_get(conn, i * total_cols + j));
+            let w_mod: f64 = bits_to_f64(vec_get(mod_m, i * total_cols + j));
+            let x_j: f64 = bits_to_f64(vec_get(states, j));
+            // Dynamic weight: w_base + w_mod * sigmoid(x_j)
+            let w_dyn: f64 = w_base + w_mod * lq_sigmoid(x_j);
+            sum = sum + w_dyn * x_j;
+            j = j + 1;
+        }
+
+        // From external inputs (columns n_neurons..total_cols)
+        var k: i64 = 0;
+        while k < n_inputs {
+            let w_in: f64 = bits_to_f64(vec_get(conn, i * total_cols + n_neurons + k));
+            let u_k: f64 = bits_to_f64(vec_get(input, k));
+            sum = sum + w_in * u_k;
+            k = k + 1;
+        }
+
+        // Apply activation and ODE step
+        let activation: f64 = lq_tanh(sum);
+        // Euler: x_new = x + (dt/tau) * (-x + activation)
+        let dx: f64 = (0.0 - x_i + activation) * dt_f / lq_max(tau, 0.001);
+        let x_new: f64 = x_i + dx;
+        vec_set(neuron, LN_STATE(), f64_to_bits(x_new));
+
+        i = i + 1;
+    }
+
+    // Gather outputs
+    let output: i64 = vec_new();
+    i = 0;
+    while i < n_outputs {
+        let out_idx: i64 = vec_get(out_map, i);
+        let out_neuron: i64 = vec_get(neurons, out_idx);
+        vec_push(output, vec_get(out_neuron, LN_STATE()));
+        i = i + 1;
+    }
+
+    output
+}
+
+/// Single integration step (alias for ncp_forward with default dt=0.1).
+///
+/// Arguments:
+///   ncp   - handle to NCP
+///   input - handle to vec of f64-as-bits
+///
+/// Returns: handle to vec of f64-as-bits (output)
+fn ncp_step(ncp: i64, input: i64) -> i64 {
+    ncp_forward(ncp, input, f64_to_bits(0.1))
+}
+
+/// Reset all neuron states in the NCP to zero.
+///
+/// Arguments:
+///   ncp - handle to NCP
+///
+/// Returns: 0
+fn ncp_reset(ncp: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    var i: i64 = 0;
+    while i < n_neurons {
+        let neuron: i64 = vec_get(neurons, i);
+        vec_set(neuron, LN_STATE(), f64_to_bits(0.0));
+        i = i + 1;
+    }
+    0
+}
+
+/// Get the number of neurons in the NCP.
+fn liquid_neuron_count(ncp: i64) -> i64 {
+    vec_get(ncp, NCP_N_NEURONS())
+}
+
+/// Compute the L2 norm of all neuron states in the NCP.
+///
+/// Useful for monitoring network activity and stability.
+///
+/// Returns: L2 norm as f64-as-bits
+fn liquid_state_norm(ncp: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    var sum_sq: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n_neurons {
+        let neuron: i64 = vec_get(neurons, i);
+        let s: f64 = bits_to_f64(vec_get(neuron, LN_STATE()));
+        sum_sq = sum_sq + s * s;
+        i = i + 1;
+    }
+    f64_to_bits(lq_sqrt(sum_sq))
+}
+
+// =============================================================================
+// Liquid Layer (stackable)
+// =============================================================================
+
+/// Create a liquid layer for stacking in deeper architectures.
+///
+/// A liquid layer wraps an NCP with a linear output projection,
+/// mapping the hidden neuron states to the desired output dimension.
+///
+/// Arguments:
+///   input_dim  - dimension of input vectors
+///   hidden_dim - number of liquid neurons in the NCP
+///   output_dim - dimension of output vectors
+///
+/// Returns: handle to liquid layer vec
+fn liquid_layer_new(input_dim: i64, hidden_dim: i64, output_dim: i64) -> i64 {
+    let layer: i64 = vec_new();
+
+    // [0] input_dim
+    vec_push(layer, input_dim);
+
+    // [1] hidden_dim
+    vec_push(layer, hidden_dim);
+
+    // [2] output_dim
+    vec_push(layer, output_dim);
+
+    // [3] ncp_handle - internal NCP
+    let ncp: i64 = ncp_new(hidden_dim, input_dim, hidden_dim);
+    vec_push(layer, ncp);
+
+    // [4] output_weights (output_dim x hidden_dim, f64-as-bits)
+    let out_w: i64 = vec_new();
+    let total_w: i64 = output_dim * hidden_dim;
+    var i: i64 = 0;
+    while i < total_w {
+        vec_push(out_w, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(layer, out_w);
+
+    // [5] output_bias (output_dim, f64-as-bits)
+    let out_b: i64 = vec_new();
+    i = 0;
+    while i < output_dim {
+        vec_push(out_b, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(layer, out_b);
+
+    layer
+}
+
+/// Initialize liquid layer weights with small random values.
+///
+/// Arguments:
+///   layer - handle to liquid layer
+///   seed  - random seed
+///
+/// Returns: 0
+fn liquid_layer_init(layer: i64, seed: i64) -> i64 {
+    let hidden_dim: i64 = vec_get(layer, LL_HIDDEN_DIM());
+    let output_dim: i64 = vec_get(layer, LL_OUTPUT_DIM());
+    let ncp: i64 = vec_get(layer, LL_NCP());
+    let out_w: i64 = vec_get(layer, LL_OUT_W());
+    let out_b: i64 = vec_get(layer, LL_OUT_B());
+
+    // Init NCP
+    ncp_init(ncp, seed);
+
+    // Init output projection weights
+    let scale: i64 = f64_to_bits(0.1);
+    var s: i64 = lq_prng(seed + 9999);
+    let total: i64 = output_dim * hidden_dim;
+    var i: i64 = 0;
+    while i < total {
+        s = lq_prng(s);
+        let w: i64 = lq_rand_weight(s, scale);
+        vec_set(out_w, i, w);
+        i = i + 1;
+    }
+
+    // Init output biases
+    i = 0;
+    while i < output_dim {
+        s = lq_prng(s);
+        let b: i64 = lq_rand_weight(s, scale);
+        vec_set(out_b, i, b);
+        i = i + 1;
+    }
+
+    0
+}
+
+/// Forward pass through a liquid layer.
+///
+/// Steps the internal NCP with the input, then applies a linear output projection
+/// to produce a fixed-size output.
+///
+/// Arguments:
+///   layer - handle to liquid layer
+///   input - handle to vec of f64-as-bits (length = input_dim)
+///
+/// Returns: handle to vec of f64-as-bits (length = output_dim)
+fn liquid_layer_forward(layer: i64, input: i64) -> i64 {
+    let hidden_dim: i64 = vec_get(layer, LL_HIDDEN_DIM());
+    let output_dim: i64 = vec_get(layer, LL_OUTPUT_DIM());
+    let ncp: i64 = vec_get(layer, LL_NCP());
+    let out_w: i64 = vec_get(layer, LL_OUT_W());
+    let out_b: i64 = vec_get(layer, LL_OUT_B());
+
+    // Step the NCP (returns hidden_dim-length vec)
+    let hidden: i64 = ncp_step(ncp, input);
+
+    // Linear projection: output = W * hidden + b
+    let output: i64 = vec_new();
+    var i: i64 = 0;
+    while i < output_dim {
+        var sum: f64 = bits_to_f64(vec_get(out_b, i));
+        var j: i64 = 0;
+        while j < hidden_dim {
+            let w: f64 = bits_to_f64(vec_get(out_w, i * hidden_dim + j));
+            let h: f64 = bits_to_f64(vec_get(hidden, j));
+            sum = sum + w * h;
+            j = j + 1;
+        }
+        vec_push(output, f64_to_bits(sum));
+        i = i + 1;
+    }
+
+    output
+}
+
+/// Reset the liquid layer's internal NCP state.
+fn liquid_layer_reset(layer: i64) -> i64 {
+    let ncp: i64 = vec_get(layer, LL_NCP());
+    ncp_reset(ncp)
+}
+
+// =============================================================================
+// Closed-form Continuous-time (CfC) Cell
+// =============================================================================
+
+/// Create a new CfC cell.
+///
+/// CfC provides an analytical closed-form solution to the liquid neuron ODE,
+/// avoiding expensive numerical integration. The solution uses a learned
+/// time-dependent gating mechanism:
+///
+///   h_new = sigmoid(gate) * f(x, h) + (1 - sigmoid(gate)) * h
+///
+/// where f is a nonlinear function of input x and hidden state h, and
+/// gate depends on both x and h (modeling the effective time constant).
+///
+/// Arguments:
+///   input_dim  - dimension of input
+///   hidden_dim - dimension of hidden state
+///
+/// Returns: handle to CfC cell vec
+fn cfc_cell_new(input_dim: i64, hidden_dim: i64) -> i64 {
+    let cell: i64 = vec_new();
+
+    // [0] input_dim
+    vec_push(cell, input_dim);
+
+    // [1] hidden_dim
+    vec_push(cell, hidden_dim);
+
+    // [2] w_input (hidden_dim x input_dim)
+    let w_input: i64 = vec_new();
+    var total: i64 = hidden_dim * input_dim;
+    var i: i64 = 0;
+    while i < total {
+        vec_push(w_input, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(cell, w_input);
+
+    // [3] w_hidden (hidden_dim x hidden_dim)
+    let w_hidden: i64 = vec_new();
+    total = hidden_dim * hidden_dim;
+    i = 0;
+    while i < total {
+        vec_push(w_hidden, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(cell, w_hidden);
+
+    // [4] b_hidden (hidden_dim)
+    let b_hidden: i64 = vec_new();
+    i = 0;
+    while i < hidden_dim {
+        vec_push(b_hidden, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(cell, b_hidden);
+
+    // [5] w_tau (hidden_dim x input_dim) - time constant modulation
+    let w_tau: i64 = vec_new();
+    total = hidden_dim * input_dim;
+    i = 0;
+    while i < total {
+        vec_push(w_tau, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(cell, w_tau);
+
+    // [6] b_tau (hidden_dim)
+    let b_tau: i64 = vec_new();
+    i = 0;
+    while i < hidden_dim {
+        vec_push(b_tau, f64_to_bits(1.0));  // Initialize tau bias to 1.0
+        i = i + 1;
+    }
+    vec_push(cell, b_tau);
+
+    // [7] w_gate (hidden_dim x (input_dim + hidden_dim))
+    let w_gate: i64 = vec_new();
+    total = hidden_dim * (input_dim + hidden_dim);
+    i = 0;
+    while i < total {
+        vec_push(w_gate, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(cell, w_gate);
+
+    // [8] b_gate (hidden_dim)
+    let b_gate: i64 = vec_new();
+    i = 0;
+    while i < hidden_dim {
+        vec_push(b_gate, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    vec_push(cell, b_gate);
+
+    cell
+}
+
+/// Initialize CfC cell weights.
+///
+/// Arguments:
+///   cell - handle to CfC cell
+///   seed - random seed
+///
+/// Returns: 0
+fn cfc_cell_init(cell: i64, seed: i64) -> i64 {
+    let input_dim: i64 = vec_get(cell, CFC_INPUT_DIM());
+    let hidden_dim: i64 = vec_get(cell, CFC_HIDDEN_DIM());
+    let scale: i64 = f64_to_bits(0.1);
+    var s: i64 = seed;
+    if s == 0 { s = 77; }
+
+    // Init w_input
+    let w_input: i64 = vec_get(cell, CFC_W_INPUT());
+    var total: i64 = hidden_dim * input_dim;
+    var i: i64 = 0;
+    while i < total {
+        s = lq_prng(s);
+        vec_set(w_input, i, lq_rand_weight(s, scale));
+        i = i + 1;
+    }
+
+    // Init w_hidden
+    let w_hidden: i64 = vec_get(cell, CFC_W_HIDDEN());
+    total = hidden_dim * hidden_dim;
+    i = 0;
+    while i < total {
+        s = lq_prng(s);
+        vec_set(w_hidden, i, lq_rand_weight(s, scale));
+        i = i + 1;
+    }
+
+    // Init b_hidden
+    let b_hidden: i64 = vec_get(cell, CFC_B_HIDDEN());
+    i = 0;
+    while i < hidden_dim {
+        s = lq_prng(s);
+        vec_set(b_hidden, i, lq_rand_weight(s, scale));
+        i = i + 1;
+    }
+
+    // Init w_tau
+    let w_tau: i64 = vec_get(cell, CFC_W_TAU());
+    total = hidden_dim * input_dim;
+    i = 0;
+    while i < total {
+        s = lq_prng(s);
+        vec_set(w_tau, i, lq_rand_weight(s, scale));
+        i = i + 1;
+    }
+
+    // Init w_gate
+    let w_gate: i64 = vec_get(cell, CFC_W_GATE());
+    total = hidden_dim * (input_dim + hidden_dim);
+    i = 0;
+    while i < total {
+        s = lq_prng(s);
+        vec_set(w_gate, i, lq_rand_weight(s, scale));
+        i = i + 1;
+    }
+
+    // Init b_gate
+    let b_gate: i64 = vec_get(cell, CFC_B_GATE());
+    i = 0;
+    while i < hidden_dim {
+        s = lq_prng(s);
+        vec_set(b_gate, i, lq_rand_weight(s, scale));
+        i = i + 1;
+    }
+
+    0
+}
+
+/// CfC forward pass: closed-form solution (no ODE solver needed).
+///
+/// Computes:
+///   1. Candidate activation: f(x, h) = tanh(W_input * x + W_hidden * h + b)
+///   2. Effective time constant: tau_eff = sigmoid(W_tau * x + b_tau)
+///   3. Gate: g = sigmoid(W_gate * [x; h] + b_gate) modulated by tau_eff
+///   4. New hidden: h_new = g * f(x, h) + (1 - g) * h
+///
+/// This is equivalent to the ODE solution at t=1 with learned dynamics.
+///
+/// Arguments:
+///   cell   - handle to CfC cell
+///   input  - handle to vec of f64-as-bits (length = input_dim)
+///   hidden - handle to vec of f64-as-bits (length = hidden_dim)
+///
+/// Returns: handle to vec of f64-as-bits (new hidden state, length = hidden_dim)
+fn cfc_forward(cell: i64, input: i64, hidden: i64) -> i64 {
+    let input_dim: i64 = vec_get(cell, CFC_INPUT_DIM());
+    let hidden_dim: i64 = vec_get(cell, CFC_HIDDEN_DIM());
+    let w_input: i64 = vec_get(cell, CFC_W_INPUT());
+    let w_hidden: i64 = vec_get(cell, CFC_W_HIDDEN());
+    let b_hidden: i64 = vec_get(cell, CFC_B_HIDDEN());
+    let w_tau: i64 = vec_get(cell, CFC_W_TAU());
+    let b_tau: i64 = vec_get(cell, CFC_B_TAU());
+    let w_gate: i64 = vec_get(cell, CFC_W_GATE());
+    let b_gate: i64 = vec_get(cell, CFC_B_GATE());
+
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < hidden_dim {
+        // 1. Candidate activation: tanh(W_input[i] * x + W_hidden[i] * h + b[i])
+        var pre_act: f64 = bits_to_f64(vec_get(b_hidden, i));
+        var j: i64 = 0;
+        while j < input_dim {
+            let wi: f64 = bits_to_f64(vec_get(w_input, i * input_dim + j));
+            let xj: f64 = bits_to_f64(vec_get(input, j));
+            pre_act = pre_act + wi * xj;
+            j = j + 1;
+        }
+        j = 0;
+        while j < hidden_dim {
+            let wh: f64 = bits_to_f64(vec_get(w_hidden, i * hidden_dim + j));
+            let hj: f64 = bits_to_f64(vec_get(hidden, j));
+            pre_act = pre_act + wh * hj;
+            j = j + 1;
+        }
+        let candidate: f64 = lq_tanh(pre_act);
+
+        // 2. Effective time constant: sigmoid(W_tau[i] * x + b_tau[i])
+        var tau_pre: f64 = bits_to_f64(vec_get(b_tau, i));
+        j = 0;
+        while j < input_dim {
+            let wt: f64 = bits_to_f64(vec_get(w_tau, i * input_dim + j));
+            let xj2: f64 = bits_to_f64(vec_get(input, j));
+            tau_pre = tau_pre + wt * xj2;
+            j = j + 1;
+        }
+        let tau_eff: f64 = lq_sigmoid(tau_pre);
+
+        // 3. Gate: sigmoid(W_gate[i] * [x; h] + b_gate[i])
+        // The gate combines input and hidden concatenation
+        var gate_pre: f64 = bits_to_f64(vec_get(b_gate, i));
+        let gate_cols: i64 = input_dim + hidden_dim;
+        // Input part
+        j = 0;
+        while j < input_dim {
+            let wg: f64 = bits_to_f64(vec_get(w_gate, i * gate_cols + j));
+            let xj3: f64 = bits_to_f64(vec_get(input, j));
+            gate_pre = gate_pre + wg * xj3;
+            j = j + 1;
+        }
+        // Hidden part
+        j = 0;
+        while j < hidden_dim {
+            let wg2: f64 = bits_to_f64(vec_get(w_gate, i * gate_cols + input_dim + j));
+            let hj2: f64 = bits_to_f64(vec_get(hidden, j));
+            gate_pre = gate_pre + wg2 * hj2;
+            j = j + 1;
+        }
+        // Modulate gate by tau_eff: larger tau -> gate opens more slowly
+        let gate: f64 = lq_sigmoid(gate_pre * tau_eff);
+
+        // 4. Interpolate: h_new = gate * candidate + (1 - gate) * h_old
+        let h_old: f64 = bits_to_f64(vec_get(hidden, i));
+        let h_new: f64 = gate * candidate + (1.0 - gate) * h_old;
+        vec_push(result, f64_to_bits(h_new));
+
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Multi-step & sequence processing
+// =============================================================================
+
+/// Process a sequence of inputs through the NCP.
+///
+/// Feeds each input in sequence, advancing the ODE state at each step.
+///
+/// Arguments:
+///   ncp     - handle to NCP
+///   inputs  - handle to vec of input vec handles (sequence_length entries)
+///   dt      - time step (f64-as-bits)
+///
+/// Returns: handle to vec of output vec handles (one per time step)
+fn ncp_sequence(ncp: i64, inputs: i64, dt: i64) -> i64 {
+    let seq_len: i64 = vec_len(inputs);
+    let outputs: i64 = vec_new();
+    var t: i64 = 0;
+    while t < seq_len {
+        let inp: i64 = vec_get(inputs, t);
+        let out: i64 = ncp_forward(ncp, inp, dt);
+        vec_push(outputs, out);
+        t = t + 1;
+    }
+    outputs
+}
+
+/// Process a sequence through a CfC cell.
+///
+/// Arguments:
+///   cell   - handle to CfC cell
+///   inputs - handle to vec of input vec handles
+///   h0     - initial hidden state (handle to vec of f64-as-bits)
+///
+/// Returns: handle to vec of hidden state vec handles (one per step)
+fn cfc_sequence(cell: i64, inputs: i64, h0: i64) -> i64 {
+    let seq_len: i64 = vec_len(inputs);
+    let outputs: i64 = vec_new();
+    var hidden: i64 = h0;
+    var t: i64 = 0;
+    while t < seq_len {
+        let inp: i64 = vec_get(inputs, t);
+        hidden = cfc_forward(cell, inp, hidden);
+        vec_push(outputs, hidden);
+        t = t + 1;
+    }
+    outputs
+}
+
+// =============================================================================
+// NCP wiring helpers
+// =============================================================================
+
+/// Set a specific connection weight in the NCP.
+///
+/// Arguments:
+///   ncp     - handle to NCP
+///   from    - source index (0..n_neurons+n_inputs-1; neurons first, then inputs)
+///   to      - target neuron index (0..n_neurons-1)
+///   weight  - connection weight (f64-as-bits)
+///
+/// Returns: 0
+fn ncp_set_weight(ncp: i64, from: i64, to: i64, weight: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let conn: i64 = vec_get(ncp, NCP_CONN());
+    let total_cols: i64 = n_neurons + n_inputs;
+    vec_set(conn, to * total_cols + from, weight);
+    0
+}
+
+/// Set a modulation weight in the NCP.
+fn ncp_set_mod_weight(ncp: i64, from: i64, to: i64, weight: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let mod_m: i64 = vec_get(ncp, NCP_MOD());
+    let total_cols: i64 = n_neurons + n_inputs;
+    vec_set(mod_m, to * total_cols + from, weight);
+    0
+}
+
+/// Set the time constant of a specific neuron.
+fn ncp_set_tau(ncp: i64, neuron_idx: i64, tau: i64) -> i64 {
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    let neuron: i64 = vec_get(neurons, neuron_idx);
+    vec_set(neuron, LN_TAU(), tau);
+    0
+}
+
+/// Set the bias of a specific neuron.
+fn ncp_set_bias(ncp: i64, neuron_idx: i64, bias: i64) -> i64 {
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    let neuron: i64 = vec_get(neurons, neuron_idx);
+    vec_set(neuron, LN_BIAS(), bias);
+    0
+}
+
+/// Get the state of a specific neuron.
+fn ncp_get_neuron_state(ncp: i64, neuron_idx: i64) -> i64 {
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    let neuron: i64 = vec_get(neurons, neuron_idx);
+    vec_get(neuron, LN_STATE())
+}
+
+// =============================================================================
+// Analysis and diagnostics
+// =============================================================================
+
+/// Compute the mean absolute state across all neurons.
+///
+/// Returns: mean |state| as f64-as-bits
+fn liquid_mean_activity(ncp: i64) -> i64 {
+    let n: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let neuron: i64 = vec_get(neurons, i);
+        let s: f64 = bits_to_f64(vec_get(neuron, LN_STATE()));
+        sum = sum + lq_abs(s);
+        i = i + 1;
+    }
+    if n > 0 {
+        let nf: f64 = bits_to_f64(f64_to_bits(n));
+        f64_to_bits(sum / nf)
+    } else {
+        f64_to_bits(0.0)
+    }
+}
+
+/// Check if the NCP has reached a fixed point (all derivatives near zero).
+///
+/// Arguments:
+///   ncp   - handle to NCP
+///   input - handle to input vec
+///   tol   - tolerance (f64-as-bits)
+///
+/// Returns: 1 if at fixed point, 0 otherwise
+fn liquid_is_fixed_point(ncp: i64, input: i64, tol: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    let conn: i64 = vec_get(ncp, NCP_CONN());
+    let mod_m: i64 = vec_get(ncp, NCP_MOD());
+    let total_cols: i64 = n_neurons + n_inputs;
+    let tol_f: f64 = bits_to_f64(tol);
+
+    // Gather states
+    let states: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_neurons {
+        let neuron: i64 = vec_get(neurons, i);
+        vec_push(states, vec_get(neuron, LN_STATE()));
+        i = i + 1;
+    }
+
+    // Check each neuron's derivative magnitude
+    i = 0;
+    while i < n_neurons {
+        let neuron: i64 = vec_get(neurons, i);
+        let x_i: f64 = bits_to_f64(vec_get(neuron, LN_STATE()));
+        let bias: f64 = bits_to_f64(vec_get(neuron, LN_BIAS()));
+        var sum: f64 = bias;
+
+        var j: i64 = 0;
+        while j < n_neurons {
+            let w_base: f64 = bits_to_f64(vec_get(conn, i * total_cols + j));
+            let w_mod: f64 = bits_to_f64(vec_get(mod_m, i * total_cols + j));
+            let x_j: f64 = bits_to_f64(vec_get(states, j));
+            let w_dyn: f64 = w_base + w_mod * lq_sigmoid(x_j);
+            sum = sum + w_dyn * x_j;
+            j = j + 1;
+        }
+        var k: i64 = 0;
+        while k < n_inputs {
+            let w_in: f64 = bits_to_f64(vec_get(conn, i * total_cols + n_neurons + k));
+            let u_k: f64 = bits_to_f64(vec_get(input, k));
+            sum = sum + w_in * u_k;
+            k = k + 1;
+        }
+
+        let activation: f64 = lq_tanh(sum);
+        let deriv: f64 = lq_abs(0.0 - x_i + activation);
+        if deriv > tol_f {
+            return 0;
+        }
+        i = i + 1;
+    }
+
+    1
+}
+
+/// Count the number of active connections (non-zero weights) in the NCP.
+fn ncp_active_connections(ncp: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let conn: i64 = vec_get(ncp, NCP_CONN());
+    let total_cols: i64 = n_neurons + n_inputs;
+    let total: i64 = n_neurons * total_cols;
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < total {
+        let w: f64 = bits_to_f64(vec_get(conn, i));
+        if lq_abs(w) > 0.0000001 {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+/// Get total parameter count for the NCP.
+fn ncp_param_count(ncp: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let total_cols: i64 = n_neurons + n_inputs;
+    // conn_matrix + mod_matrix + biases + taus
+    let conn_params: i64 = n_neurons * total_cols * 2;
+    let neuron_params: i64 = n_neurons * 2;  // bias + tau per neuron
+    conn_params + neuron_params
+}
+
+/// Produce a summary string for the NCP.
+fn ncp_summary(ncp: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let n_outputs: i64 = vec_get(ncp, NCP_N_OUTPUTS());
+    print("NCP(neurons=");
+    print_i64(n_neurons);
+    print(", inputs=");
+    print_i64(n_inputs);
+    print(", outputs=");
+    print_i64(n_outputs);
+    print(", params=");
+    print_i64(ncp_param_count(ncp));
+    print(", active_conns=");
+    print_i64(ncp_active_connections(ncp));
+    println(")");
+    0
+}
+
+/// Produce a summary string for a liquid layer.
+fn liquid_layer_summary(layer: i64) -> i64 {
+    let input_dim: i64 = vec_get(layer, LL_INPUT_DIM());
+    let hidden_dim: i64 = vec_get(layer, LL_HIDDEN_DIM());
+    let output_dim: i64 = vec_get(layer, LL_OUTPUT_DIM());
+    print("LiquidLayer(in=");
+    print_i64(input_dim);
+    print(", hidden=");
+    print_i64(hidden_dim);
+    print(", out=");
+    print_i64(output_dim);
+    println(")");
+    0
+}
+
+/// Produce a summary string for a CfC cell.
+fn cfc_summary(cell: i64) -> i64 {
+    let input_dim: i64 = vec_get(cell, CFC_INPUT_DIM());
+    let hidden_dim: i64 = vec_get(cell, CFC_HIDDEN_DIM());
+    let total_params: i64 = hidden_dim * input_dim          // w_input
+                          + hidden_dim * hidden_dim          // w_hidden
+                          + hidden_dim                       // b_hidden
+                          + hidden_dim * input_dim           // w_tau
+                          + hidden_dim                       // b_tau
+                          + hidden_dim * (input_dim + hidden_dim) // w_gate
+                          + hidden_dim;                      // b_gate
+    print("CfC(in=");
+    print_i64(input_dim);
+    print(", hidden=");
+    print_i64(hidden_dim);
+    print(", params=");
+    print_i64(total_params);
+    println(")");
+    0
+}
+
+// =============================================================================
+// Multiple NCP sub-stepping (finer-grained integration)
+// =============================================================================
+
+/// Run multiple ODE sub-steps per input to improve integration accuracy.
+///
+/// Arguments:
+///   ncp      - handle to NCP
+///   input    - handle to vec of f64-as-bits
+///   dt       - total time step (f64-as-bits)
+///   n_steps  - number of sub-steps
+///
+/// Returns: handle to vec of f64-as-bits (output)
+fn ncp_forward_substeps(ncp: i64, input: i64, dt: i64, n_steps: i64) -> i64 {
+    let dt_f: f64 = bits_to_f64(dt);
+    let sub_steps: i64 = lq_max_i64(n_steps, 1);
+    let nf: f64 = bits_to_f64(f64_to_bits(sub_steps));
+    let sub_dt: i64 = f64_to_bits(dt_f / nf);
+
+    var output: i64 = vec_new();
+    var s: i64 = 0;
+    while s < sub_steps {
+        output = ncp_forward(ncp, input, sub_dt);
+        s = s + 1;
+    }
+    output
+}
+
+fn lq_max_i64(a: i64, b: i64) -> i64 {
+    if a > b { a } else { b }
+}
+
+// =============================================================================
+// Liquid network (stacking multiple liquid layers)
+// =============================================================================
+
+/// Create a stack of liquid layers.
+///
+/// Arguments:
+///   dims    - handle to vec of i64 dimensions [input, hidden1, hidden2, ..., output]
+///   n_layers - number of layers (length of dims - 1)
+///
+/// Returns: handle to vec [n_layers, layer0, layer1, ...]
+fn liquid_stack_new(dims: i64, n_layers: i64) -> i64 {
+    let stack: i64 = vec_new();
+    vec_push(stack, n_layers);
+    var i: i64 = 0;
+    while i < n_layers {
+        let in_d: i64 = vec_get(dims, i);
+        let out_d: i64 = vec_get(dims, i + 1);
+        // Use intermediate hidden = max(in, out) for NCP internal neurons
+        let hidden: i64 = lq_max_i64(in_d, out_d);
+        let layer: i64 = liquid_layer_new(in_d, hidden, out_d);
+        vec_push(stack, layer);
+        i = i + 1;
+    }
+    stack
+}
+
+/// Initialize all layers in a liquid stack.
+fn liquid_stack_init(stack: i64, seed: i64) -> i64 {
+    let n_layers: i64 = vec_get(stack, 0);
+    var s: i64 = seed;
+    var i: i64 = 0;
+    while i < n_layers {
+        let layer: i64 = vec_get(stack, 1 + i);
+        liquid_layer_init(layer, s);
+        s = lq_prng(s);
+        i = i + 1;
+    }
+    0
+}
+
+/// Forward pass through a liquid stack.
+///
+/// Arguments:
+///   stack - handle to liquid stack
+///   input - handle to vec of f64-as-bits
+///
+/// Returns: handle to vec of f64-as-bits (output)
+fn liquid_stack_forward(stack: i64, input: i64) -> i64 {
+    let n_layers: i64 = vec_get(stack, 0);
+    var x: i64 = input;
+    var i: i64 = 0;
+    while i < n_layers {
+        let layer: i64 = vec_get(stack, 1 + i);
+        x = liquid_layer_forward(layer, x);
+        i = i + 1;
+    }
+    x
+}
+
+/// Reset all layers in a liquid stack.
+fn liquid_stack_reset(stack: i64) -> i64 {
+    let n_layers: i64 = vec_get(stack, 0);
+    var i: i64 = 0;
+    while i < n_layers {
+        let layer: i64 = vec_get(stack, 1 + i);
+        liquid_layer_reset(layer);
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Sparse wiring patterns (NCP-style connectivity)
+// =============================================================================
+
+/// Wire the NCP with a sensory -> inter -> command -> motor pattern.
+///
+/// This creates biologically-inspired sparse connectivity:
+///   - First 1/4 neurons: sensory (receive input)
+///   - Next 1/4: interneurons (connect to sensory and each other)
+///   - Next 1/4: command neurons (connect to inter + sensory)
+///   - Last 1/4: motor neurons (output, connect to command)
+///
+/// Arguments:
+///   ncp  - handle to NCP
+///   seed - random seed for weight initialization
+///
+/// Returns: 0
+fn ncp_wire_sparse(ncp: i64, seed: i64) -> i64 {
+    let n: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_in: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let scale: i64 = f64_to_bits(0.3);
+
+    // Partition neurons into 4 groups
+    let sensory_end: i64 = n / 4;
+    let inter_end: i64 = n / 2;
+    let command_end: i64 = n * 3 / 4;
+    // motor: command_end .. n
+
+    var s: i64 = seed;
+    if s == 0 { s = 12345; }
+
+    // Sensory neurons receive from inputs
+    var i: i64 = 0;
+    while i < sensory_end {
+        var k: i64 = 0;
+        while k < n_in {
+            s = lq_prng(s);
+            let w: i64 = lq_rand_weight(s, scale);
+            ncp_set_weight(ncp, n + k, i, w);
+            s = lq_prng(s);
+            let m: i64 = lq_rand_weight(s, scale);
+            ncp_set_mod_weight(ncp, n + k, i, m);
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+
+    // Interneurons connect to sensory neurons
+    i = sensory_end;
+    while i < inter_end {
+        var j: i64 = 0;
+        while j < sensory_end {
+            s = lq_prng(s);
+            let w2: i64 = lq_rand_weight(s, scale);
+            ncp_set_weight(ncp, j, i, w2);
+            s = lq_prng(s);
+            let m2: i64 = lq_rand_weight(s, scale);
+            ncp_set_mod_weight(ncp, j, i, m2);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Command neurons connect to interneurons
+    i = inter_end;
+    while i < command_end {
+        var j2: i64 = sensory_end;
+        while j2 < inter_end {
+            s = lq_prng(s);
+            let w3: i64 = lq_rand_weight(s, scale);
+            ncp_set_weight(ncp, j2, i, w3);
+            s = lq_prng(s);
+            let m3: i64 = lq_rand_weight(s, scale);
+            ncp_set_mod_weight(ncp, j2, i, m3);
+            j2 = j2 + 1;
+        }
+        i = i + 1;
+    }
+
+    // Motor neurons connect to command neurons
+    i = command_end;
+    while i < n {
+        var j3: i64 = inter_end;
+        while j3 < command_end {
+            s = lq_prng(s);
+            let w4: i64 = lq_rand_weight(s, scale);
+            ncp_set_weight(ncp, j3, i, w4);
+            s = lq_prng(s);
+            let m4: i64 = lq_rand_weight(s, scale);
+            ncp_set_mod_weight(ncp, j3, i, m4);
+            j3 = j3 + 1;
+        }
+        i = i + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// Gradient estimation for liquid neurons
+// =============================================================================
+
+/// Estimate the gradient of the output w.r.t. a specific weight using
+/// finite differences (for training / BPTT approximation).
+///
+/// Arguments:
+///   ncp       - handle to NCP
+///   input     - handle to input vec
+///   from      - source index
+///   to        - target neuron index
+///   output_idx - which output element to differentiate
+///   epsilon   - perturbation size (f64-as-bits)
+///
+/// Returns: estimated gradient as f64-as-bits
+fn liquid_weight_gradient(ncp: i64, input: i64, from: i64, to: i64, output_idx: i64, epsilon: i64) -> i64 {
+    let n_neurons: i64 = vec_get(ncp, NCP_N_NEURONS());
+    let n_inputs: i64 = vec_get(ncp, NCP_N_INPUTS());
+    let conn: i64 = vec_get(ncp, NCP_CONN());
+    let total_cols: i64 = n_neurons + n_inputs;
+    let eps: f64 = bits_to_f64(epsilon);
+    let idx: i64 = to * total_cols + from;
+
+    // Save current weight and states
+    let w_orig: i64 = vec_get(conn, idx);
+    let w_orig_f: f64 = bits_to_f64(w_orig);
+
+    // Save neuron states
+    let neurons: i64 = vec_get(ncp, NCP_NEURONS());
+    let saved_states: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_neurons {
+        let neuron: i64 = vec_get(neurons, i);
+        vec_push(saved_states, vec_get(neuron, LN_STATE()));
+        i = i + 1;
+    }
+
+    // Forward with w + eps
+    vec_set(conn, idx, f64_to_bits(w_orig_f + eps));
+    let out_plus: i64 = ncp_step(ncp, input);
+    let y_plus: f64 = bits_to_f64(vec_get(out_plus, output_idx));
+
+    // Restore states
+    i = 0;
+    while i < n_neurons {
+        let neuron2: i64 = vec_get(neurons, i);
+        vec_set(neuron2, LN_STATE(), vec_get(saved_states, i));
+        i = i + 1;
+    }
+
+    // Forward with w - eps
+    vec_set(conn, idx, f64_to_bits(w_orig_f - eps));
+    let out_minus: i64 = ncp_step(ncp, input);
+    let y_minus: f64 = bits_to_f64(vec_get(out_minus, output_idx));
+
+    // Restore weight and states
+    vec_set(conn, idx, w_orig);
+    i = 0;
+    while i < n_neurons {
+        let neuron3: i64 = vec_get(neurons, i);
+        vec_set(neuron3, LN_STATE(), vec_get(saved_states, i));
+        i = i + 1;
+    }
+
+    // Central difference: (f(w+e) - f(w-e)) / (2*e)
+    let grad: f64 = (y_plus - y_minus) / (2.0 * eps);
+    f64_to_bits(grad)
+}
+
+// =============================================================================
+// CfC utilities
+// =============================================================================
+
+/// Create a zero-initialized hidden state for a CfC cell.
+fn cfc_zero_hidden(cell: i64) -> i64 {
+    let hidden_dim: i64 = vec_get(cell, CFC_HIDDEN_DIM());
+    let h: i64 = vec_new();
+    var i: i64 = 0;
+    while i < hidden_dim {
+        vec_push(h, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    h
+}
+
+/// Get the hidden dimension of a CfC cell.
+fn cfc_hidden_dim(cell: i64) -> i64 {
+    vec_get(cell, CFC_HIDDEN_DIM())
+}
+
+/// Get the input dimension of a CfC cell.
+fn cfc_input_dim(cell: i64) -> i64 {
+    vec_get(cell, CFC_INPUT_DIM())
+}
+
+/// Compute total parameter count for a CfC cell.
+fn cfc_param_count(cell: i64) -> i64 {
+    let input_dim: i64 = vec_get(cell, CFC_INPUT_DIM());
+    let hidden_dim: i64 = vec_get(cell, CFC_HIDDEN_DIM());
+    let w_in: i64 = hidden_dim * input_dim;
+    let w_hid: i64 = hidden_dim * hidden_dim;
+    let b_hid: i64 = hidden_dim;
+    let w_tau: i64 = hidden_dim * input_dim;
+    let b_tau: i64 = hidden_dim;
+    let w_gate: i64 = hidden_dim * (input_dim + hidden_dim);
+    let b_gate: i64 = hidden_dim;
+    w_in + w_hid + b_hid + w_tau + b_tau + w_gate + b_gate
+}

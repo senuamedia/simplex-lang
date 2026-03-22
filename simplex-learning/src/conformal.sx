@@ -1,0 +1,1184 @@
+// simplex-learning::conformal - Conformal Prediction Framework
+//
+// Provides distribution-free prediction sets with finite-sample coverage
+// guarantees. Given a significance level alpha, conformal prediction
+// produces a set of labels such that the true label is included with
+// probability >= 1 - alpha, regardless of the underlying distribution.
+//
+// Core ideas:
+//   1. Compute nonconformity scores on a calibration set
+//   2. Find the (1-alpha) quantile as the threshold
+//   3. At test time, include all labels whose score <= threshold
+//
+// All f64 values are stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set.
+//
+// Exports:
+//   conformal_calibrate         - compute threshold from calibration scores
+//   conformal_predict           - single prediction: in set or not
+//   conformal_prediction_set    - indices forming the prediction set
+//   conformal_coverage          - empirical coverage rate
+//   conformal_set_size          - average prediction set size
+//   score_absolute_error        - regression nonconformity score
+//   score_softmax_margin        - classification nonconformity score
+//   adaptive_conformal_new      - online conformal state
+//   adaptive_update             - update adaptive threshold
+//   quantile                    - quantile of sorted values
+//   sort_f64_bits               - insertion sort on f64_bits vec
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+fn my_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn my_exp(x: f64) -> f64 {
+    // Compute e^x via Taylor series (clamped to avoid overflow)
+    var arg: f64 = x;
+    if arg > 20.0 { arg = 20.0; }
+    if arg < 0.0 - 20.0 { arg = 0.0 - 20.0; }
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 30 {
+        term = term * arg / (i as f64);
+        result = result + term;
+        i = i + 1;
+    }
+    result
+}
+
+fn approx_ln(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 - 30.0; }
+    let ln2: f64 = 0.6931471805599453;
+    var m: f64 = x;
+    var k: i64 = 0;
+    while m >= 1.0 {
+        m = m / 2.0;
+        k = k + 1;
+    }
+    while m < 0.5 {
+        m = m * 2.0;
+        k = k - 1;
+    }
+    let t: f64 = (m - 1.0) / (m + 1.0);
+    let t2: f64 = t * t;
+    let ln_m: f64 = 2.0 * t * (1.0 + t2 / 3.0 + t2 * t2 / 5.0);
+    ln_m + (k as f64) * ln2
+}
+
+// =============================================================================
+// Sorting
+// =============================================================================
+
+// Insertion sort on a vec of f64_bits values.
+// Returns a new sorted vec (ascending order). Original is not modified.
+//
+// Arguments:
+//   values - handle to vec of f64-as-bits
+//
+// Returns: handle to new sorted vec of f64-as-bits
+fn sort_f64_bits(values: i64) -> i64 {
+    let n: i64 = vec_len(values);
+    // Copy into a new vec
+    let sorted = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(sorted, vec_get(values, i));
+        i = i + 1;
+    }
+
+    // Insertion sort
+    var j: i64 = 1;
+    while j < n {
+        let key_bits: i64 = vec_get(sorted, j);
+        let key_val: f64 = bits_to_f64(key_bits);
+        var k: i64 = j - 1;
+        var done: i64 = 0;
+        while k >= 0 {
+            if done == 0 {
+                let cur: f64 = bits_to_f64(vec_get(sorted, k));
+                if cur > key_val {
+                    vec_set(sorted, k + 1, vec_get(sorted, k));
+                    k = k - 1;
+                } else {
+                    done = 1;
+                }
+            } else {
+                k = k - 1;
+            }
+        }
+        // When done==0, we exhausted k (went to -1), insert at 0
+        // When done==1, insert at k+1 which is already correct
+        if done == 0 {
+            vec_set(sorted, 0, key_bits);
+        } else {
+            vec_set(sorted, k + 1, key_bits);
+        }
+        j = j + 1;
+    }
+
+    sorted
+}
+
+// =============================================================================
+// Quantile Computation
+// =============================================================================
+
+// Compute the q-th quantile from a vec of sorted f64_bits values.
+// Uses linear interpolation between adjacent order statistics.
+//
+// Arguments:
+//   sorted_values - handle to sorted vec of f64-as-bits (ascending)
+//   q             - quantile in [0, 1] as f64-as-bits
+//
+// Returns: quantile value as f64-as-bits
+fn quantile(sorted_values: i64, q: i64) -> i64 {
+    let n: i64 = vec_len(sorted_values);
+    if n == 0 { return f64_to_bits(0.0); }
+    if n == 1 { return vec_get(sorted_values, 0); }
+
+    let q_val: f64 = bits_to_f64(q);
+
+    // Clamp q to [0, 1]
+    var qq: f64 = q_val;
+    if qq < 0.0 { qq = 0.0; }
+    if qq > 1.0 { qq = 1.0; }
+
+    // Continuous index
+    let idx_f: f64 = qq * ((n - 1) as f64);
+
+    // Lower and upper integer indices
+    var lo: i64 = 0;
+    // floor via truncation toward zero
+    if idx_f >= 0.0 {
+        lo = idx_f as i64;
+    }
+    var hi: i64 = lo + 1;
+    if hi >= n { hi = n - 1; }
+
+    let lo_val: f64 = bits_to_f64(vec_get(sorted_values, lo));
+    let hi_val: f64 = bits_to_f64(vec_get(sorted_values, hi));
+
+    // Linear interpolation
+    let frac: f64 = idx_f - (lo as f64);
+    let result: f64 = lo_val + frac * (hi_val - lo_val);
+
+    f64_to_bits(result)
+}
+
+// =============================================================================
+// Calibration
+// =============================================================================
+
+// Compute the conformal prediction threshold from calibration scores.
+//
+// Given nonconformity scores from a calibration set and a significance
+// level alpha, computes the ceil((n+1)(1-alpha))/n quantile of the
+// scores. This is the split conformal prediction threshold.
+//
+// Arguments:
+//   scores - handle to vec of f64-as-bits nonconformity scores
+//   alpha  - significance level as f64-as-bits (e.g., 0.05 for 95% coverage)
+//
+// Returns: threshold as f64-as-bits
+fn conformal_calibrate(scores: i64, alpha: i64) -> i64 {
+    let n: i64 = vec_len(scores);
+    if n == 0 { return f64_to_bits(0.0); }
+
+    let alpha_val: f64 = bits_to_f64(alpha);
+
+    // Compute the adjusted quantile level: ceil((n+1)*(1-alpha)) / n
+    // For finite-sample validity we need the ceil quantile
+    let level: f64 = (1.0 - alpha_val) * ((n + 1) as f64) / (n as f64);
+
+    // Clamp to [0, 1]
+    var q_level: f64 = level;
+    if q_level > 1.0 { q_level = 1.0; }
+    if q_level < 0.0 { q_level = 0.0; }
+
+    // Sort scores
+    let sorted = sort_f64_bits(scores);
+
+    // Compute quantile
+    quantile(sorted, f64_to_bits(q_level))
+}
+
+// =============================================================================
+// Prediction
+// =============================================================================
+
+// Check whether a single example is in the prediction set.
+//
+// An example is included if its nonconformity score <= threshold.
+//
+// Arguments:
+//   score     - nonconformity score as f64-as-bits
+//   threshold - conformal threshold as f64-as-bits
+//
+// Returns: 1 if in prediction set, 0 otherwise
+fn conformal_predict(score: i64, threshold: i64) -> i64 {
+    let s: f64 = bits_to_f64(score);
+    let t: f64 = bits_to_f64(threshold);
+    if s <= t { return 1; }
+    0
+}
+
+// Compute the prediction set: indices of all candidate labels whose
+// score is at or below the threshold.
+//
+// Arguments:
+//   scores    - handle to vec of f64-as-bits nonconformity scores (one per label)
+//   threshold - conformal threshold as f64-as-bits
+//
+// Returns: handle to vec of i64 indices that are in the prediction set
+fn conformal_prediction_set(scores: i64, threshold: i64) -> i64 {
+    let n: i64 = vec_len(scores);
+    let t: f64 = bits_to_f64(threshold);
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let s: f64 = bits_to_f64(vec_get(scores, i));
+        if s <= t {
+            vec_push(result, i);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Coverage Evaluation
+// =============================================================================
+
+// Compute the empirical coverage rate of conformal predictions.
+//
+// For each example, checks if the true label index is in the
+// prediction set (represented as a vec of included indices).
+//
+// Arguments:
+//   predictions - handle to vec of vecs, each inner vec contains
+//                 the indices in the prediction set for that example
+//   labels      - handle to vec of i64 true label indices
+//
+// Returns: empirical coverage as f64-as-bits (fraction of examples
+//          where the true label was in the prediction set)
+fn conformal_coverage(predictions: i64, labels: i64) -> i64 {
+    let n: i64 = vec_len(predictions);
+    if n == 0 { return f64_to_bits(0.0); }
+
+    var covered: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let pred_set: i64 = vec_get(predictions, i);
+        let true_label: i64 = vec_get(labels, i);
+        let set_size: i64 = vec_len(pred_set);
+
+        // Check if true_label is in pred_set
+        var j: i64 = 0;
+        var found: i64 = 0;
+        while j < set_size {
+            if vec_get(pred_set, j) == true_label {
+                found = 1;
+            }
+            j = j + 1;
+        }
+        if found == 1 {
+            covered = covered + 1;
+        }
+        i = i + 1;
+    }
+
+    let rate: f64 = (covered as f64) / (n as f64);
+    f64_to_bits(rate)
+}
+
+// Compute the average prediction set size.
+//
+// Smaller sets mean more informative predictions. The ideal is a
+// singleton set (exactly the correct label) while maintaining coverage.
+//
+// Arguments:
+//   predictions - handle to vec of vecs (each inner vec is a prediction set)
+//
+// Returns: average set size as f64-as-bits
+fn conformal_set_size(predictions: i64) -> i64 {
+    let n: i64 = vec_len(predictions);
+    if n == 0 { return f64_to_bits(0.0); }
+
+    var total_size: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let pred_set: i64 = vec_get(predictions, i);
+        total_size = total_size + vec_len(pred_set);
+        i = i + 1;
+    }
+
+    let avg: f64 = (total_size as f64) / (n as f64);
+    f64_to_bits(avg)
+}
+
+// =============================================================================
+// Nonconformity Score Functions
+// =============================================================================
+
+// Absolute error nonconformity score for regression.
+//
+// score = |actual - prediction|
+//
+// Arguments:
+//   prediction - predicted value as f64-as-bits
+//   actual     - true value as f64-as-bits
+//
+// Returns: absolute error as f64-as-bits
+fn score_absolute_error(prediction: i64, actual: i64) -> i64 {
+    let p: f64 = bits_to_f64(prediction);
+    let a: f64 = bits_to_f64(actual);
+    let diff: f64 = a - p;
+    f64_to_bits(my_abs(diff))
+}
+
+// Softmax margin nonconformity score for classification.
+//
+// score = 1 - softmax(logits)[label]
+//
+// The higher the softmax probability of the correct class, the lower
+// the score (more conforming). This is the standard choice for
+// classification conformal prediction.
+//
+// Arguments:
+//   logits - handle to vec of f64-as-bits raw logits
+//   label  - true label index (i64)
+//
+// Returns: nonconformity score as f64-as-bits
+fn score_softmax_margin(logits: i64, label: i64) -> i64 {
+    let n: i64 = vec_len(logits);
+    if n == 0 { return f64_to_bits(1.0); }
+
+    // Find max logit for numerical stability
+    var max_logit: f64 = bits_to_f64(vec_get(logits, 0));
+    var i: i64 = 1;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        if v > max_logit { max_logit = v; }
+        i = i + 1;
+    }
+
+    // Compute softmax denominator: sum(exp(logit_i - max))
+    var denom: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        denom = denom + my_exp(v - max_logit);
+        i = i + 1;
+    }
+
+    // Softmax probability of the correct class
+    var label_logit: f64 = 0.0;
+    if label >= 0 {
+        if label < n {
+            label_logit = bits_to_f64(vec_get(logits, label));
+        }
+    }
+    let prob: f64 = my_exp(label_logit - max_logit) / denom;
+
+    // Nonconformity = 1 - P(correct class)
+    f64_to_bits(1.0 - prob)
+}
+
+// =============================================================================
+// Softmax Helper
+// =============================================================================
+
+// Compute softmax over a vec of f64_bits logits.
+// Returns a new vec of f64_bits probabilities.
+fn softmax_vec(logits: i64) -> i64 {
+    let n: i64 = vec_len(logits);
+    let result = vec_new();
+    if n == 0 { return result; }
+
+    // Find max
+    var max_val: f64 = bits_to_f64(vec_get(logits, 0));
+    var i: i64 = 1;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    // Sum of exp(x - max)
+    var sum: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        sum = sum + my_exp(v - max_val);
+        i = i + 1;
+    }
+
+    // Probabilities
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        let p: f64 = my_exp(v - max_val) / sum;
+        vec_push(result, f64_to_bits(p));
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Adaptive Conformal Prediction
+// =============================================================================
+
+// Adaptive conformal prediction maintains a time-varying threshold
+// that adjusts online based on observed coverage. When coverage is
+// too low (not enough correct inclusions), the threshold increases.
+// When coverage is too high (sets are too large), it decreases.
+//
+// State layout (vec):
+//   [0] alpha          f64-as-bits (target significance level)
+//   [1] gamma          f64-as-bits (step size for updates)
+//   [2] threshold      f64-as-bits (current adaptive threshold)
+//   [3] total_updates  i64 (number of updates so far)
+//   [4] total_covered  i64 (number of times true label was covered)
+//   [5] err_sum        f64-as-bits (running sum of coverage errors)
+
+fn ACS_ALPHA() -> i64       { 0 }
+fn ACS_GAMMA() -> i64       { 1 }
+fn ACS_THRESHOLD() -> i64   { 2 }
+fn ACS_TOTAL() -> i64       { 3 }
+fn ACS_COVERED() -> i64     { 4 }
+fn ACS_ERR_SUM() -> i64     { 5 }
+fn ACS_FIELDS() -> i64      { 6 }
+
+// Create a new adaptive conformal prediction state.
+//
+// Arguments:
+//   alpha - target significance level as f64-as-bits (e.g., f64_to_bits(0.05))
+//   gamma - step size for threshold updates as f64-as-bits (e.g., f64_to_bits(0.01))
+//
+// Returns: handle to state vec
+fn adaptive_conformal_new(alpha: i64, gamma: i64) -> i64 {
+    let v = vec_new();
+    vec_push(v, alpha);                       // [0] alpha
+    vec_push(v, gamma);                       // [1] gamma
+    vec_push(v, f64_to_bits(1.0));            // [2] threshold (start generous)
+    vec_push(v, 0);                           // [3] total_updates
+    vec_push(v, 0);                           // [4] total_covered
+    vec_push(v, f64_to_bits(0.0));            // [5] err_sum
+    v
+}
+
+// Update the adaptive threshold after observing one example.
+//
+// The update rule adjusts the threshold to track the target coverage:
+//   threshold += gamma * (alpha - err_t)
+// where err_t = 1 if NOT covered, 0 if covered.
+//
+// This is the "learn then test" / ACI (Adaptive Conformal Inference)
+// update rule from Gibbs & Candes (2021).
+//
+// Arguments:
+//   state   - handle to adaptive conformal state vec
+//   covered - 1 if the true label was in the prediction set, 0 otherwise
+//
+// Returns: handle to the same state vec (mutated in place)
+fn adaptive_update(state: i64, covered: i64) -> i64 {
+    let alpha: f64 = bits_to_f64(vec_get(state, ACS_ALPHA()));
+    let gamma: f64 = bits_to_f64(vec_get(state, ACS_GAMMA()));
+    let threshold: f64 = bits_to_f64(vec_get(state, ACS_THRESHOLD()));
+    let total: i64 = vec_get(state, ACS_TOTAL());
+    let cov_count: i64 = vec_get(state, ACS_COVERED());
+    let err_sum: f64 = bits_to_f64(vec_get(state, ACS_ERR_SUM()));
+
+    // err_t = 1 if not covered, 0 if covered
+    var err_t: f64 = 1.0;
+    if covered == 1 { err_t = 0.0; }
+
+    // Update threshold: increase when coverage is too low (err_t=1),
+    // decrease when coverage is OK (err_t=0)
+    let new_threshold: f64 = threshold + gamma * (alpha - err_t);
+
+    // Clamp threshold to reasonable range
+    var t: f64 = new_threshold;
+    if t < 0.0 { t = 0.0; }
+    if t > 100.0 { t = 100.0; }
+
+    // Update running coverage error sum
+    let new_err_sum: f64 = err_sum + err_t;
+
+    // Store updates
+    vec_set(state, ACS_THRESHOLD(), f64_to_bits(t));
+    vec_set(state, ACS_TOTAL(), total + 1);
+    if covered == 1 {
+        vec_set(state, ACS_COVERED(), cov_count + 1);
+    }
+    vec_set(state, ACS_ERR_SUM(), f64_to_bits(new_err_sum));
+
+    state
+}
+
+// Get the current adaptive threshold.
+//
+// Arguments:
+//   state - handle to adaptive conformal state vec
+//
+// Returns: current threshold as f64-as-bits
+fn adaptive_get_threshold(state: i64) -> i64 {
+    vec_get(state, ACS_THRESHOLD())
+}
+
+// Get the empirical coverage rate so far.
+//
+// Arguments:
+//   state - handle to adaptive conformal state vec
+//
+// Returns: coverage rate as f64-as-bits
+fn adaptive_get_coverage(state: i64) -> i64 {
+    let total: i64 = vec_get(state, ACS_TOTAL());
+    if total == 0 { return f64_to_bits(0.0); }
+    let covered: i64 = vec_get(state, ACS_COVERED());
+    let rate: f64 = (covered as f64) / (total as f64);
+    f64_to_bits(rate)
+}
+
+// =============================================================================
+// Batch Conformal Operations
+// =============================================================================
+
+// Compute nonconformity scores for an entire calibration set
+// using absolute error (regression).
+//
+// Arguments:
+//   predictions - handle to vec of f64-as-bits predicted values
+//   actuals     - handle to vec of f64-as-bits actual values
+//
+// Returns: handle to vec of f64-as-bits nonconformity scores
+fn score_absolute_error_batch(predictions: i64, actuals: i64) -> i64 {
+    let n: i64 = vec_len(predictions);
+    let scores = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let p: i64 = vec_get(predictions, i);
+        let a: i64 = vec_get(actuals, i);
+        vec_push(scores, score_absolute_error(p, a));
+        i = i + 1;
+    }
+    scores
+}
+
+// Compute nonconformity scores for an entire calibration set
+// using softmax margin (classification).
+//
+// Arguments:
+//   logits_batch - handle to vec of vecs, each inner vec is f64-as-bits logits
+//   labels       - handle to vec of i64 true label indices
+//
+// Returns: handle to vec of f64-as-bits nonconformity scores
+fn score_softmax_margin_batch(logits_batch: i64, labels: i64) -> i64 {
+    let n: i64 = vec_len(logits_batch);
+    let scores = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let logits: i64 = vec_get(logits_batch, i);
+        let label: i64 = vec_get(labels, i);
+        vec_push(scores, score_softmax_margin(logits, label));
+        i = i + 1;
+    }
+    scores
+}
+
+// =============================================================================
+// Full Conformal Pipeline
+// =============================================================================
+
+// Run the full conformal prediction pipeline on a test set.
+//
+// 1. Calibrate using calibration scores and alpha
+// 2. For each test example, compute prediction set
+// 3. Return all prediction sets and the threshold
+//
+// Arguments:
+//   cal_scores   - handle to vec of f64-as-bits calibration nonconformity scores
+//   test_scores  - handle to vec of vecs, each inner vec is f64-as-bits
+//                  candidate scores for one test example
+//   alpha        - significance level as f64-as-bits
+//
+// Returns: handle to vec [threshold_bits, prediction_sets_vec]
+//   prediction_sets_vec is a vec of vecs (indices in each prediction set)
+fn conformal_pipeline(cal_scores: i64, test_scores: i64, alpha: i64) -> i64 {
+    // Step 1: Calibrate
+    let threshold: i64 = conformal_calibrate(cal_scores, alpha);
+
+    // Step 2: Predict for each test example
+    let n_test: i64 = vec_len(test_scores);
+    let pred_sets = vec_new();
+    var i: i64 = 0;
+    while i < n_test {
+        let scores: i64 = vec_get(test_scores, i);
+        let pred_set: i64 = conformal_prediction_set(scores, threshold);
+        vec_push(pred_sets, pred_set);
+        i = i + 1;
+    }
+
+    // Package result
+    let result = vec_new();
+    vec_push(result, threshold);
+    vec_push(result, pred_sets);
+    result
+}
+
+// =============================================================================
+// Conformal Regression Intervals
+// =============================================================================
+
+// Compute a conformal prediction interval for regression.
+//
+// The interval is [prediction - threshold, prediction + threshold]
+// where threshold is calibrated from the absolute error scores.
+//
+// Arguments:
+//   prediction - predicted value as f64-as-bits
+//   threshold  - conformal threshold as f64-as-bits
+//
+// Returns: handle to vec [lower_bits, upper_bits]
+fn conformal_interval(prediction: i64, threshold: i64) -> i64 {
+    let p: f64 = bits_to_f64(prediction);
+    let t: f64 = bits_to_f64(threshold);
+    let result = vec_new();
+    vec_push(result, f64_to_bits(p - t));
+    vec_push(result, f64_to_bits(p + t));
+    result
+}
+
+// Compute conformal intervals for a batch of regression predictions.
+//
+// Arguments:
+//   predictions - handle to vec of f64-as-bits predicted values
+//   threshold   - conformal threshold as f64-as-bits
+//
+// Returns: handle to vec of vecs, each [lower_bits, upper_bits]
+fn conformal_interval_batch(predictions: i64, threshold: i64) -> i64 {
+    let n: i64 = vec_len(predictions);
+    let intervals = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let p: i64 = vec_get(predictions, i);
+        let interval: i64 = conformal_interval(p, threshold);
+        vec_push(intervals, interval);
+        i = i + 1;
+    }
+    intervals
+}
+
+// =============================================================================
+// Interval Coverage and Width
+// =============================================================================
+
+// Check if a value falls within a conformal interval.
+//
+// Arguments:
+//   interval - handle to vec [lower_bits, upper_bits]
+//   actual   - actual value as f64-as-bits
+//
+// Returns: 1 if actual is in [lower, upper], 0 otherwise
+fn interval_contains(interval: i64, actual: i64) -> i64 {
+    let lower: f64 = bits_to_f64(vec_get(interval, 0));
+    let upper: f64 = bits_to_f64(vec_get(interval, 1));
+    let a: f64 = bits_to_f64(actual);
+    if a >= lower {
+        if a <= upper {
+            return 1;
+        }
+    }
+    0
+}
+
+// Compute empirical coverage of conformal intervals.
+//
+// Arguments:
+//   intervals - handle to vec of vecs [lower_bits, upper_bits]
+//   actuals   - handle to vec of f64-as-bits actual values
+//
+// Returns: coverage rate as f64-as-bits
+fn interval_coverage(intervals: i64, actuals: i64) -> i64 {
+    let n: i64 = vec_len(intervals);
+    if n == 0 { return f64_to_bits(0.0); }
+
+    var covered: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let interval: i64 = vec_get(intervals, i);
+        let actual: i64 = vec_get(actuals, i);
+        if interval_contains(interval, actual) == 1 {
+            covered = covered + 1;
+        }
+        i = i + 1;
+    }
+
+    let rate: f64 = (covered as f64) / (n as f64);
+    f64_to_bits(rate)
+}
+
+// Compute average width of conformal intervals.
+//
+// Arguments:
+//   intervals - handle to vec of vecs [lower_bits, upper_bits]
+//
+// Returns: average width as f64-as-bits
+fn interval_avg_width(intervals: i64) -> i64 {
+    let n: i64 = vec_len(intervals);
+    if n == 0 { return f64_to_bits(0.0); }
+
+    var total_width: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let interval: i64 = vec_get(intervals, i);
+        let lower: f64 = bits_to_f64(vec_get(interval, 0));
+        let upper: f64 = bits_to_f64(vec_get(interval, 1));
+        total_width = total_width + (upper - lower);
+        i = i + 1;
+    }
+
+    let avg: f64 = total_width / (n as f64);
+    f64_to_bits(avg)
+}
+
+// =============================================================================
+// Mondrian Conformal Prediction (Group-Conditional)
+// =============================================================================
+
+// Mondrian conformal prediction calibrates separately per group,
+// providing group-conditional coverage guarantees.
+//
+// Arguments:
+//   scores - handle to vec of f64-as-bits calibration scores
+//   groups - handle to vec of i64 group labels
+//   n_groups - number of distinct groups
+//   alpha  - significance level as f64-as-bits
+//
+// Returns: handle to vec of f64-as-bits thresholds (one per group)
+fn mondrian_calibrate(scores: i64, groups: i64, n_groups: i64, alpha: i64) -> i64 {
+    let thresholds = vec_new();
+
+    var g: i64 = 0;
+    while g < n_groups {
+        // Collect scores for this group
+        let group_scores = vec_new();
+        let n: i64 = vec_len(scores);
+        var i: i64 = 0;
+        while i < n {
+            if vec_get(groups, i) == g {
+                vec_push(group_scores, vec_get(scores, i));
+            }
+            i = i + 1;
+        }
+
+        // Calibrate for this group
+        let threshold: i64 = conformal_calibrate(group_scores, alpha);
+        vec_push(thresholds, threshold);
+        g = g + 1;
+    }
+
+    thresholds
+}
+
+// =============================================================================
+// Cross-Conformal Prediction
+// =============================================================================
+
+// K-fold cross-conformal prediction.
+//
+// Divides the data into K folds, calibrates on each fold, and
+// aggregates thresholds. This uses all data for both training and
+// calibration, improving efficiency.
+//
+// Arguments:
+//   scores - handle to vec of f64-as-bits nonconformity scores
+//   k      - number of folds
+//   alpha  - significance level as f64-as-bits
+//
+// Returns: handle to vec of f64-as-bits thresholds (one per fold)
+fn cross_conformal_calibrate(scores: i64, k: i64, alpha: i64) -> i64 {
+    let n: i64 = vec_len(scores);
+    let fold_size: i64 = n / k;
+    let thresholds = vec_new();
+
+    var fold: i64 = 0;
+    while fold < k {
+        // Collect scores NOT in this fold (use as calibration)
+        let cal_scores = vec_new();
+        let fold_start: i64 = fold * fold_size;
+        var fold_end: i64 = fold_start + fold_size;
+        if fold == k - 1 { fold_end = n; }
+
+        var i: i64 = 0;
+        while i < n {
+            if i < fold_start {
+                vec_push(cal_scores, vec_get(scores, i));
+            }
+            if i >= fold_end {
+                vec_push(cal_scores, vec_get(scores, i));
+            }
+            i = i + 1;
+        }
+
+        let threshold: i64 = conformal_calibrate(cal_scores, alpha);
+        vec_push(thresholds, threshold);
+        fold = fold + 1;
+    }
+
+    thresholds
+}
+
+// =============================================================================
+// Score Normalization
+// =============================================================================
+
+// Normalize nonconformity scores to [0, 1] range using min-max scaling.
+//
+// Arguments:
+//   scores - handle to vec of f64-as-bits scores
+//
+// Returns: handle to new vec of f64-as-bits normalized scores
+fn normalize_scores(scores: i64) -> i64 {
+    let n: i64 = vec_len(scores);
+    let result = vec_new();
+    if n == 0 { return result; }
+
+    // Find min and max
+    var min_val: f64 = bits_to_f64(vec_get(scores, 0));
+    var max_val: f64 = min_val;
+    var i: i64 = 1;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(scores, i));
+        if v < min_val { min_val = v; }
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    let range: f64 = max_val - min_val;
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(scores, i));
+        var normalized: f64 = 0.0;
+        if range > 0.000000001 {
+            normalized = (v - min_val) / range;
+        }
+        vec_push(result, f64_to_bits(normalized));
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Conformalized Quantile Regression
+// =============================================================================
+
+// Conformalized quantile regression (CQR) uses quantile regression
+// predictions as the base, then calibrates the residuals for
+// guaranteed coverage.
+//
+// Arguments:
+//   lower_preds - handle to vec of f64-as-bits lower quantile predictions
+//   upper_preds - handle to vec of f64-as-bits upper quantile predictions
+//   actuals     - handle to vec of f64-as-bits actual values
+//   alpha       - significance level as f64-as-bits
+//
+// Returns: handle to vec [calibrated_lower_adj, calibrated_upper_adj]
+//   The adjustments to add/subtract from quantile predictions
+fn cqr_calibrate(lower_preds: i64, upper_preds: i64, actuals: i64, alpha: i64) -> i64 {
+    let n: i64 = vec_len(actuals);
+    let scores = vec_new();
+
+    // CQR nonconformity score: max(lower - actual, actual - upper)
+    var i: i64 = 0;
+    while i < n {
+        let lo: f64 = bits_to_f64(vec_get(lower_preds, i));
+        let hi: f64 = bits_to_f64(vec_get(upper_preds, i));
+        let a: f64 = bits_to_f64(vec_get(actuals, i));
+
+        let err_lo: f64 = lo - a;
+        let err_hi: f64 = a - hi;
+        var score: f64 = err_lo;
+        if err_hi > score { score = err_hi; }
+
+        vec_push(scores, f64_to_bits(score));
+        i = i + 1;
+    }
+
+    // Calibrate the CQR scores
+    let threshold: i64 = conformal_calibrate(scores, alpha);
+
+    let result = vec_new();
+    vec_push(result, threshold);  // adjustment to apply
+    result
+}
+
+// Apply CQR adjustment to quantile predictions.
+//
+// Arguments:
+//   lower_pred - lower quantile prediction as f64-as-bits
+//   upper_pred - upper quantile prediction as f64-as-bits
+//   adjustment - CQR calibrated adjustment as f64-as-bits
+//
+// Returns: handle to vec [adjusted_lower, adjusted_upper]
+fn cqr_predict(lower_pred: i64, upper_pred: i64, adjustment: i64) -> i64 {
+    let lo: f64 = bits_to_f64(lower_pred);
+    let hi: f64 = bits_to_f64(upper_pred);
+    let adj: f64 = bits_to_f64(adjustment);
+
+    let result = vec_new();
+    vec_push(result, f64_to_bits(lo - adj));
+    vec_push(result, f64_to_bits(hi + adj));
+    result
+}
+
+// =============================================================================
+// Efficiency Metrics
+// =============================================================================
+
+// Compute the conditional coverage at different score levels.
+// Useful for diagnosing whether coverage is uniform across difficulty.
+//
+// Arguments:
+//   scores     - handle to vec of f64-as-bits nonconformity scores
+//   covered    - handle to vec of i64 (1 if covered, 0 if not)
+//   n_bins     - number of bins to partition scores into
+//
+// Returns: handle to vec of f64-as-bits per-bin coverage rates
+fn conditional_coverage(scores: i64, covered: i64, n_bins: i64) -> i64 {
+    let n: i64 = vec_len(scores);
+    let sorted = sort_f64_bits(scores);
+    let result = vec_new();
+
+    if n == 0 { return result; }
+    if n_bins <= 0 { return result; }
+
+    let bin_size: i64 = n / n_bins;
+    if bin_size == 0 { return result; }
+
+    // Find the score boundaries for each bin from sorted values
+    let boundaries = vec_new();
+    var b: i64 = 1;
+    while b < n_bins {
+        let idx: i64 = b * bin_size;
+        if idx < n {
+            vec_push(boundaries, vec_get(sorted, idx));
+        }
+        b = b + 1;
+    }
+
+    // For each bin, compute coverage
+    var bin: i64 = 0;
+    while bin < n_bins {
+        var bin_covered: i64 = 0;
+        var bin_total: i64 = 0;
+
+        var i: i64 = 0;
+        while i < n {
+            let s: f64 = bits_to_f64(vec_get(scores, i));
+
+            // Determine which bin this score falls in
+            var score_bin: i64 = 0;
+            var bnd: i64 = 0;
+            while bnd < vec_len(boundaries) {
+                let boundary: f64 = bits_to_f64(vec_get(boundaries, bnd));
+                if s >= boundary {
+                    score_bin = bnd + 1;
+                }
+                bnd = bnd + 1;
+            }
+            if score_bin >= n_bins { score_bin = n_bins - 1; }
+
+            if score_bin == bin {
+                bin_total = bin_total + 1;
+                if vec_get(covered, i) == 1 {
+                    bin_covered = bin_covered + 1;
+                }
+            }
+            i = i + 1;
+        }
+
+        var rate: f64 = 0.0;
+        if bin_total > 0 {
+            rate = (bin_covered as f64) / (bin_total as f64);
+        }
+        vec_push(result, f64_to_bits(rate));
+        bin = bin + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Label-Conditional Conformal
+// =============================================================================
+
+// Compute label-conditional nonconformity scores.
+// For each candidate label, compute the softmax score if that label
+// were the true label.
+//
+// Arguments:
+//   logits   - handle to vec of f64-as-bits raw logits
+//   n_labels - number of candidate labels
+//
+// Returns: handle to vec of f64-as-bits scores (one per label)
+fn label_conditional_scores(logits: i64, n_labels: i64) -> i64 {
+    let scores = vec_new();
+    var label: i64 = 0;
+    while label < n_labels {
+        let score: i64 = score_softmax_margin(logits, label);
+        vec_push(scores, score);
+        label = label + 1;
+    }
+    scores
+}
+
+// =============================================================================
+// Weighted Conformal Prediction
+// =============================================================================
+
+// Weighted conformal prediction assigns importance weights to
+// calibration examples, useful for distribution shift.
+//
+// Arguments:
+//   scores  - handle to vec of f64-as-bits calibration scores
+//   weights - handle to vec of f64-as-bits importance weights
+//   alpha   - significance level as f64-as-bits
+//
+// Returns: threshold as f64-as-bits
+fn weighted_conformal_calibrate(scores: i64, weights: i64, alpha: i64) -> i64 {
+    let n: i64 = vec_len(scores);
+    if n == 0 { return f64_to_bits(0.0); }
+
+    let alpha_val: f64 = bits_to_f64(alpha);
+    let target: f64 = 1.0 - alpha_val;
+
+    // Sort scores and rearrange weights accordingly
+    // Build index-value pairs, sort by score, then do weighted quantile
+    // Simple approach: insertion sort both arrays together
+    let sorted_scores = vec_new();
+    let sorted_weights = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(sorted_scores, vec_get(scores, i));
+        vec_push(sorted_weights, vec_get(weights, i));
+        i = i + 1;
+    }
+
+    // Insertion sort by score value
+    var j: i64 = 1;
+    while j < n {
+        let key_score: i64 = vec_get(sorted_scores, j);
+        let key_weight: i64 = vec_get(sorted_weights, j);
+        let key_val: f64 = bits_to_f64(key_score);
+
+        var k: i64 = j - 1;
+        var done: i64 = 0;
+        while k >= 0 {
+            if done == 0 {
+                let cur: f64 = bits_to_f64(vec_get(sorted_scores, k));
+                if cur > key_val {
+                    vec_set(sorted_scores, k + 1, vec_get(sorted_scores, k));
+                    vec_set(sorted_weights, k + 1, vec_get(sorted_weights, k));
+                    k = k - 1;
+                } else {
+                    done = 1;
+                }
+            } else {
+                k = k - 1;
+            }
+        }
+        if done == 0 {
+            vec_set(sorted_scores, 0, key_score);
+            vec_set(sorted_weights, 0, key_weight);
+        } else {
+            vec_set(sorted_scores, k + 1, key_score);
+            vec_set(sorted_weights, k + 1, key_weight);
+        }
+        j = j + 1;
+    }
+
+    // Compute total weight
+    var total_weight: f64 = 0.0;
+    i = 0;
+    while i < n {
+        total_weight = total_weight + bits_to_f64(vec_get(sorted_weights, i));
+        i = i + 1;
+    }
+
+    // Find weighted quantile
+    var cum_weight: f64 = 0.0;
+    i = 0;
+    while i < n {
+        cum_weight = cum_weight + bits_to_f64(vec_get(sorted_weights, i));
+        let fraction: f64 = cum_weight / total_weight;
+        if fraction >= target {
+            return vec_get(sorted_scores, i);
+        }
+        i = i + 1;
+    }
+
+    // Fallback: return the maximum score
+    vec_get(sorted_scores, n - 1)
+}
+
+// =============================================================================
+// Summary Statistics
+// =============================================================================
+
+// Compute summary statistics for a conformal prediction run.
+//
+// Arguments:
+//   predictions - handle to vec of vecs (prediction sets)
+//   labels      - handle to vec of i64 true label indices
+//
+// Returns: handle to vec [coverage_bits, avg_size_bits, empty_frac_bits]
+fn conformal_summary(predictions: i64, labels: i64) -> i64 {
+    let n: i64 = vec_len(predictions);
+    let result = vec_new();
+
+    if n == 0 {
+        vec_push(result, f64_to_bits(0.0));
+        vec_push(result, f64_to_bits(0.0));
+        vec_push(result, f64_to_bits(0.0));
+        return result;
+    }
+
+    // Coverage
+    let coverage: i64 = conformal_coverage(predictions, labels);
+    vec_push(result, coverage);
+
+    // Average set size
+    let avg_size: i64 = conformal_set_size(predictions);
+    vec_push(result, avg_size);
+
+    // Fraction of empty sets
+    var empty_count: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let pred_set: i64 = vec_get(predictions, i);
+        if vec_len(pred_set) == 0 {
+            empty_count = empty_count + 1;
+        }
+        i = i + 1;
+    }
+    let empty_frac: f64 = (empty_count as f64) / (n as f64);
+    vec_push(result, f64_to_bits(empty_frac));
+
+    result
+}
+
+// =============================================================================
+// Entry Point (smoke test)
+// =============================================================================
+

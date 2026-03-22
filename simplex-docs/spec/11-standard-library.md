@@ -1,6 +1,6 @@
 # Simplex Standard Library Reference
 
-**Version 0.14.0**
+**Version 0.17.0**
 
 The Simplex standard library provides core functionality for I/O, collections, networking, and more. All modules are written in pure Simplex.
 

@@ -1,284 +1,62 @@
-// Simplex YAML Format Tests
-// Tests YAML key-value parsing logic inline
-
-// =============================================================================
-// Helper: trim leading whitespace
-// =============================================================================
-
-fn trim_left(s: i64) -> i64 {
-    let len: i64 = string_len(s);
-    var start: i64 = 0;
-    while start < len {
-        let ch: i64 = string_char_at(s, start);
-        if ch != 32 {
-            let result: i64 = intrinsic_string_slice(s, start, len);
-            return result;
-        }
-        start = start + 1;
-    }
-    ""
-}
-
-// =============================================================================
-// Helper: split string by newline
-// =============================================================================
-
-fn split_lines(input: i64) -> i64 {
-    let parts: i64 = vec_new();
-    let len: i64 = string_len(input);
-    var start: i64 = 0;
-    var i: i64 = 0;
-    while i < len {
-        if string_char_at(input, i) == 10 {
-            vec_push(parts, intrinsic_string_slice(input, start, i));
-            start = i + 1;
-        }
-        i = i + 1;
-    }
-    if start <= len {
-        vec_push(parts, intrinsic_string_slice(input, start, len));
-    }
-    parts
-}
-
-// =============================================================================
-// Helper: find first occurrence of char, return index or -1
-// =============================================================================
-
-fn find_char(s: i64, ch: i64) -> i64 {
-    let len: i64 = string_len(s);
-    var i: i64 = 0;
-    while i < len {
-        if string_char_at(s, i) == ch {
-            return i;
-        }
-        i = i + 1;
-    }
-    -1
-}
-
-// =============================================================================
-// Test 1: Parse simple key: value
-// =============================================================================
-
-fn test_simple_kv() -> i64 {
-    println("  Testing simple key: value parsing...");
-    let line: i64 = "name: Alice";
-    let colon: i64 = find_char(line, 58);
-    if colon == -1 {
-        println("  FAIL: should find colon");
-        return 1;
-    }
-    let key: i64 = intrinsic_string_slice(line, 0, colon);
-    if string_eq(key, "name") != 1 {
-        println("  FAIL: key should be name");
-        return 1;
-    }
-    let val: i64 = trim_left(intrinsic_string_slice(line, colon + 1, string_len(line)));
-    if string_eq(val, "Alice") != 1 {
-        println("  FAIL: value should be Alice");
-        return 1;
-    }
-    println("  PASS: simple key: value parsing");
-    0
-}
-
-// =============================================================================
-// Test 2: Parse multiple key-value pairs
-// =============================================================================
-
-fn test_multi_kv() -> i64 {
-    println("  Testing multiple key-value pairs...");
-    let nl: i64 = intrinsic_string_from_char(10);
-    let yaml: i64 = string_concat("name: Alice", string_concat(nl, string_concat("age: 30", string_concat(nl, "city: NYC"))));
-    let lines: i64 = split_lines(yaml);
-
-    if vec_len(lines) != 3 {
-        println("  FAIL: should have 3 lines");
-        return 1;
-    }
-
-    // Store keys and values
-    let keys: i64 = vec_new();
-    let vals: i64 = vec_new();
-    var i: i64 = 0;
-    while i < vec_len(lines) {
-        let line: i64 = vec_get(lines, i);
-        let colon: i64 = find_char(line, 58);
-        if colon != -1 {
-            vec_push(keys, intrinsic_string_slice(line, 0, colon));
-            vec_push(vals, trim_left(intrinsic_string_slice(line, colon + 1, string_len(line))));
-        }
-        i = i + 1;
-    }
-
-    if vec_len(keys) != 3 {
-        println("  FAIL: should have 3 keys");
-        return 1;
-    }
-    if string_eq(vec_get(keys, 1), "age") != 1 {
-        println("  FAIL: second key should be age");
-        return 1;
-    }
-    if string_eq(vec_get(vals, 1), "30") != 1 {
-        println("  FAIL: second value should be 30");
-        return 1;
-    }
-    println("  PASS: multiple key-value pairs");
-    0
-}
-
-// =============================================================================
-// Test 3: Comment lines are skipped
-// =============================================================================
-
-fn test_comments() -> i64 {
-    println("  Testing comment lines skipped...");
-    let nl: i64 = intrinsic_string_from_char(10);
-    let yaml: i64 = string_concat("# comment", string_concat(nl, string_concat("key: value", string_concat(nl, "# another"))));
-    let lines: i64 = split_lines(yaml);
-
-    var count: i64 = 0;
-    var i: i64 = 0;
-    while i < vec_len(lines) {
-        let line: i64 = trim_left(vec_get(lines, i));
-        let len: i64 = string_len(line);
-        if len > 0 {
-            if string_char_at(line, 0) != 35 {
-                count = count + 1;
-            }
-        }
-        i = i + 1;
-    }
-    if count != 1 {
-        println("  FAIL: should have 1 non-comment line");
-        return 1;
-    }
-    println("  PASS: comment lines skipped");
-    0
-}
-
-// =============================================================================
-// Test 4: Null values
-// =============================================================================
-
-fn test_null_values() -> i64 {
-    println("  Testing null values...");
-    // "null" and "~" are YAML null
-    if string_eq("null", "null") != 1 {
-        println("  FAIL: null string check");
-        return 1;
-    }
-    if string_eq("~", "~") != 1 {
-        println("  FAIL: tilde null check");
-        return 1;
-    }
-
-    let line: i64 = "a: null";
-    let colon: i64 = find_char(line, 58);
-    let val: i64 = trim_left(intrinsic_string_slice(line, colon + 1, string_len(line)));
-    if string_eq(val, "null") != 1 {
-        println("  FAIL: value should be null");
-        return 1;
-    }
-    println("  PASS: null values");
-    0
-}
-
-// =============================================================================
-// Test 5: Document separator --- is skipped
-// =============================================================================
-
-fn test_doc_separator() -> i64 {
-    println("  Testing document separator...");
-    let nl: i64 = intrinsic_string_from_char(10);
-    let yaml: i64 = string_concat("---", string_concat(nl, "key: value"));
-    let lines: i64 = split_lines(yaml);
-
-    var data_count: i64 = 0;
-    var i: i64 = 0;
-    while i < vec_len(lines) {
-        let line: i64 = vec_get(lines, i);
-        if string_eq(line, "---") != 1 {
-            let len: i64 = string_len(line);
-            if len > 0 {
-                data_count = data_count + 1;
-            }
-        }
-        i = i + 1;
-    }
-    if data_count != 1 {
-        println("  FAIL: should have 1 data line after ---");
-        return 1;
-    }
-    println("  PASS: document separator");
-    0
-}
-
-// =============================================================================
-// Test 6: Sequence items (- prefix)
-// =============================================================================
-
-fn test_sequence_items() -> i64 {
-    println("  Testing sequence items...");
-    let nl: i64 = intrinsic_string_from_char(10);
-    let yaml: i64 = string_concat("- apple", string_concat(nl, string_concat("- banana", string_concat(nl, "- cherry"))));
-    let lines: i64 = split_lines(yaml);
-
-    let items: i64 = vec_new();
-    var i: i64 = 0;
-    while i < vec_len(lines) {
-        let line: i64 = trim_left(vec_get(lines, i));
-        let len: i64 = string_len(line);
-        if len > 2 {
-            if string_char_at(line, 0) == 45 {
-                if string_char_at(line, 1) == 32 {
-                    vec_push(items, intrinsic_string_slice(line, 2, len));
-                }
-            }
-        }
-        i = i + 1;
-    }
-
-    if vec_len(items) != 3 {
-        println("  FAIL: should have 3 items");
-        return 1;
-    }
-    if string_eq(vec_get(items, 0), "apple") != 1 {
-        println("  FAIL: first item should be apple");
-        return 1;
-    }
-    if string_eq(vec_get(items, 2), "cherry") != 1 {
-        println("  FAIL: third item should be cherry");
-        return 1;
-    }
-    println("  PASS: sequence items");
-    0
-}
-
-// =============================================================================
-// Main Test Runner
-// =============================================================================
+use yaml;
 
 fn main() -> i64 {
-    println("=== YAML Format Tests ===");
-    println("");
+    println(string_from("=== YAML Library Integration Test ==="));
+    var failures: i64 = 0;
 
-    let f1: i64 = test_simple_kv();
-    let f2: i64 = test_multi_kv();
-    let f3: i64 = test_comments();
-    let f4: i64 = test_null_values();
-    let f5: i64 = test_doc_separator();
-    let f6: i64 = test_sequence_items();
-
-    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6;
-
-    println("");
-    if failures == 0 {
-        println("All 6 YAML format tests passed!");
+    // Test 1: Parse a simple YAML mapping
+    let input: i64 = string_from("name: Alice\nage: 30\ncity: NYC");
+    let doc: i64 = yaml_parse(input);
+    if yaml_is_mapping(doc) != 1 {
+        println(string_from("FAIL: doc should be a mapping"));
+        failures = failures + 1;
     } else {
-        println("Some YAML format tests failed");
+        println(string_from("PASS: yaml_is_mapping"));
     }
 
+    // Test 2: Get a value by key
+    let name_node: i64 = yaml_get(doc, string_from("name"));
+    let name_val: i64 = yaml_scalar_value(name_node);
+    if string_eq(name_val, string_from("Alice")) != 1 {
+        println(string_from("FAIL: name should be Alice"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: yaml_get name"));
+    }
+
+    // Test 3: Get another key
+    let city_node: i64 = yaml_get(doc, string_from("city"));
+    let city_val: i64 = yaml_scalar_value(city_node);
+    if string_eq(city_val, string_from("NYC")) != 1 {
+        println(string_from("FAIL: city should be NYC"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: yaml_get city"));
+    }
+
+    // Test 4: Parse a sequence
+    let seq_input: i64 = string_from("items:\n  - alpha\n  - beta\n  - gamma");
+    let seq_doc: i64 = yaml_parse(seq_input);
+    let items_node: i64 = yaml_get(seq_doc, string_from("items"));
+    if yaml_is_sequence(items_node) != 1 {
+        println(string_from("FAIL: items should be a sequence"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: yaml_is_sequence"));
+    }
+
+    // Test 5: Get sequence element by index
+    let first: i64 = yaml_get_index(items_node, 0);
+    let first_val: i64 = yaml_scalar_value(first);
+    if string_eq(first_val, string_from("alpha")) != 1 {
+        println(string_from("FAIL: first item should be alpha"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: yaml_get_index"));
+    }
+
+    if failures == 0 {
+        println(string_from("All YAML tests passed"));
+    }
     failures
 }

@@ -118,7 +118,8 @@ enum TokenKind {
     KwRequires,      // requires precondition
     KwEnsures,       // ensures postcondition
     KwInvariant,     // invariant struct/type constraint
-    KwFallback       // fallback handler on contract failure
+    KwFallback,      // fallback handler on contract failure
+    KwExtern         // extern keyword for extern fn declarations
 }
 
 // AST node tags - using i64 since stage1 doesn't have proper enums for everything
@@ -3725,7 +3726,16 @@ fn parse_item(parser: i64) -> i64 {
         return parse_const_def(parser);
     }
     if parser_check(parser, TokenKind::KwExtern) {
-        return parse_extern_block(parser);
+        // Check if it's "extern fn" (standalone extern declaration)
+        // or "extern "C" { ... }" (extern block)
+        parser_advance(parser);  // consume 'extern'
+        if parser_check(parser, TokenKind::KwFn) {
+            // extern fn name(params) -> ret;
+            // Parse as regular function, it will get body=0 from semicolon
+            return parse_fn(parser, 0);
+        }
+        // extern "C" { ... } block — skip it
+        return parse_extern_block_inner(parser);
     }
 
     // Unknown item
@@ -3764,8 +3774,8 @@ fn parse_const_def(parser: i64) -> i64 {
 // Parse: extern "C" { fn name(params) -> ret; ... }
 // Skips the entire block - extern functions are already declared in the runtime.
 // The codegen emits declares for all runtime functions automatically.
-fn parse_extern_block(parser: i64) -> i64 {
-    parser_expect(parser, TokenKind::KwExtern);
+fn parse_extern_block_inner(parser: i64) -> i64 {
+    // 'extern' keyword already consumed by caller
     // Skip "C" string literal
     if parser_check(parser, TokenKind::String) {
         parser_advance(parser);

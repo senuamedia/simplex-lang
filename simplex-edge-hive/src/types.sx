@@ -1,7 +1,7 @@
 // Edge Hive - Core Types
 // Fundamental data structures for the Edge Hive system
 //
-// Uses i64 encoding patterns for compatibility with Simplex 0.16.0 compiler
+// Uses i64 encoding patterns for compatibility with Simplex 0.17.0 compiler
 
 // =============================================================================
 // Device Classes

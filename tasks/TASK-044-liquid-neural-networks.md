@@ -1,7 +1,7 @@
 # TASK-044: Liquid Neural Networks — Dynamic Weight Computation
 
 **Version:** 0.17.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P0 — Critical
 **Depends on:** v0.16.0 release, Neural ODEs (TASK-043), dual numbers (TASK-005)
 

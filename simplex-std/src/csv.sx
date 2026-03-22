@@ -27,33 +27,6 @@
 // Licensed under AGPL-3.0
 
 // =============================================================================
-// Runtime Extern Declarations
-// =============================================================================
-
-extern fn vec_new() -> i64;
-extern fn vec_push(v: i64, val: i64) -> i64;
-extern fn vec_get(v: i64, idx: i64) -> i64;
-extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
-extern fn vec_len(v: i64) -> i64;
-
-extern fn string_concat(a: i64, b: i64) -> i64;
-extern fn string_length(s: i64) -> i64;
-extern fn string_char_at(s: i64, idx: i64) -> i64;
-extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
-extern fn string_from_char(c: i64) -> i64;
-extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
-extern fn string_find(s: i64, needle: i64, start: i64) -> i64;
-extern fn string_trim(s: i64) -> i64;
-
-extern fn sb_new() -> i64;
-extern fn sb_append(sb: i64, s: i64);
-extern fn sb_append_char(sb: i64, c: i64);
-extern fn sb_to_string(sb: i64) -> i64;
-
-extern fn println(s: i64);
-extern fn int_to_string(n: i64) -> i64;
-
-// =============================================================================
 // Config Constants (as functions per Simplex convention)
 // =============================================================================
 
@@ -147,7 +120,7 @@ fn is_line_end(c: i64) -> i64 {
 /// Parse a single quoted field starting at position pos (after the opening quote).
 /// Returns a vec: [parsed_string, new_position]
 fn parse_quoted_field(input: i64, pos: i64, quote_char: i64) -> i64 {
-    let len: i64 = string_length(input);
+    let len: i64 = string_len(input);
     let sb: i64 = sb_new();
     var i: i64 = pos;
 
@@ -194,7 +167,7 @@ fn parse_quoted_field(input: i64, pos: i64, quote_char: i64) -> i64 {
 /// Parse an unquoted field starting at position pos.
 /// Returns a vec: [parsed_string, new_position]
 fn parse_unquoted_field(input: i64, pos: i64, delim: i64) -> i64 {
-    let len: i64 = string_length(input);
+    let len: i64 = string_len(input);
     let sb: i64 = sb_new();
     var i: i64 = pos;
 
@@ -231,7 +204,7 @@ fn parse_unquoted_field(input: i64, pos: i64, delim: i64) -> i64 {
 /// Parse a single row starting at position pos.
 /// Returns a vec: [fields_vec, new_position]
 fn parse_row(input: i64, pos: i64, delim: i64, quote_char: i64) -> i64 {
-    let len: i64 = string_length(input);
+    let len: i64 = string_len(input);
     let fields: i64 = vec_new();
     var i: i64 = pos;
 
@@ -361,7 +334,7 @@ fn is_empty_row(fields: i64) -> i64 {
     var i: i64 = 0;
     while i < count {
         let field: i64 = vec_get(fields, i);
-        if string_length(field) > 0 {
+        if string_len(field) > 0 {
             return 0;
         }
         i = i + 1;
@@ -390,7 +363,7 @@ pub fn csv_parse(input: i64, config: i64) -> i64 {
     let has_header: i64 = vec_get(config, CFG_HAS_HEADER());
     let skip_empty: i64 = vec_get(config, CFG_SKIP_EMPTY());
 
-    let len: i64 = string_length(input);
+    let len: i64 = string_len(input);
     let headers: i64 = vec_new();
     let rows: i64 = vec_new();
     var pos: i64 = 0;
@@ -558,7 +531,7 @@ pub fn csv_get_by_name(table: i64, row: i64, name: i64) -> i64 {
     var ci: i64 = 0;
     while ci < col_count {
         let hdr: i64 = vec_get(headers, ci);
-        if intrinsic_string_eq(hdr, name) == 1 {
+        if string_eq(hdr, name) == 1 {
             return csv_get_cell(table, row, ci);
         }
         ci = ci + 1;
@@ -572,7 +545,7 @@ pub fn csv_get_by_name(table: i64, row: i64, name: i64) -> i64 {
 
 /// Check if a field value needs quoting (contains delimiter, quote, or newline)
 fn field_needs_quoting(field: i64, delim: i64, quote_char: i64) -> i64 {
-    let len: i64 = string_length(field);
+    let len: i64 = string_len(field);
     var i: i64 = 0;
     while i < len {
         let c: i64 = string_char_at(field, i);
@@ -590,7 +563,7 @@ fn field_needs_quoting(field: i64, delim: i64, quote_char: i64) -> i64 {
 fn escape_field(field: i64, quote_char: i64) -> i64 {
     let sb: i64 = sb_new();
     sb_append_char(sb, quote_char);
-    let len: i64 = string_length(field);
+    let len: i64 = string_len(field);
     var i: i64 = 0;
     while i < len {
         let c: i64 = string_char_at(field, i);
@@ -738,7 +711,7 @@ pub fn csv_col_index(table: i64, name: i64) -> i64 {
     var i: i64 = 0;
     while i < count {
         let hdr: i64 = vec_get(headers, i);
-        if intrinsic_string_eq(hdr, name) == 1 {
+        if string_eq(hdr, name) == 1 {
             return i;
         }
         i = i + 1;

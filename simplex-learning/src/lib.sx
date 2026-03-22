@@ -17,6 +17,22 @@
 //   - belief:      TASK-014: Grounded beliefs with epistemic metadata
 //   - epistemic:   TASK-014: Epistemic annealing and self-correction
 //   - quantum:     TASK-021: Quantum-classical bridge, epistemic beliefs, neural gates
+//   - kan:         Kolmogorov-Arnold Networks with B-spline edge activations
+//   - causal:      Causal inference: DAGs, do-calculus, d-separation, adjustment
+//   - ssm:         State Space Models: S4 (structured) and Mamba (selective) layers
+//   - info_geometry: Information geometry, natural gradients, K-FAC, KL divergence
+//   - conformal:  Conformal prediction: calibration, prediction sets, coverage
+//   - moe:        Mixture of Experts: sparse gating, load balancing, top-k routing
+//   - interpretability: Mechanistic interpretability: activations, attribution, probing, ablation
+//   - neural_ode:  Neural ODEs: continuous-depth networks, ODE solvers, CNF
+//   - neurosymbolic: Neuro-symbolic hybrid reasoning: KB, Horn clauses, unification, chaining
+//   - hopfield:    Modern Hopfield associative memory: exponential capacity, attention
+//   - liquid:      Liquid Neural Networks: liquid neurons, NCPs, CfC cells
+//   - hyperbolic:  Hyperbolic embeddings: Poincare ball, Mobius ops, RSGD
+//   - sdm:         Sparse Distributed Memory (Kanerva) and Hyperdimensional Computing
+//   - diffusion:   Diffusion language generation: discrete denoising, masking, sampling
+//   - tensor_network: Tensor network compression: TT/MPS decomposition, SVD, Tucker
+//   - equivariant: Geometric equivariant layers: rotations, GNN, spherical harmonics
 
 pub mod tensor;
 pub mod dual;
@@ -30,6 +46,22 @@ pub mod runtime;
 pub mod belief;
 pub mod epistemic;
 pub mod quantum;
+pub mod kan;
+pub mod causal;
+pub mod ssm;
+pub mod info_geometry;
+pub mod conformal;
+pub mod moe;
+pub mod interpretability;
+pub mod neural_ode;
+pub mod neurosymbolic;
+pub mod hopfield;
+pub mod liquid;
+pub mod hyperbolic;
+pub mod sdm;
+pub mod diffusion;
+pub mod tensor_network;
+pub mod equivariant;
 
 // Re-export core types for convenience
 pub use tensor::{Tensor, DualTensor};
@@ -89,8 +121,249 @@ pub use quantum::{
     quantum_gate_step, quantum_gate_summary,
 };
 
+// KAN: Kolmogorov-Arnold Networks
+pub use kan::{
+    bspline_basis, bspline_basis_iterative, bspline_knots,
+    kan_layer_new, kan_layer_init, kan_forward, kan_forward_cached,
+    kan_backward_coeffs, kan_backward_input, kan_update_coeffs,
+    kan_network_new, kan_network_init, kan_network_forward, kan_network_param_count,
+    kan_extract_function, kan_spline_degree, kan_is_linear, kan_is_zero,
+    kan_active_edges, kan_linear_edges, kan_prune_edges,
+    kan_l1_penalty, kan_l2_penalty,
+    spline_eval, spline_eval_multi,
+    kan_layer_summary, kan_network_summary,
+};
+
+// Causal inference
+pub use causal::{
+    causal_graph_new, causal_add_edge, causal_has_edge, causal_edge_count,
+    causal_parents, causal_children, causal_is_ancestor,
+    causal_ancestors, causal_descendants,
+    causal_topological_sort, causal_is_dag,
+    d_separated,
+    do_intervention, is_identifiable,
+    backdoor_criterion, find_adjustment_set,
+    ate_estimate, att_estimate, ate_ipw,
+    causal_markov_blanket, causal_graph_copy, causal_graph_summary,
+};
+
+// Conformal prediction
+pub use conformal::{
+    conformal_calibrate, conformal_predict, conformal_prediction_set,
+    conformal_coverage, conformal_set_size,
+    score_absolute_error, score_softmax_margin,
+    adaptive_conformal_new, adaptive_update, adaptive_get_threshold, adaptive_get_coverage,
+    quantile, sort_f64_bits,
+    conformal_pipeline, conformal_interval, conformal_interval_batch,
+    interval_contains, interval_coverage, interval_avg_width,
+    score_absolute_error_batch, score_softmax_margin_batch,
+    mondrian_calibrate, cross_conformal_calibrate,
+    weighted_conformal_calibrate, cqr_calibrate, cqr_predict,
+    normalize_scores, conditional_coverage, label_conditional_scores,
+    conformal_summary,
+};
+
+// Mixture of Experts
+pub use moe::{
+    moe_layer_new, moe_forward, moe_batch_forward,
+    moe_router_logits, moe_top_k_indices, moe_softmax_weights,
+    moe_expert_forward, moe_load_balance_loss, moe_expert_utilization,
+    moe_utilization_fractions, moe_set_capacity, moe_get_capacity,
+    moe_init_experts, moe_reinit_experts,
+    moe_router_entropy, moe_primary_expert,
+    moe_expert_gradient, moe_expert_similarity, moe_similarity_matrix,
+    moe_noisy_router_logits, moe_noisy_forward,
+    moe_underutilized_experts, moe_summary, moe_reset_stats,
+    moe_get_router_weights, moe_set_router_weight,
+    moe_get_expert_weights, moe_set_expert_weight,
+};
+
+// Mechanistic Interpretability
+pub use interpretability::{
+    activation_record, activation_mean, activation_variance, activation_max_neuron,
+    gradient_attribution, integrated_gradients, saliency_map,
+    linear_probe_new, linear_probe_train, linear_probe_accuracy, linear_probe_forward,
+    ablation_study, neuron_importance,
+    activation_top_k, activation_histogram, deeplift_attribution, feature_interactions,
+    multi_ablation, neuron_importance_ranking,
+    linear_probe_per_class_accuracy, linear_probe_confusion_matrix,
+    activation_cosine_similarity, activation_l2_distance, activation_sparsity,
+};
+
+// Neural ODEs & Continuous Depth Networks
+pub use neural_ode::{
+    euler_step, rk4_step, adaptive_step,
+    ode_solve, ode_solve_final,
+    node_layer_new, node_forward, node_trajectory,
+    cnf_log_prob,
+    node_adjoint, node_multiple_shooting,
+    diagonal_dynamics, rotation_dynamics, damped_oscillator_dynamics,
+    trajectory_path_length, trajectory_final_state, trajectory_max_velocity,
+    is_fixed_point, states_approx_equal,
+};
+
+// State Space Models (S4/Mamba)
+pub use ssm::{
+    s4_layer_new, s4_forward, s4_reset_state, s4_discretize,
+    s4_state_dim, s4_input_dim, s4_get_state,
+    s4_get_A, s4_get_B, s4_get_C, s4_get_D,
+    s4_set_dt, s4_get_dt,
+    s4_stack_new, s4_stack_forward, s4_stack_reset,
+    s4_forward_batch,
+    mamba_layer_new, mamba_forward, mamba_selective_scan,
+    mamba_reset_state, mamba_dt_rank,
+    mamba_get_d_model, mamba_get_d_state, mamba_get_d_conv, mamba_get_d_inner,
+    mamba_get_ssm_state,
+    mamba_stack_new, mamba_stack_forward, mamba_stack_reset,
+    parallel_scan, prefix_sum,
+    hippo_init_A,
+    fvec_layer_norm, fvec_residual, fvec_norm, fvec_clamp,
+};
+
+// Information Geometry & Natural Gradients
+pub use info_geometry::{
+    fisher_diagonal, fisher_empirical, fisher_ema_update,
+    natural_gradient, natural_gradient_step, natural_gradient_full_step,
+    kfac_layer_new, kfac_update_stats, kfac_precondition,
+    kfac_input_dim, kfac_output_dim, kfac_n_updates,
+    kfac_get_A, kfac_get_G,
+    kl_divergence, kl_gaussian, kl_symmetric, kl_gaussian_diag,
+    js_divergence, entropy, cross_entropy,
+    geodesic_distance, trust_region_check, trust_region_clip,
+    ig_softmax,
+};
+
+// Neuro-Symbolic Hybrid Reasoning
+pub use neurosymbolic::{
+    kb_new, kb_add_fact, kb_add_rule, kb_query, kb_fact_count, kb_rule_count,
+    kb_fact_subject, kb_fact_predicate, kb_fact_object, kb_has_fact,
+    forward_chain, is_derivable,
+    backward_chain, proof_tree,
+    unify, apply_substitution, substitution_new, substitution_add, substitution_lookup,
+    is_variable, unify_triples,
+    logic_and, logic_or, logic_not, logic_implies,
+    ns_classify_and_reason, ns_confidence_gate, ns_explain,
+    kb_query_full, kb_transitive_closure, kb_match_pattern,
+    ns_hybrid_inference, kb_check_consistency,
+    ns_extract_attention_rules, ns_attention_rule_count,
+    ns_inference_depth, ns_provable_count,
+    kb_merge, ns_aggregate_confidence, ns_softmax,
+    kb_summary,
+};
+
+// Modern Hopfield Associative Memory
+pub use hopfield::{
+    hopfield_new, hopfield_store, hopfield_retrieve, hopfield_retrieve_one_step,
+    hopfield_energy, hopfield_capacity,
+    hopfield_pattern_count, hopfield_pattern_dim, hopfield_clear, hopfield_remove,
+    hopfield_overlap, hopfield_retrieval_error, hopfield_is_fixed_point,
+    hopfield_attention, hopfield_layer_new, hopfield_layer_forward,
+    softmax_vec, mat_vec_mul,
+    pattern_from_ints, pattern_zeros, pattern_fill, pattern_copy, pattern_add_noise,
+    pattern_cosine_similarity,
+    hopfield_store_batch, hopfield_retrieve_batch,
+    hopfield_similarity_matrix, hopfield_nearest_pattern, hopfield_get_pattern,
+    hopfield_energy_batch, hopfield_energy_decreased,
+    hopfield_summary,
+};
+
+// Liquid Neural Networks
+pub use liquid::{
+    liquid_neuron_new, liquid_neuron_state, liquid_neuron_set_state, liquid_neuron_reset,
+    liquid_dynamic_weight,
+    ncp_new, ncp_init, ncp_forward, ncp_step, ncp_reset,
+    ncp_sequence, ncp_set_weight, ncp_set_mod_weight, ncp_set_tau, ncp_set_bias,
+    ncp_get_neuron_state, ncp_wire_sparse, ncp_forward_substeps,
+    ncp_active_connections, ncp_param_count, ncp_summary,
+    liquid_neuron_count, liquid_state_norm, liquid_mean_activity, liquid_is_fixed_point,
+    liquid_layer_new, liquid_layer_init, liquid_layer_forward, liquid_layer_reset,
+    liquid_layer_summary,
+    liquid_stack_new, liquid_stack_init, liquid_stack_forward, liquid_stack_reset,
+    liquid_weight_gradient,
+    cfc_cell_new, cfc_cell_init, cfc_forward, cfc_sequence,
+    cfc_zero_hidden, cfc_hidden_dim, cfc_input_dim, cfc_param_count, cfc_summary,
+};
+
+// Hyperbolic Embeddings
+pub use hyperbolic::{
+    poincare_new, poincare_distance, poincare_add, poincare_scalar_mul,
+    poincare_exp_map, poincare_log_map, poincare_project,
+    poincare_to_lorentz,
+    hyp_embed_new, hyp_embed_get, hyp_embed_set, hyp_embed_nearest,
+    hyp_embed_loss, hyp_embed_train_step, hyp_embed_summary, hyp_embed_check,
+    rsgd_step, rsgd_grad_rescale,
+    lorentz_distance, lorentz_to_poincare,
+    hyp_norm, hyp_centroid,
+    hyp_distance_matrix, hyp_geodesic, hyp_logit, hyp_classify,
+    hyp_conformal_factor, hyp_is_in_ball, hyp_depth, hyp_parallel_transport,
+    hyp_attention_scores, hyp_attention_weights, hyp_attention_aggregate,
+    hyp_linear, hyp_distortion, hyp_map_score,
+};
+
+// Sparse Distributed Memory & Hyperdimensional Computing
+pub use sdm::{
+    bv_new, bv_random, bv_set_bit, bv_get_bit,
+    bv_hamming, bv_xor, bv_and, bv_or, bv_not,
+    bv_majority, bv_popcount, bv_copy, bv_equal,
+    hdc_bind, hdc_bundle, hdc_permute, hdc_similarity,
+    hdc_thermometer, hdc_encode_sequence, hdc_codebook,
+    sdm_new, sdm_init_random, sdm_set_radius, sdm_get_radius,
+    sdm_write, sdm_read, sdm_read_iterative,
+    sdm_learn, sdm_forget, sdm_update,
+    sdm_write_weighted, sdm_read_weighted,
+    sdm_write_batch, sdm_read_batch,
+    sdm_nearest, sdm_contains,
+    sdm_utilization, sdm_capacity_estimate,
+    sdm_nonzero_counters, sdm_max_counter, sdm_reset,
+    sdm_summary,
+};
+
+// Diffusion Language Generation
+pub use diffusion::{
+    diffusion_new, diffusion_mask_token, diffusion_set_mask_token,
+    diffusion_noise_schedule, diffusion_noise_schedule_linear, diffusion_mask_prob,
+    diffusion_forward, diffusion_full_mask, diffusion_get_mask, diffusion_mask_count,
+    mask_random, mask_span, mask_blocks,
+    argmax_vec, max_vec, temperature_scale, diffusion_softmax,
+    top_p_sample, top_k_sample,
+    diffusion_predict_tokens, diffusion_confidence,
+    unmask_by_confidence, diffusion_sample_step, diffusion_generate,
+    diffusion_loss, diffusion_accuracy, diffusion_perplexity,
+    diffusion_estimate_noise, diffusion_infer_timestep,
+    diffusion_copy_tokens, diffusion_fill_masked,
+    diffusion_classifier_free_guidance,
+    diffusion_summary,
+};
+
+// Tensor Network Compression
+pub use tensor_network::{
+    svd_truncated, svd_rank_estimate, svd_reconstruct,
+    tt_decompose, tt_reconstruct, tt_compress, tt_rank, tt_param_count, tt_compression_ratio,
+    tt_matvec, tt_add, tt_round,
+    tt_linear_new, tt_linear_forward, tt_linear_compression,
+    tt_matvec_batch, tt_reconstruction_error, tt_summary,
+    tucker_decompose,
+    frobenius_norm, relative_error, spectral_norm, effective_rank,
+    power_iteration_sv, mat_diff,
+};
+
+// Geometric Equivariant Layers
+pub use equivariant::{
+    rotation_matrix_2d, rotation_matrix_3d, permutation_matrix,
+    equiv_linear_new, equiv_linear_forward, equiv_check,
+    gnn_layer_new, gnn_message_pass, gnn_aggregate,
+    gnn_stack_new, gnn_stack_forward, graph_readout,
+    spherical_harmonic_y00, spherical_harmonic_y10,
+    spherical_harmonic_y1m1, spherical_harmonic_y1p1, spherical_harmonics_l01,
+    invariant_mean, invariant_max, invariant_norm,
+    apply_transform_batch, orthogonality_error,
+    det_2x2, det_3x3, invariant_inner_product, cross_product,
+    tensor_product, symmetrize, antisymmetrize,
+    is_rotation_matrix, is_permutation_matrix,
+};
+
 /// Library version
-pub const VERSION: &str = "0.16.0";
+pub const VERSION: &str = "0.17.0";
 
 /// Configuration for the @learning annotation
 pub struct LearningAnnotation {

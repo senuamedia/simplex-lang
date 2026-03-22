@@ -1,0 +1,70 @@
+use hyperbolic;
+
+fn main() -> i64 {
+    println(string_from("=== Hyperbolic Embeddings Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create a Poincare origin point
+    let dim: i64 = 3;
+    let origin: i64 = poincare_new(dim);
+    if vec_len(origin) != 3 {
+        println(string_from("FAIL: origin should have dim 3"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: poincare_new"));
+    }
+
+    // Test 2: Distance from origin to itself should be ~0
+    let dist: i64 = poincare_distance(origin, origin, dim);
+    // Distance should be 0 or very close to 0
+    // f64_to_bits(0.001) is a small positive number's bit pattern
+    // For positive f64, bits are ordered same as values
+    if dist > f64_to_bits(0.001) {
+        println(string_from("FAIL: self-distance should be ~0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: poincare_distance self"));
+    }
+
+    // Test 3: Create embedding table
+    let embed: i64 = hyp_embed_new(5, dim);
+    let e_vecs: i64 = vec_get(embed, 2);
+    if vec_len(e_vecs) != 5 {
+        println(string_from("FAIL: should have 5 embeddings"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: hyp_embed_new"));
+    }
+
+    // Test 4: Poincare addition (Mobius)
+    let a: i64 = vec_new();
+    vec_push(a, f64_to_bits(0.1));
+    vec_push(a, f64_to_bits(0.2));
+    vec_push(a, f64_to_bits(0.0));
+    let b: i64 = vec_new();
+    vec_push(b, f64_to_bits(0.0 - 0.1));
+    vec_push(b, f64_to_bits(0.1));
+    vec_push(b, f64_to_bits(0.0));
+    let added: i64 = poincare_add(a, b, dim);
+    if vec_len(added) != 3 {
+        println(string_from("FAIL: poincare_add dim mismatch"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: poincare_add"));
+    }
+
+    // Test 5: Non-zero distance for different points
+    let dist2: i64 = poincare_distance(a, b, dim);
+    // Distance should be > 0.001
+    if dist2 < f64_to_bits(0.001) {
+        println(string_from("FAIL: different points should have non-zero distance"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: poincare_distance nonzero"));
+    }
+
+    if failures == 0 {
+        println(string_from("All hyperbolic tests passed"));
+    }
+    failures
+}

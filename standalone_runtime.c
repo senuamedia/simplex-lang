@@ -5125,7 +5125,7 @@ void* intrinsic_path_extension(void* path_ptr) {
     const char* dot = strrchr(basename, '.');
     if (!dot || dot == basename) return intrinsic_string_new("");
 
-    return intrinsic_string_new(dot);
+    return intrinsic_string_new(dot + 1);
 }
 
 // Get current working directory

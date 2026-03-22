@@ -35,6 +35,10 @@
 // - `jwt`: JSON Web Token (JWT) creation, signing, and verification
 // - `oauth`: OAuth 2.0 Authorization Code flow with PKCE
 // - `dotenv`: .env file parser and variable expansion
+// - `test_framework`: Advanced test suites with assertions and reporting
+// - `bench`: Benchmark framework with timing and comparison
+// - `fs`: File system operations and path helpers
+// - `process`: Process spawning and management
 //
 // # Example
 //
@@ -94,6 +98,10 @@ pub mod xml;
 pub mod jwt;
 pub mod oauth;
 pub mod dotenv;
+pub mod test_framework;
+pub mod bench;
+pub mod fs;
+pub mod process;
 
 // =============================================================================
 // Re-exports for convenience

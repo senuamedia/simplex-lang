@@ -1,7 +1,7 @@
 # TASK-042: Mechanistic Interpretability Primitives
 
 **Version:** 0.16.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P2 — Medium
 **Depends on:** v0.15.0 release, SLM runtime (TASK-015), existing layer infrastructure
 

@@ -689,7 +689,18 @@ class Parser:
         elif self.check(TokenKind.KW_CONST):
             item = self.parse_const_def()
         elif self.check(TokenKind.KW_EXTERN):
-            item = self.parse_extern_block()
+            # Check if it's "extern fn" (standalone declaration) or "extern "C" { ... }" (block)
+            self.advance()  # consume 'extern'
+            if self.check(TokenKind.KW_FN):
+                # extern fn name(params) -> ret;
+                item = self.parse_fn_def()
+                # Mark as extern (no body)
+                if item and isinstance(item, dict):
+                    item['is_extern'] = True
+            else:
+                # extern "C" { ... } block
+                # Put back by expecting the string "C"
+                item = self.parse_extern_block_inner()
         else:
             raise SyntaxError(f"Unexpected token {self.current().kind}")
 
@@ -760,6 +771,14 @@ class Parser:
 
         # Merge bounds
         all_bounds = {**type_bounds, **where_bounds}
+
+        # Check for extern declaration (semicolon instead of body)
+        if self.check(TokenKind.SEMI):
+            self.advance()  # consume semicolon
+            fn_def = make_fn_def(name, params, return_type, None, type_params, is_async)
+            if all_bounds:
+                fn_def['type_bounds'] = all_bounds
+            return fn_def
 
         body = self.parse_block()
         fn_def = make_fn_def(name, params, return_type, body, type_params, is_async)
@@ -1428,9 +1447,8 @@ class Parser:
         self.expect(TokenKind.SEMI)
         return {'type': 'ConstDef', 'name': name, 'ty': ty, 'value': value}
 
-    def parse_extern_block(self):
-        """Parse extern "C" { fn name(params) -> ret; ... }"""
-        self.expect(TokenKind.KW_EXTERN)
+    def parse_extern_block_inner(self):
+        """Parse "C" { fn name(params) -> ret; ... } — extern keyword already consumed"""
         # Expect string literal "C"
         if self.check(TokenKind.STRING):
             self.advance()  # consume "C"
@@ -2449,6 +2467,7 @@ class CodeGen:
         self.const_params = {}  # const_param_name -> literal_value (for current instantiation)
         # Track function names for function pointer references
         self.functions = set()
+        self.declared_fns = set()  # Track declared (extern) functions to prevent duplicates
         # Top-level constants: name -> {'ty': type, 'value': expr_node}
         self.constants = {}
         # Track extern function declarations: name -> {'params': [...], 'return_type': str}
@@ -5349,6 +5368,17 @@ class CodeGen:
     def generate_fn(self, fn):
         # Track function name for function pointer references
         self.functions.add(fn['name'])
+
+        # Handle extern function declarations (no body, emit declare)
+        if fn.get('is_extern', False) or fn.get('body') is None:
+            ret_type = self.type_to_llvm(fn['return_type'])
+            params = fn['params']
+            params_str = ', '.join(f"{self.type_to_llvm(p['ty'])}" for p in params)
+            fn_name = fn['name']
+            if fn_name not in self.declared_fns:
+                self.emit(f'declare {ret_type} @"{fn_name}"({params_str})')
+                self.declared_fns.add(fn_name)
+            return
 
         # Handle async functions
         if fn.get('is_async', False):

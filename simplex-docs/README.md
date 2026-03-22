@@ -1,6 +1,6 @@
 # Simplex Language Documentation
 
-**Version 0.16.0**
+**Version 0.17.0**
 
 Simplex (Latin for "simple") is a programming language designed for the AI era. It combines the fault-tolerance of Erlang, the memory safety of Rust, the distributed computing model of Ray, and the content-addressable code of Unison into a cohesive system built for intelligent, distributed workloads.
 
@@ -23,7 +23,7 @@ Simplex (Latin for "simple") is a programming language designed for the AI era. 
 | [Cognitive Hive AI](spec/09-cognitive-hive.md) | CHAI architecture for SLM orchestration |
 | [Compiler Toolchain](spec/10-compiler-toolchain.md) | sxc, spx, cursus - 100% pure Simplex |
 | [Standard Library](spec/11-standard-library.md) | Complete std API reference |
-| [The Anima](spec/12-anima.md) | Cognitive soul - memory, beliefs, intentions |
+| [The Anima](spec/12-anima.md) | Persistent agent state - memory, beliefs, intentions |
 | [SLM Provisioning](spec/13-slm-provisioning.md) | Per-hive model architecture |
 | [Neural IR](spec/14-neural-ir.md) | Differentiable execution and neural gates |
 | [Real-Time Learning](spec/15-real-time-learning.md) | Online learning and adaptation |
@@ -105,7 +105,7 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 ## Design Principles
 
 1. **AI-native**: AI operations are first-class language constructs
-2. **Anima-centric**: Every AI agent has a cognitive soul (anima) with memory, beliefs, and intentions
+2. **Anima-centric**: Every AI agent has persistent state (anima) with memory, beliefs, and intentions
 3. **Hive-oriented**: Small language models collaborate as cognitive hives (CHAI)
 4. **Distributed-first**: Programs naturally decompose across VM swarms
 5. **Fault-tolerant**: Workers can die and resume transparently
@@ -114,7 +114,7 @@ Start the tutorial: [Tutorial Index](tutorial/README.md)
 
 ---
 
-## Key Features (v0.16.0)
+## Key Features (v0.17.0)
 
 ### NEW in v0.16.0: Enterprise Libraries & Hive Intelligence
 
@@ -248,7 +248,7 @@ for epoch in 0..epochs {
     let (solution, meta_loss) = optimizer.anneal_with_grad(objective);
     schedule.update(meta_loss.gradient());  // Schedule improves each epoch
 }
-// After training: schedule.cool_rate, schedule.reheat_threshold are optimal
+// After training: schedule.cool_rate, schedule.reheat_threshold are learned
 ```
 
 - **Learnable schedules**: Temperature, cooling rate, reheating all learned via meta-gradients
@@ -267,7 +267,7 @@ let x: dual = dual::variable(3.0)
 let y = x * x + x.sin()
 
 print(y.val)  // f(3) = 9.1411...
-print(y.der)  // f'(3) = 6.9899... (exact, not numerical)
+print(y.der)  // f'(3) = 6.9899... (analytical, not numerical approximation)
 ```
 
 - **Zero overhead**: Compiles to same assembly as hand-written derivatives
@@ -332,11 +332,11 @@ Each hive provisions ONE shared SLM that all its specialists use:
     │            │            │
     └────────────┴────────────┘
           HiveMnemonic
-       (Shared consciousness)
+       (Shared memory layer)
 ```
 
 - **Per-hive SLM**: 10 specialists share 1 model (not 10)
-- **HiveMnemonic**: Shared consciousness across specialists
+- **HiveMnemonic**: Shared memory layer across specialists
 - **Memory-augmented inference**: Anima + Mnemonic context flows to SLM
 - **Built-in models**: cognitive-7b (4.1GB), cognitive-1b (700MB), mnemonic-embed (134MB)
 
@@ -364,7 +364,7 @@ See [RELEASE-0.5.0.md](RELEASE-0.5.0.md) for complete release notes.
 - BDI (Beliefs-Desires-Intentions) architecture
 - Goal-directed memory recall
 - Memory persistence and sharing
-- Integration with HiveMnemonic for shared consciousness
+- Integration with HiveMnemonic for shared context
 
 ### AI Specialists & Hives
 - Per-hive SLM sharing (one model per hive)

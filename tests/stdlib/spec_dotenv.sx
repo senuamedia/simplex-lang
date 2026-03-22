@@ -1,318 +1,59 @@
-// Simplex .env Format Tests
-// Tests .env parsing logic inline
-
-// =============================================================================
-// Helper: split string by newline
-// =============================================================================
-
-fn split_lines(input: i64) -> i64 {
-    let parts: i64 = vec_new();
-    let len: i64 = string_len(input);
-    var start: i64 = 0;
-    var i: i64 = 0;
-    while i < len {
-        if string_char_at(input, i) == 10 {
-            vec_push(parts, intrinsic_string_slice(input, start, i));
-            start = i + 1;
-        }
-        i = i + 1;
-    }
-    if start <= len {
-        vec_push(parts, intrinsic_string_slice(input, start, len));
-    }
-    parts
-}
-
-// =============================================================================
-// Helper: trim whitespace from both ends
-// =============================================================================
-
-fn trim(s: i64) -> i64 {
-    let len: i64 = string_len(s);
-    if len == 0 { return s; }
-    var start: i64 = 0;
-    while start < len {
-        let ch: i64 = string_char_at(s, start);
-        if ch != 32 {
-            if ch != 9 {
-                break;
-            }
-        }
-        start = start + 1;
-    }
-    var end: i64 = len - 1;
-    while end >= start {
-        let ch: i64 = string_char_at(s, end);
-        if ch != 32 {
-            if ch != 9 {
-                break;
-            }
-        }
-        end = end - 1;
-    }
-    if end < start { return ""; }
-    intrinsic_string_slice(s, start, end + 1)
-}
-
-// =============================================================================
-// Helper: find first occurrence of char
-// =============================================================================
-
-fn find_char(s: i64, ch: i64) -> i64 {
-    let len: i64 = string_len(s);
-    var i: i64 = 0;
-    while i < len {
-        if string_char_at(s, i) == ch {
-            return i;
-        }
-        i = i + 1;
-    }
-    -1
-}
-
-// =============================================================================
-// Helper: starts_with
-// =============================================================================
-
-fn starts_with(s: i64, prefix: i64) -> i64 {
-    let s_len: i64 = string_len(s);
-    let p_len: i64 = string_len(prefix);
-    if p_len > s_len { return 0; }
-    let sub: i64 = intrinsic_string_slice(s, 0, p_len);
-    string_eq(sub, prefix)
-}
-
-// =============================================================================
-// Helper: parse dotenv content into keys/values vectors
-// Returns a vec of [keys_vec, vals_vec]
-// =============================================================================
-
-fn dotenv_parse(content: i64) -> i64 {
-    let keys: i64 = vec_new();
-    let vals: i64 = vec_new();
-    let lines: i64 = split_lines(content);
-    var i: i64 = 0;
-    while i < vec_len(lines) {
-        var line: i64 = trim(vec_get(lines, i));
-        let len: i64 = string_len(line);
-        // Skip empty and comment lines
-        if len > 0 {
-            if string_char_at(line, 0) != 35 {
-                // Strip "export " prefix
-                if starts_with(line, "export ") == 1 {
-                    line = intrinsic_string_slice(line, 7, string_len(line));
-                }
-                let eq: i64 = find_char(line, 61);
-                if eq != -1 {
-                    let key: i64 = trim(intrinsic_string_slice(line, 0, eq));
-                    var val: i64 = trim(intrinsic_string_slice(line, eq + 1, string_len(line)));
-                    // Strip quotes
-                    let vlen: i64 = string_len(val);
-                    if vlen >= 2 {
-                        let first: i64 = string_char_at(val, 0);
-                        let last: i64 = string_char_at(val, vlen - 1);
-                        if first == 34 {
-                            if last == 34 {
-                                val = intrinsic_string_slice(val, 1, vlen - 1);
-                            }
-                        }
-                        if first == 39 {
-                            if last == 39 {
-                                val = intrinsic_string_slice(val, 1, vlen - 1);
-                            }
-                        }
-                    }
-                    vec_push(keys, key);
-                    vec_push(vals, val);
-                }
-            }
-        }
-        i = i + 1;
-    }
-    // Return keys/vals as a pair using a wrapper vec
-    let result: i64 = vec_new();
-    vec_push(result, keys);
-    vec_push(result, vals);
-    result
-}
-
-fn dotenv_get(parsed: i64, key: i64) -> i64 {
-    let keys: i64 = vec_get(parsed, 0);
-    let vals: i64 = vec_get(parsed, 1);
-    var i: i64 = 0;
-    while i < vec_len(keys) {
-        if string_eq(vec_get(keys, i), key) == 1 {
-            return vec_get(vals, i);
-        }
-        i = i + 1;
-    }
-    ""
-}
-
-fn dotenv_count(parsed: i64) -> i64 {
-    vec_len(vec_get(parsed, 0))
-}
-
-// =============================================================================
-// Test 1: Basic KEY=VALUE parsing
-// =============================================================================
-
-fn test_basic_parsing() -> i64 {
-    println("  Testing basic KEY=VALUE parsing...");
-    let nl: i64 = intrinsic_string_from_char(10);
-    let content: i64 = string_concat("HOST=localhost", string_concat(nl, string_concat("PORT=8080", string_concat(nl, "DEBUG=true"))));
-    let parsed: i64 = dotenv_parse(content);
-
-    if dotenv_count(parsed) != 3 {
-        println("  FAIL: should have 3 entries");
-        return 1;
-    }
-    if string_eq(dotenv_get(parsed, "HOST"), "localhost") != 1 {
-        println("  FAIL: HOST should be localhost");
-        return 1;
-    }
-    if string_eq(dotenv_get(parsed, "PORT"), "8080") != 1 {
-        println("  FAIL: PORT should be 8080");
-        return 1;
-    }
-    if string_eq(dotenv_get(parsed, "DEBUG"), "true") != 1 {
-        println("  FAIL: DEBUG should be true");
-        return 1;
-    }
-    println("  PASS: basic KEY=VALUE parsing");
-    0
-}
-
-// =============================================================================
-// Test 2: Comments and empty lines
-// =============================================================================
-
-fn test_comments_empty() -> i64 {
-    println("  Testing comments and empty lines...");
-    let nl: i64 = intrinsic_string_from_char(10);
-    let content: i64 = string_concat("# comment", string_concat(nl, string_concat("", string_concat(nl, string_concat("KEY1=value1", string_concat(nl, string_concat("# another", string_concat(nl, "KEY2=value2"))))))));
-    let parsed: i64 = dotenv_parse(content);
-
-    if dotenv_count(parsed) != 2 {
-        println("  FAIL: should have 2 entries (ignoring comments/empty)");
-        return 1;
-    }
-    if string_eq(dotenv_get(parsed, "KEY1"), "value1") != 1 {
-        println("  FAIL: KEY1 should be value1");
-        return 1;
-    }
-    println("  PASS: comments and empty lines");
-    0
-}
-
-// =============================================================================
-// Test 3: Double-quoted values
-// =============================================================================
-
-fn test_double_quoted() -> i64 {
-    println("  Testing double-quoted values...");
-    let content: i64 = "MSG=\"hello world\"";
-    let parsed: i64 = dotenv_parse(content);
-
-    if string_eq(dotenv_get(parsed, "MSG"), "hello world") != 1 {
-        println("  FAIL: MSG should be hello world (quotes stripped)");
-        return 1;
-    }
-    println("  PASS: double-quoted values");
-    0
-}
-
-// =============================================================================
-// Test 4: Single-quoted values
-// =============================================================================
-
-fn test_single_quoted() -> i64 {
-    println("  Testing single-quoted values...");
-    let content: i64 = "SECRET='my$ecret'";
-    let parsed: i64 = dotenv_parse(content);
-
-    if string_eq(dotenv_get(parsed, "SECRET"), "my$ecret") != 1 {
-        println("  FAIL: single-quoted value should be literal");
-        return 1;
-    }
-    println("  PASS: single-quoted values");
-    0
-}
-
-// =============================================================================
-// Test 5: Missing key returns empty
-// =============================================================================
-
-fn test_missing_key() -> i64 {
-    println("  Testing missing key returns empty...");
-    let parsed: i64 = dotenv_parse("KEY=value");
-    let missing: i64 = dotenv_get(parsed, "NONEXISTENT");
-    if string_len(missing) != 0 {
-        println("  FAIL: missing key should return empty string");
-        return 1;
-    }
-    println("  PASS: missing key returns empty");
-    0
-}
-
-// =============================================================================
-// Test 6: Export prefix stripped
-// =============================================================================
-
-fn test_export_prefix() -> i64 {
-    println("  Testing export prefix...");
-    let content: i64 = "export DATABASE_URL=postgres://localhost/mydb";
-    let parsed: i64 = dotenv_parse(content);
-
-    if string_eq(dotenv_get(parsed, "DATABASE_URL"), "postgres://localhost/mydb") != 1 {
-        println("  FAIL: export prefix should be stripped");
-        return 1;
-    }
-    println("  PASS: export prefix");
-    0
-}
-
-// =============================================================================
-// Test 7: Whitespace trimming
-// =============================================================================
-
-fn test_whitespace_trimming() -> i64 {
-    println("  Testing whitespace trimming...");
-    let content: i64 = "  KEY1  =  value1  ";
-    let parsed: i64 = dotenv_parse(content);
-
-    if string_eq(dotenv_get(parsed, "KEY1"), "value1") != 1 {
-        println("  FAIL: whitespace should be trimmed");
-        return 1;
-    }
-    println("  PASS: whitespace trimming");
-    0
-}
-
-// =============================================================================
-// Main Test Runner
-// =============================================================================
+use dotenv;
 
 fn main() -> i64 {
-    println("=== dotenv Format Tests ===");
-    println("");
+    println(string_from("=== Dotenv Library Integration Test ==="));
+    var failures: i64 = 0;
 
-    let f1: i64 = test_basic_parsing();
-    let f2: i64 = test_comments_empty();
-    let f3: i64 = test_double_quoted();
-    let f4: i64 = test_single_quoted();
-    let f5: i64 = test_missing_key();
-    let f6: i64 = test_export_prefix();
-    let f7: i64 = test_whitespace_trimming();
+    // Test 1: Parse key=value pairs
+    let content: i64 = string_from("HOST=localhost\nPORT=8080\nDEBUG=true");
+    let entries: i64 = dotenv_parse(content);
 
-    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6 + f7;
-
-    println("");
-    if failures == 0 {
-        println("All 7 dotenv format tests passed!");
+    let host: i64 = dotenv_get(entries, string_from("HOST"));
+    if string_eq(host, string_from("localhost")) != 1 {
+        println(string_from("FAIL: HOST should be localhost"));
+        failures = failures + 1;
     } else {
-        println("Some dotenv format tests failed");
+        println(string_from("PASS: dotenv_get HOST"));
     }
 
+    // Test 2: Get another value
+    let port: i64 = dotenv_get(entries, string_from("PORT"));
+    if string_eq(port, string_from("8080")) != 1 {
+        println(string_from("FAIL: PORT should be 8080"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: dotenv_get PORT"));
+    }
+
+    // Test 3: Check entry count
+    let count: i64 = dotenv_count(entries);
+    if count != 3 {
+        println(string_from("FAIL: should have 3 entries"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: dotenv_count"));
+    }
+
+    // Test 4: Check key existence
+    let has_debug: i64 = dotenv_has(entries, string_from("DEBUG"));
+    if has_debug != 1 {
+        println(string_from("FAIL: should have DEBUG"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: dotenv_has"));
+    }
+
+    // Test 5: Missing key returns empty string
+    let missing: i64 = dotenv_get(entries, string_from("MISSING"));
+    if string_len(missing) != 0 {
+        println(string_from("FAIL: missing key should return empty"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: dotenv_get missing key"));
+    }
+
+    if failures == 0 {
+        println(string_from("All dotenv tests passed"));
+    }
     failures
 }

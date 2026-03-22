@@ -1,7 +1,7 @@
 # TASK-040: Kolmogorov-Arnold Networks (KANs)
 
 **Version:** 0.16.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P1 — High
 **Depends on:** v0.15.0 release, dual numbers (TASK-005), existing layer infrastructure
 

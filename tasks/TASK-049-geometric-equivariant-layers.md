@@ -1,7 +1,7 @@
 # TASK-049: Geometric Equivariant Layers
 
 **Version:** 0.17.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P1 — High
 **Depends on:** v0.16.0 release, existing tensor/layer infrastructure
 

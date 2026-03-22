@@ -1,260 +1,61 @@
-// Simplex OAuth Format Tests
-// Tests URL encoding, query string building, and auth URL structure inline
-
-// =============================================================================
-// Helper: check if string contains substring
-// =============================================================================
-
-fn string_contains(haystack: i64, needle: i64) -> i64 {
-    let h_len: i64 = string_len(haystack);
-    let n_len: i64 = string_len(needle);
-    if n_len > h_len { return 0; }
-    if n_len == 0 { return 1; }
-    var i: i64 = 0;
-    while i <= h_len - n_len {
-        let sub: i64 = intrinsic_string_slice(haystack, i, n_len);
-        if intrinsic_string_eq(sub, needle) == 1 {
-            return 1;
-        }
-        i = i + 1;
-    }
-    0
-}
-
-// =============================================================================
-// Helper: minimal percent-encoding for URL unsafe characters
-// =============================================================================
-
-fn hex_digit(n: i64) -> i64 {
-    if n < 10 {
-        return intrinsic_string_from_char(48 + n);
-    }
-    intrinsic_string_from_char(65 + n - 10)
-}
-
-fn url_encode_char(ch: i64) -> i64 {
-    // Unreserved: A-Z, a-z, 0-9, -, _, ., ~
-    var unreserved: i64 = 0;
-    if ch >= 65 { if ch <= 90 { unreserved = 1; } }
-    if ch >= 97 { if ch <= 122 { unreserved = 1; } }
-    if ch >= 48 { if ch <= 57 { unreserved = 1; } }
-    if ch == 45 { unreserved = 1; }
-    if ch == 95 { unreserved = 1; }
-    if ch == 46 { unreserved = 1; }
-    if ch == 126 { unreserved = 1; }
-    if unreserved == 1 {
-        return intrinsic_string_from_char(ch);
-    }
-    // Percent encode
-    let hi: i64 = (ch / 16) % 16;
-    let lo: i64 = ch % 16;
-    string_concat("%", string_concat(hex_digit(hi), hex_digit(lo)))
-}
-
-fn url_encode(s: i64) -> i64 {
-    let len: i64 = string_len(s);
-    var result: i64 = "";
-    var i: i64 = 0;
-    while i < len {
-        let ch: i64 = string_char_at(s, i);
-        result = string_concat(result, url_encode_char(ch));
-        i = i + 1;
-    }
-    result
-}
-
-// =============================================================================
-// Test 1: URL encoding preserves unreserved chars
-// =============================================================================
-
-fn test_url_encode_unreserved() -> i64 {
-    println("  Testing URL encoding unreserved chars...");
-    let encoded: i64 = url_encode("hello");
-    if intrinsic_string_eq(encoded, "hello") != 1 {
-        println("  FAIL: simple string should not change");
-        return 1;
-    }
-    let unreserved: i64 = url_encode("abc-._~123");
-    if intrinsic_string_eq(unreserved, "abc-._~123") != 1 {
-        println("  FAIL: unreserved chars should not be encoded");
-        return 1;
-    }
-    println("  PASS: URL encoding unreserved chars");
-    0
-}
-
-// =============================================================================
-// Test 2: URL encoding encodes special chars
-// =============================================================================
-
-fn test_url_encode_special() -> i64 {
-    println("  Testing URL encoding special chars...");
-    let with_space: i64 = url_encode("hello world");
-    if string_contains(with_space, "%20") != 1 {
-        println("  FAIL: space should be encoded as %20");
-        return 1;
-    }
-    let with_amp: i64 = url_encode("a&b");
-    if string_contains(with_amp, "%26") != 1 {
-        println("  FAIL: & should be encoded as %26");
-        return 1;
-    }
-    let with_eq: i64 = url_encode("a=b");
-    if string_contains(with_eq, "%3D") != 1 {
-        println("  FAIL: = should be encoded as %3D");
-        return 1;
-    }
-    println("  PASS: URL encoding special chars");
-    0
-}
-
-// =============================================================================
-// Test 3: Query string building
-// =============================================================================
-
-fn test_query_string_build() -> i64 {
-    println("  Testing query string building...");
-    let keys: i64 = vec_new();
-    let vals: i64 = vec_new();
-    vec_push(keys, "name");
-    vec_push(vals, "Alice");
-    vec_push(keys, "age");
-    vec_push(vals, "30");
-
-    var qs: i64 = "";
-    var i: i64 = 0;
-    while i < vec_len(keys) {
-        if i > 0 {
-            qs = string_concat(qs, "&");
-        }
-        qs = string_concat(qs, string_concat(vec_get(keys, i), string_concat("=", url_encode(vec_get(vals, i)))));
-        i = i + 1;
-    }
-
-    if string_contains(qs, "name=Alice") != 1 {
-        println("  FAIL: should contain name=Alice");
-        return 1;
-    }
-    if string_contains(qs, "age=30") != 1 {
-        println("  FAIL: should contain age=30");
-        return 1;
-    }
-    if string_contains(qs, "&") != 1 {
-        println("  FAIL: should contain & separator");
-        return 1;
-    }
-    println("  PASS: query string building");
-    0
-}
-
-// =============================================================================
-// Test 4: Auth URL structure
-// =============================================================================
-
-fn test_auth_url_structure() -> i64 {
-    println("  Testing auth URL structure...");
-    let base: i64 = "https://auth.example.com/authorize";
-    let client_id: i64 = "test-client";
-    let state: i64 = "csrf-token";
-
-    var url: i64 = base;
-    url = string_concat(url, "?response_type=code");
-    url = string_concat(url, string_concat("&client_id=", url_encode(client_id)));
-    url = string_concat(url, string_concat("&state=", url_encode(state)));
-    url = string_concat(url, "&code_challenge_method=S256");
-
-    if string_contains(url, "https://auth.example.com/authorize") != 1 {
-        println("  FAIL: URL should start with auth endpoint");
-        return 1;
-    }
-    if string_contains(url, "response_type=code") != 1 {
-        println("  FAIL: should contain response_type=code");
-        return 1;
-    }
-    if string_contains(url, "client_id=") != 1 {
-        println("  FAIL: should contain client_id");
-        return 1;
-    }
-    if string_contains(url, "state=") != 1 {
-        println("  FAIL: should contain state");
-        return 1;
-    }
-    if string_contains(url, "code_challenge_method=S256") != 1 {
-        println("  FAIL: should contain code_challenge_method=S256");
-        return 1;
-    }
-    println("  PASS: auth URL structure");
-    0
-}
-
-// =============================================================================
-// Test 5: State validation
-// =============================================================================
-
-fn test_state_validation() -> i64 {
-    println("  Testing state validation...");
-    let expected: i64 = "my-csrf-state";
-    let received_ok: i64 = "my-csrf-state";
-    let received_bad: i64 = "different-state";
-
-    if intrinsic_string_eq(expected, received_ok) != 1 {
-        println("  FAIL: matching states should validate");
-        return 1;
-    }
-    if intrinsic_string_eq(expected, received_bad) == 1 {
-        println("  FAIL: different states should not validate");
-        return 1;
-    }
-    println("  PASS: state validation");
-    0
-}
-
-// =============================================================================
-// Test 6: PKCE verifier length constraints
-// =============================================================================
-
-fn test_pkce_constraints() -> i64 {
-    println("  Testing PKCE verifier constraints...");
-    // PKCE code_verifier must be 43-128 characters
-    let min_len: i64 = 43;
-    let max_len: i64 = 128;
-    // A 64-char hex string is valid
-    let verifier_len: i64 = 64;
-    if verifier_len < min_len {
-        println("  FAIL: verifier too short");
-        return 1;
-    }
-    if verifier_len > max_len {
-        println("  FAIL: verifier too long");
-        return 1;
-    }
-    println("  PASS: PKCE verifier constraints");
-    0
-}
-
-// =============================================================================
-// Main Test Runner
-// =============================================================================
+use oauth;
 
 fn main() -> i64 {
-    println("=== OAuth Format Tests ===");
-    println("");
+    println(string_from("=== OAuth Library Integration Test ==="));
+    var failures: i64 = 0;
 
-    let f1: i64 = test_url_encode_unreserved();
-    let f2: i64 = test_url_encode_special();
-    let f3: i64 = test_query_string_build();
-    let f4: i64 = test_auth_url_structure();
-    let f5: i64 = test_state_validation();
-    let f6: i64 = test_pkce_constraints();
+    // Test 1: Create an OAuth config
+    let config: i64 = oauth_config_new(
+        string_from("my-client-id"),
+        string_from("my-secret"),
+        string_from("https://auth.example.com/authorize"),
+        string_from("https://auth.example.com/token"),
+        string_from("http://localhost:8080/callback")
+    );
 
-    let failures: i64 = f1 + f2 + f3 + f4 + f5 + f6;
-
-    println("");
-    if failures == 0 {
-        println("All 6 OAuth format tests passed!");
+    // Test 2: Get client ID back
+    let cid: i64 = oauth_client_id(config);
+    if string_eq(cid, string_from("my-client-id")) != 1 {
+        println(string_from("FAIL: client id mismatch"));
+        failures = failures + 1;
     } else {
-        println("Some OAuth format tests failed");
+        println(string_from("PASS: oauth_client_id"));
     }
 
+    // Test 3: Add scopes
+    let c2: i64 = oauth_add_scope(config, string_from("openid"));
+    let c3: i64 = oauth_add_scope(c2, string_from("profile"));
+
+    // Test 4: Generate auth URL
+    let url: i64 = oauth_auth_url(c3, string_from("csrf-state-123"));
+    let url_len: i64 = string_len(url);
+    if url_len < 50 {
+        println(string_from("FAIL: auth URL too short"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: oauth_auth_url produces URL"));
+    }
+
+    // Test 5: Get redirect URI
+    let redir: i64 = oauth_redirect_uri(config);
+    if string_eq(redir, string_from("http://localhost:8080/callback")) != 1 {
+        println(string_from("FAIL: redirect uri mismatch"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: oauth_redirect_uri"));
+    }
+
+    // Test 6: URL encode helper
+    let encoded: i64 = url_encode(string_from("hello world"));
+    if string_eq(encoded, string_from("hello%20world")) != 1 {
+        println(string_from("FAIL: url_encode space"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: url_encode"));
+    }
+
+    if failures == 0 {
+        println(string_from("All OAuth tests passed"));
+    }
     failures
 }

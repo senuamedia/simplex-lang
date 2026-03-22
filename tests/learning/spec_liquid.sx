@@ -1,0 +1,62 @@
+use liquid;
+
+fn main() -> i64 {
+    println(string_from("=== Liquid Neural Network Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create a liquid neuron
+    let tau: i64 = f64_to_bits(0.5);
+    let neuron: i64 = liquid_neuron_new(tau, 3);
+    // neuron[0] = tau bits = f64_to_bits(0.5), which is positive
+    let neuron_tau: i64 = vec_get(neuron, 0);
+    if neuron_tau != f64_to_bits(0.5) {
+        println(string_from("FAIL: tau should be f64_to_bits(0.5)"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: liquid_neuron_new"));
+    }
+
+    // Test 2: Create NCP network
+    let ncp: i64 = ncp_new(8, 3, 2);
+    let n_neurons: i64 = vec_get(ncp, 0);
+    if n_neurons != 8 {
+        println(string_from("FAIL: n_neurons should be 8"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: ncp_new"));
+    }
+
+    // Test 3: NCP reset
+    ncp_reset(ncp);
+    println(string_from("PASS: ncp_reset"));
+
+    // Test 4: NCP forward pass
+    let input: i64 = vec_new();
+    vec_push(input, f64_to_bits(1.0));
+    vec_push(input, f64_to_bits(0.5));
+    vec_push(input, f64_to_bits(0.0 - 0.3));
+    let dt: i64 = f64_to_bits(0.01);
+    let output: i64 = ncp_forward(ncp, input, dt);
+    let out_len: i64 = vec_len(output);
+    if out_len < 1 {
+        println(string_from("FAIL: ncp_forward should produce output"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: ncp_forward"));
+    }
+
+    // Test 5: Liquid layer creation
+    let ll: i64 = liquid_layer_new(3, 6, 2);
+    let ll_in: i64 = vec_get(ll, 0);
+    if ll_in != 3 {
+        println(string_from("FAIL: input_dim should be 3"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: liquid_layer_new"));
+    }
+
+    if failures == 0 {
+        println(string_from("All liquid tests passed"));
+    }
+    failures
+}

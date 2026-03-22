@@ -1,0 +1,745 @@
+// simplex-aws::auth - AWS Signature Version 4 Signing
+//
+// Implements the complete AWS SigV4 signing process:
+//   1. Create canonical request
+//   2. Create string to sign
+//   3. Calculate signing key (HMAC chain)
+//   4. Build authorization header
+//
+// All data flows through i64 vec handles. No external dependencies beyond
+// the Simplex C runtime intrinsics.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// AWS Config
+// =============================================================================
+//
+// Config vec layout: [access_key, secret_key, region, service, date, datetime]
+//   index 0: access_key_id (string handle)
+//   index 1: secret_access_key (string handle)
+//   index 2: region (string handle, e.g. "us-east-1")
+//   index 3: service (string handle, e.g. "sqs", "dynamodb")
+//   index 4: date (string handle, YYYYMMDD)
+//   index 5: datetime (string handle, YYYYMMDDTHHMMSSZ)
+
+fn CFG_ACCESS_KEY() -> i64 { 0 }
+fn CFG_SECRET_KEY() -> i64 { 1 }
+fn CFG_REGION() -> i64 { 2 }
+fn CFG_SERVICE() -> i64 { 3 }
+fn CFG_DATE() -> i64 { 4 }
+fn CFG_DATETIME() -> i64 { 5 }
+
+/// Create a new AWS config with credentials and target service.
+///
+/// # Arguments
+/// - `access_key`: AWS access key ID (string handle)
+/// - `secret_key`: AWS secret access key (string handle)
+/// - `region`: AWS region, e.g. "us-east-1" (string handle)
+/// - `service`: AWS service name, e.g. "sqs" (string handle)
+///
+/// # Returns
+/// Config vec handle with default date/datetime as "00000000"/"00000000T000000Z"
+///
+/// # Example
+/// ```simplex
+/// let config = aws_config_new(my_key, my_secret, "us-east-1", "sqs");
+/// ```
+pub fn aws_config_new(access_key: i64, secret_key: i64, region: i64, service: i64) -> i64 {
+    let cfg: i64 = vec_new();
+    vec_push(cfg, access_key);
+    vec_push(cfg, secret_key);
+    vec_push(cfg, region);
+    vec_push(cfg, service);
+    vec_push(cfg, "00000000");
+    vec_push(cfg, "00000000T000000Z");
+    cfg
+}
+
+/// Set the date on an AWS config.
+///
+/// # Arguments
+/// - `config`: Config vec handle
+/// - `date`: Date string in YYYYMMDD format
+///
+/// # Returns
+/// Updated config handle
+pub fn aws_config_set_date(config: i64, date: i64) -> i64 {
+    vec_set(config, CFG_DATE(), date);
+    config
+}
+
+/// Set the datetime on an AWS config.
+///
+/// # Arguments
+/// - `config`: Config vec handle
+/// - `datetime`: Datetime string in YYYYMMDDTHHMMSSZ format
+///
+/// # Returns
+/// Updated config handle
+pub fn aws_config_set_datetime(config: i64, datetime: i64) -> i64 {
+    vec_set(config, CFG_DATETIME(), datetime);
+    config
+}
+
+/// Get the access key from config
+pub fn aws_config_access_key(config: i64) -> i64 {
+    vec_get(config, CFG_ACCESS_KEY())
+}
+
+/// Get the region from config
+pub fn aws_config_region(config: i64) -> i64 {
+    vec_get(config, CFG_REGION())
+}
+
+/// Get the service from config
+pub fn aws_config_service(config: i64) -> i64 {
+    vec_get(config, CFG_SERVICE())
+}
+
+/// Get the date from config
+pub fn aws_config_date(config: i64) -> i64 {
+    vec_get(config, CFG_DATE())
+}
+
+/// Get the datetime from config
+pub fn aws_config_datetime(config: i64) -> i64 {
+    vec_get(config, CFG_DATETIME())
+}
+
+// =============================================================================
+// Header Pair Handling
+// =============================================================================
+//
+// Headers are stored as a vec of pairs: [[name, value], [name, value], ...]
+// All header names are lowercased for canonical form.
+
+/// Create a new empty headers vec
+pub fn headers_new() -> i64 {
+    vec_new()
+}
+
+/// Add a header to the headers vec
+///
+/// # Arguments
+/// - `headers`: Headers vec handle
+/// - `name`: Header name (will be lowercased in canonical form)
+/// - `value`: Header value
+///
+/// # Returns
+/// Updated headers handle
+pub fn headers_add(headers: i64, name: i64, value: i64) -> i64 {
+    let pair: i64 = vec_new();
+    vec_push(pair, string_to_lower(name));
+    vec_push(pair, string_trim(value));
+    vec_push(headers, pair);
+    headers
+}
+
+/// Get a header value by name (case-insensitive)
+pub fn headers_get(headers: i64, name: i64) -> i64 {
+    let lower_name: i64 = string_to_lower(name);
+    let count: i64 = vec_len(headers);
+    var i: i64 = 0;
+    while i < count {
+        let pair: i64 = vec_get(headers, i);
+        if string_eq(vec_get(pair, 0), lower_name) == 1 {
+            return vec_get(pair, 1);
+        }
+        i = i + 1;
+    }
+    ""
+}
+
+// =============================================================================
+// String Utilities
+// =============================================================================
+
+/// Convert a string to lowercase
+fn string_to_lower(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len == 0 { return ""; }
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(s, i);
+        // A-Z (65-90) -> a-z (97-122)
+        if ch >= 65 {
+            if ch <= 90 {
+                sb_append_char(sb, ch + 32);
+                i = i + 1;
+                continue;
+            }
+        }
+        sb_append_char(sb, ch);
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// URL-encode a string (percent encoding for AWS canonical URIs)
+pub fn url_encode(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len == 0 { return ""; }
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(s, i);
+        // Unreserved chars: A-Z a-z 0-9 - _ . ~
+        if ch >= 65 {
+            if ch <= 90 {
+                sb_append_char(sb, ch);
+                i = i + 1;
+                continue;
+            }
+        }
+        if ch >= 97 {
+            if ch <= 122 {
+                sb_append_char(sb, ch);
+                i = i + 1;
+                continue;
+            }
+        }
+        if ch >= 48 {
+            if ch <= 57 {
+                sb_append_char(sb, ch);
+                i = i + 1;
+                continue;
+            }
+        }
+        if ch == 45 { sb_append_char(sb, ch); i = i + 1; continue; } // -
+        if ch == 95 { sb_append_char(sb, ch); i = i + 1; continue; } // _
+        if ch == 46 { sb_append_char(sb, ch); i = i + 1; continue; } // .
+        if ch == 126 { sb_append_char(sb, ch); i = i + 1; continue; } // ~
+        // Percent-encode everything else
+        sb_append_char(sb, 37); // %
+        let hi: i64 = ch / 16;
+        let lo: i64 = ch - hi * 16;
+        sb_append_char(sb, hex_digit(hi));
+        sb_append_char(sb, hex_digit(lo));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Convert 0-15 to hex digit ASCII code (uppercase for AWS)
+fn hex_digit(val: i64) -> i64 {
+    if val < 10 {
+        val + 48  // '0' = 48
+    } else {
+        val - 10 + 65  // 'A' = 65
+    }
+}
+
+/// Convert a hex digit ASCII code to 0-15
+fn hex_val(ch: i64) -> i64 {
+    if ch >= 48 {
+        if ch <= 57 {
+            return ch - 48;
+        }
+    }
+    if ch >= 65 {
+        if ch <= 70 {
+            return ch - 65 + 10;
+        }
+    }
+    if ch >= 97 {
+        if ch <= 102 {
+            return ch - 97 + 10;
+        }
+    }
+    0
+}
+
+/// Convert a byte (0-255) to a two-character lowercase hex string
+fn byte_to_hex(b: i64) -> i64 {
+    let hi: i64 = b / 16;
+    let lo: i64 = b - hi * 16;
+    let sb: i64 = sb_new();
+    sb_append_char(sb, hex_digit_lower(hi));
+    sb_append_char(sb, hex_digit_lower(lo));
+    sb_to_string(sb)
+}
+
+/// Convert 0-15 to lowercase hex digit ASCII code
+fn hex_digit_lower(val: i64) -> i64 {
+    if val < 10 {
+        val + 48  // '0'
+    } else {
+        val - 10 + 97  // 'a'
+    }
+}
+
+// =============================================================================
+// SHA-256 Hashing
+// =============================================================================
+
+/// Compute SHA-256 hash of a string and return hex-encoded result.
+///
+/// Delegates to the C runtime sha256_hex intrinsic.
+pub fn sha256_hex_str(data: i64) -> i64 {
+    sha256_hex(data)
+}
+
+/// Compute HMAC-SHA256 of data using key, return hex-encoded result.
+///
+/// Delegates to the C runtime hmac_sha256_hex intrinsic.
+pub fn hmac_sha256_bytes(key: i64, data: i64) -> i64 {
+    hmac_sha256_hex(key, data)
+}
+
+// =============================================================================
+// Canonical Request Construction
+// =============================================================================
+//
+// CanonicalRequest =
+//   HTTPRequestMethod + '\n' +
+//   CanonicalURI + '\n' +
+//   CanonicalQueryString + '\n' +
+//   CanonicalHeaders + '\n' +
+//   SignedHeaders + '\n' +
+//   HexEncode(Hash(RequestPayload))
+
+/// Extract the path component from a URL.
+///
+/// Handles both full URLs (https://host/path) and bare paths (/path).
+pub fn url_path(url: i64) -> i64 {
+    // Find "://"
+    let scheme_pos: i64 = string_find(url, "://", 0);
+    var search_start: i64 = 0;
+    if scheme_pos >= 0 {
+        search_start = scheme_pos + 3;
+    }
+    // Find first / after host
+    let slash_pos: i64 = string_find(url, "/", search_start);
+    if slash_pos < 0 {
+        return "/";
+    }
+    // Find ? for query string boundary
+    let q_pos: i64 = string_find(url, "?", slash_pos);
+    if q_pos >= 0 {
+        return string_substring(url, slash_pos, q_pos - slash_pos);
+    }
+    let url_len: i64 = string_len(url);
+    string_substring(url, slash_pos, url_len - slash_pos)
+}
+
+/// Extract the query string from a URL (without the leading ?).
+/// Returns empty string if no query string present.
+pub fn url_query(url: i64) -> i64 {
+    let q_pos: i64 = string_find(url, "?", 0);
+    if q_pos < 0 {
+        return "";
+    }
+    let url_len: i64 = string_len(url);
+    string_substring(url, q_pos + 1, url_len - q_pos - 1)
+}
+
+/// Extract the host from a URL.
+pub fn url_host(url: i64) -> i64 {
+    let scheme_pos: i64 = string_find(url, "://", 0);
+    var start: i64 = 0;
+    if scheme_pos >= 0 {
+        start = scheme_pos + 3;
+    }
+    let slash_pos: i64 = string_find(url, "/", start);
+    if slash_pos >= 0 {
+        return string_substring(url, start, slash_pos - start);
+    }
+    let url_len: i64 = string_len(url);
+    string_substring(url, start, url_len - start)
+}
+
+/// Sort query string parameters alphabetically.
+///
+/// Takes a query string "b=2&a=1" and returns "a=1&b=2".
+/// Uses simple insertion sort on parameter pairs.
+pub fn sort_query_params(query: i64) -> i64 {
+    if string_len(query) == 0 { return ""; }
+
+    // Split on &
+    let params: i64 = split_string(query, 38); // '&' = 38
+    let count: i64 = vec_len(params);
+    if count <= 1 { return query; }
+
+    // Insertion sort by param name
+    var i: i64 = 1;
+    while i < count {
+        let key_i: i64 = vec_get(params, i);
+        var j: i64 = i - 1;
+        while j >= 0 {
+            let key_j: i64 = vec_get(params, j);
+            if string_compare(key_i, key_j) < 0 {
+                vec_set(params, j + 1, key_j);
+                j = j - 1;
+            } else {
+                j = -1;  // break
+            }
+        }
+        vec_set(params, j + 1, key_i);
+        i = i + 1;
+    }
+
+    // Join with &
+    let sb: i64 = sb_new();
+    var k: i64 = 0;
+    while k < count {
+        if k > 0 {
+            sb_append_char(sb, 38); // '&'
+        }
+        sb_append(sb, vec_get(params, k));
+        k = k + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Split a string by a delimiter character (ASCII code)
+fn split_string(s: i64, delim: i64) -> i64 {
+    let parts: i64 = vec_new();
+    let len: i64 = string_len(s);
+    var start: i64 = 0;
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(s, i);
+        if ch == delim {
+            vec_push(parts, string_substring(s, start, i - start));
+            start = i + 1;
+        }
+        i = i + 1;
+    }
+    vec_push(parts, string_substring(s, start, len - start));
+    parts
+}
+
+/// Lexicographic string comparison. Returns -1, 0, or 1.
+fn string_compare(a: i64, b: i64) -> i64 {
+    let len_a: i64 = string_len(a);
+    let len_b: i64 = string_len(b);
+    var min_len: i64 = len_a;
+    if len_b < min_len { min_len = len_b; }
+    var i: i64 = 0;
+    while i < min_len {
+        let ca: i64 = string_char_at(a, i);
+        let cb: i64 = string_char_at(b, i);
+        if ca < cb { return -1; }
+        if ca > cb { return 1; }
+        i = i + 1;
+    }
+    if len_a < len_b { return -1; }
+    if len_a > len_b { return 1; }
+    0
+}
+
+/// Sort headers alphabetically by name (lowercase).
+/// Returns a new vec of sorted header pairs.
+fn sort_headers(headers: i64) -> i64 {
+    let count: i64 = vec_len(headers);
+    // Copy into sortable vec
+    let sorted: i64 = vec_new();
+    var i: i64 = 0;
+    while i < count {
+        vec_push(sorted, vec_get(headers, i));
+        i = i + 1;
+    }
+    // Insertion sort
+    i = 1;
+    while i < count {
+        let pair_i: i64 = vec_get(sorted, i);
+        let name_i: i64 = vec_get(pair_i, 0);
+        var j: i64 = i - 1;
+        while j >= 0 {
+            let pair_j: i64 = vec_get(sorted, j);
+            let name_j: i64 = vec_get(pair_j, 0);
+            if string_compare(name_i, name_j) < 0 {
+                vec_set(sorted, j + 1, pair_j);
+                j = j - 1;
+            } else {
+                j = -1;  // break
+            }
+        }
+        vec_set(sorted, j + 1, pair_i);
+        i = i + 1;
+    }
+    sorted
+}
+
+/// Build the canonical headers string.
+///
+/// Format: lowercased-header-name:trimmed-value\n
+/// Headers must be sorted alphabetically by name.
+pub fn canonical_headers_string(headers: i64) -> i64 {
+    let sorted: i64 = sort_headers(headers);
+    let count: i64 = vec_len(sorted);
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+    while i < count {
+        let pair: i64 = vec_get(sorted, i);
+        sb_append(sb, vec_get(pair, 0));
+        sb_append_char(sb, 58); // ':'
+        sb_append(sb, vec_get(pair, 1));
+        sb_append_char(sb, 10); // '\n'
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Build the signed headers string.
+///
+/// Format: lowercased-header-name;lowercased-header-name
+/// Sorted alphabetically, semicolon-separated.
+pub fn signed_headers_string(headers: i64) -> i64 {
+    let sorted: i64 = sort_headers(headers);
+    let count: i64 = vec_len(sorted);
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+    while i < count {
+        if i > 0 {
+            sb_append_char(sb, 59); // ';'
+        }
+        let pair: i64 = vec_get(sorted, i);
+        sb_append(sb, vec_get(pair, 0));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Build the canonical request string.
+///
+/// # Arguments
+/// - `method`: HTTP method (GET, POST, etc.)
+/// - `url`: Request URL
+/// - `headers`: Headers vec handle
+/// - `body`: Request body string (or empty)
+///
+/// # Returns
+/// Canonical request string per AWS SigV4 specification
+pub fn aws_canonical_request(method: i64, url: i64, headers: i64, body: i64) -> i64 {
+    let path: i64 = url_path(url);
+    let query: i64 = sort_query_params(url_query(url));
+    let canon_headers: i64 = canonical_headers_string(headers);
+    let signed: i64 = signed_headers_string(headers);
+    let body_hash: i64 = sha256_hex(body);
+
+    let sb: i64 = sb_new();
+    sb_append(sb, method);
+    sb_append_char(sb, 10);  // \n
+    sb_append(sb, path);
+    sb_append_char(sb, 10);
+    sb_append(sb, query);
+    sb_append_char(sb, 10);
+    sb_append(sb, canon_headers);
+    sb_append_char(sb, 10);
+    sb_append(sb, signed);
+    sb_append_char(sb, 10);
+    sb_append(sb, body_hash);
+    sb_to_string(sb)
+}
+
+// =============================================================================
+// String To Sign
+// =============================================================================
+//
+// StringToSign =
+//   Algorithm + '\n' +
+//   RequestDateTime + '\n' +
+//   CredentialScope + '\n' +
+//   HexEncode(Hash(CanonicalRequest))
+
+/// Build the credential scope string.
+///
+/// Format: YYYYMMDD/region/service/aws4_request
+pub fn credential_scope(config: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, vec_get(config, CFG_DATE()));
+    sb_append_char(sb, 47); // '/'
+    sb_append(sb, vec_get(config, CFG_REGION()));
+    sb_append_char(sb, 47);
+    sb_append(sb, vec_get(config, CFG_SERVICE()));
+    sb_append_char(sb, 47);
+    sb_append(sb, "aws4_request");
+    sb_to_string(sb)
+}
+
+/// Build the string to sign.
+///
+/// # Arguments
+/// - `canonical_request`: The canonical request string
+/// - `config`: AWS config vec
+///
+/// # Returns
+/// String to sign per AWS SigV4 specification
+pub fn aws_string_to_sign(canonical_request: i64, config: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "AWS4-HMAC-SHA256");
+    sb_append_char(sb, 10);  // \n
+    sb_append(sb, vec_get(config, CFG_DATETIME()));
+    sb_append_char(sb, 10);
+    sb_append(sb, credential_scope(config));
+    sb_append_char(sb, 10);
+    sb_append(sb, sha256_hex(canonical_request));
+    sb_to_string(sb)
+}
+
+// =============================================================================
+// Signing Key Derivation
+// =============================================================================
+//
+// DateKey              = HMAC-SHA256("AWS4" + SecretKey, Date)
+// DateRegionKey        = HMAC-SHA256(DateKey, Region)
+// DateRegionServiceKey = HMAC-SHA256(DateRegionKey, Service)
+// SigningKey           = HMAC-SHA256(DateRegionServiceKey, "aws4_request")
+
+/// Derive the signing key using the HMAC chain.
+///
+/// # Arguments
+/// - `config`: AWS config vec with secret_key, region, service, date
+///
+/// # Returns
+/// Signing key as hex string
+///
+/// # Signing Chain
+/// ```
+/// kDate    = HMAC("AWS4" + secret, date)
+/// kRegion  = HMAC(kDate, region)
+/// kService = HMAC(kRegion, service)
+/// kSigning = HMAC(kService, "aws4_request")
+/// ```
+pub fn aws_signing_key(config: i64) -> i64 {
+    let secret: i64 = vec_get(config, CFG_SECRET_KEY());
+    let date: i64 = vec_get(config, CFG_DATE());
+    let region: i64 = vec_get(config, CFG_REGION());
+    let service: i64 = vec_get(config, CFG_SERVICE());
+
+    // AWS4 + SecretAccessKey
+    let key_seed: i64 = string_concat("AWS4", secret);
+
+    // HMAC chain: date -> region -> service -> "aws4_request"
+    let k_date: i64 = hmac_sha256_hex(key_seed, date);
+    let k_region: i64 = hmac_sha256_hex(k_date, region);
+    let k_service: i64 = hmac_sha256_hex(k_region, service);
+    let k_signing: i64 = hmac_sha256_hex(k_service, "aws4_request");
+    k_signing
+}
+
+// =============================================================================
+// Authorization Header
+// =============================================================================
+//
+// Authorization: AWS4-HMAC-SHA256
+//   Credential=AKID/credential_scope,
+//   SignedHeaders=signed_headers,
+//   Signature=signature
+
+/// Build the authorization header value.
+///
+/// # Arguments
+/// - `config`: AWS config vec
+/// - `signed_hdrs`: Signed headers string (semicolon-separated)
+/// - `signature`: Hex-encoded signature
+///
+/// # Returns
+/// Complete Authorization header value string
+pub fn aws_authorization_header(config: i64, signed_hdrs: i64, signature: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "AWS4-HMAC-SHA256 Credential=");
+    sb_append(sb, vec_get(config, CFG_ACCESS_KEY()));
+    sb_append_char(sb, 47); // '/'
+    sb_append(sb, credential_scope(config));
+    sb_append(sb, ", SignedHeaders=");
+    sb_append(sb, signed_hdrs);
+    sb_append(sb, ", Signature=");
+    sb_append(sb, signature);
+    sb_to_string(sb)
+}
+
+// =============================================================================
+// Complete Signing Flow
+// =============================================================================
+
+/// Sign an AWS request using Signature Version 4.
+///
+/// This is the main entry point that performs the complete signing flow:
+///   1. Ensure host and x-amz-date headers are present
+///   2. Build canonical request
+///   3. Build string to sign
+///   4. Derive signing key
+///   5. Calculate signature
+///   6. Add Authorization header
+///
+/// # Arguments
+/// - `method`: HTTP method string ("GET", "POST", etc.)
+/// - `url`: Full request URL
+/// - `headers`: Headers vec handle (may be empty, host/x-amz-date will be added)
+/// - `body`: Request body string (use "" for no body)
+/// - `config`: AWS config vec from aws_config_new()
+///
+/// # Returns
+/// New headers vec with Authorization, host, and x-amz-date headers added
+///
+/// # Example
+/// ```simplex
+/// let config = aws_config_new(key, secret, "us-east-1", "sqs");
+/// let config = aws_config_set_date(config, "20240101");
+/// let config = aws_config_set_datetime(config, "20240101T120000Z");
+/// let headers = headers_new();
+/// let signed = aws_sign_request("GET", url, headers, "", config);
+/// ```
+pub fn aws_sign_request(method: i64, url: i64, headers: i64, body: i64, config: i64) -> i64 {
+    // Clone headers and ensure required headers are present
+    let signed_headers: i64 = vec_new();
+    let count: i64 = vec_len(headers);
+    var i: i64 = 0;
+    var has_host: i64 = 0;
+    var has_date: i64 = 0;
+    while i < count {
+        let pair: i64 = vec_get(headers, i);
+        let name: i64 = vec_get(pair, 0);
+        if string_eq(name, "host") == 1 {
+            has_host = 1;
+        }
+        if string_eq(name, "x-amz-date") == 1 {
+            has_date = 1;
+        }
+        vec_push(signed_headers, pair);
+        i = i + 1;
+    }
+
+    // Add host header if missing
+    if has_host == 0 {
+        let host: i64 = url_host(url);
+        headers_add(signed_headers, "host", host);
+    }
+
+    // Add x-amz-date header if missing
+    if has_date == 0 {
+        let datetime: i64 = vec_get(config, CFG_DATETIME());
+        headers_add(signed_headers, "x-amz-date", datetime);
+    }
+
+    // Step 1: Create canonical request
+    let canon_req: i64 = aws_canonical_request(method, url, signed_headers, body);
+
+    // Step 2: Create string to sign
+    let str_to_sign: i64 = aws_string_to_sign(canon_req, config);
+
+    // Step 3: Derive signing key
+    let signing_key: i64 = aws_signing_key(config);
+
+    // Step 4: Calculate signature
+    let signature: i64 = hmac_sha256_hex(signing_key, str_to_sign);
+
+    // Step 5: Build authorization header
+    let signed_hdrs: i64 = signed_headers_string(signed_headers);
+    let auth_value: i64 = aws_authorization_header(config, signed_hdrs, signature);
+
+    // Step 6: Add Authorization header
+    headers_add(signed_headers, "authorization", auth_value);
+
+    signed_headers
+}
+
+/// Compute the SHA-256 hash of the request body for the x-amz-content-sha256 header.
+pub fn aws_content_hash(body: i64) -> i64 {
+    sha256_hex(body)
+}

@@ -1,0 +1,75 @@
+use neural_ode;
+
+fn main() -> i64 {
+    println(string_from("=== Neural ODE Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Euler step on dx/dt = -x
+    let state: i64 = vec_new();
+    vec_push(state, f64_to_bits(1.0));
+    let dyn_matrix: i64 = vec_new();
+    vec_push(dyn_matrix, f64_to_bits(0.0 - 1.0));
+    let dt_bits: i64 = f64_to_bits(0.01);
+    let new_state: i64 = euler_step(state, dyn_matrix, dt_bits);
+    // x_euler should be ~0.99 (positive, > 0.98)
+    let x_euler: i64 = vec_get(new_state, 0);
+    if x_euler < f64_to_bits(0.98) {
+        println(string_from("FAIL: euler step wrong"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: euler_step"));
+    }
+
+    // Test 2: RK4 step is more accurate
+    let t_bits: i64 = f64_to_bits(0.0);
+    let rk4_state: i64 = rk4_step(state, dyn_matrix, t_bits, dt_bits);
+    let x_rk4: i64 = vec_get(rk4_state, 0);
+    if x_rk4 < f64_to_bits(0.989) {
+        println(string_from("FAIL: rk4 step wrong"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: rk4_step"));
+    }
+
+    // Test 3: ODE solve final state (decay to ~0.368)
+    let t_start: i64 = f64_to_bits(0.0);
+    let t_end: i64 = f64_to_bits(1.0);
+    let solve_dt: i64 = f64_to_bits(0.1);
+    let final_st: i64 = ode_solve_final(state, dyn_matrix, t_start, t_end, solve_dt);
+    let x_final: i64 = vec_get(final_st, 0);
+    if x_final < f64_to_bits(0.3) {
+        println(string_from("FAIL: final state too low"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: ode_solve_final"));
+    }
+
+    // Test 4: Neural ODE layer creation
+    let node: i64 = node_layer_new(2, 4);
+    let sdim: i64 = vec_get(node, 0);
+    if sdim != 2 {
+        println(string_from("FAIL: state_dim should be 2"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: node_layer_new"));
+    }
+
+    // Test 5: NODE forward pass output dim
+    let node_input: i64 = vec_new();
+    vec_push(node_input, f64_to_bits(1.0));
+    vec_push(node_input, f64_to_bits(0.5));
+    let span: i64 = f64_to_bits(1.0);
+    let node_dt: i64 = f64_to_bits(0.1);
+    let node_out: i64 = node_forward(node, node_input, span, node_dt);
+    if vec_len(node_out) != 2 {
+        println(string_from("FAIL: NODE output should be dim 2"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: node_forward"));
+    }
+
+    if failures == 0 {
+        println(string_from("All neural ODE tests passed"));
+    }
+    failures
+}

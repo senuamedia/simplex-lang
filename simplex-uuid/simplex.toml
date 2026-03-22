@@ -1,6 +1,6 @@
 [package]
 name = "simplex-uuid"
-version = "0.9.0"
+version = "0.17.0"
 description = "UUID generation for Simplex"
 license = "MIT"
 

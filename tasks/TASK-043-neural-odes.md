@@ -1,7 +1,7 @@
 # TASK-043: Neural ODEs & Continuous Depth Networks
 
 **Version:** 0.16.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P2 — Medium
 **Depends on:** v0.15.0 release, dual numbers (TASK-005), existing layer infrastructure
 

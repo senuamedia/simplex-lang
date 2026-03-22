@@ -1,0 +1,1363 @@
+// Mechanistic Interpretability for Simplex Neural Networks
+//
+// Tools for understanding what neural networks learn internally:
+//   - Activation analysis: record and analyze layer activations
+//   - Feature attribution: gradient-based input importance scoring
+//   - Probing: train linear probes on hidden representations
+//   - Circuit analysis: ablation studies and neuron importance
+//
+// All float values are stored as i64 via f64_to_bits / bits_to_f64.
+// Collections are vec handles (i64).
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Field layout indices (returned via fn to avoid const)
+// =============================================================================
+
+// ActivationRecord layout:
+//   [0] layer_index   i64
+//   [1] n_neurons     i64
+//   [2] values_vec    i64 (handle to vec of f64-as-bits)
+fn AR_LAYER() -> i64     { 0 }
+fn AR_N_NEURONS() -> i64 { 1 }
+fn AR_VALUES() -> i64    { 2 }
+fn AR_FIELDS() -> i64    { 3 }
+
+// ActivationRecordSet layout:
+//   [0] n_records     i64
+//   [1] n_neurons     i64
+//   [2] records_vec   i64 (handle to vec of record handles)
+fn ARS_N_RECORDS() -> i64  { 0 }
+fn ARS_N_NEURONS() -> i64  { 1 }
+fn ARS_RECORDS() -> i64    { 2 }
+fn ARS_FIELDS() -> i64     { 3 }
+
+// LinearProbe layout:
+//   [0] hidden_dim   i64
+//   [1] n_classes    i64
+//   [2] weights_vec  i64 (handle to vec of f64-as-bits, hidden_dim * n_classes)
+//   [3] bias_vec     i64 (handle to vec of f64-as-bits, n_classes)
+fn LP_HIDDEN_DIM() -> i64  { 0 }
+fn LP_N_CLASSES() -> i64   { 1 }
+fn LP_WEIGHTS() -> i64     { 2 }
+fn LP_BIAS() -> i64        { 3 }
+fn LP_FIELDS() -> i64      { 4 }
+
+// AblationResult layout:
+//   [0] original_vec    i64 (handle to vec of f64-as-bits)
+//   [1] modified_vec    i64 (handle to vec of f64-as-bits)
+//   [2] neuron_index    i64
+//   [3] delta_norm      i64 (f64-as-bits, L2 norm of change)
+fn ABL_ORIGINAL() -> i64   { 0 }
+fn ABL_MODIFIED() -> i64   { 1 }
+fn ABL_NEURON() -> i64     { 2 }
+fn ABL_DELTA() -> i64      { 3 }
+fn ABL_FIELDS() -> i64     { 4 }
+
+// =============================================================================
+// Helper: absolute value
+// =============================================================================
+
+fn interp_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+// =============================================================================
+// Helper: sqrt via Newton's method
+// =============================================================================
+
+fn interp_sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    var guess: f64 = x;
+    if guess > 1.0 { guess = guess / 2.0; }
+    if guess < 0.001 { guess = 0.001; }
+    var i: i64 = 0;
+    while i < 30 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    guess
+}
+
+// =============================================================================
+// Activation Analysis
+// =============================================================================
+
+// Record activations at a specific layer.
+//
+// Takes a flat vec of activation values (f64-as-bits) from a model layer
+// and wraps it in a record with the layer index.
+//
+// Arguments:
+//   model_activations - handle to vec of f64-as-bits values (all neurons at this layer)
+//   layer             - layer index (0-based)
+//
+// Returns: handle to ActivationRecord vec
+fn interp_activation_record(model_activations: i64, layer: i64) -> i64 {
+    let n: i64 = vec_len(model_activations);
+
+    // Deep copy the activation values
+    let values = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(values, vec_get(model_activations, i));
+        i = i + 1;
+    }
+
+    let rec = vec_new();
+    vec_push(rec, layer);      // [0] layer_index
+    vec_push(rec, n);          // [1] n_neurons
+    vec_push(rec, values);     // [2] values_vec
+    rec
+}
+
+// Compute mean activation per neuron across a set of records.
+//
+// All records must have the same number of neurons.
+// Returns a vec of f64-as-bits representing the mean activation per neuron.
+//
+// Arguments:
+//   records - handle to vec of ActivationRecord handles
+//
+// Returns: handle to vec of f64-as-bits (one mean per neuron)
+fn activation_mean(records: i64) -> i64 {
+    let n_records: i64 = vec_len(records);
+    if n_records == 0 {
+        return vec_new();
+    }
+
+    // Get neuron count from first record
+    let first_rec: i64 = vec_get(records, 0);
+    let n_neurons: i64 = vec_get(first_rec, AR_N_NEURONS());
+
+    // Accumulate sums per neuron
+    let sums = vec_new();
+    var j: i64 = 0;
+    while j < n_neurons {
+        vec_push(sums, f64_to_bits(0.0));
+        j = j + 1;
+    }
+
+    // Sum across all records
+    var r: i64 = 0;
+    while r < n_records {
+        let rec: i64 = vec_get(records, r);
+        let vals: i64 = vec_get(rec, AR_VALUES());
+        j = 0;
+        while j < n_neurons {
+            let current: f64 = bits_to_f64(vec_get(sums, j));
+            let val: f64 = bits_to_f64(vec_get(vals, j));
+            vec_set(sums, j, f64_to_bits(current + val));
+            j = j + 1;
+        }
+        r = r + 1;
+    }
+
+    // Divide by n_records to get means
+    let means = vec_new();
+    let n_f64: f64 = n_records as f64;
+    j = 0;
+    while j < n_neurons {
+        let s: f64 = bits_to_f64(vec_get(sums, j));
+        vec_push(means, f64_to_bits(s / n_f64));
+        j = j + 1;
+    }
+
+    means
+}
+
+// Compute variance of activations per neuron across records.
+//
+// Var(x) = E[x^2] - (E[x])^2
+//
+// Arguments:
+//   records - handle to vec of ActivationRecord handles
+//
+// Returns: handle to vec of f64-as-bits (one variance per neuron)
+fn activation_variance(records: i64) -> i64 {
+    let n_records: i64 = vec_len(records);
+    if n_records == 0 {
+        return vec_new();
+    }
+
+    let first_rec: i64 = vec_get(records, 0);
+    let n_neurons: i64 = vec_get(first_rec, AR_N_NEURONS());
+
+    // Compute means first
+    let means: i64 = activation_mean(records);
+
+    // Accumulate squared differences
+    let sq_diffs = vec_new();
+    var j: i64 = 0;
+    while j < n_neurons {
+        vec_push(sq_diffs, f64_to_bits(0.0));
+        j = j + 1;
+    }
+
+    var r: i64 = 0;
+    while r < n_records {
+        let rec: i64 = vec_get(records, r);
+        let vals: i64 = vec_get(rec, AR_VALUES());
+        j = 0;
+        while j < n_neurons {
+            let val: f64 = bits_to_f64(vec_get(vals, j));
+            let mean: f64 = bits_to_f64(vec_get(means, j));
+            let diff: f64 = val - mean;
+            let current: f64 = bits_to_f64(vec_get(sq_diffs, j));
+            vec_set(sq_diffs, j, f64_to_bits(current + diff * diff));
+            j = j + 1;
+        }
+        r = r + 1;
+    }
+
+    // Divide by n_records
+    let variances = vec_new();
+    let n_f64: f64 = n_records as f64;
+    j = 0;
+    while j < n_neurons {
+        let sq: f64 = bits_to_f64(vec_get(sq_diffs, j));
+        vec_push(variances, f64_to_bits(sq / n_f64));
+        j = j + 1;
+    }
+
+    variances
+}
+
+// Find the neuron index with the highest mean activation.
+//
+// Arguments:
+//   records - handle to vec of ActivationRecord handles
+//
+// Returns: index (i64) of the neuron with highest mean activation
+//          Returns -1 if records is empty.
+fn activation_max_neuron(records: i64) -> i64 {
+    let n_records: i64 = vec_len(records);
+    if n_records == 0 {
+        return 0 - 1;
+    }
+
+    let means: i64 = activation_mean(records);
+    let n_neurons: i64 = vec_len(means);
+    if n_neurons == 0 {
+        return 0 - 1;
+    }
+
+    var best_idx: i64 = 0;
+    var best_val: f64 = bits_to_f64(vec_get(means, 0));
+
+    var j: i64 = 1;
+    while j < n_neurons {
+        let val: f64 = bits_to_f64(vec_get(means, j));
+        if val > best_val {
+            best_val = val;
+            best_idx = j;
+        }
+        j = j + 1;
+    }
+
+    best_idx
+}
+
+// =============================================================================
+// Feature Attribution
+// =============================================================================
+
+// Compute gradient-based attribution for input features.
+//
+// Given an input vector and the gradient of the output with respect to
+// the output, computes a simple input * gradient attribution score for
+// each input feature.
+//
+// Arguments:
+//   input       - handle to vec of f64-as-bits input features
+//   output_grad - handle to vec of f64-as-bits output gradients (same length as input)
+//
+// Returns: handle to vec of f64-as-bits attribution scores (input * grad)
+fn gradient_attribution(input: i64, output_grad: i64) -> i64 {
+    let n: i64 = vec_len(input);
+    let grad_n: i64 = vec_len(output_grad);
+
+    // Use the minimum length for safety
+    var length: i64 = n;
+    if grad_n < length { length = grad_n; }
+
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < length {
+        let inp: f64 = bits_to_f64(vec_get(input, i));
+        let grad: f64 = bits_to_f64(vec_get(output_grad, i));
+        // Attribution = input * gradient (element-wise)
+        vec_push(result, f64_to_bits(inp * grad));
+        i = i + 1;
+    }
+
+    result
+}
+
+// Compute integrated gradients from baseline to input.
+//
+// Approximates the path integral of gradients along the straight line
+// from baseline to input using the trapezoid rule:
+//
+//   IG_i = (x_i - x_baseline_i) * (1/steps) * sum_{k=0}^{steps}
+//          grad_fn(baseline + k/steps * (input - baseline))[i]
+//
+// The grad_fn is represented as a function ID. Since Simplex does not
+// support first-class closures in the i64-handle pattern, we approximate
+// integrated gradients by interpolating and using finite differences.
+//
+// Arguments:
+//   input    - handle to vec of f64-as-bits input features
+//   baseline - handle to vec of f64-as-bits baseline (e.g., zero vector)
+//   steps    - number of interpolation steps (i64)
+//   grad_fn  - handle to a vec of gradient vectors at each interpolation step
+//              (pre-computed by the caller: vec of vec handles, one per step)
+//
+// Returns: handle to vec of f64-as-bits integrated gradient attributions
+fn integrated_gradients(input: i64, baseline: i64, steps: i64, grad_fn: i64) -> i64 {
+    let n: i64 = vec_len(input);
+    var actual_steps: i64 = steps;
+    if actual_steps < 1 { actual_steps = 1; }
+
+    // Accumulate gradient sum per feature
+    let grad_sum = vec_new();
+    var j: i64 = 0;
+    while j < n {
+        vec_push(grad_sum, f64_to_bits(0.0));
+        j = j + 1;
+    }
+
+    // The grad_fn is a vec of gradient vecs, one per interpolation step
+    let n_grad_steps: i64 = vec_len(grad_fn);
+
+    var k: i64 = 0;
+    while k < n_grad_steps {
+        let step_grads: i64 = vec_get(grad_fn, k);
+        let step_len: i64 = vec_len(step_grads);
+
+        j = 0;
+        while j < n {
+            if j < step_len {
+                let g: f64 = bits_to_f64(vec_get(step_grads, j));
+                let current: f64 = bits_to_f64(vec_get(grad_sum, j));
+
+                // Trapezoid rule: first and last steps get weight 0.5
+                var weight: f64 = 1.0;
+                if k == 0 { weight = 0.5; }
+                if k == n_grad_steps - 1 { weight = 0.5; }
+
+                vec_set(grad_sum, j, f64_to_bits(current + weight * g));
+            }
+            j = j + 1;
+        }
+        k = k + 1;
+    }
+
+    // Multiply by (input - baseline) / steps
+    let result = vec_new();
+    let steps_f64: f64 = actual_steps as f64;
+    j = 0;
+    while j < n {
+        let inp: f64 = bits_to_f64(vec_get(input, j));
+        let base: f64 = bits_to_f64(vec_get(baseline, j));
+        let delta: f64 = inp - base;
+        let grad_avg: f64 = bits_to_f64(vec_get(grad_sum, j)) / steps_f64;
+        vec_push(result, f64_to_bits(delta * grad_avg));
+        j = j + 1;
+    }
+
+    result
+}
+
+// Normalize attributions to [0, 1] range to produce a saliency map.
+//
+// Each attribution is normalized as:
+//   saliency_i = |attribution_i| / max(|attributions|)
+//
+// Arguments:
+//   attributions - handle to vec of f64-as-bits attribution scores
+//   input_dim    - number of input dimensions (for validation; uses vec_len if 0)
+//
+// Returns: handle to vec of f64-as-bits saliency values in [0, 1]
+fn saliency_map(attributions: i64, input_dim: i64) -> i64 {
+    let n: i64 = vec_len(attributions);
+    if n == 0 {
+        return vec_new();
+    }
+
+    // Find max absolute value
+    var max_abs: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(attributions, i));
+        let abs_val: f64 = interp_abs(val);
+        if abs_val > max_abs {
+            max_abs = abs_val;
+        }
+        i = i + 1;
+    }
+
+    // Avoid division by zero
+    if max_abs < 0.000000001 {
+        max_abs = 0.000000001;
+    }
+
+    // Normalize to [0, 1]
+    let result = vec_new();
+    i = 0;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(attributions, i));
+        let abs_val: f64 = interp_abs(val);
+        let normalized: f64 = abs_val / max_abs;
+        vec_push(result, f64_to_bits(normalized));
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Probing
+// =============================================================================
+
+// Create a new linear probe for testing representations.
+//
+// The probe is a single linear layer: output = W * input + b
+// where W has shape [n_classes, hidden_dim] and b has shape [n_classes].
+// Weights are initialized to small random-like values using a deterministic
+// sinusoidal pattern. Biases are initialized to zero.
+//
+// Arguments:
+//   hidden_dim - dimensionality of hidden activations
+//   n_classes  - number of output classes
+//
+// Returns: handle to LinearProbe vec
+fn linear_probe_new(hidden_dim: i64, n_classes: i64) -> i64 {
+    // Initialize weights with deterministic small values
+    let weights = vec_new();
+    let total: i64 = hidden_dim * n_classes;
+    var i: i64 = 0;
+    while i < total {
+        // Xavier-like initialization: scale ~ 1/sqrt(hidden_dim)
+        let scale: f64 = 1.0 / interp_sqrt(hidden_dim as f64);
+        let seed: f64 = ((i as f64) + 0.5) * 0.7111;
+        let val: f64 = sin(seed) * scale;
+        vec_push(weights, f64_to_bits(val));
+        i = i + 1;
+    }
+
+    // Initialize biases to zero
+    let bias = vec_new();
+    i = 0;
+    while i < n_classes {
+        vec_push(bias, f64_to_bits(0.0));
+        i = i + 1;
+    }
+
+    let probe = vec_new();
+    vec_push(probe, hidden_dim);    // [0] hidden_dim
+    vec_push(probe, n_classes);     // [1] n_classes
+    vec_push(probe, weights);       // [2] weights_vec
+    vec_push(probe, bias);          // [3] bias_vec
+    probe
+}
+
+// Forward pass through the linear probe.
+//
+// Computes: output[c] = sum_j(W[c * hidden_dim + j] * activation[j]) + bias[c]
+//
+// Arguments:
+//   probe      - handle to LinearProbe vec
+//   activation - handle to vec of f64-as-bits (length = hidden_dim)
+//
+// Returns: handle to vec of f64-as-bits logits (length = n_classes)
+fn linear_probe_forward(probe: i64, activation: i64) -> i64 {
+    let hidden_dim: i64 = vec_get(probe, LP_HIDDEN_DIM());
+    let n_classes: i64 = vec_get(probe, LP_N_CLASSES());
+    let weights: i64 = vec_get(probe, LP_WEIGHTS());
+    let bias: i64 = vec_get(probe, LP_BIAS());
+
+    let output = vec_new();
+    var c: i64 = 0;
+    while c < n_classes {
+        var sum: f64 = bits_to_f64(vec_get(bias, c));
+        var j: i64 = 0;
+        while j < hidden_dim {
+            let w: f64 = bits_to_f64(vec_get(weights, c * hidden_dim + j));
+            let a: f64 = bits_to_f64(vec_get(activation, j));
+            sum = sum + w * a;
+            j = j + 1;
+        }
+        vec_push(output, f64_to_bits(sum));
+        c = c + 1;
+    }
+
+    output
+}
+
+// Train the linear probe on activations and labels using SGD.
+//
+// For each epoch, iterates over all examples and updates weights
+// using softmax cross-entropy loss with stochastic gradient descent.
+//
+// Arguments:
+//   probe       - handle to LinearProbe vec (modified in place)
+//   activations - handle to vec of activation vec handles (each is f64-as-bits)
+//   labels      - handle to vec of label indices (i64 values)
+//   lr          - learning rate (f64-as-bits)
+//   epochs      - number of training epochs
+//
+// Returns: final loss (f64-as-bits)
+fn linear_probe_train(probe: i64, activations: i64, labels: i64, lr: i64, epochs: i64) -> i64 {
+    let hidden_dim: i64 = vec_get(probe, LP_HIDDEN_DIM());
+    let n_classes: i64 = vec_get(probe, LP_N_CLASSES());
+    let weights: i64 = vec_get(probe, LP_WEIGHTS());
+    let bias: i64 = vec_get(probe, LP_BIAS());
+    let n_examples: i64 = vec_len(activations);
+    let learning_rate: f64 = bits_to_f64(lr);
+
+    if n_examples == 0 {
+        return f64_to_bits(0.0);
+    }
+
+    var final_loss: f64 = 0.0;
+
+    var epoch: i64 = 0;
+    while epoch < epochs {
+        var epoch_loss: f64 = 0.0;
+
+        var ex: i64 = 0;
+        while ex < n_examples {
+            let act: i64 = vec_get(activations, ex);
+            let label: i64 = vec_get(labels, ex);
+
+            // Forward pass: compute logits
+            let logits = vec_new();
+            var c: i64 = 0;
+            while c < n_classes {
+                var sum: f64 = bits_to_f64(vec_get(bias, c));
+                var j: i64 = 0;
+                while j < hidden_dim {
+                    let w: f64 = bits_to_f64(vec_get(weights, c * hidden_dim + j));
+                    let a: f64 = bits_to_f64(vec_get(act, j));
+                    sum = sum + w * a;
+                    j = j + 1;
+                }
+                vec_push(logits, f64_to_bits(sum));
+                c = c + 1;
+            }
+
+            // Softmax: exp(logit - max_logit) / sum(exp(logit - max_logit))
+            // Find max logit for numerical stability
+            var max_logit: f64 = bits_to_f64(vec_get(logits, 0));
+            c = 1;
+            while c < n_classes {
+                let l: f64 = bits_to_f64(vec_get(logits, c));
+                if l > max_logit { max_logit = l; }
+                c = c + 1;
+            }
+
+            let softmax = vec_new();
+            var exp_sum: f64 = 0.0;
+            c = 0;
+            while c < n_classes {
+                let l: f64 = bits_to_f64(vec_get(logits, c));
+                let e: f64 = exp(l - max_logit);
+                vec_push(softmax, f64_to_bits(e));
+                exp_sum = exp_sum + e;
+                c = c + 1;
+            }
+
+            // Normalize and compute loss
+            c = 0;
+            while c < n_classes {
+                let e: f64 = bits_to_f64(vec_get(softmax, c));
+                let prob: f64 = e / exp_sum;
+                vec_set(softmax, c, f64_to_bits(prob));
+                c = c + 1;
+            }
+
+            // Cross-entropy loss for this example
+            let correct_prob: f64 = bits_to_f64(vec_get(softmax, label));
+            var log_prob: f64 = 0.0;
+            if correct_prob > 0.0000001 {
+                log_prob = interp_ln(correct_prob);
+            } else {
+                log_prob = 0.0 - 20.0;
+            }
+            epoch_loss = epoch_loss - log_prob;
+
+            // Gradient of softmax cross-entropy: grad[c] = softmax[c] - (c == label ? 1 : 0)
+            // Update weights and biases
+            c = 0;
+            while c < n_classes {
+                let prob: f64 = bits_to_f64(vec_get(softmax, c));
+                var target: f64 = 0.0;
+                if c == label { target = 1.0; }
+                let grad_c: f64 = prob - target;
+
+                // Update bias
+                let old_b: f64 = bits_to_f64(vec_get(bias, c));
+                vec_set(bias, c, f64_to_bits(old_b - learning_rate * grad_c));
+
+                // Update weights for this class
+                var j2: i64 = 0;
+                while j2 < hidden_dim {
+                    let a: f64 = bits_to_f64(vec_get(act, j2));
+                    let w_idx: i64 = c * hidden_dim + j2;
+                    let old_w: f64 = bits_to_f64(vec_get(weights, w_idx));
+                    vec_set(weights, w_idx, f64_to_bits(old_w - learning_rate * grad_c * a));
+                    j2 = j2 + 1;
+                }
+                c = c + 1;
+            }
+
+            ex = ex + 1;
+        }
+
+        final_loss = epoch_loss / (n_examples as f64);
+        epoch = epoch + 1;
+    }
+
+    f64_to_bits(final_loss)
+}
+
+// Compute accuracy of the probe on a set of activations and labels.
+//
+// Accuracy = number correct / total examples
+//
+// Arguments:
+//   probe       - handle to LinearProbe vec
+//   activations - handle to vec of activation vec handles
+//   labels      - handle to vec of label indices (i64)
+//
+// Returns: accuracy as f64-as-bits (0.0 to 1.0)
+fn linear_probe_accuracy(probe: i64, activations: i64, labels: i64) -> i64 {
+    let n: i64 = vec_len(activations);
+    if n == 0 {
+        return f64_to_bits(0.0);
+    }
+
+    var correct: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let act: i64 = vec_get(activations, i);
+        let label: i64 = vec_get(labels, i);
+
+        let logits: i64 = linear_probe_forward(probe, act);
+        let n_classes: i64 = vec_len(logits);
+
+        // Find argmax
+        var best_class: i64 = 0;
+        var best_score: f64 = bits_to_f64(vec_get(logits, 0));
+        var c: i64 = 1;
+        while c < n_classes {
+            let s: f64 = bits_to_f64(vec_get(logits, c));
+            if s > best_score {
+                best_score = s;
+                best_class = c;
+            }
+            c = c + 1;
+        }
+
+        if best_class == label {
+            correct = correct + 1;
+        }
+        i = i + 1;
+    }
+
+    let accuracy: f64 = (correct as f64) / (n as f64);
+    f64_to_bits(accuracy)
+}
+
+// =============================================================================
+// Circuit Analysis
+// =============================================================================
+
+// Perform an ablation study by replacing a single neuron's activation.
+//
+// Creates a copy of the activations with the specified neuron's value
+// replaced by a given replacement value. This reveals the causal
+// contribution of that neuron.
+//
+// Arguments:
+//   activations - handle to vec of f64-as-bits activation values
+//   neuron      - index of the neuron to ablate
+//   replacement - replacement value (f64-as-bits), typically 0 or the mean
+//
+// Returns: handle to AblationResult vec containing original, modified, neuron, delta
+fn ablation_study(activations: i64, neuron: i64, replacement: i64) -> i64 {
+    let n: i64 = vec_len(activations);
+    let replacement_f64: f64 = bits_to_f64(replacement);
+
+    // Copy original
+    let original = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(original, vec_get(activations, i));
+        i = i + 1;
+    }
+
+    // Create modified version with neuron replaced
+    let modified = vec_new();
+    i = 0;
+    while i < n {
+        if i == neuron {
+            vec_push(modified, replacement);
+        } else {
+            vec_push(modified, vec_get(activations, i));
+        }
+        i = i + 1;
+    }
+
+    // Compute L2 norm of the difference
+    var delta_sq: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let orig_val: f64 = bits_to_f64(vec_get(original, i));
+        let mod_val: f64 = bits_to_f64(vec_get(modified, i));
+        let diff: f64 = orig_val - mod_val;
+        delta_sq = delta_sq + diff * diff;
+        i = i + 1;
+    }
+    let delta_norm: f64 = interp_sqrt(delta_sq);
+
+    let result = vec_new();
+    vec_push(result, original);                    // [0] original
+    vec_push(result, modified);                    // [1] modified
+    vec_push(result, neuron);                      // [2] neuron index
+    vec_push(result, f64_to_bits(delta_norm));     // [3] delta_norm
+    result
+}
+
+// Compute the importance of a neuron via ablation.
+//
+// Importance is measured as the L2 norm of the change in downstream
+// activations when the neuron is replaced with a baseline value.
+//
+// For a simple vector of activations, this computes:
+//   importance = ||activations_original - activations_ablated||
+//
+// which is the absolute difference at the ablated position (since
+// other positions remain unchanged).
+//
+// Arguments:
+//   activations - handle to vec of f64-as-bits activation values
+//   neuron      - index of the neuron to measure importance of
+//   baseline    - baseline replacement value (f64-as-bits), typically 0
+//
+// Returns: importance score (f64-as-bits)
+fn neuron_importance(activations: i64, neuron: i64, baseline: i64) -> i64 {
+    let n: i64 = vec_len(activations);
+    if neuron < 0 { return f64_to_bits(0.0); }
+    if neuron >= n { return f64_to_bits(0.0); }
+
+    let original_val: f64 = bits_to_f64(vec_get(activations, neuron));
+    let baseline_val: f64 = bits_to_f64(baseline);
+    let diff: f64 = interp_abs(original_val - baseline_val);
+
+    f64_to_bits(diff)
+}
+
+// =============================================================================
+// Extended Activation Analysis
+// =============================================================================
+
+// Compute the top-k most active neurons by mean activation.
+//
+// Arguments:
+//   records - handle to vec of ActivationRecord handles
+//   k       - number of top neurons to return
+//
+// Returns: handle to vec of [neuron_index, mean_value_bits] pairs
+fn activation_top_k(records: i64, k: i64) -> i64 {
+    let means: i64 = activation_mean(records);
+    let n: i64 = vec_len(means);
+
+    // Create index-value pairs and selection-sort the top k
+    let used = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(used, 0);  // not yet selected
+        i = i + 1;
+    }
+
+    let result = vec_new();
+    var found: i64 = 0;
+    while found < k {
+        if found >= n { break; }
+
+        var best_idx: i64 = 0 - 1;
+        var best_val: f64 = 0.0 - 999999999.0;
+
+        i = 0;
+        while i < n {
+            if vec_get(used, i) == 0 {
+                let val: f64 = bits_to_f64(vec_get(means, i));
+                if best_idx < 0 {
+                    best_idx = i;
+                    best_val = val;
+                } else {
+                    if val > best_val {
+                        best_idx = i;
+                        best_val = val;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+
+        if best_idx >= 0 {
+            vec_set(used, best_idx, 1);
+            let pair = vec_new();
+            vec_push(pair, best_idx);
+            vec_push(pair, f64_to_bits(best_val));
+            vec_push(result, pair);
+        }
+        found = found + 1;
+    }
+
+    result
+}
+
+// Compute activation histogram (binned distribution) for a single neuron.
+//
+// Arguments:
+//   records    - handle to vec of ActivationRecord handles
+//   neuron_idx - index of the neuron to analyze
+//   n_bins     - number of histogram bins
+//
+// Returns: handle to vec containing [min_bits, max_bits, bin_counts_vec]
+fn activation_histogram(records: i64, neuron_idx: i64, n_bins: i64) -> i64 {
+    let n_records: i64 = vec_len(records);
+    if n_records == 0 {
+        let empty = vec_new();
+        vec_push(empty, f64_to_bits(0.0));
+        vec_push(empty, f64_to_bits(0.0));
+        vec_push(empty, vec_new());
+        return empty;
+    }
+
+    // Collect all values for this neuron
+    var min_val: f64 = 0.0;
+    var max_val: f64 = 0.0;
+    var first: i64 = 1;
+
+    var r: i64 = 0;
+    while r < n_records {
+        let rec: i64 = vec_get(records, r);
+        let vals: i64 = vec_get(rec, AR_VALUES());
+        let val: f64 = bits_to_f64(vec_get(vals, neuron_idx));
+        if first == 1 {
+            min_val = val;
+            max_val = val;
+            first = 0;
+        } else {
+            if val < min_val { min_val = val; }
+            if val > max_val { max_val = val; }
+        }
+        r = r + 1;
+    }
+
+    // Build bins
+    let bins = vec_new();
+    var b: i64 = 0;
+    while b < n_bins {
+        vec_push(bins, 0);
+        b = b + 1;
+    }
+
+    let range: f64 = max_val - min_val;
+    var bin_width: f64 = range / (n_bins as f64);
+    if bin_width < 0.000000001 { bin_width = 1.0; }
+
+    r = 0;
+    while r < n_records {
+        let rec: i64 = vec_get(records, r);
+        let vals: i64 = vec_get(rec, AR_VALUES());
+        let val: f64 = bits_to_f64(vec_get(vals, neuron_idx));
+        var bin_idx: i64 = ((val - min_val) / bin_width) as i64;
+        if bin_idx >= n_bins { bin_idx = n_bins - 1; }
+        if bin_idx < 0 { bin_idx = 0; }
+        let count: i64 = vec_get(bins, bin_idx);
+        vec_set(bins, bin_idx, count + 1);
+        r = r + 1;
+    }
+
+    let result = vec_new();
+    vec_push(result, f64_to_bits(min_val));
+    vec_push(result, f64_to_bits(max_val));
+    vec_push(result, bins);
+    result
+}
+
+// =============================================================================
+// Extended Feature Attribution
+// =============================================================================
+
+// Compute DeepLIFT-style attribution (difference from reference).
+//
+// attribution_i = (input_i - reference_i) * (output - reference_output) / sum_j |input_j - reference_j|
+//
+// Arguments:
+//   input            - handle to vec of f64-as-bits
+//   reference        - handle to vec of f64-as-bits (reference input)
+//   output_diff      - scalar output difference (f64-as-bits)
+//
+// Returns: handle to vec of f64-as-bits attributions
+fn deeplift_attribution(input: i64, reference: i64, output_diff: i64) -> i64 {
+    let n: i64 = vec_len(input);
+    let out_diff: f64 = bits_to_f64(output_diff);
+
+    // Compute total absolute difference
+    var total_diff: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let inp: f64 = bits_to_f64(vec_get(input, i));
+        let ref_val: f64 = bits_to_f64(vec_get(reference, i));
+        total_diff = total_diff + interp_abs(inp - ref_val);
+        i = i + 1;
+    }
+
+    if total_diff < 0.000000001 {
+        total_diff = 0.000000001;
+    }
+
+    let result = vec_new();
+    i = 0;
+    while i < n {
+        let inp: f64 = bits_to_f64(vec_get(input, i));
+        let ref_val: f64 = bits_to_f64(vec_get(reference, i));
+        let contribution: f64 = (inp - ref_val) * out_diff / total_diff;
+        vec_push(result, f64_to_bits(contribution));
+        i = i + 1;
+    }
+
+    result
+}
+
+// Compute feature interaction scores between pairs of features.
+//
+// Uses second-order attribution: interaction(i,j) = attribution(i+j) - attribution(i) - attribution(j)
+// Requires three attribution vectors:
+//   - combined: attribution when both features i,j are present
+//   - separate_i: attribution with only feature i
+//   - separate_j: attribution with only feature j
+//
+// For a simpler approach, compute pairwise covariance of attribution vectors.
+//
+// Arguments:
+//   attributions_vec - handle to vec of attribution vec handles (one per example)
+//
+// Returns: handle to vec of pairwise interaction scores (flat upper triangle, f64-as-bits)
+fn feature_interactions(attributions_vec: i64) -> i64 {
+    let n_examples: i64 = vec_len(attributions_vec);
+    if n_examples == 0 {
+        return vec_new();
+    }
+
+    let first: i64 = vec_get(attributions_vec, 0);
+    let n_features: i64 = vec_len(first);
+
+    // Compute means of each feature's attribution
+    let means = vec_new();
+    var f: i64 = 0;
+    while f < n_features {
+        var sum: f64 = 0.0;
+        var ex: i64 = 0;
+        while ex < n_examples {
+            let attrs: i64 = vec_get(attributions_vec, ex);
+            sum = sum + bits_to_f64(vec_get(attrs, f));
+            ex = ex + 1;
+        }
+        vec_push(means, f64_to_bits(sum / (n_examples as f64)));
+        f = f + 1;
+    }
+
+    // Compute pairwise covariance (upper triangle)
+    let interactions = vec_new();
+    var fi: i64 = 0;
+    while fi < n_features {
+        var fj: i64 = fi + 1;
+        while fj < n_features {
+            var cov: f64 = 0.0;
+            var ex2: i64 = 0;
+            while ex2 < n_examples {
+                let attrs: i64 = vec_get(attributions_vec, ex2);
+                let ai: f64 = bits_to_f64(vec_get(attrs, fi)) - bits_to_f64(vec_get(means, fi));
+                let aj: f64 = bits_to_f64(vec_get(attrs, fj)) - bits_to_f64(vec_get(means, fj));
+                cov = cov + ai * aj;
+                ex2 = ex2 + 1;
+            }
+            cov = cov / (n_examples as f64);
+            vec_push(interactions, f64_to_bits(cov));
+            fj = fj + 1;
+        }
+        fi = fi + 1;
+    }
+
+    interactions
+}
+
+// =============================================================================
+// Extended Circuit Analysis
+// =============================================================================
+
+// Perform multi-neuron ablation: ablate multiple neurons simultaneously.
+//
+// Arguments:
+//   activations  - handle to vec of f64-as-bits
+//   neurons      - handle to vec of neuron indices to ablate
+//   replacement  - replacement value (f64-as-bits)
+//
+// Returns: handle to AblationResult vec
+fn multi_ablation(activations: i64, neurons: i64, replacement: i64) -> i64 {
+    let n: i64 = vec_len(activations);
+    let n_ablate: i64 = vec_len(neurons);
+
+    // Copy original
+    let original = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(original, vec_get(activations, i));
+        i = i + 1;
+    }
+
+    // Create modified version
+    let modified = vec_new();
+    i = 0;
+    while i < n {
+        // Check if this neuron should be ablated
+        var should_ablate: i64 = 0;
+        var k: i64 = 0;
+        while k < n_ablate {
+            if vec_get(neurons, k) == i {
+                should_ablate = 1;
+                break;
+            }
+            k = k + 1;
+        }
+
+        if should_ablate == 1 {
+            vec_push(modified, replacement);
+        } else {
+            vec_push(modified, vec_get(activations, i));
+        }
+        i = i + 1;
+    }
+
+    // Compute L2 norm of difference
+    var delta_sq: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let orig_val: f64 = bits_to_f64(vec_get(original, i));
+        let mod_val: f64 = bits_to_f64(vec_get(modified, i));
+        let diff: f64 = orig_val - mod_val;
+        delta_sq = delta_sq + diff * diff;
+        i = i + 1;
+    }
+
+    let result = vec_new();
+    vec_push(result, original);
+    vec_push(result, modified);
+    vec_push(result, 0 - 1);  // multi-neuron, no single index
+    vec_push(result, f64_to_bits(interp_sqrt(delta_sq)));
+    result
+}
+
+// Rank all neurons by importance using iterative ablation.
+//
+// For each neuron, ablates it individually and measures the change
+// in the L2 norm of the activation vector. Returns neurons sorted
+// by importance (most important first).
+//
+// Arguments:
+//   activations - handle to vec of f64-as-bits
+//   baseline    - replacement value for ablation (f64-as-bits)
+//
+// Returns: handle to vec of [neuron_index, importance_bits] pairs
+fn neuron_importance_ranking(activations: i64, baseline: i64) -> i64 {
+    let n: i64 = vec_len(activations);
+
+    // Compute importance for each neuron
+    let importances = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let imp_bits: i64 = neuron_importance(activations, i, baseline);
+        let pair = vec_new();
+        vec_push(pair, i);
+        vec_push(pair, imp_bits);
+        vec_push(importances, pair);
+        i = i + 1;
+    }
+
+    // Sort by importance (descending) using selection sort
+    let n_pairs: i64 = vec_len(importances);
+    var si: i64 = 0;
+    while si < n_pairs {
+        var max_idx: i64 = si;
+        var max_imp: f64 = bits_to_f64(vec_get(vec_get(importances, si), 1));
+        var sj: i64 = si + 1;
+        while sj < n_pairs {
+            let imp: f64 = bits_to_f64(vec_get(vec_get(importances, sj), 1));
+            if imp > max_imp {
+                max_imp = imp;
+                max_idx = sj;
+            }
+            sj = sj + 1;
+        }
+        if max_idx != si {
+            // Swap
+            let tmp: i64 = vec_get(importances, si);
+            vec_set(importances, si, vec_get(importances, max_idx));
+            vec_set(importances, max_idx, tmp);
+        }
+        si = si + 1;
+    }
+
+    importances
+}
+
+// =============================================================================
+// Extended Probing
+// =============================================================================
+
+// Compute per-class accuracy for the linear probe.
+//
+// Arguments:
+//   probe       - handle to LinearProbe vec
+//   activations - handle to vec of activation vec handles
+//   labels      - handle to vec of label indices
+//   n_classes   - total number of classes
+//
+// Returns: handle to vec of per-class accuracy (f64-as-bits)
+fn linear_probe_per_class_accuracy(probe: i64, activations: i64, labels: i64, n_classes: i64) -> i64 {
+    let n: i64 = vec_len(activations);
+
+    let correct_per_class = vec_new();
+    let total_per_class = vec_new();
+    var c: i64 = 0;
+    while c < n_classes {
+        vec_push(correct_per_class, 0);
+        vec_push(total_per_class, 0);
+        c = c + 1;
+    }
+
+    var i: i64 = 0;
+    while i < n {
+        let act: i64 = vec_get(activations, i);
+        let label: i64 = vec_get(labels, i);
+        let logits: i64 = linear_probe_forward(probe, act);
+
+        // argmax
+        var best: i64 = 0;
+        var best_s: f64 = bits_to_f64(vec_get(logits, 0));
+        c = 1;
+        while c < n_classes {
+            let s: f64 = bits_to_f64(vec_get(logits, c));
+            if s > best_s {
+                best_s = s;
+                best = c;
+            }
+            c = c + 1;
+        }
+
+        vec_set(total_per_class, label, vec_get(total_per_class, label) + 1);
+        if best == label {
+            vec_set(correct_per_class, label, vec_get(correct_per_class, label) + 1);
+        }
+        i = i + 1;
+    }
+
+    let result = vec_new();
+    c = 0;
+    while c < n_classes {
+        let total: i64 = vec_get(total_per_class, c);
+        if total > 0 {
+            let acc: f64 = (vec_get(correct_per_class, c) as f64) / (total as f64);
+            vec_push(result, f64_to_bits(acc));
+        } else {
+            vec_push(result, f64_to_bits(0.0));
+        }
+        c = c + 1;
+    }
+
+    result
+}
+
+// Compute confusion matrix for the linear probe.
+//
+// Arguments:
+//   probe       - handle to LinearProbe vec
+//   activations - handle to vec of activation vec handles
+//   labels      - handle to vec of label indices
+//   n_classes   - total number of classes
+//
+// Returns: handle to flat vec of i64 counts (n_classes * n_classes)
+//          confusion[true_class * n_classes + predicted_class] = count
+fn linear_probe_confusion_matrix(probe: i64, activations: i64, labels: i64, n_classes: i64) -> i64 {
+    let n: i64 = vec_len(activations);
+    let matrix = vec_new();
+    let total: i64 = n_classes * n_classes;
+
+    var idx: i64 = 0;
+    while idx < total {
+        vec_push(matrix, 0);
+        idx = idx + 1;
+    }
+
+    var i: i64 = 0;
+    while i < n {
+        let act: i64 = vec_get(activations, i);
+        let label: i64 = vec_get(labels, i);
+        let logits: i64 = linear_probe_forward(probe, act);
+
+        var best: i64 = 0;
+        var best_s: f64 = bits_to_f64(vec_get(logits, 0));
+        var c: i64 = 1;
+        while c < n_classes {
+            let s: f64 = bits_to_f64(vec_get(logits, c));
+            if s > best_s {
+                best_s = s;
+                best = c;
+            }
+            c = c + 1;
+        }
+
+        let cell: i64 = label * n_classes + best;
+        vec_set(matrix, cell, vec_get(matrix, cell) + 1);
+        i = i + 1;
+    }
+
+    matrix
+}
+
+// =============================================================================
+// Utilities
+// =============================================================================
+
+// Approximate natural log using range reduction and polynomial.
+// ln(x) = ln(m * 2^k) = ln(m) + k * ln(2)
+// where m is in [0.5, 1.0).
+fn interp_ln(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 - 30.0; }
+
+    let ln2: f64 = 0.6931471805599453;
+    var m: f64 = x;
+    var k: i64 = 0;
+
+    while m >= 1.0 {
+        m = m / 2.0;
+        k = k + 1;
+    }
+    while m < 0.5 {
+        m = m * 2.0;
+        k = k - 1;
+    }
+
+    // 0.5 <= m < 1.0
+    // ln(m) ~ 2*t*(1 + t^2/3 + t^4/5) where t = (m-1)/(m+1)
+    let t: f64 = (m - 1.0) / (m + 1.0);
+    let t2: f64 = t * t;
+    let ln_m: f64 = 2.0 * t * (1.0 + t2 / 3.0 + t2 * t2 / 5.0);
+
+    ln_m + (k as f64) * ln2
+}
+
+// Compute cosine similarity between two activation vectors.
+//
+// Arguments:
+//   a - handle to vec of f64-as-bits
+//   b - handle to vec of f64-as-bits
+//
+// Returns: cosine similarity (f64-as-bits), in [-1, 1]
+fn activation_cosine_similarity(a: i64, b: i64) -> i64 {
+    let n: i64 = vec_len(a);
+    let m: i64 = vec_len(b);
+    var length: i64 = n;
+    if m < length { length = m; }
+
+    var dot: f64 = 0.0;
+    var norm_a: f64 = 0.0;
+    var norm_b: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < length {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        dot = dot + va * vb;
+        norm_a = norm_a + va * va;
+        norm_b = norm_b + vb * vb;
+        i = i + 1;
+    }
+
+    let na: f64 = interp_sqrt(norm_a);
+    let nb: f64 = interp_sqrt(norm_b);
+    let denom: f64 = na * nb;
+
+    if denom < 0.000000001 {
+        return f64_to_bits(0.0);
+    }
+
+    f64_to_bits(dot / denom)
+}
+
+// Compute L2 distance between two activation vectors.
+//
+// Arguments:
+//   a - handle to vec of f64-as-bits
+//   b - handle to vec of f64-as-bits
+//
+// Returns: L2 distance (f64-as-bits)
+fn activation_l2_distance(a: i64, b: i64) -> i64 {
+    let n: i64 = vec_len(a);
+    let m: i64 = vec_len(b);
+    var length: i64 = n;
+    if m < length { length = m; }
+
+    var sum_sq: f64 = 0.0;
+    var i: i64 = 0;
+    while i < length {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        let diff: f64 = va - vb;
+        sum_sq = sum_sq + diff * diff;
+        i = i + 1;
+    }
+
+    f64_to_bits(interp_sqrt(sum_sq))
+}
+
+// Compute activation sparsity (fraction of near-zero activations).
+//
+// Arguments:
+//   activations - handle to vec of f64-as-bits
+//   threshold   - threshold for "near zero" (f64-as-bits)
+//
+// Returns: sparsity ratio (f64-as-bits), 0.0 = all active, 1.0 = all zero
+fn activation_sparsity(activations: i64, threshold: i64) -> i64 {
+    let n: i64 = vec_len(activations);
+    if n == 0 { return f64_to_bits(0.0); }
+
+    let thresh: f64 = bits_to_f64(threshold);
+    var zero_count: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(activations, i));
+        if interp_abs(val) < thresh {
+            zero_count = zero_count + 1;
+        }
+        i = i + 1;
+    }
+
+    f64_to_bits((zero_count as f64) / (n as f64))
+}
+
+// =============================================================================
+// Smoke test
+// =============================================================================
+

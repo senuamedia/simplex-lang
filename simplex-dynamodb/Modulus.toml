@@ -1,0 +1,23 @@
+# simplex-dynamodb - Amazon DynamoDB Client Library
+#
+# Pure Simplex implementation of Amazon DynamoDB client.
+# Uses AWS HTTP/JSON API with Signature V4 signing.
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-dynamodb"
+version = "0.17.0"
+description = "Amazon DynamoDB NoSQL database client for Simplex"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+simplex-aws = { path = "../simplex-aws" }
+
+[features]
+default = ["full"]
+full = []          # Full DynamoDB API support

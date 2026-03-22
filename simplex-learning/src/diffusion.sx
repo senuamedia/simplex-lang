@@ -1,0 +1,1053 @@
+// simplex-learning::diffusion - Diffusion Language Generation
+//
+// Implements discrete diffusion models for text generation. Unlike autoregressive
+// models that generate tokens left-to-right, diffusion models start from a
+// fully masked sequence and iteratively unmask tokens based on predicted
+// confidence, enabling parallel and non-monotonic generation.
+//
+// The forward process gradually corrupts clean text by randomly masking tokens.
+// The reverse (denoising) process learns to predict original tokens from
+// partially masked inputs. At inference time, we start from all-[MASK] and
+// iteratively reveal the most confident predictions.
+//
+// # Data Layout (vec handles)
+//
+// All floating-point values stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set.
+//
+// Config vec:    [vocab_size, seq_len, n_steps, mask_token_id]
+// Token vec:    vec of i64 token IDs
+// Logits vec:   vec of n_tokens * vocab_size f64_bits values
+//               logits[i * vocab_size + j] = log-probability of token j at position i
+// Mask vec:     vec of i64 (1 = masked, 0 = not masked)
+//
+// # References
+//
+// Austin et al. "Structured Denoising Diffusion Models in Discrete State-Spaces" (2021)
+// He et al. "Diffusion Models for Non-Autoregressive Text Generation" (2022)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Config field indices
+// =============================================================================
+
+fn DIFF_VOCAB_SIZE() -> i64 { 0 }
+fn DIFF_SEQ_LEN() -> i64 { 1 }
+fn DIFF_N_STEPS() -> i64 { 2 }
+fn DIFF_MASK_TOKEN() -> i64 { 3 }
+
+// =============================================================================
+// Pseudo-random number generation
+// =============================================================================
+
+fn diff_lcg_next(state: i64) -> i64 {
+    let a: i64 = 6364136223846793005;
+    let c: i64 = 1442695040888963407;
+    state * a + c
+}
+
+fn diff_abs_i64(x: i64) -> i64 {
+    if x < 0 { 0 - x } else { x }
+}
+
+// =============================================================================
+// Math helpers
+// =============================================================================
+
+fn diff_exp(x: f64) -> f64 {
+    var arg: f64 = x;
+    if arg > 20.0 { arg = 20.0; }
+    if arg < 0.0 - 20.0 { arg = 0.0 - 20.0; }
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 30 {
+        term = term * arg / (i as f64);
+        result = result + term;
+        i = i + 1;
+    }
+    result
+}
+
+fn diff_ln(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 - 30.0; }
+    let ln2: f64 = 0.6931471805599453;
+    var m: f64 = x;
+    var k: i64 = 0;
+    while m >= 1.0 {
+        m = m / 2.0;
+        k = k + 1;
+    }
+    while m < 0.5 {
+        m = m * 2.0;
+        k = k - 1;
+    }
+    let t: f64 = (m - 1.0) / (m + 1.0);
+    let t2: f64 = t * t;
+    let ln_m: f64 = 2.0 * t * (1.0 + t2 / 3.0 + t2 * t2 / 5.0);
+    ln_m + (k as f64) * ln2
+}
+
+fn diff_cos(x: f64) -> f64 {
+    // Cosine via Taylor series
+    var arg: f64 = x;
+    // Reduce to [-pi, pi] roughly
+    let two_pi: f64 = 6.283185307179586;
+    while arg > 3.14159265 { arg = arg - two_pi; }
+    while arg < 0.0 - 3.14159265 { arg = arg + two_pi; }
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 15 {
+        term = 0.0 - term * arg * arg / ((2 * i - 1) as f64) / ((2 * i) as f64);
+        result = result + term;
+        i = i + 1;
+    }
+    result
+}
+
+fn diff_abs(x: f64) -> f64 {
+    if x < 0.0 { 0.0 - x } else { x }
+}
+
+fn diff_max_f64(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
+
+// =============================================================================
+// Diffusion Config
+// =============================================================================
+
+/// Create a diffusion model configuration.
+///
+/// Arguments:
+///   vocab_size - vocabulary size (number of distinct tokens)
+///   seq_len    - maximum sequence length
+///   n_steps    - number of diffusion steps T
+///
+/// Returns: handle to config vec.
+fn diffusion_new(vocab_size: i64, seq_len: i64, n_steps: i64) -> i64 {
+    let config: i64 = vec_new();
+    vec_push(config, vocab_size);          // [0]
+    vec_push(config, seq_len);             // [1]
+    vec_push(config, n_steps);             // [2]
+    vec_push(config, vocab_size - 1);      // [3] mask_token = last vocab ID
+    config
+}
+
+/// Get the mask token ID for this config.
+fn diffusion_mask_token(config: i64) -> i64 {
+    vec_get(config, DIFF_MASK_TOKEN())
+}
+
+/// Set a custom mask token ID.
+fn diffusion_set_mask_token(config: i64, mask_id: i64) -> i64 {
+    vec_set(config, DIFF_MASK_TOKEN(), mask_id);
+    0
+}
+
+// =============================================================================
+// Noise Schedule
+// =============================================================================
+
+/// Cosine noise schedule: alpha(t) = cos(pi * t / (2*T))^2
+/// At t=0: alpha=1 (no noise). At t=T: alpha=0 (fully masked).
+/// The mask probability at step t is 1 - alpha(t).
+/// Returns f64_bits.
+fn diffusion_noise_schedule(config: i64, t: i64) -> i64 {
+    let n_steps: i64 = vec_get(config, DIFF_N_STEPS());
+    if n_steps <= 0 { return f64_to_bits(0.0); }
+    // alpha(t) = cos(pi * t / (2*T))^2
+    let pi: f64 = 3.141592653589793;
+    let t_f: f64 = bits_to_f64(f64_to_bits(t));
+    let T_f: f64 = bits_to_f64(f64_to_bits(n_steps));
+    let angle: f64 = pi * t_f / (2.0 * T_f);
+    let c: f64 = diff_cos(angle);
+    let alpha: f64 = c * c;
+    f64_to_bits(alpha)
+}
+
+/// Linear noise schedule: alpha(t) = 1 - t/T
+fn diffusion_noise_schedule_linear(config: i64, t: i64) -> i64 {
+    let n_steps: i64 = vec_get(config, DIFF_N_STEPS());
+    if n_steps <= 0 { return f64_to_bits(0.0); }
+    let t_f: f64 = bits_to_f64(f64_to_bits(t));
+    let T_f: f64 = bits_to_f64(f64_to_bits(n_steps));
+    let alpha: f64 = 1.0 - t_f / T_f;
+    f64_to_bits(alpha)
+}
+
+/// Mask probability at step t: beta(t) = 1 - alpha(t).
+fn diffusion_mask_prob(config: i64, t: i64) -> i64 {
+    let alpha_bits: i64 = diffusion_noise_schedule(config, t);
+    let alpha: f64 = bits_to_f64(alpha_bits);
+    f64_to_bits(1.0 - alpha)
+}
+
+// =============================================================================
+// Forward Process (Noising)
+// =============================================================================
+
+/// Forward diffusion: randomly mask tokens with probability proportional to t/T.
+///
+/// Arguments:
+///   config - diffusion config handle
+///   tokens - vec of i64 token IDs (length seq_len)
+///   t      - diffusion time step (0 = clean, T = fully masked)
+///   seed   - random seed
+///
+/// Returns: handle to vec of noised token IDs.
+fn diffusion_forward(config: i64, tokens: i64, t: i64, seed: i64) -> i64 {
+    let n_tokens: i64 = vec_len(tokens);
+    let mask_token: i64 = vec_get(config, DIFF_MASK_TOKEN());
+    let mask_prob_bits: i64 = diffusion_mask_prob(config, t);
+    let mask_prob: f64 = bits_to_f64(mask_prob_bits);
+
+    // mask_prob as integer threshold out of 1000
+    var threshold: i64 = 0;
+    if mask_prob > 0.0 {
+        // Convert to per-mille
+        threshold = (mask_prob * 1000.0) as i64;
+        if threshold > 1000 { threshold = 1000; }
+    }
+
+    let result: i64 = vec_new();
+    var state: i64 = seed;
+    var i: i64 = 0;
+    while i < n_tokens {
+        state = diff_lcg_next(state);
+        let r: i64 = diff_abs_i64(state) % 1000;
+        if r < threshold {
+            vec_push(result, mask_token);
+        } else {
+            vec_push(result, vec_get(tokens, i));
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Create a fully masked sequence of given length.
+fn diffusion_full_mask(config: i64, length: i64) -> i64 {
+    let mask_token: i64 = vec_get(config, DIFF_MASK_TOKEN());
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < length {
+        vec_push(result, mask_token);
+        i = i + 1;
+    }
+    result
+}
+
+/// Create a mask vector from tokens (1 where token == mask_token, else 0).
+fn diffusion_get_mask(config: i64, tokens: i64) -> i64 {
+    let n: i64 = vec_len(tokens);
+    let mask_token: i64 = vec_get(config, DIFF_MASK_TOKEN());
+    let mask: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        if vec_get(tokens, i) == mask_token {
+            vec_push(mask, 1);
+        } else {
+            vec_push(mask, 0);
+        }
+        i = i + 1;
+    }
+    mask
+}
+
+/// Count the number of masked positions.
+fn diffusion_mask_count(tokens: i64, mask_token: i64) -> i64 {
+    let n: i64 = vec_len(tokens);
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        if vec_get(tokens, i) == mask_token {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+// =============================================================================
+// Masking Strategies
+// =============================================================================
+
+/// Random masking: replace tokens with mask_token at given ratio.
+///
+/// Arguments:
+///   tokens     - vec of i64 token IDs
+///   n_tokens   - number of tokens
+///   mask_ratio - ratio as f64_bits (e.g., 0.5 = mask 50%)
+///   mask_token - the mask token ID
+///   seed       - random seed
+///
+/// Returns: handle to vec of masked token IDs.
+fn mask_random(tokens: i64, n_tokens: i64, mask_ratio: i64, mask_token: i64, seed: i64) -> i64 {
+    let ratio: f64 = bits_to_f64(mask_ratio);
+    let threshold: i64 = (ratio * 1000.0) as i64;
+
+    let result: i64 = vec_new();
+    var state: i64 = seed;
+    var i: i64 = 0;
+    while i < n_tokens {
+        state = diff_lcg_next(state);
+        let r: i64 = diff_abs_i64(state) % 1000;
+        if r < threshold {
+            vec_push(result, mask_token);
+        } else {
+            vec_push(result, vec_get(tokens, i));
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Span masking: mask a contiguous span of tokens starting at a random position.
+///
+/// Arguments:
+///   tokens     - vec of i64 token IDs
+///   n_tokens   - number of tokens
+///   span_len   - length of span to mask
+///   mask_token - the mask token ID
+///   seed       - random seed
+///
+/// Returns: handle to vec of masked token IDs.
+fn mask_span(tokens: i64, n_tokens: i64, span_len: i64, mask_token: i64, seed: i64) -> i64 {
+    let result: i64 = vec_new();
+
+    // Pick random start position
+    var start: i64 = 0;
+    if n_tokens > span_len {
+        let state: i64 = diff_lcg_next(seed);
+        start = diff_abs_i64(state) % (n_tokens - span_len + 1);
+    }
+    let end: i64 = start + span_len;
+
+    var i: i64 = 0;
+    while i < n_tokens {
+        if i >= start {
+            if i < end {
+                vec_push(result, mask_token);
+            } else {
+                vec_push(result, vec_get(tokens, i));
+            }
+        } else {
+            vec_push(result, vec_get(tokens, i));
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Block masking: mask multiple random blocks of tokens.
+fn mask_blocks(tokens: i64, n_tokens: i64, n_blocks: i64, block_size: i64, mask_token: i64, seed: i64) -> i64 {
+    // Start with a copy
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_tokens {
+        vec_push(result, vec_get(tokens, i));
+        i = i + 1;
+    }
+
+    // Mask each block
+    var state: i64 = seed;
+    var b: i64 = 0;
+    while b < n_blocks {
+        state = diff_lcg_next(state);
+        var start: i64 = 0;
+        if n_tokens > block_size {
+            start = diff_abs_i64(state) % (n_tokens - block_size + 1);
+        }
+        var j: i64 = start;
+        while j < start + block_size {
+            if j < n_tokens {
+                vec_set(result, j, mask_token);
+            }
+            j = j + 1;
+        }
+        state = diff_lcg_next(state);
+        b = b + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Argmax and Sampling Utilities
+// =============================================================================
+
+/// Argmax over a logit vector of length n (f64_bits values).
+/// Returns the index of the maximum value.
+fn argmax_vec(logits: i64, n: i64) -> i64 {
+    if n <= 0 { return 0; }
+    var best_idx: i64 = 0;
+    var best_val: f64 = bits_to_f64(vec_get(logits, 0));
+    var i: i64 = 1;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(logits, i));
+        if val > best_val {
+            best_val = val;
+            best_idx = i;
+        }
+        i = i + 1;
+    }
+    best_idx
+}
+
+/// Get the maximum value in a logit vector.
+fn max_vec(logits: i64, n: i64) -> i64 {
+    if n <= 0 { return f64_to_bits(0.0); }
+    var best: f64 = bits_to_f64(vec_get(logits, 0));
+    var i: i64 = 1;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(logits, i));
+        if val > best {
+            best = val;
+        }
+        i = i + 1;
+    }
+    f64_to_bits(best)
+}
+
+/// Scale logits by temperature (divide each by temp).
+/// Returns a new vec of f64_bits values.
+fn temperature_scale(logits: i64, n: i64, temp: i64) -> i64 {
+    let t: f64 = bits_to_f64(temp);
+    if t < 0.0001 { return logits; }  // avoid division by zero
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(logits, i));
+        vec_push(result, f64_to_bits(val / t));
+        i = i + 1;
+    }
+    result
+}
+
+/// Softmax over a logit vector.
+/// Returns a new vec of f64_bits probability values.
+fn diffusion_softmax(logits: i64, n: i64) -> i64 {
+    if n <= 0 {
+        return vec_new();
+    }
+    // Find max for numerical stability
+    var max_val: f64 = bits_to_f64(vec_get(logits, 0));
+    var i: i64 = 1;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    // Compute exp(x - max) and sum
+    let exps: i64 = vec_new();
+    var sum: f64 = 0.0;
+    var j: i64 = 0;
+    while j < n {
+        let e: f64 = diff_exp(bits_to_f64(vec_get(logits, j)) - max_val);
+        vec_push(exps, f64_to_bits(e));
+        sum = sum + e;
+        j = j + 1;
+    }
+
+    // Normalize
+    let result: i64 = vec_new();
+    if sum < 0.0000001 { sum = 0.0000001; }
+    var k: i64 = 0;
+    while k < n {
+        let p: f64 = bits_to_f64(vec_get(exps, k)) / sum;
+        vec_push(result, f64_to_bits(p));
+        k = k + 1;
+    }
+    result
+}
+
+/// Nucleus (top-p) sampling from logits.
+/// Selects from the smallest set of tokens whose cumulative probability >= p.
+///
+/// Arguments:
+///   logits - vec of f64_bits logit values
+///   n      - number of logit entries
+///   p      - nucleus threshold as f64_bits (e.g., 0.9)
+///   seed   - random seed
+///
+/// Returns: selected token index.
+fn top_p_sample(logits: i64, n: i64, p: i64, seed: i64) -> i64 {
+    let p_val: f64 = bits_to_f64(p);
+
+    // Compute softmax probabilities
+    let probs: i64 = diffusion_softmax(logits, n);
+
+    // Sort indices by probability (descending) - simple selection
+    let sorted_indices: i64 = vec_new();
+    let used: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(sorted_indices, 0);
+        vec_push(used, 0);
+        i = i + 1;
+    }
+
+    // Selection sort to get sorted indices
+    var si: i64 = 0;
+    while si < n {
+        var best_idx: i64 = 0;
+        var best_prob: f64 = 0.0 - 1.0;
+        var j: i64 = 0;
+        while j < n {
+            if vec_get(used, j) == 0 {
+                let pj: f64 = bits_to_f64(vec_get(probs, j));
+                if pj > best_prob {
+                    best_prob = pj;
+                    best_idx = j;
+                }
+            }
+            j = j + 1;
+        }
+        vec_set(sorted_indices, si, best_idx);
+        vec_set(used, best_idx, 1);
+        si = si + 1;
+    }
+
+    // Find the nucleus: smallest set with cumulative prob >= p
+    var cumulative: f64 = 0.0;
+    var nucleus_size: i64 = 0;
+    var k: i64 = 0;
+    while k < n {
+        let idx: i64 = vec_get(sorted_indices, k);
+        cumulative = cumulative + bits_to_f64(vec_get(probs, idx));
+        nucleus_size = nucleus_size + 1;
+        if cumulative >= p_val {
+            k = n; // break
+        }
+        k = k + 1;
+    }
+
+    if nucleus_size <= 0 { nucleus_size = 1; }
+
+    // Sample uniformly from the nucleus
+    let state: i64 = diff_lcg_next(seed);
+    let sample_idx: i64 = diff_abs_i64(state) % nucleus_size;
+    vec_get(sorted_indices, sample_idx)
+}
+
+/// Top-k sampling: sample from the k tokens with highest logits.
+fn top_k_sample(logits: i64, n: i64, k: i64, seed: i64) -> i64 {
+    // Find top-k indices
+    let top_indices: i64 = vec_new();
+    let used: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(used, 0);
+        i = i + 1;
+    }
+
+    var ki: i64 = 0;
+    let actual_k: i64 = if k > n { n } else { k };
+    while ki < actual_k {
+        var best_idx: i64 = 0;
+        var best_val: f64 = 0.0 - 999999.0;
+        var j: i64 = 0;
+        while j < n {
+            if vec_get(used, j) == 0 {
+                let v: f64 = bits_to_f64(vec_get(logits, j));
+                if v > best_val {
+                    best_val = v;
+                    best_idx = j;
+                }
+            }
+            j = j + 1;
+        }
+        vec_push(top_indices, best_idx);
+        vec_set(used, best_idx, 1);
+        ki = ki + 1;
+    }
+
+    // Sample uniformly from top-k
+    let state: i64 = diff_lcg_next(seed);
+    let sample_idx: i64 = diff_abs_i64(state) % actual_k;
+    vec_get(top_indices, sample_idx)
+}
+
+// =============================================================================
+// Denoising (Reverse Process)
+// =============================================================================
+
+/// Predict original tokens from masked input using model logits.
+/// For each position, pick the token with highest logit.
+///
+/// Arguments:
+///   config        - diffusion config handle
+///   masked_tokens - vec of token IDs (some are mask_token)
+///   model_logits  - vec of n_tokens * vocab_size f64_bits values
+///
+/// Returns: vec of predicted token IDs.
+fn diffusion_predict_tokens(config: i64, masked_tokens: i64, model_logits: i64) -> i64 {
+    let n_tokens: i64 = vec_len(masked_tokens);
+    let vocab_size: i64 = vec_get(config, DIFF_VOCAB_SIZE());
+    let mask_token: i64 = vec_get(config, DIFF_MASK_TOKEN());
+
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_tokens {
+        if vec_get(masked_tokens, i) == mask_token {
+            // This position is masked - predict from logits
+            let offset: i64 = i * vocab_size;
+            // Extract logits for this position
+            let pos_logits: i64 = vec_new();
+            var j: i64 = 0;
+            while j < vocab_size {
+                vec_push(pos_logits, vec_get(model_logits, offset + j));
+                j = j + 1;
+            }
+            let predicted: i64 = argmax_vec(pos_logits, vocab_size);
+            vec_push(result, predicted);
+        } else {
+            // Not masked - keep original
+            vec_push(result, vec_get(masked_tokens, i));
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Get the confidence (max probability) for each masked position.
+/// Returns vec of n_tokens f64_bits confidence values.
+/// Unmasked positions get confidence 1.0.
+fn diffusion_confidence(config: i64, masked_tokens: i64, model_logits: i64) -> i64 {
+    let n_tokens: i64 = vec_len(masked_tokens);
+    let vocab_size: i64 = vec_get(config, DIFF_VOCAB_SIZE());
+    let mask_token: i64 = vec_get(config, DIFF_MASK_TOKEN());
+
+    let conf: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_tokens {
+        if vec_get(masked_tokens, i) == mask_token {
+            let offset: i64 = i * vocab_size;
+            let pos_logits: i64 = vec_new();
+            var j: i64 = 0;
+            while j < vocab_size {
+                vec_push(pos_logits, vec_get(model_logits, offset + j));
+                j = j + 1;
+            }
+            let probs: i64 = diffusion_softmax(pos_logits, vocab_size);
+            // Find max probability
+            var max_p: f64 = 0.0;
+            var k: i64 = 0;
+            while k < vocab_size {
+                let p: f64 = bits_to_f64(vec_get(probs, k));
+                if p > max_p { max_p = p; }
+                k = k + 1;
+            }
+            vec_push(conf, f64_to_bits(max_p));
+        } else {
+            vec_push(conf, f64_to_bits(1.0));
+        }
+        i = i + 1;
+    }
+    conf
+}
+
+/// Unmask tokens with highest predicted confidence first.
+///
+/// Arguments:
+///   masked     - current token vec (some masked)
+///   logits     - model logits (n_tokens * vocab_size f64_bits)
+///   n_to_unmask - number of tokens to unmask this step
+///
+/// Returns: new token vec with n_to_unmask tokens unmasked.
+fn unmask_by_confidence(masked: i64, logits: i64, n_to_unmask: i64) -> i64 {
+    let n_tokens: i64 = vec_len(masked);
+    // Find the mask token by looking for the most common high-value token
+    // We need vocab_size to index logits - infer from logit count
+    // For safety, we need to know vocab_size. We'll determine it from
+    // total logits / n_tokens
+    let total_logits: i64 = vec_len(logits);
+    if n_tokens <= 0 { return masked; }
+    let vocab_size: i64 = total_logits / n_tokens;
+    if vocab_size <= 0 { return masked; }
+
+    // Identify masked positions and their confidence
+    let masked_positions: i64 = vec_new();
+    let confidences: i64 = vec_new();
+
+    // Determine mask_token: assume it's vocab_size - 1 (standard convention)
+    let mask_token: i64 = vocab_size - 1;
+
+    var i: i64 = 0;
+    while i < n_tokens {
+        if vec_get(masked, i) == mask_token {
+            vec_push(masked_positions, i);
+            // Compute confidence for this position
+            let offset: i64 = i * vocab_size;
+            let pos_logits: i64 = vec_new();
+            var j: i64 = 0;
+            while j < vocab_size {
+                vec_push(pos_logits, vec_get(logits, offset + j));
+                j = j + 1;
+            }
+            let probs: i64 = diffusion_softmax(pos_logits, vocab_size);
+            var max_p: f64 = 0.0;
+            var k: i64 = 0;
+            while k < vocab_size {
+                let p: f64 = bits_to_f64(vec_get(probs, k));
+                if p > max_p { max_p = p; }
+                k = k + 1;
+            }
+            vec_push(confidences, f64_to_bits(max_p));
+        }
+        i = i + 1;
+    }
+
+    let n_masked: i64 = vec_len(masked_positions);
+    let actual_unmask: i64 = if n_to_unmask > n_masked { n_masked } else { n_to_unmask };
+
+    // Copy the current sequence
+    let result: i64 = vec_new();
+    var ci: i64 = 0;
+    while ci < n_tokens {
+        vec_push(result, vec_get(masked, ci));
+        ci = ci + 1;
+    }
+
+    // Find and unmask the `actual_unmask` positions with highest confidence
+    let unmasked_flags: i64 = vec_new();
+    var fi: i64 = 0;
+    while fi < n_masked {
+        vec_push(unmasked_flags, 0);
+        fi = fi + 1;
+    }
+
+    var u: i64 = 0;
+    while u < actual_unmask {
+        var best_mi: i64 = 0;
+        var best_conf: f64 = 0.0 - 1.0;
+        var m: i64 = 0;
+        while m < n_masked {
+            if vec_get(unmasked_flags, m) == 0 {
+                let c: f64 = bits_to_f64(vec_get(confidences, m));
+                if c > best_conf {
+                    best_conf = c;
+                    best_mi = m;
+                }
+            }
+            m = m + 1;
+        }
+        vec_set(unmasked_flags, best_mi, 1);
+
+        // Unmask this position: predict the token
+        let pos: i64 = vec_get(masked_positions, best_mi);
+        let offset: i64 = pos * vocab_size;
+        let pos_logits: i64 = vec_new();
+        var lj: i64 = 0;
+        while lj < vocab_size {
+            vec_push(pos_logits, vec_get(logits, offset + lj));
+            lj = lj + 1;
+        }
+        let predicted: i64 = argmax_vec(pos_logits, vocab_size);
+        vec_set(result, pos, predicted);
+
+        u = u + 1;
+    }
+    result
+}
+
+/// One denoising step: unmask some tokens based on the schedule.
+///
+/// Arguments:
+///   config  - diffusion config
+///   current - current token sequence (partially masked)
+///   logits  - model logits for current input
+///   t       - current time step (counting down from T to 0)
+///   seed    - random seed
+///
+/// Returns: updated token sequence with fewer masks.
+fn diffusion_sample_step(config: i64, current: i64, logits: i64, t: i64, seed: i64) -> i64 {
+    let n_tokens: i64 = vec_len(current);
+    let n_steps: i64 = vec_get(config, DIFF_N_STEPS());
+    let mask_token: i64 = vec_get(config, DIFF_MASK_TOKEN());
+
+    // Count current masks
+    let n_masked: i64 = diffusion_mask_count(current, mask_token);
+    if n_masked == 0 { return current; }
+
+    // Determine how many to unmask this step
+    // At step t, we want mask_ratio = t/T of tokens masked
+    // So unmask enough to get from current mask count to target
+    let target_masked: i64 = n_tokens * (t - 1) / n_steps;
+    var n_to_unmask: i64 = n_masked - target_masked;
+    if n_to_unmask <= 0 { n_to_unmask = 1; }
+    if n_to_unmask > n_masked { n_to_unmask = n_masked; }
+
+    unmask_by_confidence(current, logits, n_to_unmask)
+}
+
+/// Full generation loop: start from all-masked, iteratively denoise.
+///
+/// This is a template that uses a logits function callback.
+/// Since Simplex doesn't have first-class closures in compiled mode,
+/// `logits_fn_id` is a placeholder: the caller should provide logits externally.
+///
+/// In practice, call diffusion_sample_step in a loop with model logits.
+///
+/// Arguments:
+///   config      - diffusion config
+///   logits_fn_id - (reserved) function ID for logits computation
+///   n_steps     - number of denoising steps
+///   seed        - random seed
+///
+/// Returns: handle to fully generated token sequence.
+fn diffusion_generate(config: i64, logits_fn_id: i64, n_steps: i64, seed: i64) -> i64 {
+    let seq_len: i64 = vec_get(config, DIFF_SEQ_LEN());
+    let vocab_size: i64 = vec_get(config, DIFF_VOCAB_SIZE());
+    let mask_token: i64 = vec_get(config, DIFF_MASK_TOKEN());
+
+    // Start fully masked
+    var current: i64 = diffusion_full_mask(config, seq_len);
+
+    // Generate uniform logits as placeholder (real usage would call a model)
+    // This demonstrates the structure; callers replace with real logits
+    var t: i64 = n_steps;
+    var state: i64 = seed;
+    while t > 0 {
+        // Placeholder: generate random logits
+        let logits: i64 = vec_new();
+        var i: i64 = 0;
+        while i < seq_len {
+            var j: i64 = 0;
+            while j < vocab_size {
+                state = diff_lcg_next(state);
+                let r: i64 = diff_abs_i64(state) % 100;
+                let val: f64 = bits_to_f64(f64_to_bits(r)) / 100.0;
+                vec_push(logits, f64_to_bits(val));
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+
+        current = diffusion_sample_step(config, current, logits, t, state);
+        state = diff_lcg_next(state);
+        t = t - 1;
+    }
+    current
+}
+
+// =============================================================================
+// Score Computation
+// =============================================================================
+
+/// Cross-entropy loss on masked positions only.
+///
+/// Arguments:
+///   predicted - vec of n_tokens * vocab_size f64_bits logits
+///   original  - vec of n_tokens i64 true token IDs
+///   mask      - vec of n_tokens i64 (1 = masked, 0 = not)
+///   n_tokens  - number of tokens
+///
+/// Returns: average cross-entropy loss as f64_bits.
+fn diffusion_loss(predicted: i64, original: i64, mask: i64, n_tokens: i64) -> i64 {
+    let vocab_size: i64 = vec_len(predicted) / n_tokens;
+    if vocab_size <= 0 { return f64_to_bits(0.0); }
+
+    var total_loss: f64 = 0.0;
+    var n_masked: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n_tokens {
+        if vec_get(mask, i) == 1 {
+            n_masked = n_masked + 1;
+            let true_token: i64 = vec_get(original, i);
+            let offset: i64 = i * vocab_size;
+
+            // Compute softmax for this position
+            let pos_logits: i64 = vec_new();
+            var j: i64 = 0;
+            while j < vocab_size {
+                vec_push(pos_logits, vec_get(predicted, offset + j));
+                j = j + 1;
+            }
+            let probs: i64 = diffusion_softmax(pos_logits, vocab_size);
+
+            // Cross-entropy: -log(prob of true token)
+            let true_prob: f64 = bits_to_f64(vec_get(probs, true_token));
+            let clamped: f64 = diff_max_f64(true_prob, 0.0000001);
+            total_loss = total_loss - diff_ln(clamped);
+        }
+        i = i + 1;
+    }
+
+    if n_masked == 0 { return f64_to_bits(0.0); }
+    let avg: f64 = total_loss / bits_to_f64(f64_to_bits(n_masked));
+    f64_to_bits(avg)
+}
+
+/// Accuracy on masked positions: fraction of correctly predicted tokens.
+///
+/// Arguments:
+///   predicted - vec of i64 predicted token IDs (from argmax)
+///   original  - vec of i64 true token IDs
+///   mask      - vec of i64 (1 = masked, 0 = not)
+///   n_tokens  - number of tokens
+///
+/// Returns: accuracy as f64_bits.
+fn diffusion_accuracy(predicted: i64, original: i64, mask: i64, n_tokens: i64) -> i64 {
+    var correct: i64 = 0;
+    var total: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n_tokens {
+        if vec_get(mask, i) == 1 {
+            total = total + 1;
+            if vec_get(predicted, i) == vec_get(original, i) {
+                correct = correct + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    if total == 0 { return f64_to_bits(1.0); }
+    let acc: f64 = bits_to_f64(f64_to_bits(correct)) / bits_to_f64(f64_to_bits(total));
+    f64_to_bits(acc)
+}
+
+/// Perplexity on masked positions: exp(average cross-entropy).
+fn diffusion_perplexity(predicted: i64, original: i64, mask: i64, n_tokens: i64) -> i64 {
+    let loss_bits: i64 = diffusion_loss(predicted, original, mask, n_tokens);
+    let loss: f64 = bits_to_f64(loss_bits);
+    let ppl: f64 = diff_exp(loss);
+    f64_to_bits(ppl)
+}
+
+// =============================================================================
+// Noise Estimation
+// =============================================================================
+
+/// Estimate the noise level of a partially masked sequence.
+/// Returns the fraction of masked tokens as f64_bits.
+fn diffusion_estimate_noise(tokens: i64, mask_token: i64) -> i64 {
+    let n: i64 = vec_len(tokens);
+    if n == 0 { return f64_to_bits(0.0); }
+    let n_masked: i64 = diffusion_mask_count(tokens, mask_token);
+    let frac: f64 = bits_to_f64(f64_to_bits(n_masked)) / bits_to_f64(f64_to_bits(n));
+    f64_to_bits(frac)
+}
+
+/// Infer the time step from the noise level.
+/// Inverts the cosine schedule: t = (2T/pi) * arccos(sqrt(1-noise)).
+/// Returns the estimated time step.
+fn diffusion_infer_timestep(config: i64, noise_level: i64) -> i64 {
+    let n_steps: i64 = vec_get(config, DIFF_N_STEPS());
+    let noise: f64 = bits_to_f64(noise_level);
+    // alpha = 1 - noise, t = 2T/pi * arccos(sqrt(alpha))
+    let alpha: f64 = 1.0 - noise;
+    if alpha <= 0.0 { return n_steps; }
+    if alpha >= 1.0 { return 0; }
+    // Approximate arccos(x) ~ pi/2 - x - x^3/6 for rough estimate
+    var sq: f64 = alpha;
+    // Newton's method sqrt: y = alpha, y = (y + alpha/y) / 2
+    var y: f64 = 1.0;
+    var iter: i64 = 0;
+    while iter < 10 {
+        y = (y + alpha / y) / 2.0;
+        iter = iter + 1;
+    }
+    sq = y;
+    // arccos(sq) ~ pi/2 - sq (very rough for small angles)
+    let pi: f64 = 3.141592653589793;
+    // Better: arccos(x) ~ pi/2 - (x + x^3/6 + 3x^5/40)
+    let x: f64 = sq;
+    let acos_val: f64 = pi / 2.0 - x - x * x * x / 6.0;
+    if acos_val < 0.0 { return 0; }
+    let t_est: f64 = 2.0 * bits_to_f64(f64_to_bits(n_steps)) * acos_val / pi;
+    t_est as i64
+}
+
+// =============================================================================
+// Token Copying Utilities
+// =============================================================================
+
+/// Copy a token sequence.
+fn diffusion_copy_tokens(tokens: i64) -> i64 {
+    let n: i64 = vec_len(tokens);
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(result, vec_get(tokens, i));
+        i = i + 1;
+    }
+    result
+}
+
+/// Replace masked tokens with values from another sequence.
+fn diffusion_fill_masked(masked: i64, fill: i64, mask_token: i64) -> i64 {
+    let n: i64 = vec_len(masked);
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        if vec_get(masked, i) == mask_token {
+            vec_push(result, vec_get(fill, i));
+        } else {
+            vec_push(result, vec_get(masked, i));
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Guidance and Classifier-Free Diffusion
+// =============================================================================
+
+/// Classifier-free guidance: interpolate between conditional and unconditional logits.
+/// guided = unconditional + guidance_scale * (conditional - unconditional)
+///
+/// Arguments:
+///   cond_logits   - conditional logits (n values, f64_bits)
+///   uncond_logits - unconditional logits (n values, f64_bits)
+///   n             - number of values
+///   guidance_scale - scaling factor as f64_bits
+///
+/// Returns: guided logits vec (f64_bits).
+fn diffusion_classifier_free_guidance(cond_logits: i64, uncond_logits: i64, n: i64, guidance_scale: i64) -> i64 {
+    let scale: f64 = bits_to_f64(guidance_scale);
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let c: f64 = bits_to_f64(vec_get(cond_logits, i));
+        let u: f64 = bits_to_f64(vec_get(uncond_logits, i));
+        let guided: f64 = u + scale * (c - u);
+        vec_push(result, f64_to_bits(guided));
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Diffusion Summary
+// =============================================================================
+
+/// Print summary of diffusion config.
+fn diffusion_summary(config: i64) -> i64 {
+    let vocab_size: i64 = vec_get(config, DIFF_VOCAB_SIZE());
+    let seq_len: i64 = vec_get(config, DIFF_SEQ_LEN());
+    let n_steps: i64 = vec_get(config, DIFF_N_STEPS());
+    let mask_token: i64 = vec_get(config, DIFF_MASK_TOKEN());
+
+    println("Diffusion Config Summary:");
+    print("  Vocab size: ");
+    print_i64(vocab_size);
+    println("");
+    print("  Sequence length: ");
+    print_i64(seq_len);
+    println("");
+    print("  Diffusion steps: ");
+    print_i64(n_steps);
+    println("");
+    print("  Mask token ID: ");
+    print_i64(mask_token);
+    println("");
+    0
+}

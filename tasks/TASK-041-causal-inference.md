@@ -1,7 +1,7 @@
 # TASK-041: Causal Inference Primitives
 
 **Version:** 0.16.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P1 — High
 **Depends on:** v0.15.0 release, belief/epistemic system (TASK-014)
 

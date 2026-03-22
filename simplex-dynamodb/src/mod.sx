@@ -1,0 +1,1021 @@
+// simplex-dynamodb - Amazon DynamoDB Client Library
+//
+// Pure Simplex implementation of the Amazon DynamoDB client using the
+// AWS HTTP/JSON API with SigV4 signing.
+//
+// # DynamoDB Data Model
+//
+// DynamoDB uses a typed attribute format in JSON:
+//   - String:  {"S": "value"}
+//   - Number:  {"N": "123"}
+//   - Boolean: {"BOOL": true}
+//   - Null:    {"NULL": true}
+//   - List:    {"L": [attr, attr, ...]}
+//   - Map:     {"M": {"key": attr, ...}}
+//   - Binary:  {"B": "base64data"}
+//   - StringSet: {"SS": ["a", "b"]}
+//   - NumberSet: {"NS": ["1", "2"]}
+//
+// Items are represented as JSON objects where each value is a typed attribute.
+//
+// # Usage
+//
+// ```simplex
+// use simplex_dynamodb::{dynamo_put, dynamo_get, dynamo_query, dynamo_delete};
+// use simplex_dynamodb::{attr_s, attr_n, attr_bool, item_new, item_set};
+//
+// // Build an item
+// let item = item_new();
+// let item = item_set(item, "user_id", attr_s("u-123"));
+// let item = item_set(item, "name", attr_s("Alice"));
+// let item = item_set(item, "age", attr_n(30));
+//
+// // Put item
+// let result = dynamo_put("Users", item, config);
+//
+// // Get item
+// let key = item_new();
+// let key = item_set(key, "user_id", attr_s("u-123"));
+// let result = dynamo_get("Users", key, config);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Result Layout
+// =============================================================================
+//
+// result = [status, data, error_code, error_message]
+
+fn RES_STATUS() -> i64 { 0 }
+fn RES_DATA() -> i64 { 1 }
+fn RES_ERROR_CODE() -> i64 { 2 }
+fn RES_ERROR_MSG() -> i64 { 3 }
+
+/// Check if result indicates success
+pub fn dynamo_result_ok(result: i64) -> i64 {
+    vec_get(result, RES_STATUS())
+}
+
+/// Get the data from a result
+pub fn dynamo_result_data(result: i64) -> i64 {
+    vec_get(result, RES_DATA())
+}
+
+/// Get the error code from a result
+pub fn dynamo_result_error_code(result: i64) -> i64 {
+    vec_get(result, RES_ERROR_CODE())
+}
+
+/// Get the error message from a result
+pub fn dynamo_result_error_msg(result: i64) -> i64 {
+    vec_get(result, RES_ERROR_MSG())
+}
+
+fn result_ok(data: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 1);
+    vec_push(r, data);
+    vec_push(r, "");
+    vec_push(r, "");
+    r
+}
+
+fn result_err(code: i64, msg: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 0);
+    vec_push(r, 0);
+    vec_push(r, code);
+    vec_push(r, msg);
+    r
+}
+
+// =============================================================================
+// DynamoDB Attribute Constructors
+// =============================================================================
+//
+// DynamoDB uses typed attributes in JSON format:
+//   {"S": "string_value"}     -> String
+//   {"N": "123"}              -> Number (always as string)
+//   {"BOOL": true}            -> Boolean
+//   {"NULL": true}            -> Null
+//   {"L": [...]}              -> List
+//   {"M": {...}}              -> Map
+//   {"SS": ["a", "b"]}        -> String Set
+//   {"NS": ["1", "2"]}        -> Number Set
+
+/// Create a String attribute {"S": "value"}
+pub fn attr_s(value: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "S", json_string(value));
+    obj
+}
+
+/// Create a Number attribute {"N": "123"}
+/// DynamoDB numbers are always serialized as strings
+pub fn attr_n(value: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "N", json_string(int_to_string(value)));
+    obj
+}
+
+/// Create a Number attribute from a string value {"N": "3.14"}
+pub fn attr_n_str(value: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "N", json_string(value));
+    obj
+}
+
+/// Create a Boolean attribute {"BOOL": true/false}
+pub fn attr_bool(value: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "BOOL", json_bool(value));
+    obj
+}
+
+/// Create a Null attribute {"NULL": true}
+pub fn attr_null() -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "NULL", json_bool(1));
+    obj
+}
+
+/// Create a List attribute {"L": [attr, attr, ...]}
+///
+/// # Arguments
+/// - `items`: Vec of DynamoDB attribute JSON objects
+pub fn attr_list(items: i64) -> i64 {
+    let arr: i64 = json_array_new();
+    let count: i64 = vec_len(items);
+    var i: i64 = 0;
+    while i < count {
+        json_array_push(arr, vec_get(items, i));
+        i = i + 1;
+    }
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "L", arr);
+    obj
+}
+
+/// Create a Map attribute {"M": {"key": attr, ...}}
+///
+/// # Arguments
+/// - `map_obj`: JSON object with DynamoDB typed attribute values
+pub fn attr_map(map_obj: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "M", map_obj);
+    obj
+}
+
+/// Create a String Set attribute {"SS": ["a", "b"]}
+pub fn attr_ss(values: i64) -> i64 {
+    let arr: i64 = json_array_new();
+    let count: i64 = vec_len(values);
+    var i: i64 = 0;
+    while i < count {
+        json_array_push(arr, json_string(vec_get(values, i)));
+        i = i + 1;
+    }
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "SS", arr);
+    obj
+}
+
+/// Create a Number Set attribute {"NS": ["1", "2"]}
+pub fn attr_ns(values: i64) -> i64 {
+    let arr: i64 = json_array_new();
+    let count: i64 = vec_len(values);
+    var i: i64 = 0;
+    while i < count {
+        json_array_push(arr, json_string(int_to_string(vec_get(values, i))));
+        i = i + 1;
+    }
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "NS", arr);
+    obj
+}
+
+// =============================================================================
+// Attribute Value Extraction
+// =============================================================================
+
+/// Get the type tag of a DynamoDB attribute ("S", "N", "BOOL", etc.)
+pub fn attr_type(attr: i64) -> i64 {
+    if json_is_object(attr) != 1 { return ""; }
+    // Check each type in order
+    let s_val: i64 = json_get_sx(attr, "S");
+    if json_is_string(s_val) == 1 { return "S"; }
+    let n_val: i64 = json_get_sx(attr, "N");
+    if json_is_string(n_val) == 1 { return "N"; }
+    let b_val: i64 = json_get_sx(attr, "BOOL");
+    if json_is_bool(b_val) == 1 { return "BOOL"; }
+    let null_val: i64 = json_get_sx(attr, "NULL");
+    if json_is_bool(null_val) == 1 { return "NULL"; }
+    let l_val: i64 = json_get_sx(attr, "L");
+    if json_is_array(l_val) == 1 { return "L"; }
+    let m_val: i64 = json_get_sx(attr, "M");
+    if json_is_object(m_val) == 1 { return "M"; }
+    let ss_val: i64 = json_get_sx(attr, "SS");
+    if json_is_array(ss_val) == 1 { return "SS"; }
+    let ns_val: i64 = json_get_sx(attr, "NS");
+    if json_is_array(ns_val) == 1 { return "NS"; }
+    ""
+}
+
+/// Extract string value from a String attribute
+pub fn attr_get_s(attr: i64) -> i64 {
+    let val: i64 = json_get_sx(attr, "S");
+    if json_is_string(val) == 1 {
+        return json_as_string(val);
+    }
+    ""
+}
+
+/// Extract numeric value from a Number attribute (as i64)
+pub fn attr_get_n(attr: i64) -> i64 {
+    let val: i64 = json_get_sx(attr, "N");
+    if json_is_string(val) == 1 {
+        return string_to_int(json_as_string(val));
+    }
+    0
+}
+
+/// Extract numeric value as string from a Number attribute
+pub fn attr_get_n_str(attr: i64) -> i64 {
+    let val: i64 = json_get_sx(attr, "N");
+    if json_is_string(val) == 1 {
+        return json_as_string(val);
+    }
+    "0"
+}
+
+/// Extract boolean value from a Boolean attribute
+pub fn attr_get_bool(attr: i64) -> i64 {
+    let val: i64 = json_get_sx(attr, "BOOL");
+    if json_is_bool(val) == 1 {
+        return json_as_i64(val);
+    }
+    0
+}
+
+/// Extract the list from a List attribute
+pub fn attr_get_list(attr: i64) -> i64 {
+    json_get_sx(attr, "L")
+}
+
+/// Extract the map from a Map attribute
+pub fn attr_get_map(attr: i64) -> i64 {
+    json_get_sx(attr, "M")
+}
+
+// =============================================================================
+// Item Construction
+// =============================================================================
+
+/// Create a new empty DynamoDB item (JSON object)
+pub fn item_new() -> i64 {
+    json_object_new()
+}
+
+/// Set an attribute on an item
+///
+/// # Arguments
+/// - `item`: Item JSON object
+/// - `name`: Attribute name
+/// - `attr`: Typed attribute (from attr_s, attr_n, etc.)
+///
+/// # Returns
+/// Updated item object
+pub fn item_set(item: i64, name: i64, attr: i64) -> i64 {
+    json_object_set(item, name, attr);
+    item
+}
+
+/// Get an attribute from an item
+pub fn item_get(item: i64, name: i64) -> i64 {
+    json_get_sx(item, name)
+}
+
+/// Get the number of attributes in an item
+pub fn item_count(item: i64) -> i64 {
+    json_object_len(item)
+}
+
+/// Get attribute name at index
+pub fn item_key_at(item: i64, idx: i64) -> i64 {
+    json_object_key_at(item, idx)
+}
+
+/// Get attribute value at index
+pub fn item_value_at(item: i64, idx: i64) -> i64 {
+    json_object_value_at(item, idx)
+}
+
+// =============================================================================
+// DynamoDB JSON Request Building
+// =============================================================================
+
+/// Build the DynamoDB endpoint URL for a region
+pub fn dynamo_endpoint(region: i64) -> i64 {
+    string_concat("https://dynamodb.", string_concat(region, ".amazonaws.com"))
+}
+
+/// Build a PutItem request body
+///
+/// ```json
+/// {
+///   "TableName": "Users",
+///   "Item": {
+///     "user_id": {"S": "u-123"},
+///     "name": {"S": "Alice"}
+///   }
+/// }
+/// ```
+fn build_put_request(table: i64, item: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "Item", item);
+    json_stringify(req)
+}
+
+/// Build a PutItem request body with condition expression
+fn build_put_conditional(table: i64, item: i64, condition: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "Item", item);
+    json_object_set(req, "ConditionExpression", json_string(condition));
+    json_stringify(req)
+}
+
+/// Build a GetItem request body
+///
+/// ```json
+/// {
+///   "TableName": "Users",
+///   "Key": {
+///     "user_id": {"S": "u-123"}
+///   },
+///   "ConsistentRead": true
+/// }
+/// ```
+fn build_get_request(table: i64, key: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "Key", key);
+    json_object_set(req, "ConsistentRead", json_bool(1));
+    json_stringify(req)
+}
+
+/// Build a GetItem request body without consistent read
+fn build_get_eventual(table: i64, key: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "Key", key);
+    json_stringify(req)
+}
+
+/// Build a DeleteItem request body
+///
+/// ```json
+/// {
+///   "TableName": "Users",
+///   "Key": {
+///     "user_id": {"S": "u-123"}
+///   }
+/// }
+/// ```
+fn build_delete_request(table: i64, key: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "Key", key);
+    json_stringify(req)
+}
+
+/// Build a Query request body
+///
+/// ```json
+/// {
+///   "TableName": "Users",
+///   "KeyConditionExpression": "user_id = :uid",
+///   "ExpressionAttributeValues": {
+///     ":uid": {"S": "u-123"}
+///   }
+/// }
+/// ```
+fn build_query_request(table: i64, condition: i64, values: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "KeyConditionExpression", json_string(condition));
+    json_object_set(req, "ExpressionAttributeValues", values);
+    json_stringify(req)
+}
+
+/// Build a Query request body with limit
+fn build_query_limited(table: i64, condition: i64, values: i64, limit: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "KeyConditionExpression", json_string(condition));
+    json_object_set(req, "ExpressionAttributeValues", values);
+    json_object_set(req, "Limit", json_number_i64(limit));
+    json_stringify(req)
+}
+
+/// Build a Query request body with index
+fn build_query_index(table: i64, index_name: i64, condition: i64, values: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "IndexName", json_string(index_name));
+    json_object_set(req, "KeyConditionExpression", json_string(condition));
+    json_object_set(req, "ExpressionAttributeValues", values);
+    json_stringify(req)
+}
+
+/// Build a Scan request body
+fn build_scan_request(table: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_stringify(req)
+}
+
+/// Build a Scan request with filter
+fn build_scan_filtered(table: i64, filter: i64, values: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "FilterExpression", json_string(filter));
+    json_object_set(req, "ExpressionAttributeValues", values);
+    json_stringify(req)
+}
+
+/// Build an UpdateItem request body
+///
+/// ```json
+/// {
+///   "TableName": "Users",
+///   "Key": {"user_id": {"S": "u-123"}},
+///   "UpdateExpression": "SET #n = :name, age = :age",
+///   "ExpressionAttributeValues": {":name": {"S": "Bob"}, ":age": {"N": "31"}},
+///   "ExpressionAttributeNames": {"#n": "name"},
+///   "ReturnValues": "ALL_NEW"
+/// }
+/// ```
+fn build_update_request(table: i64, key: i64, update_expr: i64, values: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "Key", key);
+    json_object_set(req, "UpdateExpression", json_string(update_expr));
+    json_object_set(req, "ExpressionAttributeValues", values);
+    json_object_set(req, "ReturnValues", json_string("ALL_NEW"));
+    json_stringify(req)
+}
+
+/// Build an UpdateItem request with attribute name mapping
+fn build_update_with_names(table: i64, key: i64, update_expr: i64, values: i64, names: i64) -> i64 {
+    let req: i64 = json_object_new();
+    json_object_set(req, "TableName", json_string(table));
+    json_object_set(req, "Key", key);
+    json_object_set(req, "UpdateExpression", json_string(update_expr));
+    json_object_set(req, "ExpressionAttributeValues", values);
+    json_object_set(req, "ExpressionAttributeNames", names);
+    json_object_set(req, "ReturnValues", json_string("ALL_NEW"));
+    json_stringify(req)
+}
+
+/// Build a BatchGetItem request body
+fn build_batch_get_request(table: i64, keys: i64) -> i64 {
+    let keys_arr: i64 = json_array_new();
+    let count: i64 = vec_len(keys);
+    var i: i64 = 0;
+    while i < count {
+        json_array_push(keys_arr, vec_get(keys, i));
+        i = i + 1;
+    }
+
+    let table_req: i64 = json_object_new();
+    json_object_set(table_req, "Keys", keys_arr);
+
+    let request_items: i64 = json_object_new();
+    json_object_set(request_items, table, table_req);
+
+    let req: i64 = json_object_new();
+    json_object_set(req, "RequestItems", request_items);
+    json_stringify(req)
+}
+
+/// Build a BatchWriteItem request body for puts
+fn build_batch_put_request(table: i64, items: i64) -> i64 {
+    let write_requests: i64 = json_array_new();
+    let count: i64 = vec_len(items);
+    var i: i64 = 0;
+    while i < count {
+        let put_req: i64 = json_object_new();
+        let put_item: i64 = json_object_new();
+        json_object_set(put_item, "Item", vec_get(items, i));
+        json_object_set(put_req, "PutRequest", put_item);
+        json_array_push(write_requests, put_req);
+        i = i + 1;
+    }
+
+    let request_items: i64 = json_object_new();
+    json_object_set(request_items, table, write_requests);
+
+    let req: i64 = json_object_new();
+    json_object_set(req, "RequestItems", request_items);
+    json_stringify(req)
+}
+
+// =============================================================================
+// DynamoDB Response Parsing
+// =============================================================================
+
+/// Parse error from DynamoDB JSON response
+fn parse_dynamo_error(resp_body: i64) -> i64 {
+    let parsed: i64 = json_parse_simple(resp_body);
+    if json_is_object(parsed) != 1 {
+        return result_err("ParseError", "Invalid JSON response");
+    }
+
+    // DynamoDB returns __type for error code
+    let err_type: i64 = json_get_sx(parsed, "__type");
+    var code: i64 = "UnknownError";
+    if json_is_string(err_type) == 1 {
+        code = json_as_string(err_type);
+        // Extract just the error name from "com.amazonaws.dynamodb.v20120810#ConditionalCheckFailedException"
+        let hash_pos: i64 = string_find(code, "#", 0);
+        if hash_pos >= 0 {
+            let code_len: i64 = string_len(code);
+            code = string_substring(code, hash_pos + 1, code_len - hash_pos - 1);
+        }
+    }
+
+    let err_msg: i64 = json_get_sx(parsed, "message");
+    var msg: i64 = "Unknown error";
+    if json_is_string(err_msg) == 1 {
+        msg = json_as_string(err_msg);
+    }
+    // Also check Message (capital M)
+    let err_msg2: i64 = json_get_sx(parsed, "Message");
+    if json_is_string(err_msg2) == 1 {
+        msg = json_as_string(err_msg2);
+    }
+
+    result_err(code, msg)
+}
+
+/// Parse a GetItem response and extract the Item
+fn parse_get_response(resp_body: i64) -> i64 {
+    let parsed: i64 = json_parse_simple(resp_body);
+    if json_is_object(parsed) != 1 {
+        return result_err("ParseError", "Invalid JSON response");
+    }
+    let item: i64 = json_get_sx(parsed, "Item");
+    if json_is_object(item) != 1 {
+        // Item not found - return ok with null
+        return result_ok(0);
+    }
+    result_ok(item)
+}
+
+/// Parse a PutItem response
+fn parse_put_response(resp_body: i64) -> i64 {
+    // PutItem returns empty object {} on success
+    result_ok(1)
+}
+
+/// Parse a DeleteItem response
+fn parse_delete_response(resp_body: i64) -> i64 {
+    result_ok(1)
+}
+
+/// Parse a Query/Scan response and extract Items array
+fn parse_query_response(resp_body: i64) -> i64 {
+    let parsed: i64 = json_parse_simple(resp_body);
+    if json_is_object(parsed) != 1 {
+        return result_err("ParseError", "Invalid JSON response");
+    }
+
+    let items: i64 = json_get_sx(parsed, "Items");
+    if json_is_array(items) != 1 {
+        return result_ok(json_array_new());
+    }
+
+    // Build result with items and metadata
+    let query_result: i64 = vec_new();
+    vec_push(query_result, items);
+
+    // Extract Count
+    let count_val: i64 = json_get_sx(parsed, "Count");
+    if json_is_number(count_val) == 1 {
+        vec_push(query_result, json_as_i64(count_val));
+    } else {
+        vec_push(query_result, json_array_len(items));
+    }
+
+    // Extract ScannedCount
+    let scanned: i64 = json_get_sx(parsed, "ScannedCount");
+    if json_is_number(scanned) == 1 {
+        vec_push(query_result, json_as_i64(scanned));
+    } else {
+        vec_push(query_result, 0);
+    }
+
+    // Extract LastEvaluatedKey for pagination
+    let last_key: i64 = json_get_sx(parsed, "LastEvaluatedKey");
+    if json_is_object(last_key) == 1 {
+        vec_push(query_result, last_key);
+    } else {
+        vec_push(query_result, 0);
+    }
+
+    result_ok(query_result)
+}
+
+/// Parse an UpdateItem response
+fn parse_update_response(resp_body: i64) -> i64 {
+    let parsed: i64 = json_parse_simple(resp_body);
+    if json_is_object(parsed) != 1 {
+        return result_err("ParseError", "Invalid JSON response");
+    }
+    let attrs: i64 = json_get_sx(parsed, "Attributes");
+    if json_is_object(attrs) == 1 {
+        return result_ok(attrs);
+    }
+    result_ok(1)
+}
+
+/// Parse a BatchGetItem response
+fn parse_batch_get_response(resp_body: i64, table: i64) -> i64 {
+    let parsed: i64 = json_parse_simple(resp_body);
+    if json_is_object(parsed) != 1 {
+        return result_err("ParseError", "Invalid JSON response");
+    }
+    let responses: i64 = json_get_sx(parsed, "Responses");
+    if json_is_object(responses) != 1 {
+        return result_ok(json_array_new());
+    }
+    let table_items: i64 = json_get_sx(responses, table);
+    if json_is_array(table_items) != 1 {
+        return result_ok(json_array_new());
+    }
+    result_ok(table_items)
+}
+
+// =============================================================================
+// HTTP Request Execution
+// =============================================================================
+
+/// Send a DynamoDB request with the given target action
+fn dynamo_request(target: i64, body: i64, config: i64) -> i64 {
+    // Config is expected to have: [access_key, secret_key, region, service, date, datetime]
+    let region: i64 = vec_get(config, 2);
+    let endpoint: i64 = dynamo_endpoint(region);
+
+    let req: i64 = http_request_new("POST", endpoint);
+    http_request_header(req, "Content-Type", "application/x-amz-json-1.0");
+    http_request_header(req, "X-Amz-Target", target);
+    http_request_header(req, "Host", string_concat("dynamodb.", string_concat(region, ".amazonaws.com")));
+    http_request_body(req, body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    // Return [status, resp_body]
+    let result: i64 = vec_new();
+    vec_push(result, status);
+    vec_push(result, resp_body);
+    result
+}
+
+// =============================================================================
+// Public API
+// =============================================================================
+
+/// Put an item into a DynamoDB table.
+///
+/// # Arguments
+/// - `table`: Table name string
+/// - `item`: Item JSON object with typed attributes
+/// - `config`: AWS config vec
+///
+/// # Returns
+/// Result vec: [1, 1, "", ""] on success
+///
+/// # Example
+/// ```simplex
+/// let item = item_new();
+/// let item = item_set(item, "pk", attr_s("user-1"));
+/// let item = item_set(item, "name", attr_s("Alice"));
+/// let result = dynamo_put("Users", item, config);
+/// ```
+pub fn dynamo_put(table: i64, item: i64, config: i64) -> i64 {
+    let body: i64 = build_put_request(table, item);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.PutItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_put_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Put an item with a condition expression.
+pub fn dynamo_put_conditional(table: i64, item: i64, condition: i64, config: i64) -> i64 {
+    let body: i64 = build_put_conditional(table, item, condition);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.PutItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_put_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Get an item from a DynamoDB table by key.
+///
+/// # Arguments
+/// - `table`: Table name string
+/// - `key`: Key JSON object with typed attributes
+/// - `config`: AWS config vec
+///
+/// # Returns
+/// Result vec with data being the item JSON object (or 0 if not found)
+///
+/// # Example
+/// ```simplex
+/// let key = item_new();
+/// let key = item_set(key, "pk", attr_s("user-1"));
+/// let result = dynamo_get("Users", key, config);
+/// if dynamo_result_ok(result) == 1 {
+///     let item = dynamo_result_data(result);
+///     if item != 0 {
+///         let name = attr_get_s(item_get(item, "name"));
+///     }
+/// }
+/// ```
+pub fn dynamo_get(table: i64, key: i64, config: i64) -> i64 {
+    let body: i64 = build_get_request(table, key);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.GetItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_get_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Get an item with eventual consistency (faster, cheaper).
+pub fn dynamo_get_eventual(table: i64, key: i64, config: i64) -> i64 {
+    let body: i64 = build_get_eventual(table, key);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.GetItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_get_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Query items from a DynamoDB table.
+///
+/// # Arguments
+/// - `table`: Table name string
+/// - `condition`: Key condition expression (e.g. "pk = :pk AND begins_with(sk, :prefix)")
+/// - `values`: Expression attribute values JSON object
+/// - `config`: AWS config vec
+///
+/// # Returns
+/// Result vec with data being a vec: [items_array, count, scanned_count, last_key_or_0]
+///
+/// # Example
+/// ```simplex
+/// let values = item_new();
+/// let values = item_set(values, ":uid", attr_s("user-1"));
+/// let result = dynamo_query("Users", "pk = :uid", values, config);
+/// if dynamo_result_ok(result) == 1 {
+///     let query_data = dynamo_result_data(result);
+///     let items = vec_get(query_data, 0);
+///     let count = vec_get(query_data, 1);
+/// }
+/// ```
+pub fn dynamo_query(table: i64, condition: i64, values: i64, config: i64) -> i64 {
+    let body: i64 = build_query_request(table, condition, values);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.Query", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_query_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Query items with a result limit.
+pub fn dynamo_query_limited(table: i64, condition: i64, values: i64, limit: i64, config: i64) -> i64 {
+    let body: i64 = build_query_limited(table, condition, values, limit);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.Query", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_query_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Query items using a secondary index.
+pub fn dynamo_query_index(table: i64, index_name: i64, condition: i64, values: i64, config: i64) -> i64 {
+    let body: i64 = build_query_index(table, index_name, condition, values);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.Query", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_query_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Delete an item from a DynamoDB table.
+///
+/// # Arguments
+/// - `table`: Table name string
+/// - `key`: Key JSON object with typed attributes
+/// - `config`: AWS config vec
+///
+/// # Returns
+/// Result vec: [1, 1, "", ""] on success
+pub fn dynamo_delete(table: i64, key: i64, config: i64) -> i64 {
+    let body: i64 = build_delete_request(table, key);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.DeleteItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_delete_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Update an item in a DynamoDB table.
+///
+/// # Arguments
+/// - `table`: Table name string
+/// - `key`: Key JSON object
+/// - `update_expr`: Update expression (e.g. "SET #n = :name")
+/// - `values`: Expression attribute values
+/// - `config`: AWS config vec
+///
+/// # Returns
+/// Result vec with data being the updated item attributes
+pub fn dynamo_update(table: i64, key: i64, update_expr: i64, values: i64, config: i64) -> i64 {
+    let body: i64 = build_update_request(table, key, update_expr, values);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.UpdateItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_update_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Update an item with expression attribute name mapping.
+///
+/// Use this when attribute names conflict with DynamoDB reserved words.
+///
+/// # Arguments
+/// - `names`: JSON object mapping placeholders to real names (e.g. {"#n": "name"})
+pub fn dynamo_update_with_names(table: i64, key: i64, update_expr: i64, values: i64, names: i64, config: i64) -> i64 {
+    let body: i64 = build_update_with_names(table, key, update_expr, values, names);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.UpdateItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_update_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Scan all items in a table (expensive, use sparingly).
+pub fn dynamo_scan(table: i64, config: i64) -> i64 {
+    let body: i64 = build_scan_request(table);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.Scan", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_query_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Scan with a filter expression.
+pub fn dynamo_scan_filtered(table: i64, filter: i64, values: i64, config: i64) -> i64 {
+    let body: i64 = build_scan_filtered(table, filter, values);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.Scan", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_query_response(resp_body);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Batch get items from a table (up to 100 keys).
+pub fn dynamo_batch_get(table: i64, keys: i64, config: i64) -> i64 {
+    let body: i64 = build_batch_get_request(table, keys);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.BatchGetItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_batch_get_response(resp_body, table);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+/// Batch put items into a table (up to 25 items).
+pub fn dynamo_batch_put(table: i64, items: i64, config: i64) -> i64 {
+    let count: i64 = vec_len(items);
+    if count > 25 {
+        return result_err("ValidationError", "Batch write exceeds 25 items");
+    }
+
+    let body: i64 = build_batch_put_request(table, items);
+    let resp: i64 = dynamo_request("DynamoDB_20120810.BatchWriteItem", body, config);
+    let status: i64 = vec_get(resp, 0);
+    let resp_body: i64 = vec_get(resp, 1);
+
+    if status >= 200 {
+        if status < 300 {
+            return result_ok(1);
+        }
+    }
+    parse_dynamo_error(resp_body)
+}
+
+// =============================================================================
+// Query Result Accessors
+// =============================================================================
+
+/// Get items array from query result data
+pub fn query_items(query_data: i64) -> i64 {
+    vec_get(query_data, 0)
+}
+
+/// Get count from query result data
+pub fn query_count(query_data: i64) -> i64 {
+    vec_get(query_data, 1)
+}
+
+/// Get scanned count from query result data
+pub fn query_scanned_count(query_data: i64) -> i64 {
+    vec_get(query_data, 2)
+}
+
+/// Get last evaluated key from query result data (0 if no more pages)
+pub fn query_last_key(query_data: i64) -> i64 {
+    if vec_len(query_data) > 3 {
+        return vec_get(query_data, 3);
+    }
+    0
+}
+
+/// Check if query has more pages
+pub fn query_has_more(query_data: i64) -> i64 {
+    let last: i64 = query_last_key(query_data);
+    if last != 0 { 1 } else { 0 }
+}

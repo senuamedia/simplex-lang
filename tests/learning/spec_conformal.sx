@@ -1,0 +1,77 @@
+use conformal;
+
+fn main() -> i64 {
+    println(string_from("=== Conformal Prediction Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Calibrate from scores
+    let scores: i64 = vec_new();
+    vec_push(scores, f64_to_bits(0.1));
+    vec_push(scores, f64_to_bits(0.3));
+    vec_push(scores, f64_to_bits(0.5));
+    vec_push(scores, f64_to_bits(0.7));
+    vec_push(scores, f64_to_bits(0.9));
+    let alpha: i64 = f64_to_bits(0.1);
+    let threshold: i64 = conformal_calibrate(scores, alpha);
+    // threshold should be >= 0.5 (as f64 bits, compare against bits of 0.5)
+    // f64_to_bits(0.5) is a positive i64 for positive f64 values
+    // For positive f64, bit patterns are ordered same as f64 values
+    if threshold < f64_to_bits(0.5) {
+        println(string_from("FAIL: threshold too low"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: conformal_calibrate"));
+    }
+
+    // Test 2: Predict membership
+    let low_score: i64 = f64_to_bits(0.2);
+    let in_set: i64 = conformal_predict(low_score, threshold);
+    if in_set != 1 {
+        println(string_from("FAIL: low score should be in set"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: conformal_predict in set"));
+    }
+
+    // Test 3: Prediction set
+    let test_scores: i64 = vec_new();
+    vec_push(test_scores, f64_to_bits(0.2));
+    vec_push(test_scores, f64_to_bits(0.8));
+    vec_push(test_scores, f64_to_bits(0.4));
+    let pset: i64 = conformal_prediction_set(test_scores, threshold);
+    if vec_len(pset) < 2 {
+        println(string_from("FAIL: prediction set too small"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: conformal_prediction_set"));
+    }
+
+    // Test 4: Adaptive conformal state
+    let acs: i64 = adaptive_conformal_new(f64_to_bits(0.05), f64_to_bits(0.01));
+    let t_before: i64 = adaptive_get_threshold(acs);
+    adaptive_update(acs, 1);
+    let t_after: i64 = adaptive_get_threshold(acs);
+    if t_before == t_after {
+        println(string_from("FAIL: threshold should change after update"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: adaptive_update changes threshold"));
+    }
+
+    // Test 5: Score absolute error
+    let pred: i64 = f64_to_bits(3.0);
+    let actual: i64 = f64_to_bits(5.0);
+    let err: i64 = score_absolute_error(pred, actual);
+    // error should be ~2.0, check it's >= 1.9 in bit pattern
+    if err < f64_to_bits(1.9) {
+        println(string_from("FAIL: absolute error should be ~2.0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: score_absolute_error"));
+    }
+
+    if failures == 0 {
+        println(string_from("All conformal tests passed"));
+    }
+    failures
+}

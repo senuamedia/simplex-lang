@@ -1,0 +1,64 @@
+use process;
+
+fn main() -> i64 {
+    println(string_from("=== Process Library Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Build argument vector with process_args1
+    let args: i64 = process_args1(string_from("-la"));
+    if vec_len(args) != 1 {
+        println(string_from("FAIL: process_args1 should have 1 element"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: process_args1"));
+    }
+
+    // Test 2: Build multi-argument vector
+    let args2: i64 = process_args3(
+        string_from("-l"),
+        string_from("-a"),
+        string_from("/tmp")
+    );
+    if vec_len(args2) != 3 {
+        println(string_from("FAIL: process_args3 should have 3 elements"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: process_args3"));
+    }
+
+    // Test 3: process_result_code on synthetic result
+    let result: i64 = vec_new();
+    vec_push(result, 0);
+    vec_push(result, string_from("output text"));
+    vec_push(result, string_from(""));
+    let code: i64 = process_result_code(result);
+    if code != 0 {
+        println(string_from("FAIL: result code should be 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: process_result_code"));
+    }
+
+    // Test 4: process_result_ok
+    let ok: i64 = process_result_ok(result);
+    if ok != 1 {
+        println(string_from("FAIL: result should be ok"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: process_result_ok"));
+    }
+
+    // Test 5: process_result_stdout
+    let stdout: i64 = process_result_stdout(result);
+    if string_eq(stdout, string_from("output text")) != 1 {
+        println(string_from("FAIL: stdout mismatch"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: process_result_stdout"));
+    }
+
+    if failures == 0 {
+        println(string_from("All process tests passed"));
+    }
+    failures
+}

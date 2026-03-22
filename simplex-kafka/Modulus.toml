@@ -1,0 +1,24 @@
+# simplex-kafka - Apache Kafka Client Library
+#
+# Pure Simplex implementation of the Kafka binary wire protocol.
+# Supports producer and consumer operations over TCP.
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-kafka"
+version = "0.17.0"
+description = "Apache Kafka client with binary wire protocol for Simplex"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+
+[features]
+default = ["full"]
+full = ["producer", "consumer"]
+producer = []      # Kafka producer support
+consumer = []      # Kafka consumer support

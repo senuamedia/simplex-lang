@@ -1,0 +1,68 @@
+use kan;
+
+fn main() -> i64 {
+    println(string_from("=== KAN Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create a KAN layer (2 -> 3, 5 basis, cubic)
+    let layer: i64 = kan_layer_new(2, 3, 5, 3);
+    let in_dim: i64 = vec_get(layer, 0);
+    if in_dim != 2 {
+        println(string_from("FAIL: in_dim should be 2"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kan_layer_new"));
+    }
+
+    // Test 2: Initialize with random coefficients
+    kan_layer_init(layer, 42);
+    let coeffs: i64 = kan_extract_function(layer, 0, 0);
+    let n_coeffs: i64 = vec_len(coeffs);
+    if n_coeffs != 5 {
+        println(string_from("FAIL: should have 5 coefficients"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kan_layer_init"));
+    }
+
+    // Test 3: Count non-zero coefficients (spline degree)
+    let degree: i64 = kan_spline_degree(coeffs);
+    if degree < 1 {
+        println(string_from("FAIL: spline degree should be >= 1 after init"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kan_spline_degree"));
+    }
+
+    // Test 4: Forward pass
+    let input: i64 = vec_new();
+    vec_push(input, f64_to_bits(0.5));
+    vec_push(input, f64_to_bits(0.3));
+    let output: i64 = kan_forward(layer, input);
+    if vec_len(output) != 3 {
+        println(string_from("FAIL: output dim should be 3"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kan_forward"));
+    }
+
+    // Test 5: Network param count
+    let dims: i64 = vec_new();
+    vec_push(dims, 2);
+    vec_push(dims, 4);
+    vec_push(dims, 1);
+    let net: i64 = kan_network_new(dims, 5, 3);
+    let params: i64 = kan_network_param_count(net);
+    // 2*4*5 + 4*1*5 = 40 + 20 = 60
+    if params != 60 {
+        println(string_from("FAIL: param count should be 60"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: kan_network_param_count"));
+    }
+
+    if failures == 0 {
+        println(string_from("All KAN tests passed"));
+    }
+    failures
+}

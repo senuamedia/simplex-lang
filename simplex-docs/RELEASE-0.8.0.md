@@ -23,7 +23,7 @@ let x: dual = dual::variable(3.0);  // value=3, derivative seed=1
 let y = x * x + x.sin();            // Arithmetic propagates derivatives
 
 println(y.val);  // f(3) = 9.1411...
-println(y.der);  // f'(3) = 6.9899... (exact, not numerical approximation)
+println(y.der);  // f'(3) = 6.9899... (analytical, not numerical approximation)
 ```
 
 **Key Properties:**
@@ -323,14 +323,14 @@ fn numerical_derivative(f: fn(f64) -> f64, x: f64) -> f64 {
     (f(x + h) - f(x)) / h
 }
 
-// After: automatic differentiation (fast, exact)
+// After: automatic differentiation (fast, analytical)
 use simplex::diff::derivative;
 
 fn f(x: dual) -> dual {
     x * x + x.sin()
 }
 
-let exact_derivative = derivative(f, 3.0);  // Exact!
+let analytical_derivative = derivative(f, 3.0);  // Analytical, not approximate
 ```
 
 ---
@@ -363,7 +363,7 @@ diff::hessian(f, x)           // Compute H_f(x)
 // Annotations
 @differentiable(mode: forward)  // Force forward-mode AD
 @differentiable(mode: reverse)  // Force reverse-mode AD
-@differentiable(mode: auto)     // Compiler chooses optimal mode
+@differentiable(mode: auto)     // Compiler chooses appropriate mode
 @zero_overhead                  // Ensure struct elimination
 ```
 

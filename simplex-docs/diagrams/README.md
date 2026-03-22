@@ -93,7 +93,7 @@ To modify a diagram, edit the SVG directly or use a vector editor like Inkscape.
 1. **Per-Hive SLM**
    - One model shared by all specialists
    - Memory efficiency (8-12GB vs 80+GB)
-   - HiveMnemonic for shared consciousness
+   - HiveMnemonic for shared context
 
 2. **Three-Tier Memory**
    - Anima: Personal (30% belief threshold)

@@ -1,0 +1,1359 @@
+// simplex-learning::ssm - State Space Models (S4/Mamba Architecture)
+//
+// Provides state space model layers for sequence modelling with linear-time
+// complexity. Includes the S4 (Structured State Space for Sequences) layer
+// and the Mamba (Selective State Space) layer.
+//
+// All values stored as i64 vec handles. Floats are stored via f64_to_bits.
+//
+// # S4 Layer
+//
+// The S4 layer implements the discrete-time recurrence:
+//   x[t+1] = A * x[t] + B * u[t]
+//   y[t]   = C * x[t] + D * u[t]
+//
+// where A is diagonal (HiPPO initialization), enabling efficient long-range
+// memory.
+//
+// # Mamba Layer
+//
+// The Mamba layer extends S4 with input-dependent (selective) parameters:
+//   - Delta, B, C are projected from the input
+//   - 1D convolution for local context
+//   - Gated output projection
+//
+// # Utilities
+//
+// - parallel_scan: Parallel associative scan (prefix sum generalization)
+// - hippo_init_A: HiPPO matrix initialization for long-range dependencies
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Internal helpers
+// =============================================================================
+
+/// Simple pseudo-random number for weight initialization.
+/// Uses a linear congruential generator seeded from position.
+fn ssm_prng(seed: i64) -> i64 {
+    // LCG: next = (a * seed + c) mod m
+    // Returns bits of a small float in [-0.1, 0.1]
+    var s: i64 = seed;
+    if s < 0 { s = 0 - s; }
+    s = (s * 6364136223846793005 + 1442695040888963407);
+    // Take some middle bits, map to [-0.1, 0.1]
+    var frac: i64 = s;
+    if frac < 0 { frac = 0 - frac; }
+    // Modulo 10000, then scale to [-0.5, 0.5] / 5
+    let modval: i64 = frac - (frac / 10000) * 10000;
+    let f: f64 = (0.0 + modval) / 10000.0 - 0.5;
+    let scaled: f64 = f / 5.0;
+    f64_to_bits(scaled)
+}
+
+/// Absolute value of f64 stored as bits.
+fn ssm_fabs(x_bits: i64) -> i64 {
+    let v: f64 = bits_to_f64(x_bits);
+    var r: f64 = v;
+    if r < 0.0 { r = 0.0 - r; }
+    f64_to_bits(r)
+}
+
+/// Multiply two f64-as-bits values, return bits.
+fn ssm_fmul(a_bits: i64, b_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    let b: f64 = bits_to_f64(b_bits);
+    f64_to_bits(a * b)
+}
+
+/// Add two f64-as-bits values, return bits.
+fn ssm_fadd(a_bits: i64, b_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    let b: f64 = bits_to_f64(b_bits);
+    f64_to_bits(a + b)
+}
+
+/// Subtract two f64-as-bits values, return bits.
+fn ssm_fsub(a_bits: i64, b_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    let b: f64 = bits_to_f64(b_bits);
+    f64_to_bits(a - b)
+}
+
+/// Divide two f64-as-bits values, return bits.
+fn ssm_fdiv(a_bits: i64, b_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    let b: f64 = bits_to_f64(b_bits);
+    f64_to_bits(a / b)
+}
+
+/// Negate f64-as-bits.
+fn ssm_fneg(a_bits: i64) -> i64 {
+    let a: f64 = bits_to_f64(a_bits);
+    f64_to_bits(0.0 - a)
+}
+
+/// Exponentiate f64-as-bits: exp(x).
+/// Uses Taylor series: exp(x) = 1 + x + x^2/2! + x^3/3! + ...
+fn ssm_fexp(x_bits: i64) -> i64 {
+    let x: f64 = bits_to_f64(x_bits);
+    // Taylor expansion to 12 terms for reasonable accuracy
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 12 {
+        let fi: f64 = 0.0 + i;
+        term = term * x / fi;
+        result = result + term;
+        i = i + 1;
+    }
+    f64_to_bits(result)
+}
+
+/// Square root via Newton's method for f64-as-bits.
+fn ssm_fsqrt(x_bits: i64) -> i64 {
+    let x: f64 = bits_to_f64(x_bits);
+    if x <= 0.0 { return f64_to_bits(0.0); }
+    var guess: f64 = x / 2.0;
+    if guess < 1.0 { guess = 1.0; }
+    var i: i64 = 0;
+    while i < 20 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    f64_to_bits(guess)
+}
+
+/// Convert i64 to f64 bits.
+fn ssm_i2f(n: i64) -> i64 {
+    f64_to_bits(0.0 + n)
+}
+
+/// f64 zero as bits.
+fn ssm_zero() -> i64 {
+    f64_to_bits(0.0)
+}
+
+/// f64 one as bits.
+fn ssm_one() -> i64 {
+    f64_to_bits(1.0)
+}
+
+// =============================================================================
+// Vector/Matrix helpers (all stored as flat i64 vecs of f64 bits)
+// =============================================================================
+
+/// Create a new float vector of given size, initialized to zero.
+fn fvec_new(size: i64) -> i64 {
+    let v: i64 = vec_new();
+    let zero: i64 = ssm_zero();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(v, zero);
+        i = i + 1;
+    }
+    v
+}
+
+/// Create a new float vector from random initialization.
+fn fvec_rand(size: i64, seed_base: i64) -> i64 {
+    let v: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(v, ssm_prng(seed_base + i * 7 + 13));
+        i = i + 1;
+    }
+    v
+}
+
+/// Copy a float vector.
+fn fvec_copy(src: i64, size: i64) -> i64 {
+    let dst: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    dst
+}
+
+/// Element-wise addition of two float vectors.
+fn fvec_add(a: i64, b: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ssm_fadd(vec_get(a, i), vec_get(b, i)));
+        i = i + 1;
+    }
+    out
+}
+
+/// Element-wise multiplication of two float vectors (Hadamard product).
+fn fvec_mul(a: i64, b: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ssm_fmul(vec_get(a, i), vec_get(b, i)));
+        i = i + 1;
+    }
+    out
+}
+
+/// Scale a float vector by a scalar (bits).
+fn fvec_scale(v: i64, scalar_bits: i64, size: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        vec_push(out, ssm_fmul(vec_get(v, i), scalar_bits));
+        i = i + 1;
+    }
+    out
+}
+
+/// Dot product of two float vectors, returns f64 bits.
+fn fvec_dot(a: i64, b: i64, size: i64) -> i64 {
+    var sum: i64 = ssm_zero();
+    var i: i64 = 0;
+    while i < size {
+        sum = ssm_fadd(sum, ssm_fmul(vec_get(a, i), vec_get(b, i)));
+        i = i + 1;
+    }
+    sum
+}
+
+/// Matrix-vector multiply: out = M * v
+/// M is stored row-major as flat vec, rows x cols. v has length cols.
+/// Returns vec of length rows.
+fn fmat_vec_mul(mat: i64, v: i64, rows: i64, cols: i64) -> i64 {
+    let out: i64 = vec_new();
+    var r: i64 = 0;
+    while r < rows {
+        var sum: i64 = ssm_zero();
+        var c: i64 = 0;
+        while c < cols {
+            let m_val: i64 = vec_get(mat, r * cols + c);
+            let v_val: i64 = vec_get(v, c);
+            sum = ssm_fadd(sum, ssm_fmul(m_val, v_val));
+            c = c + 1;
+        }
+        vec_push(out, sum);
+        r = r + 1;
+    }
+    out
+}
+
+/// Outer product: a (len_a) x b (len_b) -> flat matrix (len_a * len_b).
+fn fvec_outer(a: i64, b: i64, len_a: i64, len_b: i64) -> i64 {
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < len_a {
+        let ai: i64 = vec_get(a, i);
+        var j: i64 = 0;
+        while j < len_b {
+            vec_push(out, ssm_fmul(ai, vec_get(b, j)));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    out
+}
+
+/// SiLU activation: x * sigmoid(x) for float-as-bits.
+fn ssm_silu(x_bits: i64) -> i64 {
+    let x: f64 = bits_to_f64(x_bits);
+    // sigmoid(x) = 1 / (1 + exp(-x))
+    let neg_x: f64 = 0.0 - x;
+    // Use our exp approximation
+    let exp_neg: f64 = bits_to_f64(ssm_fexp(f64_to_bits(neg_x)));
+    let sig: f64 = 1.0 / (1.0 + exp_neg);
+    f64_to_bits(x * sig)
+}
+
+/// Softplus: log(1 + exp(x)) for float-as-bits.
+fn ssm_softplus(x_bits: i64) -> i64 {
+    let x: f64 = bits_to_f64(x_bits);
+    let exp_x: f64 = bits_to_f64(ssm_fexp(x_bits));
+    let result: f64 = bits_to_f64(ssm_fsqrt(f64_to_bits((1.0 + exp_x) * (1.0 + exp_x))));
+    // log(1 + exp(x)) approximation: for large x, ~= x; for small x, ~= exp(x)
+    // Actually compute properly:
+    let one_plus: f64 = 1.0 + exp_x;
+    // ln via series: ln(y) for y > 0
+    // Use the identity: ln(1+e^x)
+    // For |x| < 20, compute directly; for x > 20, return x
+    if x > 20.0 { return x_bits; }
+    if x < -20.0 { return ssm_zero(); }
+    // ln(one_plus) via Newton: find t such that exp(t) = one_plus
+    var t: f64 = x / 2.0;
+    if t < 0.0 { t = 0.1; }
+    var iter: i64 = 0;
+    while iter < 20 {
+        let et: f64 = bits_to_f64(ssm_fexp(f64_to_bits(t)));
+        let diff: f64 = et - one_plus;
+        t = t - diff / et;
+        iter = iter + 1;
+    }
+    f64_to_bits(t)
+}
+
+// =============================================================================
+// S4 Layer
+// =============================================================================
+//
+// Layout of an S4 layer (vec handle):
+//   [0] state_dim (N)
+//   [1] input_dim (D)
+//   [2] A_diag handle  - diagonal of A matrix, N floats as bits
+//   [3] B_mat handle   - B matrix, N x D floats as bits (row-major)
+//   [4] C_mat handle   - C matrix, D x N floats as bits (row-major)
+//   [5] D_mat handle   - D vector, D floats as bits (feedthrough)
+//   [6] dt_bits        - discretization timestep as f64 bits
+//   [7] state_vec handle - current hidden state, N floats as bits
+//
+// Continuous-time system:
+//   dx/dt = A * x + B * u
+//   y     = C * x + D * u
+//
+// Discretized (ZOH):
+//   x[t+1] = A_bar * x[t] + B_bar * u[t]
+//   y[t]   = C * x[t] + D * u[t]
+//
+// where A_bar = exp(A * dt), B_bar = (A_bar - I) * A^{-1} * B
+
+/// Create a new S4 layer.
+///
+/// Arguments:
+///   state_dim - dimension of the hidden state (N)
+///   input_dim - dimension of the input/output (D)
+///
+/// Returns: S4 layer handle (i64)
+fn s4_layer_new(state_dim: i64, input_dim: i64) -> i64 {
+    let layer: i64 = vec_new();
+
+    // [0] state_dim, [1] input_dim
+    vec_push(layer, state_dim);
+    vec_push(layer, input_dim);
+
+    // [2] A_diag: diagonal of A, initialized with HiPPO
+    let a_diag: i64 = hippo_init_A(state_dim);
+    vec_push(layer, a_diag);
+
+    // [3] B_mat: N x D, random init
+    let b_mat: i64 = fvec_rand(state_dim * input_dim, 42);
+    vec_push(layer, b_mat);
+
+    // [4] C_mat: D x N, random init
+    let c_mat: i64 = fvec_rand(input_dim * state_dim, 137);
+    vec_push(layer, c_mat);
+
+    // [5] D_vec: D feedthrough, initialized to zero
+    let d_vec: i64 = fvec_new(input_dim);
+    vec_push(layer, d_vec);
+
+    // [6] dt: discretization timestep, default 0.01
+    vec_push(layer, f64_to_bits(0.01));
+
+    // [7] state_vec: current hidden state, initialized to zero
+    let state: i64 = fvec_new(state_dim);
+    vec_push(layer, state);
+
+    layer
+}
+
+/// Get state dimension from S4 layer.
+fn s4_state_dim(layer: i64) -> i64 {
+    vec_get(layer, 0)
+}
+
+/// Get input dimension from S4 layer.
+fn s4_input_dim(layer: i64) -> i64 {
+    vec_get(layer, 1)
+}
+
+/// Get current hidden state from S4 layer.
+fn s4_get_state(layer: i64) -> i64 {
+    vec_get(layer, 7)
+}
+
+/// Discretize continuous-time A, B matrices using Zero-Order Hold (ZOH).
+///
+/// A_bar = exp(A * dt)  (diagonal, so element-wise exp)
+/// B_bar = (A_bar - I) * A^{-1} * B  (simplified for diagonal A)
+///
+/// Arguments:
+///   layer - S4 layer handle
+///   dt    - timestep as f64 bits
+///
+/// Returns: handle to vec [A_bar_diag, B_bar_mat]
+fn s4_discretize(layer: i64, dt: i64) -> i64 {
+    let n: i64 = vec_get(layer, 0);
+    let d: i64 = vec_get(layer, 1);
+    let a_diag: i64 = vec_get(layer, 2);
+    let b_mat: i64 = vec_get(layer, 3);
+
+    let dt_f: f64 = bits_to_f64(dt);
+
+    // A_bar_diag[i] = exp(A_diag[i] * dt)
+    let a_bar: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let a_i: f64 = bits_to_f64(vec_get(a_diag, i));
+        let a_dt: f64 = a_i * dt_f;
+        let exp_val: i64 = ssm_fexp(f64_to_bits(a_dt));
+        vec_push(a_bar, exp_val);
+        i = i + 1;
+    }
+
+    // B_bar[i, j] = (exp(A_i * dt) - 1) / A_i * B[i, j]
+    // For diagonal A: B_bar[i,:] = ((A_bar[i] - 1) / A_i) * B[i,:]
+    let b_bar: i64 = vec_new();
+    i = 0;
+    while i < n {
+        let a_i: f64 = bits_to_f64(vec_get(a_diag, i));
+        let a_bar_i: f64 = bits_to_f64(vec_get(a_bar, i));
+
+        // Scale factor: (A_bar_i - 1) / A_i
+        // Handle near-zero A_i: if |A_i| < eps, scale ≈ dt
+        var scale: f64 = dt_f;
+        if a_i > 0.000001 { scale = (a_bar_i - 1.0) / a_i; }
+        if a_i < -0.000001 { scale = (a_bar_i - 1.0) / a_i; }
+
+        var j: i64 = 0;
+        while j < d {
+            let b_ij: f64 = bits_to_f64(vec_get(b_mat, i * d + j));
+            vec_push(b_bar, f64_to_bits(scale * b_ij));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, a_bar);
+    vec_push(result, b_bar);
+    result
+}
+
+/// Process input sequence through S4 layer (recurrent mode).
+///
+/// Applies the discrete-time recurrence for each timestep:
+///   x[t+1] = A_bar * x[t] + B_bar * u[t]
+///   y[t]   = C * x[t] + D * u[t]
+///
+/// Arguments:
+///   layer - S4 layer handle
+///   input - input sequence handle: vec of T input vectors,
+///           each input vector has D elements (f64 bits)
+///           Layout: input is a vec of vec handles,
+///           where each inner vec has input_dim elements.
+///
+/// Returns: output sequence handle (vec of T output vectors)
+fn s4_forward(layer: i64, input: i64) -> i64 {
+    let n: i64 = vec_get(layer, 0);
+    let d: i64 = vec_get(layer, 1);
+    let c_mat: i64 = vec_get(layer, 4);
+    let d_vec: i64 = vec_get(layer, 5);
+    let dt: i64 = vec_get(layer, 6);
+
+    // Discretize
+    let disc: i64 = s4_discretize(layer, dt);
+    let a_bar: i64 = vec_get(disc, 0);
+    let b_bar: i64 = vec_get(disc, 1);
+
+    // Get current state
+    let state: i64 = vec_get(layer, 7);
+    var x: i64 = fvec_copy(state, n);
+
+    let seq_len: i64 = vec_len(input);
+    let output: i64 = vec_new();
+
+    var t: i64 = 0;
+    while t < seq_len {
+        let u_t: i64 = vec_get(input, t);
+
+        // x_new = A_bar * x + B_bar * u_t
+        // A_bar is diagonal, so element-wise multiply
+        let ax: i64 = fvec_mul(a_bar, x, n);
+
+        // B_bar * u_t: matrix-vector multiply (N x D) * (D)
+        let bu: i64 = fmat_vec_mul(b_bar, u_t, n, d);
+
+        // x = ax + bu
+        x = fvec_add(ax, bu, n);
+
+        // y = C * x + D * u_t
+        // C is D x N, x is N -> y is D
+        let cx: i64 = fmat_vec_mul(c_mat, x, d, n);
+
+        // D * u_t: element-wise multiply of feedthrough
+        let du: i64 = fvec_mul(d_vec, u_t, d);
+
+        // y = cx + du
+        let y_t: i64 = fvec_add(cx, du, d);
+
+        vec_push(output, y_t);
+        t = t + 1;
+    }
+
+    // Update stored state
+    var si: i64 = 0;
+    while si < n {
+        vec_set(state, si, vec_get(x, si));
+        si = si + 1;
+    }
+
+    output
+}
+
+/// Reset the hidden state to zeros.
+///
+/// Arguments:
+///   layer - S4 layer handle
+///
+/// Returns: 0 on success
+fn s4_reset_state(layer: i64) -> i64 {
+    let n: i64 = vec_get(layer, 0);
+    let state: i64 = vec_get(layer, 7);
+    let zero: i64 = ssm_zero();
+    var i: i64 = 0;
+    while i < n {
+        vec_set(state, i, zero);
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// HiPPO Matrix Initialization
+// =============================================================================
+
+/// Initialize the diagonal of the HiPPO matrix for long-range memory.
+///
+/// The HiPPO (High-order Polynomial Projection Operators) matrix defines
+/// how the state evolves to optimally compress history. For diagonal
+/// approximation:
+///   A_ii = -(i + 1/2)
+///
+/// This gives exponentially decaying eigenvalues that capture long-range
+/// dependencies when properly discretized.
+///
+/// Arguments:
+///   n - state dimension
+///
+/// Returns: vec handle with N diagonal entries (f64 bits)
+fn hippo_init_A(n: i64) -> i64 {
+    let a: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        // A_ii = -(i + 0.5)
+        let fi: f64 = 0.0 + i;
+        let val: f64 = 0.0 - (fi + 0.5);
+        vec_push(a, f64_to_bits(val));
+        i = i + 1;
+    }
+    a
+}
+
+// =============================================================================
+// Mamba (Selective State Space Model)
+// =============================================================================
+//
+// Layout of a Mamba layer (vec handle):
+//   [0] d_model      - model dimension
+//   [1] d_state      - SSM state dimension (N)
+//   [2] d_conv       - 1D convolution kernel size
+//   [3] d_inner      - expanded inner dimension = d_model * expand
+//   [4] expand        - expansion factor
+//   [5] in_proj handle    - input projection weights (d_model -> 2 * d_inner)
+//   [6] conv1d_weight     - 1D conv weights (d_inner x d_conv)
+//   [7] conv1d_bias       - 1D conv bias (d_inner)
+//   [8] x_proj handle     - project x -> (delta, B, C) combined
+//   [9] dt_proj handle    - project delta -> delta (d_inner -> d_inner)
+//  [10] A_log handle      - log of A diagonal (d_inner x d_state)
+//  [11] D_param handle    - D parameter (d_inner)
+//  [12] out_proj handle   - output projection (d_inner -> d_model)
+//  [13] conv_state handle - convolution state buffer (d_inner x d_conv)
+//  [14] ssm_state handle  - SSM hidden state (d_inner x d_state)
+
+/// Create a new Mamba (Selective SSM) layer.
+///
+/// Arguments:
+///   d_model - model dimension
+///   d_state - SSM state dimension (typically 16)
+///   d_conv  - 1D convolution kernel size (typically 4)
+///   expand  - expansion factor (typically 2)
+///
+/// Returns: Mamba layer handle (i64)
+fn mamba_layer_new(d_model: i64, d_state: i64, d_conv: i64, expand: i64) -> i64 {
+    let layer: i64 = vec_new();
+    let d_inner: i64 = d_model * expand;
+
+    // [0] d_model
+    vec_push(layer, d_model);
+    // [1] d_state
+    vec_push(layer, d_state);
+    // [2] d_conv
+    vec_push(layer, d_conv);
+    // [3] d_inner
+    vec_push(layer, d_inner);
+    // [4] expand
+    vec_push(layer, expand);
+
+    // [5] in_proj: d_model -> 2 * d_inner (for x and z gate)
+    let in_proj: i64 = fvec_rand(d_model * 2 * d_inner, 101);
+    vec_push(layer, in_proj);
+
+    // [6] conv1d_weight: d_inner x d_conv
+    let conv_w: i64 = fvec_rand(d_inner * d_conv, 202);
+    vec_push(layer, conv_w);
+
+    // [7] conv1d_bias: d_inner
+    let conv_b: i64 = fvec_new(d_inner);
+    vec_push(layer, conv_b);
+
+    // [8] x_proj: d_inner -> (dt_rank + 2 * d_state)
+    //     dt_rank approximated as d_inner / 16 (minimum 1)
+    var dt_rank: i64 = d_inner / 16;
+    if dt_rank < 1 { dt_rank = 1; }
+    let x_proj_size: i64 = d_inner * (dt_rank + 2 * d_state);
+    let x_proj: i64 = fvec_rand(x_proj_size, 303);
+    vec_push(layer, x_proj);
+
+    // [9] dt_proj: dt_rank -> d_inner
+    let dt_proj: i64 = fvec_rand(dt_rank * d_inner, 404);
+    vec_push(layer, dt_proj);
+
+    // [10] A_log: d_inner x d_state (log of diagonal A, initialized like HiPPO)
+    let a_log: i64 = vec_new();
+    var i: i64 = 0;
+    while i < d_inner {
+        var j: i64 = 0;
+        while j < d_state {
+            // A = -(j + 1), log(|A|) = log(j + 1)
+            let fj: f64 = 0.0 + j + 1.0;
+            // ln(fj) approximation via Newton
+            var ln_val: f64 = 1.0;
+            if fj > 1.0 {
+                // Newton: find t s.t. exp(t) = fj
+                var t: f64 = fj / 3.0;
+                var iter: i64 = 0;
+                while iter < 15 {
+                    let et: f64 = bits_to_f64(ssm_fexp(f64_to_bits(t)));
+                    t = t - (et - fj) / et;
+                    iter = iter + 1;
+                }
+                ln_val = t;
+            }
+            vec_push(a_log, f64_to_bits(ln_val));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    vec_push(layer, a_log);
+
+    // [11] D_param: d_inner (initialized to ones)
+    let d_param: i64 = vec_new();
+    i = 0;
+    while i < d_inner {
+        vec_push(d_param, ssm_one());
+        i = i + 1;
+    }
+    vec_push(layer, d_param);
+
+    // [12] out_proj: d_inner -> d_model
+    let out_proj: i64 = fvec_rand(d_inner * d_model, 505);
+    vec_push(layer, out_proj);
+
+    // [13] conv_state: d_inner x d_conv (zeros)
+    let conv_state: i64 = fvec_new(d_inner * d_conv);
+    vec_push(layer, conv_state);
+
+    // [14] ssm_state: d_inner x d_state (zeros)
+    let ssm_state: i64 = fvec_new(d_inner * d_state);
+    vec_push(layer, ssm_state);
+
+    layer
+}
+
+/// Get the dt_rank for a Mamba layer.
+fn mamba_dt_rank(layer: i64) -> i64 {
+    let d_inner: i64 = vec_get(layer, 3);
+    var dt_rank: i64 = d_inner / 16;
+    if dt_rank < 1 { dt_rank = 1; }
+    dt_rank
+}
+
+/// Mamba 1D convolution step (causal, per-timestep).
+///
+/// Shifts the conv_state buffer and applies the convolution kernel.
+///
+/// Arguments:
+///   layer - Mamba layer handle
+///   x     - input vector (d_inner elements, f64 bits)
+///
+/// Returns: convolved output (d_inner elements, f64 bits)
+fn mamba_conv1d_step(layer: i64, x: i64) -> i64 {
+    let d_inner: i64 = vec_get(layer, 3);
+    let d_conv: i64 = vec_get(layer, 2);
+    let conv_w: i64 = vec_get(layer, 6);
+    let conv_b: i64 = vec_get(layer, 7);
+    let conv_state: i64 = vec_get(layer, 13);
+
+    // Shift conv_state left by 1 for each channel, insert new x
+    var ch: i64 = 0;
+    while ch < d_inner {
+        // Shift: state[ch, k] = state[ch, k+1] for k = 0..d_conv-2
+        var k: i64 = 0;
+        while k < d_conv - 1 {
+            let next_val: i64 = vec_get(conv_state, ch * d_conv + k + 1);
+            vec_set(conv_state, ch * d_conv + k, next_val);
+            k = k + 1;
+        }
+        // Insert new value at the end
+        vec_set(conv_state, ch * d_conv + d_conv - 1, vec_get(x, ch));
+        ch = ch + 1;
+    }
+
+    // Apply convolution: out[ch] = sum_k(conv_w[ch, k] * conv_state[ch, k]) + bias[ch]
+    let out: i64 = vec_new();
+    ch = 0;
+    while ch < d_inner {
+        var sum: i64 = ssm_zero();
+        var k: i64 = 0;
+        while k < d_conv {
+            let w: i64 = vec_get(conv_w, ch * d_conv + k);
+            let s: i64 = vec_get(conv_state, ch * d_conv + k);
+            sum = ssm_fadd(sum, ssm_fmul(w, s));
+            k = k + 1;
+        }
+        // Add bias
+        sum = ssm_fadd(sum, vec_get(conv_b, ch));
+        vec_push(out, sum);
+        ch = ch + 1;
+    }
+    out
+}
+
+/// Selective scan: the core Mamba operation.
+///
+/// Computes the selective SSM recurrence with input-dependent parameters:
+///   x[t+1] = A_bar * x[t] + B_bar * u[t]
+///   y[t]   = C[t] * x[t]
+///
+/// where A_bar = exp(A * delta[t]), B_bar = delta[t] * B[t]
+///
+/// Arguments:
+///   layer - Mamba layer handle
+///   x     - input (d_inner elements, f64 bits) at current timestep
+///   delta - input-dependent timestep (d_inner elements, f64 bits)
+///   B     - input-dependent B matrix (d_state elements, f64 bits)
+///   C     - input-dependent C matrix (d_state elements, f64 bits)
+///
+/// Returns: output (d_inner elements, f64 bits)
+fn mamba_selective_scan(layer: i64, x: i64, delta: i64, B: i64, C: i64) -> i64 {
+    let d_inner: i64 = vec_get(layer, 3);
+    let d_state: i64 = vec_get(layer, 1);
+    let a_log: i64 = vec_get(layer, 10);
+    let d_param: i64 = vec_get(layer, 11);
+    let ssm_state: i64 = vec_get(layer, 14);
+
+    let out: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < d_inner {
+        let delta_i: f64 = bits_to_f64(vec_get(delta, i));
+        let x_i: f64 = bits_to_f64(vec_get(x, i));
+
+        var y_i: f64 = 0.0;
+
+        // For each state dimension
+        var j: i64 = 0;
+        while j < d_state {
+            let idx: i64 = i * d_state + j;
+
+            // A = -exp(A_log[i, j])
+            let a_log_ij: f64 = bits_to_f64(vec_get(a_log, idx));
+            let a_val: f64 = 0.0 - bits_to_f64(ssm_fexp(f64_to_bits(a_log_ij)));
+
+            // A_bar = exp(A * delta_i)
+            let a_bar: f64 = bits_to_f64(ssm_fexp(f64_to_bits(a_val * delta_i)));
+
+            // B_bar = delta_i * B[j]
+            let b_j: f64 = bits_to_f64(vec_get(B, j));
+            let b_bar: f64 = delta_i * b_j;
+
+            // State update: h = A_bar * h + B_bar * x_i
+            let h_old: f64 = bits_to_f64(vec_get(ssm_state, idx));
+            let h_new: f64 = a_bar * h_old + b_bar * x_i;
+            vec_set(ssm_state, idx, f64_to_bits(h_new));
+
+            // Output: y_i += C[j] * h_new
+            let c_j: f64 = bits_to_f64(vec_get(C, j));
+            y_i = y_i + c_j * h_new;
+
+            j = j + 1;
+        }
+
+        // Add D * x_i (skip connection)
+        let d_i: f64 = bits_to_f64(vec_get(d_param, i));
+        y_i = y_i + d_i * x_i;
+
+        vec_push(out, f64_to_bits(y_i));
+        i = i + 1;
+    }
+
+    out
+}
+
+/// Forward pass through Mamba layer for a single timestep.
+///
+/// Steps:
+///   1. Linear projection to expand dimension (produces x and z gate)
+///   2. 1D causal convolution on x
+///   3. SiLU activation
+///   4. Project to get input-dependent delta, B, C
+///   5. Selective scan
+///   6. Gate with z (element-wise multiply with SiLU(z))
+///   7. Output projection back to d_model
+///
+/// Arguments:
+///   layer - Mamba layer handle
+///   input - input vector (d_model elements, f64 bits)
+///
+/// Returns: output vector (d_model elements, f64 bits)
+fn mamba_forward(layer: i64, input: i64) -> i64 {
+    let d_model: i64 = vec_get(layer, 0);
+    let d_state: i64 = vec_get(layer, 1);
+    let d_inner: i64 = vec_get(layer, 3);
+    let in_proj: i64 = vec_get(layer, 5);
+    let x_proj: i64 = vec_get(layer, 8);
+    let dt_proj: i64 = vec_get(layer, 9);
+    let out_proj: i64 = vec_get(layer, 12);
+
+    let dt_rank: i64 = mamba_dt_rank(layer);
+
+    // 1. Input projection: [x, z] = in_proj * input
+    //    in_proj is (2 * d_inner) x d_model
+    let xz: i64 = fmat_vec_mul(in_proj, input, 2 * d_inner, d_model);
+
+    // Split into x (first d_inner) and z (second d_inner)
+    let x_part: i64 = vec_new();
+    let z_part: i64 = vec_new();
+    var i: i64 = 0;
+    while i < d_inner {
+        vec_push(x_part, vec_get(xz, i));
+        i = i + 1;
+    }
+    i = 0;
+    while i < d_inner {
+        vec_push(z_part, vec_get(xz, d_inner + i));
+        i = i + 1;
+    }
+
+    // 2. 1D convolution
+    let x_conv: i64 = mamba_conv1d_step(layer, x_part);
+
+    // 3. SiLU activation on x
+    let x_act: i64 = vec_new();
+    i = 0;
+    while i < d_inner {
+        vec_push(x_act, ssm_silu(vec_get(x_conv, i)));
+        i = i + 1;
+    }
+
+    // 4. Project to get delta, B, C
+    //    x_proj is (dt_rank + 2*d_state) x d_inner
+    let proj_out: i64 = fmat_vec_mul(x_proj, x_act, dt_rank + 2 * d_state, d_inner);
+
+    // Split: delta_raw (dt_rank), B (d_state), C (d_state)
+    let delta_raw: i64 = vec_new();
+    i = 0;
+    while i < dt_rank {
+        vec_push(delta_raw, vec_get(proj_out, i));
+        i = i + 1;
+    }
+
+    let b_input: i64 = vec_new();
+    i = 0;
+    while i < d_state {
+        vec_push(b_input, vec_get(proj_out, dt_rank + i));
+        i = i + 1;
+    }
+
+    let c_input: i64 = vec_new();
+    i = 0;
+    while i < d_state {
+        vec_push(c_input, vec_get(proj_out, dt_rank + d_state + i));
+        i = i + 1;
+    }
+
+    // dt_proj: dt_rank -> d_inner, then softplus
+    let delta: i64 = fmat_vec_mul(dt_proj, delta_raw, d_inner, dt_rank);
+    let delta_act: i64 = vec_new();
+    i = 0;
+    while i < d_inner {
+        vec_push(delta_act, ssm_softplus(vec_get(delta, i)));
+        i = i + 1;
+    }
+
+    // 5. Selective scan
+    let y: i64 = mamba_selective_scan(layer, x_act, delta_act, b_input, c_input);
+
+    // 6. Gate with z: y = y * SiLU(z)
+    let y_gated: i64 = vec_new();
+    i = 0;
+    while i < d_inner {
+        let y_i: i64 = vec_get(y, i);
+        let z_i: i64 = ssm_silu(vec_get(z_part, i));
+        vec_push(y_gated, ssm_fmul(y_i, z_i));
+        i = i + 1;
+    }
+
+    // 7. Output projection: d_inner -> d_model
+    let output: i64 = fmat_vec_mul(out_proj, y_gated, d_model, d_inner);
+
+    output
+}
+
+// =============================================================================
+// Parallel Scan (Prefix Sum Generalization)
+// =============================================================================
+
+/// Parallel associative scan (Blelloch-style prefix sum).
+///
+/// Given a vec of elements where each element is a pair [a_i, b_i] (f64 bits),
+/// computes the prefix "product" under the associative operator:
+///   (a1, b1) ⊕ (a2, b2) = (a1 * a2, a2 * b1 + b2)
+///
+/// This is the core operation for parallelizing the SSM recurrence:
+///   h[t] = a[t] * h[t-1] + b[t]
+///
+/// After scan, element i contains the accumulated result from 0..i.
+///
+/// Arguments:
+///   elements - vec of pair handles, each pair is [a_bits, b_bits]
+///
+/// Returns: vec of pair handles with prefix-scanned results
+fn parallel_scan(elements: i64) -> i64 {
+    let n: i64 = vec_len(elements);
+    if n == 0 { return vec_new(); }
+
+    // Copy elements to working buffer
+    let work: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let pair: i64 = vec_get(elements, i);
+        let a_i: i64 = vec_get(pair, 0);
+        let b_i: i64 = vec_get(pair, 1);
+        let new_pair: i64 = vec_new();
+        vec_push(new_pair, a_i);
+        vec_push(new_pair, b_i);
+        vec_push(work, new_pair);
+        i = i + 1;
+    }
+
+    // Up-sweep (reduce) phase
+    var stride: i64 = 1;
+    while stride < n {
+        var idx: i64 = 2 * stride - 1;
+        while idx < n {
+            let left_idx: i64 = idx - stride;
+            let left_pair: i64 = vec_get(work, left_idx);
+            let right_pair: i64 = vec_get(work, idx);
+
+            // (a_l, b_l) ⊕ (a_r, b_r) = (a_l * a_r, a_r * b_l + b_r)
+            let a_l: i64 = vec_get(left_pair, 0);
+            let b_l: i64 = vec_get(left_pair, 1);
+            let a_r: i64 = vec_get(right_pair, 0);
+            let b_r: i64 = vec_get(right_pair, 1);
+
+            let new_a: i64 = ssm_fmul(a_l, a_r);
+            let new_b: i64 = ssm_fadd(ssm_fmul(a_r, b_l), b_r);
+
+            vec_set(right_pair, 0, new_a);
+            vec_set(right_pair, 1, new_b);
+
+            idx = idx + 2 * stride;
+        }
+        stride = stride * 2;
+    }
+
+    // Set last element's identity for down-sweep
+    // For inclusive scan, we keep the last element as-is and sweep down
+
+    // Down-sweep phase
+    stride = stride / 2;
+    while stride >= 1 {
+        var idx: i64 = 3 * stride - 1;
+        while idx < n {
+            let left_idx: i64 = idx - stride;
+            let left_pair: i64 = vec_get(work, left_idx);
+            let right_pair: i64 = vec_get(work, idx);
+
+            let a_l: i64 = vec_get(left_pair, 0);
+            let b_l: i64 = vec_get(left_pair, 1);
+            let a_r: i64 = vec_get(right_pair, 0);
+            let b_r: i64 = vec_get(right_pair, 1);
+
+            // Combine left into right
+            let new_a: i64 = ssm_fmul(a_l, a_r);
+            let new_b: i64 = ssm_fadd(ssm_fmul(a_r, b_l), b_r);
+
+            vec_set(right_pair, 0, new_a);
+            vec_set(right_pair, 1, new_b);
+
+            idx = idx + 2 * stride;
+        }
+        stride = stride / 2;
+    }
+
+    // Build output: apply the recurrence h[i] = a_acc * h_init + b_acc
+    // For h_init = 0, h[i] = b_acc[i]
+    // We return the work pairs which now contain accumulated (a, b)
+    let result: i64 = vec_new();
+    i = 0;
+    while i < n {
+        let pair: i64 = vec_get(work, i);
+        // For prefix sum: result[i] = accumulated b value
+        // (with a being the accumulated multiplicative factor)
+        vec_push(result, pair);
+        i = i + 1;
+    }
+    result
+}
+
+/// Simple prefix sum using parallel scan framework.
+///
+/// Given a vec of i64 values, computes prefix sums using the parallel
+/// scan with operator (a=1, b=value), giving additive scan.
+///
+/// Arguments:
+///   values - vec of f64 bits values
+///
+/// Returns: vec of f64 bits with prefix sums
+fn prefix_sum(values: i64) -> i64 {
+    let n: i64 = vec_len(values);
+    if n == 0 { return vec_new(); }
+
+    // Build elements: each is (1.0, value[i])
+    let elements: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let pair: i64 = vec_new();
+        vec_push(pair, ssm_one());
+        vec_push(pair, vec_get(values, i));
+        vec_push(elements, pair);
+        i = i + 1;
+    }
+
+    // Run parallel scan
+    let scanned: i64 = parallel_scan(elements);
+
+    // Extract b values (the accumulated sums)
+    let result: i64 = vec_new();
+    i = 0;
+    while i < n {
+        let pair: i64 = vec_get(scanned, i);
+        vec_push(result, vec_get(pair, 1));
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// S4 Batch Processing
+// =============================================================================
+
+/// Process a batch of sequences through an S4 layer.
+///
+/// Arguments:
+///   layer   - S4 layer handle
+///   batch   - vec of sequence handles (each is vec of input vecs)
+///
+/// Returns: vec of output sequence handles
+fn s4_forward_batch(layer: i64, batch: i64) -> i64 {
+    let n_seqs: i64 = vec_len(batch);
+    let outputs: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < n_seqs {
+        // Reset state for each sequence in batch
+        s4_reset_state(layer);
+        let seq: i64 = vec_get(batch, i);
+        let out: i64 = s4_forward(layer, seq);
+        vec_push(outputs, out);
+        i = i + 1;
+    }
+    outputs
+}
+
+// =============================================================================
+// S4 Parameter Access
+// =============================================================================
+
+/// Get the A diagonal parameters.
+fn s4_get_A(layer: i64) -> i64 {
+    vec_get(layer, 2)
+}
+
+/// Get the B matrix parameters.
+fn s4_get_B(layer: i64) -> i64 {
+    vec_get(layer, 3)
+}
+
+/// Get the C matrix parameters.
+fn s4_get_C(layer: i64) -> i64 {
+    vec_get(layer, 4)
+}
+
+/// Get the D vector parameters.
+fn s4_get_D(layer: i64) -> i64 {
+    vec_get(layer, 5)
+}
+
+/// Get the discretization timestep (as f64 bits).
+fn s4_get_dt(layer: i64) -> i64 {
+    vec_get(layer, 6)
+}
+
+/// Set the discretization timestep.
+fn s4_set_dt(layer: i64, dt_bits: i64) -> i64 {
+    vec_set(layer, 6, dt_bits);
+    0
+}
+
+// =============================================================================
+// Mamba State Reset
+// =============================================================================
+
+/// Reset the Mamba layer's internal state (conv + SSM).
+fn mamba_reset_state(layer: i64) -> i64 {
+    let d_inner: i64 = vec_get(layer, 3);
+    let d_state: i64 = vec_get(layer, 1);
+    let d_conv: i64 = vec_get(layer, 2);
+    let conv_state: i64 = vec_get(layer, 13);
+    let ssm_state: i64 = vec_get(layer, 14);
+    let zero: i64 = ssm_zero();
+
+    var i: i64 = 0;
+    while i < d_inner * d_conv {
+        vec_set(conv_state, i, zero);
+        i = i + 1;
+    }
+    i = 0;
+    while i < d_inner * d_state {
+        vec_set(ssm_state, i, zero);
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Mamba Parameter Access
+// =============================================================================
+
+/// Get d_model from Mamba layer.
+fn mamba_get_d_model(layer: i64) -> i64 {
+    vec_get(layer, 0)
+}
+
+/// Get d_state from Mamba layer.
+fn mamba_get_d_state(layer: i64) -> i64 {
+    vec_get(layer, 1)
+}
+
+/// Get d_conv from Mamba layer.
+fn mamba_get_d_conv(layer: i64) -> i64 {
+    vec_get(layer, 2)
+}
+
+/// Get d_inner from Mamba layer.
+fn mamba_get_d_inner(layer: i64) -> i64 {
+    vec_get(layer, 3)
+}
+
+/// Get the SSM state for inspection.
+fn mamba_get_ssm_state(layer: i64) -> i64 {
+    vec_get(layer, 14)
+}
+
+// =============================================================================
+// Stacked SSM Layers
+// =============================================================================
+
+/// Create a stack of S4 layers.
+///
+/// Arguments:
+///   n_layers  - number of layers
+///   state_dim - state dimension per layer
+///   input_dim - input/output dimension
+///
+/// Returns: vec of S4 layer handles
+fn s4_stack_new(n_layers: i64, state_dim: i64, input_dim: i64) -> i64 {
+    let stack: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_layers {
+        let layer: i64 = s4_layer_new(state_dim, input_dim);
+        vec_push(stack, layer);
+        i = i + 1;
+    }
+    stack
+}
+
+/// Forward pass through a stack of S4 layers.
+///
+/// Arguments:
+///   stack - vec of S4 layer handles
+///   input - input sequence (vec of timestep vectors)
+///
+/// Returns: output sequence from the final layer
+fn s4_stack_forward(stack: i64, input: i64) -> i64 {
+    let n_layers: i64 = vec_len(stack);
+    var current: i64 = input;
+
+    var i: i64 = 0;
+    while i < n_layers {
+        let layer: i64 = vec_get(stack, i);
+        current = s4_forward(layer, current);
+        i = i + 1;
+    }
+    current
+}
+
+/// Reset all states in a stack of S4 layers.
+fn s4_stack_reset(stack: i64) -> i64 {
+    let n_layers: i64 = vec_len(stack);
+    var i: i64 = 0;
+    while i < n_layers {
+        s4_reset_state(vec_get(stack, i));
+        i = i + 1;
+    }
+    0
+}
+
+/// Create a stack of Mamba layers.
+fn mamba_stack_new(n_layers: i64, d_model: i64, d_state: i64, d_conv: i64, expand: i64) -> i64 {
+    let stack: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_layers {
+        let layer: i64 = mamba_layer_new(d_model, d_state, d_conv, expand);
+        vec_push(stack, layer);
+        i = i + 1;
+    }
+    stack
+}
+
+/// Forward pass through a stack of Mamba layers (single timestep).
+fn mamba_stack_forward(stack: i64, input: i64) -> i64 {
+    let n_layers: i64 = vec_len(stack);
+    var current: i64 = input;
+    var i: i64 = 0;
+    while i < n_layers {
+        let layer: i64 = vec_get(stack, i);
+        current = mamba_forward(layer, current);
+        i = i + 1;
+    }
+    current
+}
+
+/// Reset all states in a stack of Mamba layers.
+fn mamba_stack_reset(stack: i64) -> i64 {
+    let n_layers: i64 = vec_len(stack);
+    var i: i64 = 0;
+    while i < n_layers {
+        mamba_reset_state(vec_get(stack, i));
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// SSM Utilities
+// =============================================================================
+
+/// Compute the L2 norm of a float vector (as bits).
+fn fvec_norm(v: i64, size: i64) -> i64 {
+    var sum: i64 = ssm_zero();
+    var i: i64 = 0;
+    while i < size {
+        let vi: i64 = vec_get(v, i);
+        sum = ssm_fadd(sum, ssm_fmul(vi, vi));
+        i = i + 1;
+    }
+    ssm_fsqrt(sum)
+}
+
+/// Check if all elements of a float vector are zero.
+fn fvec_is_zero(v: i64, size: i64) -> i64 {
+    var i: i64 = 0;
+    while i < size {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        if val > 0.000001 { return 0; }
+        if val < -0.000001 { return 0; }
+        i = i + 1;
+    }
+    1
+}
+
+/// Clamp all elements of a float vector to [min, max].
+fn fvec_clamp(v: i64, size: i64, min_bits: i64, max_bits: i64) -> i64 {
+    let min_f: f64 = bits_to_f64(min_bits);
+    let max_f: f64 = bits_to_f64(max_bits);
+    let out: i64 = vec_new();
+    var i: i64 = 0;
+    while i < size {
+        var val: f64 = bits_to_f64(vec_get(v, i));
+        if val < min_f { val = min_f; }
+        if val > max_f { val = max_f; }
+        vec_push(out, f64_to_bits(val));
+        i = i + 1;
+    }
+    out
+}
+
+/// Apply layer normalization to a float vector.
+///
+/// norm[i] = (v[i] - mean) / sqrt(var + eps)
+///
+/// Arguments:
+///   v    - float vector (f64 bits)
+///   size - vector length
+///
+/// Returns: normalized float vector
+fn fvec_layer_norm(v: i64, size: i64) -> i64 {
+    // Compute mean
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < size {
+        sum = sum + bits_to_f64(vec_get(v, i));
+        i = i + 1;
+    }
+    let n_f: f64 = 0.0 + size;
+    let mean: f64 = sum / n_f;
+
+    // Compute variance
+    var var_sum: f64 = 0.0;
+    i = 0;
+    while i < size {
+        let diff: f64 = bits_to_f64(vec_get(v, i)) - mean;
+        var_sum = var_sum + diff * diff;
+        i = i + 1;
+    }
+    let variance: f64 = var_sum / n_f;
+    let std_dev: f64 = bits_to_f64(ssm_fsqrt(f64_to_bits(variance + 0.00001)));
+
+    // Normalize
+    let out: i64 = vec_new();
+    i = 0;
+    while i < size {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        let normed: f64 = (val - mean) / std_dev;
+        vec_push(out, f64_to_bits(normed));
+        i = i + 1;
+    }
+    out
+}
+
+/// Residual connection: out = x + f(x).
+fn fvec_residual(x: i64, fx: i64, size: i64) -> i64 {
+    fvec_add(x, fx, size)
+}
