@@ -1,7 +1,7 @@
 # TASK-037: Mixture of Experts with Formal Routing
 
 **Version:** 0.16.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P0 — Critical
 **Depends on:** v0.15.0 release, neural gates (TASK-001), cognitive hive (TASK-009)
 

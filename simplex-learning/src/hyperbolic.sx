@@ -1,0 +1,1405 @@
+// simplex-learning::hyperbolic - Hyperbolic Embeddings
+//
+// Hyperbolic geometry provides a natural space for embedding hierarchical and
+// tree-like data. Unlike Euclidean space, hyperbolic space has exponential
+// volume growth, matching the exponential growth of trees. This means a
+// 2D hyperbolic embedding can faithfully represent trees that would require
+// very high-dimensional Euclidean space.
+//
+// This module implements two models of hyperbolic geometry:
+//
+// 1. Poincare Ball Model: Points in the open unit ball {x : ||x|| < 1}.
+//    Distances grow logarithmically near the boundary, compressing an
+//    infinite space into a bounded disk.
+//
+// 2. Lorentz (Hyperboloid) Model: Points on the upper sheet of a hyperboloid.
+//    Numerically more stable for optimization, can convert to/from Poincare.
+//
+// Key operations:
+//   - Mobius addition/scalar multiplication (non-Euclidean arithmetic)
+//   - Exponential/logarithmic maps (tangent space <-> manifold)
+//   - Riemannian SGD (gradient descent respecting curvature)
+//   - Embedding tables with hyperbolic nearest-neighbor search
+//
+// All floating-point values stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set / vec_len.
+//
+// # References
+//
+// Nickel & Kiela "Poincare Embeddings for Learning Hierarchical Representations" (NeurIPS 2017)
+// Nickel & Kiela "Learning Continuous Hierarchies in the Lorentz Model" (ICML 2018)
+// Ganea et al. "Hyperbolic Neural Networks" (NeurIPS 2018)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+
+// Embedding table field indices
+// =============================================================================
+
+fn HE_N_ITEMS() -> i64   { 0 }
+fn HE_DIM() -> i64        { 1 }
+fn HE_VECTORS() -> i64    { 2 }   // handle: vec of vec handles (one per item)
+fn HE_FIELDS() -> i64     { 3 }
+
+// =============================================================================
+// Float helpers
+// =============================================================================
+
+fn hyp_abs(x: f64) -> f64 {
+    if x < 0.0 { 0.0 - x } else { x }
+}
+
+fn hyp_max(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
+
+fn hyp_min(a: f64, b: f64) -> f64 {
+    if a < b { a } else { b }
+}
+
+fn hyp_sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    var guess: f64 = x;
+    if guess > 1.0 { guess = guess / 2.0; }
+    if guess < 0.001 { guess = 0.001; }
+    var i: i64 = 0;
+    while i < 30 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    guess
+}
+
+// ln(x) via Newton on exp(y) = x
+fn hyp_ln(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 - 1000.0; }
+    var y: f64 = 0.0;
+    if x > 1.0 { y = x - 1.0; }
+    if x < 1.0 { y = 0.0 - (1.0 - x); }
+    var i: i64 = 0;
+    while i < 50 {
+        let ey: f64 = exp(y);
+        if ey < 0.0000001 { y = y + 1.0; i = i + 1; }
+        else {
+            y = y - (ey - x) / ey;
+            i = i + 1;
+        }
+    }
+    y
+}
+
+// arccosh(x) = ln(x + sqrt(x^2 - 1)), defined for x >= 1
+fn hyp_arccosh(x: f64) -> f64 {
+    if x < 1.0 { return 0.0; }
+    let inner: f64 = x * x - 1.0;
+    hyp_ln(x + hyp_sqrt(inner))
+}
+
+// arctanh(x) = 0.5 * ln((1+x)/(1-x)), defined for |x| < 1
+fn hyp_arctanh(x: f64) -> f64 {
+    let clamped: f64 = hyp_max(0.0 - 0.999999, hyp_min(0.999999, x));
+    0.5 * hyp_ln((1.0 + clamped) / (1.0 - clamped))
+}
+
+fn hyp_tanh(x: f64) -> f64 {
+    let clamped: f64 = hyp_max(0.0 - 15.0, hyp_min(15.0, x));
+    let e2x: f64 = exp(2.0 * clamped);
+    (e2x - 1.0) / (e2x + 1.0)
+}
+
+// PRNG for initialization
+fn hyp_prng(seed: i64) -> i64 {
+    var s: i64 = seed;
+    if s == 0 { s = 987654321; }
+    s = s ^ (s * 8192);
+    if s < 0 { s = 0 - s; }
+    s = s ^ (s / 131072);
+    s = s ^ (s * 32);
+    if s < 0 { s = 0 - s; }
+    s
+}
+
+// =============================================================================
+// Vector operations on f64-as-bits vecs
+// =============================================================================
+
+/// Squared L2 norm of a vector (stored as f64-as-bits).
+fn hvec_norm_sq(v: i64, dim: i64) -> f64 {
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < dim {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        sum = sum + val * val;
+        i = i + 1;
+    }
+    sum
+}
+
+/// L2 norm of a vector.
+///
+/// Arguments:
+///   v   - handle to vec of f64-as-bits
+///   dim - dimension
+///
+/// Returns: norm as f64-as-bits
+fn hyp_norm(v: i64, dim: i64) -> i64 {
+    f64_to_bits(hyp_sqrt(hvec_norm_sq(v, dim)))
+}
+
+/// Dot product of two vectors.
+fn hvec_dot(u: i64, v: i64, dim: i64) -> f64 {
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < dim {
+        let a: f64 = bits_to_f64(vec_get(u, i));
+        let b: f64 = bits_to_f64(vec_get(v, i));
+        sum = sum + a * b;
+        i = i + 1;
+    }
+    sum
+}
+
+/// Squared distance between two vectors.
+fn hvec_dist_sq(u: i64, v: i64, dim: i64) -> f64 {
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < dim {
+        let a: f64 = bits_to_f64(vec_get(u, i));
+        let b: f64 = bits_to_f64(vec_get(v, i));
+        let d: f64 = a - b;
+        sum = sum + d * d;
+        i = i + 1;
+    }
+    sum
+}
+
+/// Copy a vector.
+fn hvec_copy(v: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(result, vec_get(v, i));
+        i = i + 1;
+    }
+    result
+}
+
+/// Create a zero vector.
+fn hvec_zero(dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(result, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    result
+}
+
+/// Add two vectors: result = u + v.
+fn hvec_add(u: i64, v: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let a: f64 = bits_to_f64(vec_get(u, i));
+        let b: f64 = bits_to_f64(vec_get(v, i));
+        vec_push(result, f64_to_bits(a + b));
+        i = i + 1;
+    }
+    result
+}
+
+/// Subtract: result = u - v.
+fn hvec_sub(u: i64, v: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let a: f64 = bits_to_f64(vec_get(u, i));
+        let b: f64 = bits_to_f64(vec_get(v, i));
+        vec_push(result, f64_to_bits(a - b));
+        i = i + 1;
+    }
+    result
+}
+
+/// Scale: result = v * scalar.
+fn hvec_scale(v: i64, scalar: f64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        vec_push(result, f64_to_bits(val * scalar));
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Poincare Ball Model
+// =============================================================================
+
+/// Create a Poincare ball space descriptor.
+///
+/// The Poincare ball is the open unit ball in R^dim with the metric:
+///   ds^2 = (2 / (1 - ||x||^2))^2 * ||dx||^2
+///
+/// This function returns the dimension (as the space is fully defined by dim).
+///
+/// Arguments:
+///   dim - embedding dimension
+///
+/// Returns: dim (for API consistency; the space needs no additional state)
+fn poincare_new(dim: i64) -> i64 {
+    hvec_zero(dim)
+}
+
+/// Compute the Poincare (hyperbolic) distance between two points.
+///
+/// d(u, v) = arccosh(1 + 2 * ||u - v||^2 / ((1 - ||u||^2)(1 - ||v||^2)))
+///
+/// Arguments:
+///   u   - handle to vec of f64-as-bits (point in Poincare ball)
+///   v   - handle to vec of f64-as-bits (point in Poincare ball)
+///   dim - dimension
+///
+/// Returns: distance as f64-as-bits
+fn poincare_distance(u: i64, v: i64, dim: i64) -> i64 {
+    let u_sq: f64 = hvec_norm_sq(u, dim);
+    let v_sq: f64 = hvec_norm_sq(v, dim);
+    let diff_sq: f64 = hvec_dist_sq(u, v, dim);
+
+    // Clamp denominators to avoid division by zero at boundary
+    let denom_u: f64 = hyp_max(1.0 - u_sq, 0.0000001);
+    let denom_v: f64 = hyp_max(1.0 - v_sq, 0.0000001);
+
+    let arg: f64 = 1.0 + 2.0 * diff_sq / (denom_u * denom_v);
+    // arccosh argument must be >= 1
+    let safe_arg: f64 = hyp_max(arg, 1.0);
+    f64_to_bits(hyp_arccosh(safe_arg))
+}
+
+/// Mobius addition in the Poincare ball.
+///
+/// u (+) v = ((1 + 2<u,v> + ||v||^2) * u + (1 - ||u||^2) * v)
+///           / (1 + 2<u,v> + ||u||^2 * ||v||^2)
+///
+/// This is the "translation" operation in hyperbolic space.
+///
+/// Arguments:
+///   u   - handle to vec of f64-as-bits
+///   v   - handle to vec of f64-as-bits
+///   dim - dimension
+///
+/// Returns: handle to result vec of f64-as-bits
+fn poincare_add(u: i64, v: i64, dim: i64) -> i64 {
+    let u_sq: f64 = hvec_norm_sq(u, dim);
+    let v_sq: f64 = hvec_norm_sq(v, dim);
+    let uv: f64 = hvec_dot(u, v, dim);
+
+    let num_u_coeff: f64 = 1.0 + 2.0 * uv + v_sq;
+    let num_v_coeff: f64 = 1.0 - u_sq;
+    let denom: f64 = hyp_max(1.0 + 2.0 * uv + u_sq * v_sq, 0.0000001);
+
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let ui: f64 = bits_to_f64(vec_get(u, i));
+        let vi: f64 = bits_to_f64(vec_get(v, i));
+        let val: f64 = (num_u_coeff * ui + num_v_coeff * vi) / denom;
+        vec_push(result, f64_to_bits(val));
+        i = i + 1;
+    }
+
+    // Project to ensure we stay in the ball
+    poincare_project_internal(result, dim, 0.999)
+}
+
+/// Internal projection helper (takes f64 max_norm directly).
+fn poincare_project_internal(v: i64, dim: i64, max_norm: f64) -> i64 {
+    let norm: f64 = hyp_sqrt(hvec_norm_sq(v, dim));
+    if norm < max_norm {
+        return v;
+    }
+    // Scale down to max_norm
+    let scale: f64 = max_norm / hyp_max(norm, 0.0000001);
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        vec_push(result, f64_to_bits(val * scale));
+        i = i + 1;
+    }
+    result
+}
+
+/// Mobius scalar multiplication in the Poincare ball.
+///
+/// r (*) v = tanh(r * arctanh(||v||)) * (v / ||v||)
+///
+/// Scales a point along the geodesic from the origin through v.
+///
+/// Arguments:
+///   r   - scalar (f64-as-bits)
+///   v   - handle to vec of f64-as-bits
+///   dim - dimension
+///
+/// Returns: handle to result vec of f64-as-bits
+fn poincare_scalar_mul(r: i64, v: i64, dim: i64) -> i64 {
+    let r_f: f64 = bits_to_f64(r);
+    let norm: f64 = hyp_sqrt(hvec_norm_sq(v, dim));
+
+    if norm < 0.0000001 {
+        // Zero vector: any scalar multiple is still zero
+        return hvec_zero(dim);
+    }
+
+    let new_norm: f64 = hyp_tanh(r_f * hyp_arctanh(norm));
+    let scale: f64 = new_norm / norm;
+
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        vec_push(result, f64_to_bits(val * scale));
+        i = i + 1;
+    }
+    result
+}
+
+/// Exponential map: tangent space at v -> Poincare ball.
+///
+/// Maps a tangent vector at point v onto the manifold:
+///   exp_v(u) = v (+) (tanh(lambda_v * ||u|| / 2) * u / ||u||)
+///
+/// where lambda_v = 2 / (1 - ||v||^2) is the conformal factor.
+///
+/// Arguments:
+///   v       - base point (handle to vec of f64-as-bits)
+///   tangent - tangent vector at v (handle to vec of f64-as-bits)
+///   dim     - dimension
+///
+/// Returns: handle to result point on manifold
+fn poincare_exp_map(v: i64, tangent: i64, dim: i64) -> i64 {
+    let v_sq: f64 = hvec_norm_sq(v, dim);
+    let lambda_v: f64 = 2.0 / hyp_max(1.0 - v_sq, 0.0000001);
+    let t_norm: f64 = hyp_sqrt(hvec_norm_sq(tangent, dim));
+
+    if t_norm < 0.0000001 {
+        return hvec_copy(v, dim);
+    }
+
+    let coeff: f64 = hyp_tanh(lambda_v * t_norm / 2.0) / t_norm;
+
+    // Scaled tangent
+    let scaled: i64 = hvec_scale(tangent, coeff, dim);
+
+    // Mobius add: v (+) scaled
+    poincare_add(v, scaled, dim)
+}
+
+/// Logarithmic map: Poincare ball -> tangent space at u.
+///
+/// Inverse of exp_map. Maps a point v back to the tangent space at u:
+///   log_u(v) = (2 / lambda_u) * arctanh(||(-u) (+) v||) * ((-u) (+) v) / ||(-u) (+) v||
+///
+/// Arguments:
+///   u   - base point (handle to vec of f64-as-bits)
+///   v   - target point (handle to vec of f64-as-bits)
+///   dim - dimension
+///
+/// Returns: handle to tangent vector at u
+fn poincare_log_map(u: i64, v: i64, dim: i64) -> i64 {
+    let u_sq: f64 = hvec_norm_sq(u, dim);
+    let lambda_u: f64 = 2.0 / hyp_max(1.0 - u_sq, 0.0000001);
+
+    // (-u) (+) v
+    let neg_u: i64 = hvec_scale(u, 0.0 - 1.0, dim);
+    let diff: i64 = poincare_add(neg_u, v, dim);
+    let diff_norm: f64 = hyp_sqrt(hvec_norm_sq(diff, dim));
+
+    if diff_norm < 0.0000001 {
+        return hvec_zero(dim);
+    }
+
+    let coeff: f64 = (2.0 / lambda_u) * hyp_arctanh(diff_norm) / diff_norm;
+    hvec_scale(diff, coeff, dim)
+}
+
+/// Project a point to ensure it stays inside the Poincare ball.
+///
+/// If ||v|| >= max_norm, rescale to ||v|| = max_norm.
+/// This is essential after gradient updates to prevent points from escaping.
+///
+/// Arguments:
+///   v        - handle to vec of f64-as-bits
+///   dim      - dimension
+///   max_norm - maximum allowed norm (f64-as-bits, should be < 1.0)
+///
+/// Returns: handle to projected point
+fn poincare_project(v: i64, dim: i64, max_norm: i64) -> i64 {
+    let mn: f64 = bits_to_f64(max_norm);
+    poincare_project_internal(v, dim, mn)
+}
+
+// =============================================================================
+// Embedding Table
+// =============================================================================
+
+/// Create a hyperbolic embedding table.
+///
+/// Each item gets a dim-dimensional vector in the Poincare ball,
+/// initialized near the origin (small random values).
+///
+/// Arguments:
+///   n_items - number of items to embed
+///   dim     - embedding dimension
+///
+/// Returns: handle to embedding table vec
+fn hyp_embed_new(n_items: i64, dim: i64) -> i64 {
+    let table: i64 = vec_new();
+
+    // [0] n_items
+    vec_push(table, n_items);
+
+    // [1] dim
+    vec_push(table, dim);
+
+    // [2] vectors - initialize near origin with small random values
+    let vectors: i64 = vec_new();
+    var s: i64 = 42;
+    var i: i64 = 0;
+    while i < n_items {
+        let v: i64 = vec_new();
+        var j: i64 = 0;
+        while j < dim {
+            s = hyp_prng(s);
+            let frac: f64 = bits_to_f64(f64_to_bits(s % 1000000)) / 1000000.0;
+            let val: f64 = (frac - 0.5) * 0.02;  // Small values near origin
+            vec_push(v, f64_to_bits(val));
+            j = j + 1;
+        }
+        vec_push(vectors, v);
+        i = i + 1;
+    }
+    vec_push(table, vectors);
+
+    table
+}
+
+/// Get the embedding vector for item id.
+///
+/// Arguments:
+///   table - handle to embedding table
+///   id    - item index
+///
+/// Returns: handle to vec of f64-as-bits (the embedding vector)
+fn hyp_embed_get(table: i64, id: i64) -> i64 {
+    let vectors: i64 = vec_get(table, HE_VECTORS());
+    vec_get(vectors, id)
+}
+
+/// Set the embedding vector for item id.
+///
+/// Arguments:
+///   table - handle to embedding table
+///   id    - item index
+///   vec_h - handle to new vec of f64-as-bits
+///
+/// Returns: 0
+fn hyp_embed_set(table: i64, id: i64, vec_h: i64) -> i64 {
+    let vectors: i64 = vec_get(table, HE_VECTORS());
+    vec_set(vectors, id, vec_h);
+    0
+}
+
+/// Find the k nearest neighbors to a query point in hyperbolic space.
+///
+/// Uses brute-force search with Poincare distance.
+///
+/// Arguments:
+///   table - handle to embedding table
+///   query - handle to query vec of f64-as-bits
+///   top_k - number of neighbors to return
+///
+/// Returns: handle to vec of item indices (sorted by distance, closest first)
+fn hyp_embed_nearest(table: i64, query: i64, top_k: i64) -> i64 {
+    let n_items: i64 = vec_get(table, HE_N_ITEMS());
+    let dim: i64 = vec_get(table, HE_DIM());
+    let vectors: i64 = vec_get(table, HE_VECTORS());
+
+    // Compute all distances
+    let distances: i64 = vec_new();
+    let indices: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_items {
+        let v: i64 = vec_get(vectors, i);
+        let d: i64 = poincare_distance(query, v, dim);
+        vec_push(distances, d);
+        vec_push(indices, i);
+        i = i + 1;
+    }
+
+    // Selection sort for top_k (fine for moderate n_items)
+    let result: i64 = vec_new();
+    var k: i64 = 0;
+    let actual_k: i64 = hyp_min_i64(top_k, n_items);
+    while k < actual_k {
+        var best_idx: i64 = 0;
+        var best_dist: f64 = bits_to_f64(vec_get(distances, 0));
+        var found: i64 = 0;
+
+        i = 0;
+        while i < n_items {
+            let d_i: f64 = bits_to_f64(vec_get(distances, i));
+            // Skip already selected (marked with huge distance)
+            if d_i < 999999.0 {
+                if found == 0 {
+                    best_idx = i;
+                    best_dist = d_i;
+                    found = 1;
+                } else {
+                    if d_i < best_dist {
+                        best_idx = i;
+                        best_dist = d_i;
+                    }
+                }
+            }
+            i = i + 1;
+        }
+
+        if found == 1 {
+            vec_push(result, vec_get(indices, best_idx));
+            // Mark as used
+            vec_set(distances, best_idx, f64_to_bits(9999999.0));
+        }
+        k = k + 1;
+    }
+
+    result
+}
+
+fn hyp_min_i64(a: i64, b: i64) -> i64 {
+    if a < b { a } else { b }
+}
+
+// =============================================================================
+// Riemannian SGD
+// =============================================================================
+
+/// Rescale a Euclidean gradient to Riemannian gradient on the Poincare ball.
+///
+/// The Riemannian gradient is obtained by multiplying the Euclidean gradient
+/// by the inverse of the metric tensor:
+///   grad_R = ((1 - ||x||^2)^2 / 4) * grad_E
+///
+/// Arguments:
+///   grad  - Euclidean gradient (handle to vec of f64-as-bits)
+///   point - current point on manifold (handle to vec of f64-as-bits)
+///   dim   - dimension
+///
+/// Returns: handle to Riemannian gradient vec
+fn rsgd_grad_rescale(grad: i64, point: i64, dim: i64) -> i64 {
+    let p_sq: f64 = hvec_norm_sq(point, dim);
+    let factor: f64 = (1.0 - p_sq) * (1.0 - p_sq) / 4.0;
+
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let g: f64 = bits_to_f64(vec_get(grad, i));
+        vec_push(result, f64_to_bits(g * factor));
+        i = i + 1;
+    }
+    result
+}
+
+/// Riemannian SGD step on the Poincare ball.
+///
+/// 1. Rescale gradient: grad_R = ((1-||x||^2)^2/4) * grad_E
+/// 2. Retract: x_new = exp_x(-lr * grad_R)
+/// 3. Project to ball
+///
+/// Arguments:
+///   embedding - current point (handle to vec of f64-as-bits)
+///   grad      - Euclidean gradient (handle to vec of f64-as-bits)
+///   lr        - learning rate (f64-as-bits)
+///   dim       - dimension
+///
+/// Returns: handle to updated point (in Poincare ball)
+fn rsgd_step(embedding: i64, grad: i64, lr: i64, dim: i64) -> i64 {
+    let lr_f: f64 = bits_to_f64(lr);
+
+    // Rescale to Riemannian gradient
+    let rgrad: i64 = rsgd_grad_rescale(grad, embedding, dim);
+
+    // Negative gradient step in tangent space: tangent = -lr * rgrad
+    let tangent: i64 = hvec_scale(rgrad, 0.0 - lr_f, dim);
+
+    // Retract via exponential map
+    let updated: i64 = poincare_exp_map(embedding, tangent, dim);
+
+    // Project to ensure we stay in the ball
+    poincare_project_internal(updated, dim, 0.999)
+}
+
+// =============================================================================
+// Lorentz (Hyperboloid) Model
+// =============================================================================
+
+/// Compute Lorentz distance using the Minkowski inner product.
+///
+/// The Lorentz model uses the upper sheet of the hyperboloid:
+///   H^n = {x in R^{n+1} : <x,x>_L = -1, x_0 > 0}
+///
+/// where the Minkowski inner product is:
+///   <u,v>_L = -u_0*v_0 + u_1*v_1 + ... + u_n*v_n
+///
+/// Distance: d(u,v) = arccosh(-<u,v>_L)
+///
+/// Note: vectors here are (dim+1)-dimensional (first component is time-like).
+///
+/// Arguments:
+///   u   - handle to vec of f64-as-bits (dim+1 components)
+///   v   - handle to vec of f64-as-bits (dim+1 components)
+///   dim - spatial dimension (total vector length is dim+1)
+///
+/// Returns: distance as f64-as-bits
+fn lorentz_distance(u: i64, v: i64, dim: i64) -> i64 {
+    let total: i64 = dim + 1;
+
+    // Minkowski inner product: -u0*v0 + sum(u_i * v_i for i>=1)
+    let u0: f64 = bits_to_f64(vec_get(u, 0));
+    let v0: f64 = bits_to_f64(vec_get(v, 0));
+    var inner: f64 = 0.0 - u0 * v0;
+
+    var i: i64 = 1;
+    while i < total {
+        let ui: f64 = bits_to_f64(vec_get(u, i));
+        let vi: f64 = bits_to_f64(vec_get(v, i));
+        inner = inner + ui * vi;
+        i = i + 1;
+    }
+
+    // d = arccosh(-inner)
+    // For valid hyperboloid points, -inner >= 1
+    let arg: f64 = hyp_max(0.0 - inner, 1.0);
+    f64_to_bits(hyp_arccosh(arg))
+}
+
+/// Convert from Lorentz model to Poincare ball model.
+///
+/// Maps hyperboloid point (x0, x1, ..., xn) to Poincare ball point:
+///   p_i = x_i / (x_0 + 1)  for i = 1..n
+///
+/// Arguments:
+///   v   - handle to Lorentz vec (dim+1 components)
+///   dim - spatial dimension
+///
+/// Returns: handle to Poincare ball vec (dim components)
+fn lorentz_to_poincare(v: i64, dim: i64) -> i64 {
+    let x0: f64 = bits_to_f64(vec_get(v, 0));
+    let denom: f64 = hyp_max(x0 + 1.0, 0.0000001);
+
+    let result: i64 = vec_new();
+    var i: i64 = 1;
+    while i <= dim {
+        let xi: f64 = bits_to_f64(vec_get(v, i));
+        vec_push(result, f64_to_bits(xi / denom));
+        i = i + 1;
+    }
+    result
+}
+
+/// Convert from Poincare ball to Lorentz model.
+///
+/// Maps Poincare ball point (p1, ..., pn) to hyperboloid:
+///   x_0 = (1 + ||p||^2) / (1 - ||p||^2)
+///   x_i = 2 * p_i / (1 - ||p||^2)
+///
+/// Arguments:
+///   v   - handle to Poincare ball vec (dim components)
+///   dim - spatial dimension
+///
+/// Returns: handle to Lorentz vec (dim+1 components)
+fn poincare_to_lorentz(v: i64, dim: i64) -> i64 {
+    let p_sq: f64 = hvec_norm_sq(v, dim);
+    let denom: f64 = hyp_max(1.0 - p_sq, 0.0000001);
+
+    let result: i64 = vec_new();
+    // x_0
+    vec_push(result, f64_to_bits((1.0 + p_sq) / denom));
+
+    // x_i for i=1..dim
+    var i: i64 = 0;
+    while i < dim {
+        let pi: f64 = bits_to_f64(vec_get(v, i));
+        vec_push(result, f64_to_bits(2.0 * pi / denom));
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Hyperbolic centroid (Einstein midpoint)
+// =============================================================================
+
+/// Compute the Einstein midpoint (approximate centroid) in the Poincare ball.
+///
+/// Uses the conformal factor as weight:
+///   gamma_i = 1 / (1 - ||x_i||^2)
+///   centroid = project(sum(gamma_i * x_i) / sum(gamma_i))
+///
+/// Arguments:
+///   points - handle to vec of point handles
+///   n      - number of points
+///   dim    - dimension
+///
+/// Returns: handle to centroid vec
+fn hyp_centroid(points: i64, n: i64, dim: i64) -> i64 {
+    if n == 0 {
+        return hvec_zero(dim);
+    }
+
+    // Accumulate weighted sum
+    let weighted_sum: i64 = hvec_zero(dim);
+    var total_weight: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < n {
+        let p: i64 = vec_get(points, i);
+        let p_sq: f64 = hvec_norm_sq(p, dim);
+        let gamma: f64 = 1.0 / hyp_max(1.0 - p_sq, 0.0000001);
+        total_weight = total_weight + gamma;
+
+        var j: i64 = 0;
+        while j < dim {
+            let old: f64 = bits_to_f64(vec_get(weighted_sum, j));
+            let pj: f64 = bits_to_f64(vec_get(p, j));
+            vec_set(weighted_sum, j, f64_to_bits(old + gamma * pj));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Normalize
+    if total_weight < 0.0000001 {
+        return hvec_zero(dim);
+    }
+    let result: i64 = hvec_scale(weighted_sum, 1.0 / total_weight, dim);
+
+    // Project to ensure inside ball
+    poincare_project_internal(result, dim, 0.999)
+}
+
+// =============================================================================
+// Hyperbolic distance matrix
+// =============================================================================
+
+/// Compute the pairwise distance matrix for a set of points.
+///
+/// Arguments:
+///   points - handle to vec of point handles
+///   n      - number of points
+///   dim    - dimension
+///
+/// Returns: handle to flat vec of f64-as-bits (n x n matrix, row-major)
+fn hyp_distance_matrix(points: i64, n: i64, dim: i64) -> i64 {
+    let matrix: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < n {
+            if i == j {
+                vec_push(matrix, f64_to_bits(0.0));
+            } else {
+                let pi: i64 = vec_get(points, i);
+                let pj: i64 = vec_get(points, j);
+                let d: i64 = poincare_distance(pi, pj, dim);
+                vec_push(matrix, d);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    matrix
+}
+
+// =============================================================================
+// Hyperbolic embedding loss (for training)
+// =============================================================================
+
+/// Compute the embedding loss for a set of distance targets.
+///
+/// Loss = sum((d_hyp(i,j) - d_target(i,j))^2) for all pairs in the target list.
+///
+/// Arguments:
+///   table   - handle to embedding table
+///   pairs   - handle to vec of [i, j] index pairs (flat: i0, j0, i1, j1, ...)
+///   targets - handle to vec of f64-as-bits target distances
+///   n_pairs - number of pairs
+///
+/// Returns: total loss as f64-as-bits
+fn hyp_embed_loss(table: i64, pairs: i64, targets: i64, n_pairs: i64) -> i64 {
+    let dim: i64 = vec_get(table, HE_DIM());
+    var total_loss: f64 = 0.0;
+
+    var k: i64 = 0;
+    while k < n_pairs {
+        let idx_i: i64 = vec_get(pairs, k * 2);
+        let idx_j: i64 = vec_get(pairs, k * 2 + 1);
+        let target: f64 = bits_to_f64(vec_get(targets, k));
+
+        let vi: i64 = hyp_embed_get(table, idx_i);
+        let vj: i64 = hyp_embed_get(table, idx_j);
+        let d: f64 = bits_to_f64(poincare_distance(vi, vj, dim));
+
+        let err: f64 = d - target;
+        total_loss = total_loss + err * err;
+        k = k + 1;
+    }
+
+    f64_to_bits(total_loss)
+}
+
+// =============================================================================
+// Embedding training step
+// =============================================================================
+
+/// Train embedding table with one step of Riemannian SGD on distance targets.
+///
+/// Uses finite-difference gradient estimation for each point involved.
+///
+/// Arguments:
+///   table   - handle to embedding table
+///   pairs   - handle to flat pair indices
+///   targets - handle to target distances (f64-as-bits)
+///   n_pairs - number of pairs
+///   lr      - learning rate (f64-as-bits)
+///
+/// Returns: loss before the step (f64-as-bits)
+fn hyp_embed_train_step(table: i64, pairs: i64, targets: i64, n_pairs: i64, lr: i64) -> i64 {
+    let dim: i64 = vec_get(table, HE_DIM());
+    let n_items: i64 = vec_get(table, HE_N_ITEMS());
+    let eps: f64 = 0.001;
+
+    // Compute current loss
+    let loss: i64 = hyp_embed_loss(table, pairs, targets, n_pairs);
+
+    // For each item involved, estimate gradient and update
+    var item: i64 = 0;
+    while item < n_items {
+        let v: i64 = hyp_embed_get(table, item);
+        let grad: i64 = vec_new();
+
+        // Finite difference for each dimension
+        var d: i64 = 0;
+        while d < dim {
+            let orig: i64 = vec_get(v, d);
+            let orig_f: f64 = bits_to_f64(orig);
+
+            // f(x + eps)
+            vec_set(v, d, f64_to_bits(orig_f + eps));
+            let loss_plus: f64 = bits_to_f64(hyp_embed_loss(table, pairs, targets, n_pairs));
+
+            // f(x - eps)
+            vec_set(v, d, f64_to_bits(orig_f - eps));
+            let loss_minus: f64 = bits_to_f64(hyp_embed_loss(table, pairs, targets, n_pairs));
+
+            // Restore
+            vec_set(v, d, orig);
+
+            let g: f64 = (loss_plus - loss_minus) / (2.0 * eps);
+            vec_push(grad, f64_to_bits(g));
+            d = d + 1;
+        }
+
+        // RSGD step
+        let updated: i64 = rsgd_step(v, grad, lr, dim);
+        hyp_embed_set(table, item, updated);
+
+        item = item + 1;
+    }
+
+    loss
+}
+
+// =============================================================================
+// Geodesic interpolation
+// =============================================================================
+
+/// Interpolate along the geodesic from u to v.
+///
+/// gamma(t) = exp_u(t * log_u(v))
+///
+/// At t=0, returns u. At t=1, returns v.
+///
+/// Arguments:
+///   u   - start point
+///   v   - end point
+///   t   - interpolation parameter (f64-as-bits), in [0, 1]
+///   dim - dimension
+///
+/// Returns: handle to interpolated point
+fn hyp_geodesic(u: i64, v: i64, t: i64, dim: i64) -> i64 {
+    let t_f: f64 = bits_to_f64(t);
+    let log_uv: i64 = poincare_log_map(u, v, dim);
+    let scaled: i64 = hvec_scale(log_uv, t_f, dim);
+    poincare_exp_map(u, scaled, dim)
+}
+
+// =============================================================================
+// Hyperbolic MLR (Multinomial Logistic Regression)
+// =============================================================================
+
+/// Compute hyperbolic logit for a class.
+///
+/// Uses the Ganea et al. formulation:
+///   logit_k = (||a_k|| / lambda_pk) * sinh(lambda_pk * d(p, H_k))
+///
+/// Simplified version using Poincare distance to class centers.
+///
+/// Arguments:
+///   point   - query point (handle to vec of f64-as-bits)
+///   center  - class center point
+///   dim     - dimension
+///
+/// Returns: logit as f64-as-bits
+fn hyp_logit(point: i64, center: i64, dim: i64) -> i64 {
+    let d: f64 = bits_to_f64(poincare_distance(point, center, dim));
+    // Negative distance: closer = higher logit
+    f64_to_bits(0.0 - d)
+}
+
+/// Classify a point using hyperbolic nearest-center classification.
+///
+/// Arguments:
+///   point    - query point
+///   centers  - handle to vec of class center handles
+///   n_classes - number of classes
+///   dim      - dimension
+///
+/// Returns: predicted class index (i64)
+fn hyp_classify(point: i64, centers: i64, n_classes: i64, dim: i64) -> i64 {
+    var best_class: i64 = 0;
+    var best_dist: f64 = 999999.0;
+
+    var c: i64 = 0;
+    while c < n_classes {
+        let center: i64 = vec_get(centers, c);
+        let d: f64 = bits_to_f64(poincare_distance(point, center, dim));
+        if d < best_dist {
+            best_dist = d;
+            best_class = c;
+        }
+        c = c + 1;
+    }
+    best_class
+}
+
+// =============================================================================
+// Curvature utilities
+// =============================================================================
+
+/// Compute the conformal factor (lambda) at a point.
+///
+/// lambda(x) = 2 / (1 - ||x||^2)
+///
+/// This measures how much the metric is stretched at point x.
+/// Near the origin, lambda ~ 2. Near the boundary, lambda -> infinity.
+///
+/// Arguments:
+///   v   - point (handle to vec of f64-as-bits)
+///   dim - dimension
+///
+/// Returns: conformal factor as f64-as-bits
+fn hyp_conformal_factor(v: i64, dim: i64) -> i64 {
+    let v_sq: f64 = hvec_norm_sq(v, dim);
+    let denom: f64 = hyp_max(1.0 - v_sq, 0.0000001);
+    f64_to_bits(2.0 / denom)
+}
+
+/// Check if a point is inside the Poincare ball (||v|| < 1).
+///
+/// Returns: 1 if inside, 0 if on or outside boundary
+fn hyp_is_in_ball(v: i64, dim: i64) -> i64 {
+    let norm_sq: f64 = hvec_norm_sq(v, dim);
+    if norm_sq < 1.0 { 1 } else { 0 }
+}
+
+/// Compute the "depth" of a point in the hierarchy.
+///
+/// In a Poincare embedding of a tree, the distance from the origin
+/// correlates with depth in the hierarchy. Root nodes are near the origin,
+/// leaf nodes are near the boundary.
+///
+/// Returns: distance from origin as f64-as-bits
+fn hyp_depth(v: i64, dim: i64) -> i64 {
+    let origin: i64 = hvec_zero(dim);
+    poincare_distance(origin, v, dim)
+}
+
+// =============================================================================
+// Parallel transport
+// =============================================================================
+
+/// Parallel transport a tangent vector from point u to point v along the geodesic.
+///
+/// This moves a tangent vector from one tangent space to another while
+/// preserving its norm and direction relative to the geodesic.
+///
+///   PT_{u->v}(w) = (lambda_u / lambda_v) * gyration[u, -v](w)
+///
+/// Simplified implementation using the logarithmic/exponential map composition.
+///
+/// Arguments:
+///   u   - source point
+///   v   - destination point
+///   w   - tangent vector at u
+///   dim - dimension
+///
+/// Returns: handle to transported tangent vector at v
+fn hyp_parallel_transport(u: i64, v: i64, w: i64, dim: i64) -> i64 {
+    let u_sq: f64 = hvec_norm_sq(u, dim);
+    let v_sq: f64 = hvec_norm_sq(v, dim);
+    let lambda_u: f64 = 2.0 / hyp_max(1.0 - u_sq, 0.0000001);
+    let lambda_v: f64 = 2.0 / hyp_max(1.0 - v_sq, 0.0000001);
+
+    // Scale by conformal factor ratio
+    let scale: f64 = lambda_u / hyp_max(lambda_v, 0.0000001);
+
+    // Approximate transport: rotate and scale
+    // For small distances, this is a good approximation
+    let log_uv: i64 = poincare_log_map(u, v, dim);
+    let log_norm: f64 = hyp_sqrt(hvec_norm_sq(log_uv, dim));
+
+    if log_norm < 0.0000001 {
+        // u ~ v, no transport needed
+        return hvec_scale(w, scale, dim);
+    }
+
+    // Project w onto the geodesic direction and its orthogonal complement
+    let w_dot_dir: f64 = hvec_dot(w, log_uv, dim) / (log_norm * log_norm);
+
+    // Transport preserves the decomposition: parallel + perpendicular components
+    // Both get scaled by the conformal factor ratio
+    hvec_scale(w, scale, dim)
+}
+
+// =============================================================================
+// Summary and diagnostics
+// =============================================================================
+
+/// Print summary of an embedding table.
+fn hyp_embed_summary(table: i64) -> i64 {
+    let n_items: i64 = vec_get(table, HE_N_ITEMS());
+    let dim: i64 = vec_get(table, HE_DIM());
+    print("HyperbolicEmbedding(items=");
+    print_i64(n_items);
+    print(", dim=");
+    print_i64(dim);
+
+    // Compute average norm
+    let vectors: i64 = vec_get(table, HE_VECTORS());
+    var sum_norm: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n_items {
+        let v: i64 = vec_get(vectors, i);
+        sum_norm = sum_norm + hyp_sqrt(hvec_norm_sq(v, dim));
+        i = i + 1;
+    }
+    let avg: f64 = sum_norm / hyp_max(bits_to_f64(f64_to_bits(n_items)), 1.0);
+    print(", avg_norm=");
+    print_f64(avg);
+    println(")");
+    0
+}
+
+// =============================================================================
+// Hyperbolic attention (for transformers in hyperbolic space)
+// =============================================================================
+
+/// Compute hyperbolic attention scores between a query and a set of keys.
+///
+/// score_i = -d_H(query, key_i) (negative distance = similarity)
+///
+/// Arguments:
+///   query  - query point (handle to vec of f64-as-bits)
+///   keys   - handle to vec of key point handles
+///   n_keys - number of keys
+///   dim    - dimension
+///
+/// Returns: handle to vec of f64-as-bits scores
+fn hyp_attention_scores(query: i64, keys: i64, n_keys: i64, dim: i64) -> i64 {
+    let scores: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_keys {
+        let key: i64 = vec_get(keys, i);
+        let d: f64 = bits_to_f64(poincare_distance(query, key, dim));
+        vec_push(scores, f64_to_bits(0.0 - d));
+        i = i + 1;
+    }
+    scores
+}
+
+/// Compute hyperbolic attention weights (softmax of scores).
+///
+/// Arguments:
+///   scores - handle to vec of f64-as-bits scores
+///   n      - number of scores
+///
+/// Returns: handle to vec of f64-as-bits weights (sum to 1)
+fn hyp_attention_weights(scores: i64, n: i64) -> i64 {
+    // Find max for numerical stability
+    var max_s: f64 = bits_to_f64(vec_get(scores, 0));
+    var i: i64 = 1;
+    while i < n {
+        let s: f64 = bits_to_f64(vec_get(scores, i));
+        if s > max_s { max_s = s; }
+        i = i + 1;
+    }
+
+    // Compute exp(score - max)
+    let weights: i64 = vec_new();
+    var total: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let s: f64 = bits_to_f64(vec_get(scores, i));
+        let w: f64 = exp(s - max_s);
+        vec_push(weights, f64_to_bits(w));
+        total = total + w;
+        i = i + 1;
+    }
+
+    // Normalize
+    if total < 0.0000001 { total = 0.0000001; }
+    i = 0;
+    while i < n {
+        let w: f64 = bits_to_f64(vec_get(weights, i));
+        vec_set(weights, i, f64_to_bits(w / total));
+        i = i + 1;
+    }
+    weights
+}
+
+/// Compute hyperbolic weighted centroid (attention aggregation).
+///
+/// Aggregates value points using attention weights via Einstein midpoint.
+///
+/// Arguments:
+///   weights - handle to vec of f64-as-bits attention weights
+///   values  - handle to vec of value point handles
+///   n       - number of values
+///   dim     - dimension
+///
+/// Returns: handle to aggregated point in Poincare ball
+fn hyp_attention_aggregate(weights: i64, values: i64, n: i64, dim: i64) -> i64 {
+    // Weighted Einstein midpoint
+    let weighted_sum: i64 = hvec_zero(dim);
+    var total_w: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < n {
+        let w: f64 = bits_to_f64(vec_get(weights, i));
+        let v: i64 = vec_get(values, i);
+        let v_sq: f64 = hvec_norm_sq(v, dim);
+        let gamma: f64 = 1.0 / hyp_max(1.0 - v_sq, 0.0000001);
+        let combined_w: f64 = w * gamma;
+        total_w = total_w + combined_w;
+
+        var j: i64 = 0;
+        while j < dim {
+            let old: f64 = bits_to_f64(vec_get(weighted_sum, j));
+            let vj: f64 = bits_to_f64(vec_get(v, j));
+            vec_set(weighted_sum, j, f64_to_bits(old + combined_w * vj));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    if total_w < 0.0000001 {
+        return hvec_zero(dim);
+    }
+    let result: i64 = hvec_scale(weighted_sum, 1.0 / total_w, dim);
+    poincare_project_internal(result, dim, 0.999)
+}
+
+// =============================================================================
+// Hyperbolic MLP layer
+// =============================================================================
+
+/// Apply a linear map in the tangent space at the origin, then project back.
+///
+/// This is the standard approach for hyperbolic neural networks:
+///   1. Log map to tangent space at origin
+///   2. Apply linear transformation
+///   3. Exp map back to manifold
+///
+/// Arguments:
+///   input  - input point (handle to vec of f64-as-bits)
+///   weight - weight matrix (handle, out_dim x in_dim, f64-as-bits)
+///   bias   - bias vector (handle, out_dim, f64-as-bits)
+///   in_dim - input dimension
+///   out_dim - output dimension
+///
+/// Returns: handle to output point in Poincare ball
+fn hyp_linear(input: i64, weight: i64, bias: i64, in_dim: i64, out_dim: i64) -> i64 {
+    let origin: i64 = hvec_zero(in_dim);
+
+    // Log map to tangent space at origin
+    let tangent: i64 = poincare_log_map(origin, input, in_dim);
+
+    // Linear transform in tangent space: y = W * x + b
+    let output_tangent: i64 = vec_new();
+    var i: i64 = 0;
+    while i < out_dim {
+        var sum: f64 = bits_to_f64(vec_get(bias, i));
+        var j: i64 = 0;
+        while j < in_dim {
+            let w: f64 = bits_to_f64(vec_get(weight, i * in_dim + j));
+            let x: f64 = bits_to_f64(vec_get(tangent, j));
+            sum = sum + w * x;
+            j = j + 1;
+        }
+        vec_push(output_tangent, f64_to_bits(sum));
+        i = i + 1;
+    }
+
+    // Exp map back to manifold (at the origin for out_dim space)
+    let origin_out: i64 = hvec_zero(out_dim);
+    poincare_exp_map(origin_out, output_tangent, out_dim)
+}
+
+// =============================================================================
+// Distortion metrics
+// =============================================================================
+
+/// Compute the average distortion of an embedding.
+///
+/// Distortion measures how well the embedding preserves target distances:
+///   D_avg = (1/n) * sum |d_H(i,j) / d_target(i,j) - 1|
+///
+/// Lower distortion means better preservation of the original metric.
+///
+/// Arguments:
+///   table   - handle to embedding table
+///   pairs   - handle to flat pair indices
+///   targets - handle to target distances (f64-as-bits)
+///   n_pairs - number of pairs
+///
+/// Returns: average distortion as f64-as-bits
+fn hyp_distortion(table: i64, pairs: i64, targets: i64, n_pairs: i64) -> i64 {
+    let dim: i64 = vec_get(table, HE_DIM());
+    var total_distortion: f64 = 0.0;
+    var valid_count: i64 = 0;
+
+    var k: i64 = 0;
+    while k < n_pairs {
+        let idx_i: i64 = vec_get(pairs, k * 2);
+        let idx_j: i64 = vec_get(pairs, k * 2 + 1);
+        let target: f64 = bits_to_f64(vec_get(targets, k));
+
+        if hyp_abs(target) > 0.0000001 {
+            let vi: i64 = hyp_embed_get(table, idx_i);
+            let vj: i64 = hyp_embed_get(table, idx_j);
+            let d: f64 = bits_to_f64(poincare_distance(vi, vj, dim));
+
+            let ratio: f64 = d / target;
+            total_distortion = total_distortion + hyp_abs(ratio - 1.0);
+            valid_count = valid_count + 1;
+        }
+        k = k + 1;
+    }
+
+    if valid_count == 0 {
+        return f64_to_bits(0.0);
+    }
+    let avg: f64 = total_distortion / bits_to_f64(f64_to_bits(valid_count));
+    f64_to_bits(avg)
+}
+
+/// Compute the MAP (Mean Average Precision) for nearest neighbor retrieval.
+///
+/// Given ground truth neighbor sets, measures retrieval quality.
+///
+/// Arguments:
+///   table      - handle to embedding table
+///   queries    - handle to vec of query item indices
+///   n_queries  - number of queries
+///   gt_neighbors - handle to vec of ground truth neighbor index vecs
+///   k          - number of neighbors to consider
+///
+/// Returns: MAP score as f64-as-bits (higher is better)
+fn hyp_map_score(table: i64, queries: i64, n_queries: i64, gt_neighbors: i64, k: i64) -> i64 {
+    let dim: i64 = vec_get(table, HE_DIM());
+    var total_ap: f64 = 0.0;
+
+    var q: i64 = 0;
+    while q < n_queries {
+        let query_idx: i64 = vec_get(queries, q);
+        let query_vec: i64 = hyp_embed_get(table, query_idx);
+        let gt: i64 = vec_get(gt_neighbors, q);
+        let gt_size: i64 = vec_len(gt);
+
+        // Get k nearest neighbors
+        let retrieved: i64 = hyp_embed_nearest(table, query_vec, k + 1);
+        // Skip self if present
+        let ret_len: i64 = vec_len(retrieved);
+
+        var hits: i64 = 0;
+        var ap_sum: f64 = 0.0;
+        var rank: i64 = 0;
+
+        var r: i64 = 0;
+        while r < ret_len {
+            let ret_idx: i64 = vec_get(retrieved, r);
+            if ret_idx != query_idx {
+                rank = rank + 1;
+                // Check if this is a ground truth neighbor
+                var is_gt: i64 = 0;
+                var g: i64 = 0;
+                while g < gt_size {
+                    if vec_get(gt, g) == ret_idx {
+                        is_gt = 1;
+                    }
+                    g = g + 1;
+                }
+                if is_gt == 1 {
+                    hits = hits + 1;
+                    let precision: f64 = bits_to_f64(f64_to_bits(hits)) / bits_to_f64(f64_to_bits(rank));
+                    ap_sum = ap_sum + precision;
+                }
+                if rank >= k { r = ret_len; }  // break
+            }
+            r = r + 1;
+        }
+
+        if gt_size > 0 {
+            let min_k: i64 = hyp_min_i64(k, gt_size);
+            total_ap = total_ap + ap_sum / bits_to_f64(f64_to_bits(min_k));
+        }
+        q = q + 1;
+    }
+
+    if n_queries == 0 {
+        return f64_to_bits(0.0);
+    }
+    f64_to_bits(total_ap / bits_to_f64(f64_to_bits(n_queries)))
+}
+
+/// Check that all embeddings are inside the Poincare ball.
+///
+/// Returns: number of violations (should be 0)
+fn hyp_embed_check(table: i64) -> i64 {
+    let n_items: i64 = vec_get(table, HE_N_ITEMS());
+    let dim: i64 = vec_get(table, HE_DIM());
+    let vectors: i64 = vec_get(table, HE_VECTORS());
+    var violations: i64 = 0;
+    var i: i64 = 0;
+    while i < n_items {
+        let v: i64 = vec_get(vectors, i);
+        if hyp_is_in_ball(v, dim) == 0 {
+            violations = violations + 1;
+        }
+        i = i + 1;
+    }
+    violations
+}

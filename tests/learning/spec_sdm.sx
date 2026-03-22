@@ -1,0 +1,59 @@
+use sdm;
+
+fn main() -> i64 {
+    println(string_from("=== Sparse Distributed Memory Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create a binary vector (all zeros)
+    let dim: i64 = 16;
+    let bv: i64 = bv_new(dim);
+    if vec_len(bv) != dim {
+        println(string_from("FAIL: bv should have 16 bits"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: bv_new"));
+    }
+
+    // Test 2: Create a random binary vector
+    let rbv: i64 = bv_random(dim, 42);
+    if vec_len(rbv) != dim {
+        println(string_from("FAIL: random bv should have 16 bits"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: bv_random"));
+    }
+
+    // Test 3: Hamming distance from self should be 0
+    let self_dist: i64 = bv_hamming(rbv, rbv, dim);
+    if self_dist != 0 {
+        println(string_from("FAIL: self hamming should be 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: bv_hamming self"));
+    }
+
+    // Test 4: Hamming distance from all-zeros to random should be popcount
+    let pop: i64 = bv_popcount(rbv, dim);
+    let dist: i64 = bv_hamming(bv, rbv, dim);
+    if dist != pop {
+        println(string_from("FAIL: hamming should equal popcount"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: bv_hamming vs popcount"));
+    }
+
+    // Test 5: XOR with self should be all zeros
+    let xored: i64 = bv_xor(rbv, rbv, dim);
+    let xor_pop: i64 = bv_popcount(xored, dim);
+    if xor_pop != 0 {
+        println(string_from("FAIL: xor with self should be 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: bv_xor self"));
+    }
+
+    if failures == 0 {
+        println(string_from("All SDM tests passed"));
+    }
+    failures
+}

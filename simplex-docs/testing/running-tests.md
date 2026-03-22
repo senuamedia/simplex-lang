@@ -1,6 +1,6 @@
 # Running Simplex Tests
 
-**Version:** 0.16.0
+**Version:** 0.17.0
 
 ## Quick Start
 
@@ -16,7 +16,7 @@
 ==============================================
          Simplex Language Test Suite
 ==============================================
-  Compiler: sxc v0.15.0 (self-hosted)
+  Compiler: sxc v0.17.0 (self-hosted)
 
 Language
     language/actors/spec_actor_basic               [spec] PASS
@@ -35,9 +35,9 @@ Fuzz Testing
     ...
 
 ==============================================
-  Passed:   197
+  Passed:   228
   Failed:   0
-  Total:    197 (100% pass rate)
+  Total:    228 (100% pass rate)
 ==============================================
 ```
 

@@ -1,0 +1,638 @@
+// simplex-std::bench - Benchmark Framework
+//
+// A benchmarking framework for measuring and comparing code performance.
+// All values are i64 handles (vec-backed). Strings use string_from().
+//
+// # Benchmark Lifecycle
+//
+// 1. Create a benchmark with bench_new()
+// 2. Run iterations with bench_start() / bench_end() pairs
+// 3. Get results with bench_report()
+// 4. Compare benchmarks with bench_compare()
+//
+// # Example
+//
+// ```simplex
+// fn main() -> i64 {
+//     let b: i64 = bench_new(string_from("sort 1000"), 100);
+//     var i: i64 = 0;
+//     while i < 100 {
+//         bench_start(b);
+//         // ... code under test ...
+//         bench_end(b);
+//         i = i + 1;
+//     }
+//     let report: i64 = bench_report(b);
+//     println(bench_format(b));
+//     0
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Benchmark Field Indices
+// =============================================================================
+
+// Join a vec of strings into one string (replaces string_join_vec)
+extern fn string_join_vec(parts: i64, sep: i64) -> i64;
+fn BENCH_NAME() -> i64 { 0 }
+fn BENCH_ITERATIONS() -> i64 { 1 }
+fn BENCH_SAMPLES() -> i64 { 2 }
+fn BENCH_CURRENT_START() -> i64 { 3 }
+fn BENCH_TOTAL_NS() -> i64 { 4 }
+fn BENCH_MIN_NS() -> i64 { 5 }
+fn BENCH_MAX_NS() -> i64 { 6 }
+fn BENCH_COUNT() -> i64 { 7 }
+
+// Report field indices
+fn REPORT_NAME() -> i64 { 0 }
+fn REPORT_MEAN_NS() -> i64 { 1 }
+fn REPORT_MIN_NS() -> i64 { 2 }
+fn REPORT_MAX_NS() -> i64 { 3 }
+fn REPORT_TOTAL_NS() -> i64 { 4 }
+fn REPORT_ITERATIONS() -> i64 { 5 }
+fn REPORT_MEDIAN_NS() -> i64 { 6 }
+
+// Very large sentinel for min tracking
+fn MAX_SENTINEL() -> i64 { 9223372036854775807 }
+
+// =============================================================================
+// Benchmark Creation
+// =============================================================================
+
+/// Create a new benchmark.
+///
+/// # Arguments
+/// * `name` - i64 string handle for the benchmark name
+/// * `iterations` - planned number of iterations (informational)
+///
+/// # Returns
+/// i64 handle to the benchmark
+fn bench_new(name: i64, iterations: i64) -> i64 {
+    let b: i64 = vec_new();
+    vec_push(b, name);              // 0: name
+    vec_push(b, iterations);        // 1: planned iterations
+    let samples: i64 = vec_new();
+    vec_push(b, samples);           // 2: individual sample durations (ns)
+    vec_push(b, 0);                 // 3: current start timestamp (ns)
+    vec_push(b, 0);                 // 4: total nanoseconds
+    vec_push(b, MAX_SENTINEL());    // 5: min nanoseconds
+    vec_push(b, 0);                 // 6: max nanoseconds
+    vec_push(b, 0);                 // 7: completed count
+    b
+}
+
+// =============================================================================
+// Benchmark Execution
+// =============================================================================
+
+/// Start timing an iteration.
+///
+/// Call this before the code under test. Must be paired with bench_end().
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+///
+/// # Returns
+/// 0
+fn bench_start(b: i64) -> i64 {
+    vec_set(b, BENCH_CURRENT_START(), get_time_ns());
+    0
+}
+
+/// End timing an iteration and record the sample.
+///
+/// Call this after the code under test. Must be paired with bench_start().
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+///
+/// # Returns
+/// The duration of this iteration in nanoseconds
+fn bench_end(b: i64) -> i64 {
+    let end_ns: i64 = get_time_ns();
+    let start_ns: i64 = vec_get(b, BENCH_CURRENT_START());
+    let elapsed: i64 = end_ns - start_ns;
+
+    // Clamp to 0 if clock went backward
+    let duration: i64 = elapsed;
+    if duration < 0 {
+        return 0;
+    }
+
+    // Record sample
+    let samples: i64 = vec_get(b, BENCH_SAMPLES());
+    vec_push(samples, duration);
+
+    // Update total
+    let total: i64 = vec_get(b, BENCH_TOTAL_NS());
+    vec_set(b, BENCH_TOTAL_NS(), total + duration);
+
+    // Update min
+    let min_ns: i64 = vec_get(b, BENCH_MIN_NS());
+    if duration < min_ns {
+        vec_set(b, BENCH_MIN_NS(), duration);
+    }
+
+    // Update max
+    let max_ns: i64 = vec_get(b, BENCH_MAX_NS());
+    if duration > max_ns {
+        vec_set(b, BENCH_MAX_NS(), duration);
+    }
+
+    // Increment count
+    let count: i64 = vec_get(b, BENCH_COUNT());
+    vec_set(b, BENCH_COUNT(), count + 1);
+
+    duration
+}
+
+// =============================================================================
+// Benchmark Results
+// =============================================================================
+
+/// Generate a report for a benchmark.
+///
+/// Returns a vec: [name, mean_ns, min_ns, max_ns, total_ns, iterations, median_ns]
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+///
+/// # Returns
+/// i64 report vec handle
+fn bench_report(b: i64) -> i64 {
+    let name: i64 = vec_get(b, BENCH_NAME());
+    let count: i64 = vec_get(b, BENCH_COUNT());
+    let total: i64 = vec_get(b, BENCH_TOTAL_NS());
+    let min_ns: i64 = vec_get(b, BENCH_MIN_NS());
+    let max_ns: i64 = vec_get(b, BENCH_MAX_NS());
+
+    var mean_ns: i64 = 0;
+    if count > 0 {
+        mean_ns = total / count;
+    }
+
+    // Calculate median
+    let median: i64 = bench_median(b);
+
+    // If no samples recorded, reset min to 0
+    var final_min: i64 = min_ns;
+    if count == 0 {
+        final_min = 0;
+    }
+
+    let report: i64 = vec_new();
+    vec_push(report, name);         // 0: name
+    vec_push(report, mean_ns);      // 1: mean ns
+    vec_push(report, final_min);    // 2: min ns
+    vec_push(report, max_ns);       // 3: max ns
+    vec_push(report, total);        // 4: total ns
+    vec_push(report, count);        // 5: iterations
+    vec_push(report, median);       // 6: median ns
+    report
+}
+
+/// Calculate the median sample duration in nanoseconds.
+///
+/// Uses a simple selection approach (sorts a copy of the samples).
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+///
+/// # Returns
+/// median duration in nanoseconds
+fn bench_median(b: i64) -> i64 {
+    let samples: i64 = vec_get(b, BENCH_SAMPLES());
+    let count: i64 = vec_len(samples);
+    if count == 0 {
+        return 0;
+    }
+    if count == 1 {
+        return vec_get(samples, 0);
+    }
+
+    // Copy samples to sort them
+    let sorted: i64 = vec_new();
+    var i: i64 = 0;
+    while i < count {
+        vec_push(sorted, vec_get(samples, i));
+        i = i + 1;
+    }
+
+    // Simple insertion sort (benchmarks typically have < 10000 samples)
+    var j: i64 = 1;
+    while j < count {
+        let key: i64 = vec_get(sorted, j);
+        var k: i64 = j - 1;
+        while k >= 0 {
+            if vec_get(sorted, k) > key {
+                vec_set(sorted, k + 1, vec_get(sorted, k));
+                k = k - 1;
+            } else {
+                k = -1; // break
+            }
+        }
+        vec_set(sorted, k + 1, key);
+        j = j + 1;
+    }
+
+    // Return median
+    let mid: i64 = count / 2;
+    if count % 2 == 0 {
+        // Average of two middle elements
+        let a: i64 = vec_get(sorted, mid - 1);
+        let b_val: i64 = vec_get(sorted, mid);
+        (a + b_val) / 2
+    } else {
+        vec_get(sorted, mid)
+    }
+}
+
+/// Get the mean duration in nanoseconds.
+fn bench_mean_ns(b: i64) -> i64 {
+    let count: i64 = vec_get(b, BENCH_COUNT());
+    if count == 0 {
+        return 0;
+    }
+    let total: i64 = vec_get(b, BENCH_TOTAL_NS());
+    total / count
+}
+
+/// Get the mean duration in microseconds.
+fn bench_mean_us(b: i64) -> i64 {
+    bench_mean_ns(b) / 1000
+}
+
+/// Get the mean duration in milliseconds.
+fn bench_mean_ms(b: i64) -> i64 {
+    bench_mean_ns(b) / 1000000
+}
+
+/// Get the min duration in nanoseconds.
+fn bench_min_ns(b: i64) -> i64 {
+    let count: i64 = vec_get(b, BENCH_COUNT());
+    if count == 0 {
+        return 0;
+    }
+    vec_get(b, BENCH_MIN_NS())
+}
+
+/// Get the max duration in nanoseconds.
+fn bench_max_ns(b: i64) -> i64 {
+    vec_get(b, BENCH_MAX_NS())
+}
+
+/// Get the total duration in nanoseconds.
+fn bench_total_ns(b: i64) -> i64 {
+    vec_get(b, BENCH_TOTAL_NS())
+}
+
+/// Get the number of completed iterations.
+fn bench_iteration_count(b: i64) -> i64 {
+    vec_get(b, BENCH_COUNT())
+}
+
+// =============================================================================
+// Formatting
+// =============================================================================
+
+/// Convert nanoseconds to a human-readable duration string.
+///
+/// Automatically chooses ns, us, or ms units.
+///
+/// # Arguments
+/// * `ns` - nanoseconds
+///
+/// # Returns
+/// i64 string handle (e.g., "1234ns", "56us", "78ms")
+fn bench_format_ns(ns: i64) -> i64 {
+    if ns < 1000 {
+        string_concat(int_to_string(ns), string_from("ns"))
+    } else if ns < 1000000 {
+        let us: i64 = ns / 1000;
+        string_concat(int_to_string(us), string_from("us"))
+    } else if ns < 1000000000 {
+        let ms: i64 = ns / 1000000;
+        string_concat(int_to_string(ms), string_from("ms"))
+    } else {
+        let s: i64 = ns / 1000000000;
+        string_concat(int_to_string(s), string_from("s"))
+    }
+}
+
+/// Format a benchmark as a human-readable string.
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+///
+/// # Returns
+/// i64 string handle with formatted results
+fn bench_format(b: i64) -> i64 {
+    let name: i64 = vec_get(b, BENCH_NAME());
+    let count: i64 = vec_get(b, BENCH_COUNT());
+    let mean: i64 = bench_mean_ns(b);
+    let min: i64 = bench_min_ns(b);
+    let max: i64 = bench_max_ns(b);
+    let total: i64 = vec_get(b, BENCH_TOTAL_NS());
+    let median: i64 = bench_median(b);
+
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("bench "));
+    vec_push(parts, name);
+    vec_push(parts, string_from(" ... "));
+    vec_push(parts, int_to_string(count));
+    vec_push(parts, string_from(" iterations\n"));
+    vec_push(parts, string_from("  mean:   "));
+    vec_push(parts, bench_format_ns(mean));
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("  median: "));
+    vec_push(parts, bench_format_ns(median));
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("  min:    "));
+    vec_push(parts, bench_format_ns(min));
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("  max:    "));
+    vec_push(parts, bench_format_ns(max));
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("  total:  "));
+    vec_push(parts, bench_format_ns(total));
+
+    string_join_vec(parts, string_from(""))
+}
+
+/// Print a benchmark's results to stdout.
+fn bench_print(b: i64) -> i64 {
+    println(bench_format(b));
+    0
+}
+
+// =============================================================================
+// Comparison
+// =============================================================================
+
+/// Compare multiple benchmark results.
+///
+/// Takes a vec of benchmark handles and returns a formatted comparison string.
+///
+/// # Arguments
+/// * `benchmarks` - vec of benchmark handles
+///
+/// # Returns
+/// i64 string handle with comparison table
+fn bench_compare(benchmarks: i64) -> i64 {
+    let count: i64 = vec_len(benchmarks);
+    if count == 0 {
+        return string_from("No benchmarks to compare.")
+    }
+
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("=== Benchmark Comparison ===\n"));
+    vec_push(parts, string_from("\n"));
+
+    // Header
+    vec_push(parts, string_from("  Name                  Mean         Min          Max          Iters\n"));
+    vec_push(parts, string_from("  ----                  ----         ---          ---          -----\n"));
+
+    // Find the fastest mean for relative comparison
+    var fastest_mean: i64 = MAX_SENTINEL();
+    var i: i64 = 0;
+    while i < count {
+        let b: i64 = vec_get(benchmarks, i);
+        let mean: i64 = bench_mean_ns(b);
+        if mean > 0 {
+            if mean < fastest_mean {
+                fastest_mean = mean;
+            }
+        }
+        i = i + 1;
+    }
+
+    // Rows
+    i = 0;
+    while i < count {
+        let b: i64 = vec_get(benchmarks, i);
+        let name: i64 = vec_get(b, BENCH_NAME());
+        let mean: i64 = bench_mean_ns(b);
+        let min: i64 = bench_min_ns(b);
+        let max: i64 = bench_max_ns(b);
+        let iters: i64 = vec_get(b, BENCH_COUNT());
+
+        vec_push(parts, string_from("  "));
+        vec_push(parts, string_pad_right(name, 22));
+        vec_push(parts, string_pad_right(bench_format_ns(mean), 13));
+        vec_push(parts, string_pad_right(bench_format_ns(min), 13));
+        vec_push(parts, string_pad_right(bench_format_ns(max), 13));
+        vec_push(parts, int_to_string(iters));
+
+        // Relative speed
+        if fastest_mean > 0 {
+            if mean > fastest_mean {
+                let ratio: i64 = (mean * 100) / fastest_mean;
+                let pct: i64 = ratio - 100;
+                vec_push(parts, string_from("  (+"));
+                vec_push(parts, int_to_string(pct));
+                vec_push(parts, string_from("%)"));
+            } else {
+                vec_push(parts, string_from("  (fastest)"));
+            }
+        }
+
+        vec_push(parts, string_from("\n"));
+        i = i + 1;
+    }
+
+    string_join_vec(parts, string_from(""))
+}
+
+/// Print a comparison of multiple benchmarks to stdout.
+fn bench_print_compare(benchmarks: i64) -> i64 {
+    println(bench_compare(benchmarks));
+    0
+}
+
+// =============================================================================
+// String Padding Helper
+// =============================================================================
+
+/// Pad a string on the right with spaces to reach a target width.
+///
+/// # Arguments
+/// * `s` - i64 string handle
+/// * `width` - target width
+///
+/// # Returns
+/// padded string handle
+fn string_pad_right(s: i64, width: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len >= width {
+        return s;
+    }
+    let pad_count: i64 = width - len;
+    var pad: i64 = string_from("");
+    var i: i64 = 0;
+    while i < pad_count {
+        pad = string_concat(pad, string_from(" "));
+        i = i + 1;
+    }
+    string_concat(s, pad)
+}
+
+// =============================================================================
+// Benchmark Suite (Multiple Benchmarks)
+// =============================================================================
+
+/// Create a benchmark suite for running multiple benchmarks together.
+///
+/// # Arguments
+/// * `name` - i64 string handle for suite name
+///
+/// # Returns
+/// suite handle (vec: [name, benchmarks_vec])
+fn bench_suite_new(name: i64) -> i64 {
+    let suite: i64 = vec_new();
+    vec_push(suite, name);
+    let benchmarks: i64 = vec_new();
+    vec_push(suite, benchmarks);
+    suite
+}
+
+/// Add a benchmark to a suite.
+fn bench_suite_add(suite: i64, b: i64) -> i64 {
+    let benchmarks: i64 = vec_get(suite, 1);
+    vec_push(benchmarks, b);
+    0
+}
+
+/// Run all benchmarks in a suite and print comparison.
+///
+/// Note: benchmarks should already have been executed (bench_start/bench_end
+/// loops completed). This just generates the comparison report.
+///
+/// # Arguments
+/// * `suite` - the benchmark suite handle
+///
+/// # Returns
+/// formatted comparison string handle
+fn bench_suite_report(suite: i64) -> i64 {
+    let name: i64 = vec_get(suite, 0);
+    let benchmarks: i64 = vec_get(suite, 1);
+
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("=== Benchmark Suite: "));
+    vec_push(parts, name);
+    vec_push(parts, string_from(" ===\n\n"));
+
+    // Individual results
+    let count: i64 = vec_len(benchmarks);
+    var i: i64 = 0;
+    while i < count {
+        let b: i64 = vec_get(benchmarks, i);
+        vec_push(parts, bench_format(b));
+        vec_push(parts, string_from("\n\n"));
+        i = i + 1;
+    }
+
+    // Comparison table
+    if count > 1 {
+        vec_push(parts, bench_compare(benchmarks));
+    }
+
+    string_join_vec(parts, string_from(""))
+}
+
+/// Print the suite report to stdout.
+fn bench_suite_print(suite: i64) -> i64 {
+    println(bench_suite_report(suite));
+    0
+}
+
+// =============================================================================
+// Warm-up Support
+// =============================================================================
+
+/// Run warm-up iterations (discarded, not recorded).
+///
+/// Useful for JIT warm-up or cache priming.
+///
+/// # Arguments
+/// * `warmup_count` - number of warm-up iterations
+///
+/// # Returns
+/// 0
+fn bench_warmup(warmup_count: i64) -> i64 {
+    // This is a marker function. The caller should run their code
+    // warmup_count times before starting the real benchmark.
+    // The function just returns 0 as a no-op.
+    0
+}
+
+/// Reset a benchmark, clearing all recorded samples.
+///
+/// Useful after warm-up to start fresh.
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+///
+/// # Returns
+/// 0
+fn bench_reset(b: i64) -> i64 {
+    let samples: i64 = vec_get(b, BENCH_SAMPLES());
+    vec_clear(samples);
+    vec_set(b, BENCH_CURRENT_START(), 0);
+    vec_set(b, BENCH_TOTAL_NS(), 0);
+    vec_set(b, BENCH_MIN_NS(), MAX_SENTINEL());
+    vec_set(b, BENCH_MAX_NS(), 0);
+    vec_set(b, BENCH_COUNT(), 0);
+    0
+}
+
+// =============================================================================
+// Throughput Helpers
+// =============================================================================
+
+/// Calculate throughput in operations per second.
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+///
+/// # Returns
+/// operations per second (i64)
+fn bench_ops_per_sec(b: i64) -> i64 {
+    let total_ns: i64 = vec_get(b, BENCH_TOTAL_NS());
+    let count: i64 = vec_get(b, BENCH_COUNT());
+    if total_ns == 0 {
+        return 0;
+    }
+    // ops/sec = count * 1_000_000_000 / total_ns
+    (count * 1000000000) / total_ns
+}
+
+/// Calculate throughput in bytes per second.
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+/// * `bytes_per_op` - bytes processed per iteration
+///
+/// # Returns
+/// bytes per second (i64)
+fn bench_bytes_per_sec(b: i64, bytes_per_op: i64) -> i64 {
+    let ops: i64 = bench_ops_per_sec(b);
+    ops * bytes_per_op
+}
+
+/// Format throughput as a human-readable string.
+///
+/// # Arguments
+/// * `b` - the benchmark handle
+///
+/// # Returns
+/// string handle (e.g., "1234567 ops/sec")
+fn bench_format_throughput(b: i64) -> i64 {
+    let ops: i64 = bench_ops_per_sec(b);
+    let parts: i64 = vec_new();
+    vec_push(parts, int_to_string(ops));
+    vec_push(parts, string_from(" ops/sec"));
+    string_join_vec(parts, string_from(""))
+}

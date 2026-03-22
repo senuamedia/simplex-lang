@@ -49,12 +49,10 @@ fn specialist_create(name: i64, hive_slm: i64, anima: i64) -> i64;
 fn specialist_infer(spec: i64, prompt: i64) -> i64;
 fn specialist_close(spec: i64);
 
-fn string_from(s: i64) -> i64;
 fn string_eq(a: i64, b: i64) -> i64;
 fn string_contains(s: i64, substr: i64) -> i64;
 fn print(s: i64);
 fn println(s: i64);
-fn print_i64(n: i64);
 fn print_string(s: i64);
 
 fn main() {

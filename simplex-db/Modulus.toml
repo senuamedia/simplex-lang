@@ -4,7 +4,7 @@
 
 [package]
 name = "simplex-db"
-version = "0.16.0"
+version = "0.17.0"
 description = "Unified database connectivity with pluggable SQL and NoSQL drivers"
 authors = ["Rod Higgins"]
 license = "AGPL-3.0"

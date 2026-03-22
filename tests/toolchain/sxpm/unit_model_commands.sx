@@ -21,13 +21,10 @@ fn model_is_installed(name: i64) -> i64;
 fn model_install_path(name: i64) -> i64;
 fn model_info_json(name: i64) -> i64;
 
-fn path_exists(path: i64) -> i64;
 fn path_join(a: i64, b: i64) -> i64;
-fn string_from(s: i64) -> i64;
 fn string_eq(a: i64, b: i64) -> i64;
 fn print(s: i64);
 fn println(s: i64);
-fn print_i64(n: i64);
 fn print_string(s: i64);
 
 fn main() -> i64 {

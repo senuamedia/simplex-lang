@@ -1,6 +1,6 @@
 # Tutorial 13: Dual Numbers and Automatic Differentiation
 
-Simplex provides native **dual numbers** for forward-mode automatic differentiation. This tutorial teaches you how to compute exact derivatives without numerical approximation.
+Simplex provides native **dual numbers** for forward-mode automatic differentiation. This tutorial teaches you how to compute analytical derivatives without numerical approximation.
 
 ---
 
@@ -332,7 +332,7 @@ The struct is eliminated at compile time. There's no runtime overhead compared t
 1. `dual::variable(x)` marks what you're differentiating with respect to
 2. `dual::constant(c)` marks fixed values
 3. All arithmetic and transcendental functions propagate derivatives
-4. Results are exact (not numerical approximations)
+4. Results are analytical (not numerical approximations)
 5. Zero runtime overhead vs hand-coded derivatives
 
 ---
@@ -348,5 +348,5 @@ The struct is eliminated at compile time. There's no runtime overhead compared t
 
 ## Next Steps
 
-- [Tutorial 14: Self-Learning Annealing](14-self-learning-annealing.md) - Using dual numbers to learn optimal schedules
+- [Tutorial 14: Self-Learning Annealing](14-self-learning-annealing.md) - Using dual numbers to learn adaptive schedules
 - [Specification: Real-Time Learning](../spec/15-real-time-learning.md) - Full dual number API reference

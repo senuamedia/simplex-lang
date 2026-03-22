@@ -1,6 +1,6 @@
 # Simplex Testing Documentation
 
-**Version:** 0.16.0
+**Version:** 0.17.0
 **Status:** 215/215 tests passing (100%)
 
 This directory contains comprehensive documentation for the Simplex testing framework, including test organization, coverage reports, testing methodologies, and best practices.

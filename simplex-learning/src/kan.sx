@@ -1,0 +1,1299 @@
+// simplex-learning::kan - Kolmogorov-Arnold Networks
+//
+// KAN replaces fixed activation functions (like ReLU) with learnable
+// univariate functions on each edge, parameterized as B-spline expansions.
+// This enables interpretable function discovery: after training, each edge
+// activation can be inspected, simplified, or replaced by a symbolic form.
+//
+// # Architecture
+//
+// In a standard MLP, each neuron computes y = σ(Σ w_i x_i + b).
+// In a KAN, each edge (i→j) carries its own spline function:
+//   y_j = Σ_i φ_{i,j}(x_i)
+// where φ_{i,j}(x) = Σ_k c_{i,j,k} · B_k(x) is a B-spline expansion.
+//
+// # Data Layout (vec handles)
+//
+// All floating-point values stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_len.
+//
+// Knot vector:  [k0, k1, ..., k_{n+degree}]  (f64_to_bits values)
+// Layer vec:    [in_dim, out_dim, n_basis, degree, knots_handle, coeffs_handle]
+//   coeffs_handle: vec of in_dim * out_dim * n_basis entries (f64_to_bits)
+// Network vec:  [n_layers, layer0_handle, layer1_handle, ...]
+//
+// # References
+//
+// Liu et al. "KAN: Kolmogorov-Arnold Networks" (2024)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Constants (as functions - no const in compiled path)
+// =============================================================================
+
+fn KAN_IN_DIM() -> i64 { 0 }
+fn KAN_OUT_DIM() -> i64 { 1 }
+fn KAN_N_BASIS() -> i64 { 2 }
+fn KAN_DEGREE() -> i64 { 3 }
+fn KAN_KNOTS() -> i64 { 4 }
+fn KAN_COEFFS() -> i64 { 5 }
+
+fn NET_N_LAYERS() -> i64 { 0 }
+fn NET_LAYERS_START() -> i64 { 1 }
+
+// =============================================================================
+// Floating-point helpers
+// =============================================================================
+
+fn kan_f64_abs(x: f64) -> f64 {
+    if x < 0.0 { 0.0 - x } else { x }
+}
+
+fn kan_f64_max(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
+
+fn kan_f64_min(a: f64, b: f64) -> f64 {
+    if a < b { a } else { b }
+}
+
+// =============================================================================
+// B-Spline Basis Functions
+// =============================================================================
+
+/// Generate a uniform knot vector for B-splines.
+///
+/// For `n_basis` basis functions of given `degree`, we need
+/// n_basis + degree + 1 knots, uniformly spaced on [0, 1].
+///
+/// Returns: handle to vec of f64_to_bits knot values.
+fn bspline_knots(n_basis: i64, degree: i64) -> i64 {
+    let n_knots: i64 = n_basis + degree + 1;
+    let knots: i64 = vec_new();
+
+    if n_knots <= 1 {
+        vec_push(knots, f64_to_bits(0.0));
+        return knots;
+    }
+
+    let denom: f64 = bits_to_f64(f64_to_bits(n_knots - 1));
+    var i: i64 = 0;
+    while i < n_knots {
+        let t: f64 = bits_to_f64(f64_to_bits(i)) / denom;
+        vec_push(knots, f64_to_bits(t));
+        i = i + 1;
+    }
+    knots
+}
+
+/// Evaluate all B-spline basis functions at point x.
+///
+/// Uses the Cox-de Boor recursion:
+///   B_{i,0}(x) = 1  if knot[i] <= x < knot[i+1], else 0
+///   B_{i,p}(x) = w1 * B_{i,p-1}(x) + w2 * B_{i+1,p-1}(x)
+/// where w1 = (x - knot[i]) / (knot[i+p] - knot[i])
+///       w2 = (knot[i+p+1] - x) / (knot[i+p+1] - knot[i+1])
+///
+/// Arguments:
+///   x      - evaluation point (f64_to_bits)
+///   knots  - knot vector handle
+///   degree - spline degree (e.g. 3 for cubic)
+///
+/// Returns: handle to vec of n_basis f64_to_bits basis values.
+fn bspline_basis(x: i64, knots: i64, degree: i64) -> i64 {
+    let x_val: f64 = bits_to_f64(x);
+    let n_knots: i64 = vec_len(knots);
+    let n_basis: i64 = n_knots - degree - 1;
+
+    if n_basis <= 0 {
+        let result: i64 = vec_new();
+        return result;
+    }
+
+    // Degree 0: piecewise constant
+    // B_{i,0}(x) = 1 if knot[i] <= x < knot[i+1], 0 otherwise
+    // Special: for the last interval, include the right endpoint
+    let basis_prev: i64 = vec_new();
+    let n_intervals: i64 = n_knots - 1;
+    var i: i64 = 0;
+    while i < n_intervals {
+        let ki: f64 = bits_to_f64(vec_get(knots, i));
+        let ki1: f64 = bits_to_f64(vec_get(knots, i + 1));
+        var val: f64 = 0.0;
+        if i == n_intervals - 1 {
+            // Last interval: include right endpoint
+            if x_val >= ki && x_val <= ki1 {
+                val = 1.0;
+            }
+        } else {
+            if x_val >= ki && x_val < ki1 {
+                val = 1.0;
+            }
+        }
+        vec_push(basis_prev, f64_to_bits(val));
+        i = i + 1;
+    }
+
+    // Recurse up to target degree
+    var p: i64 = 1;
+    while p <= degree {
+        let n_current: i64 = n_knots - p - 1;
+        let basis_curr: i64 = vec_new();
+
+        var j: i64 = 0;
+        while j < n_current {
+            // Left term: (x - knot[j]) / (knot[j+p] - knot[j]) * B_{j,p-1}(x)
+            let kj: f64 = bits_to_f64(vec_get(knots, j));
+            let kjp: f64 = bits_to_f64(vec_get(knots, j + p));
+            let denom1: f64 = kjp - kj;
+
+            var left: f64 = 0.0;
+            if kan_f64_abs(denom1) > 0.0000000001 {
+                let b_prev_j: f64 = bits_to_f64(vec_get(basis_prev, j));
+                left = (x_val - kj) / denom1 * b_prev_j;
+            }
+
+            // Right term: (knot[j+p+1] - x) / (knot[j+p+1] - knot[j+1]) * B_{j+1,p-1}(x)
+            let kjp1: f64 = bits_to_f64(vec_get(knots, j + p + 1));
+            let kj1: f64 = bits_to_f64(vec_get(knots, j + 1));
+            let denom2: f64 = kjp1 - kj1;
+
+            var right: f64 = 0.0;
+            if kan_f64_abs(denom2) > 0.0000000001 {
+                let b_prev_j1: f64 = bits_to_f64(vec_get(basis_prev, j + 1));
+                right = (kjp1 - x_val) / denom2 * b_prev_j1;
+            }
+
+            vec_push(basis_curr, f64_to_bits(left + right));
+            j = j + 1;
+        }
+
+        // Swap: basis_prev = basis_curr for next iteration
+        // We reuse basis_curr as the new prev by copying
+        // Since we create fresh vecs each iteration, just reassign
+        // (In Simplex, i64 handles are cheap to copy)
+        // We need to rebuild basis_prev from basis_curr
+        // Actually, since handles are just i64, we use basis_curr directly
+        // by creating a new alias for next loop iteration.
+        // But we can't reassign let. We'll use a helper approach:
+        // Store in a wrapper vec and swap.
+
+        // Clear and refill basis_prev
+        var copy_i: i64 = 0;
+        let copy_len: i64 = vec_len(basis_curr);
+
+        // We'll build a new vec for next iteration
+        // Since basis_prev is let-bound above the loop, we use a different approach:
+        // Just set values if we have enough slots, or push new ones.
+        // Easiest: create a fresh vec each time and break the let binding issue.
+        // Actually we are using var p as loop var but basis_prev is let.
+        // We need to use the inner/outer pattern.
+
+        p = p + 1;
+
+        // If we've reached target degree, extract result from basis_curr
+        if p > degree {
+            // basis_curr has our final n_basis values
+            let result: i64 = vec_new();
+            var ri: i64 = 0;
+            while ri < n_basis {
+                if ri < vec_len(basis_curr) {
+                    vec_push(result, vec_get(basis_curr, ri));
+                } else {
+                    vec_push(result, f64_to_bits(0.0));
+                }
+                ri = ri + 1;
+            }
+            return result;
+        }
+
+        // Otherwise we need another iteration, but basis_prev is immutable.
+        // Solution: recurse. We'll use an iterative approach with a different
+        // data structure: store all levels in a 2D vec.
+    }
+
+    // If degree == 0, return the degree-0 basis directly
+    let result: i64 = vec_new();
+    var ri: i64 = 0;
+    while ri < n_basis {
+        if ri < vec_len(basis_prev) {
+            vec_push(result, vec_get(basis_prev, ri));
+        } else {
+            vec_push(result, f64_to_bits(0.0));
+        }
+        ri = ri + 1;
+    }
+    result
+}
+
+/// Iterative B-spline evaluation using a triangular table.
+///
+/// Stores all intermediate basis levels in a vec-of-vecs to avoid
+/// mutation issues. This is the main implementation used by kan_forward.
+///
+/// Returns: handle to vec of n_basis f64_to_bits basis values.
+fn bspline_basis_iterative(x: i64, knots: i64, degree: i64) -> i64 {
+    let x_val: f64 = bits_to_f64(x);
+    let n_knots: i64 = vec_len(knots);
+    let n_basis: i64 = n_knots - degree - 1;
+
+    if n_basis <= 0 {
+        return vec_new();
+    }
+
+    // Table: levels[p] = vec of basis values at degree p
+    let levels: i64 = vec_new();
+
+    // Degree 0
+    let level0: i64 = vec_new();
+    let n_intervals: i64 = n_knots - 1;
+    var i: i64 = 0;
+    while i < n_intervals {
+        let ki: f64 = bits_to_f64(vec_get(knots, i));
+        let ki1: f64 = bits_to_f64(vec_get(knots, i + 1));
+        var val: f64 = 0.0;
+        if i == n_intervals - 1 {
+            if x_val >= ki && x_val <= ki1 { val = 1.0; }
+        } else {
+            if x_val >= ki && x_val < ki1 { val = 1.0; }
+        }
+        vec_push(level0, f64_to_bits(val));
+        i = i + 1;
+    }
+    vec_push(levels, level0);
+
+    // Build up to target degree
+    var p: i64 = 1;
+    while p <= degree {
+        let prev: i64 = vec_get(levels, p - 1);
+        let n_current: i64 = n_knots - p - 1;
+        let curr: i64 = vec_new();
+
+        var j: i64 = 0;
+        while j < n_current {
+            let kj: f64 = bits_to_f64(vec_get(knots, j));
+            let kjp: f64 = bits_to_f64(vec_get(knots, j + p));
+            let denom1: f64 = kjp - kj;
+
+            var left: f64 = 0.0;
+            if kan_f64_abs(denom1) > 0.0000000001 {
+                let b_prev_j: f64 = bits_to_f64(vec_get(prev, j));
+                left = (x_val - kj) / denom1 * b_prev_j;
+            }
+
+            let kjp1: f64 = bits_to_f64(vec_get(knots, j + p + 1));
+            let kj1: f64 = bits_to_f64(vec_get(knots, j + 1));
+            let denom2: f64 = kjp1 - kj1;
+
+            var right: f64 = 0.0;
+            if kan_f64_abs(denom2) > 0.0000000001 {
+                let b_prev_j1: f64 = bits_to_f64(vec_get(prev, j + 1));
+                right = (kjp1 - x_val) / denom2 * b_prev_j1;
+            }
+
+            vec_push(curr, f64_to_bits(left + right));
+            j = j + 1;
+        }
+
+        vec_push(levels, curr);
+        p = p + 1;
+    }
+
+    // Extract final level
+    let final_level: i64 = vec_get(levels, degree);
+    let result: i64 = vec_new();
+    var ri: i64 = 0;
+    while ri < n_basis {
+        if ri < vec_len(final_level) {
+            vec_push(result, vec_get(final_level, ri));
+        } else {
+            vec_push(result, f64_to_bits(0.0));
+        }
+        ri = ri + 1;
+    }
+    result
+}
+
+// =============================================================================
+// KAN Layer
+// =============================================================================
+
+/// Create a new KAN layer.
+///
+/// Each edge (i, j) has its own B-spline with n_basis coefficients.
+/// Total parameters: in_dim * out_dim * n_basis.
+///
+/// Layer vec layout: [in_dim, out_dim, n_basis, degree, knots_handle, coeffs_handle]
+///
+/// Arguments:
+///   in_dim  - input dimension
+///   out_dim - output dimension
+///   n_basis - number of B-spline basis functions per edge
+///   degree  - B-spline degree (e.g. 3 for cubic)
+///
+/// Returns: handle to layer vec
+fn kan_layer_new(in_dim: i64, out_dim: i64, n_basis: i64, degree: i64) -> i64 {
+    let layer: i64 = vec_new();
+
+    // Metadata
+    vec_push(layer, in_dim);     // [0] in_dim
+    vec_push(layer, out_dim);    // [1] out_dim
+    vec_push(layer, n_basis);    // [2] n_basis
+    vec_push(layer, degree);     // [3] degree
+
+    // Knot vector (shared by all edges in this layer)
+    let knots: i64 = bspline_knots(n_basis, degree);
+    vec_push(layer, knots);      // [4] knots
+
+    // Coefficient storage: flat vec of in_dim * out_dim * n_basis entries
+    // All initialized to zero
+    let n_coeffs: i64 = in_dim * out_dim * n_basis;
+    let coeffs: i64 = vec_new();
+    var c: i64 = 0;
+    while c < n_coeffs {
+        vec_push(coeffs, f64_to_bits(0.0));
+        c = c + 1;
+    }
+    vec_push(layer, coeffs);     // [5] coefficients
+
+    layer
+}
+
+/// Initialize layer coefficients with pseudo-random values.
+///
+/// Uses a simple linear congruential generator seeded by the given value.
+/// Coefficients are initialized in range [-0.5, 0.5] / sqrt(in_dim).
+///
+/// Arguments:
+///   layer - layer handle
+///   seed  - random seed
+///
+/// Returns: the layer handle (for chaining)
+fn kan_layer_init(layer: i64, seed: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let n_coeffs: i64 = in_dim * out_dim * n_basis;
+
+    // Scale factor: 1/sqrt(in_dim) for variance normalization
+    let in_dim_f: f64 = bits_to_f64(f64_to_bits(in_dim));
+    let scale: f64 = 1.0 / sqrt(in_dim_f);
+
+    // LCG parameters (Numerical Recipes)
+    var rng_state: i64 = seed;
+    if rng_state == 0 { rng_state = 12345; }
+
+    var c: i64 = 0;
+    while c < n_coeffs {
+        // LCG: state = (a * state + c) mod m
+        rng_state = rng_state * 1103515245 + 12345;
+        // Make sure state is positive
+        var s: i64 = rng_state;
+        if s < 0 { s = 0 - s; }
+
+        // Map to [-0.5, 0.5]
+        let raw: f64 = bits_to_f64(f64_to_bits(s % 10000)) / 10000.0 - 0.5;
+        let val: f64 = raw * scale;
+        vec_set(coeffs, c, f64_to_bits(val));
+        c = c + 1;
+    }
+
+    layer
+}
+
+/// Get the coefficient index for edge (i, j), basis function k.
+///
+/// Layout: coeffs[(i * out_dim + j) * n_basis + k]
+fn kan_coeff_index(out_dim: i64, n_basis: i64, i: i64, j: i64, k: i64) -> i64 {
+    (i * out_dim + j) * n_basis + k
+}
+
+/// Evaluate a single edge spline: φ_{i,j}(x) = Σ_k c_{i,j,k} · B_k(x)
+///
+/// Arguments:
+///   layer - layer handle
+///   i     - input index
+///   j     - output index
+///   x     - input value (f64_to_bits)
+///
+/// Returns: spline output (f64_to_bits)
+fn kan_edge_eval(layer: i64, i: i64, j: i64, x: i64) -> i64 {
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let degree: i64 = vec_get(layer, KAN_DEGREE());
+    let knots: i64 = vec_get(layer, KAN_KNOTS());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+
+    // Evaluate basis functions at x
+    let basis: i64 = bspline_basis_iterative(x, knots, degree);
+
+    // Dot product: Σ_k c_{i,j,k} * B_k(x)
+    var sum: f64 = 0.0;
+    var k: i64 = 0;
+    while k < n_basis {
+        let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+        let c_val: f64 = bits_to_f64(vec_get(coeffs, idx));
+        let b_val: f64 = bits_to_f64(vec_get(basis, k));
+        sum = sum + c_val * b_val;
+        k = k + 1;
+    }
+
+    f64_to_bits(sum)
+}
+
+/// Forward pass through a KAN layer.
+///
+/// For each output j: y_j = Σ_i φ_{i,j}(x_i)
+/// where φ_{i,j} is the learned spline on edge (i→j).
+///
+/// Arguments:
+///   layer - layer handle
+///   input - handle to vec of in_dim f64_to_bits values
+///
+/// Returns: handle to vec of out_dim f64_to_bits values
+fn kan_forward(layer: i64, input: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+
+    let output: i64 = vec_new();
+
+    var j: i64 = 0;
+    while j < out_dim {
+        var sum: f64 = 0.0;
+
+        var i: i64 = 0;
+        while i < in_dim {
+            let x_i: i64 = vec_get(input, i);
+            let edge_val: i64 = kan_edge_eval(layer, i, j, x_i);
+            sum = sum + bits_to_f64(edge_val);
+            i = i + 1;
+        }
+
+        vec_push(output, f64_to_bits(sum));
+        j = j + 1;
+    }
+
+    output
+}
+
+/// Set a specific coefficient in a KAN layer.
+///
+/// Arguments:
+///   layer - layer handle
+///   i     - input index
+///   j     - output index
+///   k     - basis function index
+///   value - coefficient value (f64_to_bits)
+fn kan_set_coeff(layer: i64, i: i64, j: i64, k: i64, value: i64) -> i64 {
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+    vec_set(coeffs, idx, value);
+    0
+}
+
+/// Get a specific coefficient from a KAN layer.
+///
+/// Returns: coefficient value (f64_to_bits)
+fn kan_get_coeff(layer: i64, i: i64, j: i64, k: i64) -> i64 {
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+    vec_get(coeffs, idx)
+}
+
+// =============================================================================
+// KAN Network (multi-layer)
+// =============================================================================
+
+/// Create a multi-layer KAN network.
+///
+/// layer_dims is a vec of i64 dimension values: [d0, d1, d2, ...].
+/// Creates (n-1) layers: d0→d1, d1→d2, etc.
+///
+/// Network vec layout: [n_layers, layer0, layer1, ...]
+///
+/// Arguments:
+///   layer_dims - vec handle of dimension values
+///   n_basis    - basis functions per edge
+///   degree     - B-spline degree
+///
+/// Returns: handle to network vec
+fn kan_network_new(layer_dims: i64, n_basis: i64, degree: i64) -> i64 {
+    let n_dims: i64 = vec_len(layer_dims);
+    let n_layers: i64 = n_dims - 1;
+
+    let net: i64 = vec_new();
+    vec_push(net, n_layers);   // [0] number of layers
+
+    var l: i64 = 0;
+    while l < n_layers {
+        let in_d: i64 = vec_get(layer_dims, l);
+        let out_d: i64 = vec_get(layer_dims, l + 1);
+        let layer: i64 = kan_layer_new(in_d, out_d, n_basis, degree);
+        vec_push(net, layer);  // [1+l] layer handle
+        l = l + 1;
+    }
+
+    net
+}
+
+/// Initialize all layers in a KAN network with pseudo-random coefficients.
+///
+/// Each layer gets a different seed derived from the base seed.
+///
+/// Returns: the network handle (for chaining)
+fn kan_network_init(net: i64, seed: i64) -> i64 {
+    let n_layers: i64 = vec_get(net, NET_N_LAYERS());
+
+    var l: i64 = 0;
+    while l < n_layers {
+        let layer: i64 = vec_get(net, NET_LAYERS_START() + l);
+        let layer_seed: i64 = seed * 31 + l * 7 + 1;
+        kan_layer_init(layer, layer_seed);
+        l = l + 1;
+    }
+
+    net
+}
+
+/// Forward pass through a multi-layer KAN network.
+///
+/// Feeds input through each layer sequentially.
+///
+/// Arguments:
+///   net   - network handle
+///   input - handle to vec of input f64_to_bits values
+///
+/// Returns: handle to vec of output f64_to_bits values
+fn kan_network_forward(net: i64, input: i64) -> i64 {
+    let n_layers: i64 = vec_get(net, NET_N_LAYERS());
+    var current: i64 = input;
+
+    var l: i64 = 0;
+    while l < n_layers {
+        let layer: i64 = vec_get(net, NET_LAYERS_START() + l);
+        current = kan_forward(layer, current);
+        l = l + 1;
+    }
+
+    current
+}
+
+/// Get a specific layer from a network.
+///
+/// Returns: layer handle
+fn kan_network_get_layer(net: i64, layer_idx: i64) -> i64 {
+    vec_get(net, NET_LAYERS_START() + layer_idx)
+}
+
+/// Count total parameters in a KAN network.
+///
+/// Returns: total number of learnable coefficients across all layers
+fn kan_network_param_count(net: i64) -> i64 {
+    let n_layers: i64 = vec_get(net, NET_N_LAYERS());
+    var total: i64 = 0;
+
+    var l: i64 = 0;
+    while l < n_layers {
+        let layer: i64 = vec_get(net, NET_LAYERS_START() + l);
+        let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+        let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+        let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+        total = total + in_dim * out_dim * n_basis;
+        l = l + 1;
+    }
+
+    total
+}
+
+// =============================================================================
+// Symbolic Simplification
+// =============================================================================
+
+/// Extract the coefficient vector for a single edge activation φ_{i,j}.
+///
+/// Returns a new vec of n_basis f64_to_bits coefficient values,
+/// which fully describes the spline function on edge (i→j).
+///
+/// Arguments:
+///   layer - layer handle
+///   i     - input index
+///   j     - output index
+///
+/// Returns: handle to vec of n_basis f64_to_bits coefficients
+fn kan_extract_function(layer: i64, i: i64, j: i64) -> i64 {
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+
+    let result: i64 = vec_new();
+    var k: i64 = 0;
+    while k < n_basis {
+        let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+        vec_push(result, vec_get(coeffs, idx));
+        k = k + 1;
+    }
+
+    result
+}
+
+/// Compute the effective degree of a spline's coefficient vector.
+///
+/// Counts the number of non-zero coefficients (above a small threshold).
+/// A spline with k non-zero coefficients can represent up to degree-(k-1)
+/// polynomials over each knot span.
+///
+/// Arguments:
+///   coeffs - handle to vec of f64_to_bits coefficient values
+///
+/// Returns: count of non-zero coefficients
+fn kan_spline_degree(coeffs: i64) -> i64 {
+    let n: i64 = vec_len(coeffs);
+    var count: i64 = 0;
+    let threshold: f64 = 0.0000001;
+
+    var k: i64 = 0;
+    while k < n {
+        let c: f64 = bits_to_f64(vec_get(coeffs, k));
+        if kan_f64_abs(c) > threshold {
+            count = count + 1;
+        }
+        k = k + 1;
+    }
+
+    count
+}
+
+/// Check if a spline is approximately linear.
+///
+/// A B-spline is approximately linear if it has at most 2 significant
+/// coefficients (the constant and linear basis functions). For uniform
+/// knots, the first two basis functions capture constant and linear
+/// behavior. We check that higher-order coefficients are below tolerance.
+///
+/// Arguments:
+///   coeffs    - handle to vec of f64_to_bits coefficient values
+///   tolerance - threshold (f64_to_bits) for "approximately zero"
+///
+/// Returns: 1 if approximately linear, 0 otherwise
+fn kan_is_linear(coeffs: i64, tolerance: i64) -> i64 {
+    let n: i64 = vec_len(coeffs);
+    let tol: f64 = bits_to_f64(tolerance);
+
+    if n <= 2 {
+        return 1;
+    }
+
+    // Check if all coefficients beyond the first two are near zero
+    // For B-splines on uniform knots, higher basis functions capture
+    // curvature. If their coefficients are small, the function is ~linear.
+    var k: i64 = 2;
+    while k < n {
+        let c: f64 = bits_to_f64(vec_get(coeffs, k));
+        if kan_f64_abs(c) > tol {
+            return 0;
+        }
+        k = k + 1;
+    }
+
+    1
+}
+
+/// Check if a spline is approximately zero.
+///
+/// Returns 1 if all coefficients are below tolerance in absolute value.
+///
+/// Arguments:
+///   coeffs    - handle to vec of f64_to_bits coefficient values
+///   tolerance - threshold (f64_to_bits) for "approximately zero"
+///
+/// Returns: 1 if approximately zero, 0 otherwise
+fn kan_is_zero(coeffs: i64, tolerance: i64) -> i64 {
+    let n: i64 = vec_len(coeffs);
+    let tol: f64 = bits_to_f64(tolerance);
+
+    var k: i64 = 0;
+    while k < n {
+        let c: f64 = bits_to_f64(vec_get(coeffs, k));
+        if kan_f64_abs(c) > tol {
+            return 0;
+        }
+        k = k + 1;
+    }
+
+    1
+}
+
+/// Count the number of active (non-zero) edges in a layer.
+///
+/// An edge is active if its spline function is not approximately zero.
+///
+/// Arguments:
+///   layer     - layer handle
+///   tolerance - threshold (f64_to_bits) for zero check
+///
+/// Returns: number of active edges
+fn kan_active_edges(layer: i64, tolerance: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    var count: i64 = 0;
+
+    var i: i64 = 0;
+    while i < in_dim {
+        var j: i64 = 0;
+        while j < out_dim {
+            let edge_coeffs: i64 = kan_extract_function(layer, i, j);
+            if kan_is_zero(edge_coeffs, tolerance) == 0 {
+                count = count + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    count
+}
+
+/// Count the number of approximately linear edges in a layer.
+///
+/// Arguments:
+///   layer     - layer handle
+///   tolerance - threshold (f64_to_bits)
+///
+/// Returns: number of linear edges
+fn kan_linear_edges(layer: i64, tolerance: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    var count: i64 = 0;
+
+    var i: i64 = 0;
+    while i < in_dim {
+        var j: i64 = 0;
+        while j < out_dim {
+            let edge_coeffs: i64 = kan_extract_function(layer, i, j);
+            if kan_is_linear(edge_coeffs, tolerance) == 1 {
+                count = count + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    count
+}
+
+// =============================================================================
+// Spline Evaluation Utilities
+// =============================================================================
+
+/// Evaluate a spline at a single point, given coefficients and shared knots.
+///
+/// Computes: Σ_k c_k · B_k(x)
+///
+/// Arguments:
+///   coeffs - handle to vec of n_basis f64_to_bits coefficients
+///   knots  - knot vector handle
+///   degree - B-spline degree
+///   x      - evaluation point (f64_to_bits)
+///
+/// Returns: spline value (f64_to_bits)
+fn spline_eval(coeffs: i64, knots: i64, degree: i64, x: i64) -> i64 {
+    let basis: i64 = bspline_basis_iterative(x, knots, degree);
+    let n: i64 = vec_len(coeffs);
+    var sum: f64 = 0.0;
+
+    var k: i64 = 0;
+    while k < n {
+        let c_val: f64 = bits_to_f64(vec_get(coeffs, k));
+        if k < vec_len(basis) {
+            let b_val: f64 = bits_to_f64(vec_get(basis, k));
+            sum = sum + c_val * b_val;
+        }
+        k = k + 1;
+    }
+
+    f64_to_bits(sum)
+}
+
+/// Evaluate a spline at multiple points.
+///
+/// Arguments:
+///   coeffs - handle to vec of n_basis f64_to_bits coefficients
+///   knots  - knot vector handle
+///   degree - B-spline degree
+///   xs     - handle to vec of f64_to_bits evaluation points
+///
+/// Returns: handle to vec of f64_to_bits spline values
+fn spline_eval_multi(coeffs: i64, knots: i64, degree: i64, xs: i64) -> i64 {
+    let n: i64 = vec_len(xs);
+    let result: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < n {
+        let x: i64 = vec_get(xs, i);
+        vec_push(result, spline_eval(coeffs, knots, degree, x));
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Compute L2 norm of a coefficient vector.
+///
+/// Returns: ||coeffs||_2  (f64_to_bits)
+fn kan_coeff_norm(coeffs: i64) -> i64 {
+    let n: i64 = vec_len(coeffs);
+    var sum_sq: f64 = 0.0;
+
+    var k: i64 = 0;
+    while k < n {
+        let c: f64 = bits_to_f64(vec_get(coeffs, k));
+        sum_sq = sum_sq + c * c;
+        k = k + 1;
+    }
+
+    f64_to_bits(sqrt(sum_sq))
+}
+
+/// Compute the L1 sparsity of a coefficient vector.
+///
+/// Returns: Σ |c_k|  (f64_to_bits)
+fn kan_coeff_l1(coeffs: i64) -> i64 {
+    let n: i64 = vec_len(coeffs);
+    var sum: f64 = 0.0;
+
+    var k: i64 = 0;
+    while k < n {
+        let c: f64 = bits_to_f64(vec_get(coeffs, k));
+        sum = sum + kan_f64_abs(c);
+        k = k + 1;
+    }
+
+    f64_to_bits(sum)
+}
+
+// =============================================================================
+// KAN Training Utilities
+// =============================================================================
+
+/// Compute the output of a KAN layer and cache intermediate values
+/// needed for backpropagation.
+///
+/// Returns a cache vec: [input_handle, basis_cache_handle, output_handle]
+/// where basis_cache_handle is a vec of in_dim basis evaluation vecs.
+///
+/// Arguments:
+///   layer - layer handle
+///   input - handle to vec of in_dim f64_to_bits values
+///
+/// Returns: cache vec handle
+fn kan_forward_cached(layer: i64, input: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let degree: i64 = vec_get(layer, KAN_DEGREE());
+    let knots: i64 = vec_get(layer, KAN_KNOTS());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+
+    // Evaluate basis functions for each input (cache for backward pass)
+    let basis_cache: i64 = vec_new();
+    var i: i64 = 0;
+    while i < in_dim {
+        let x_i: i64 = vec_get(input, i);
+        let basis_i: i64 = bspline_basis_iterative(x_i, knots, degree);
+        vec_push(basis_cache, basis_i);
+        i = i + 1;
+    }
+
+    // Compute output
+    let output: i64 = vec_new();
+    var j: i64 = 0;
+    while j < out_dim {
+        var sum: f64 = 0.0;
+        i = 0;
+        while i < in_dim {
+            let basis_i: i64 = vec_get(basis_cache, i);
+            var k: i64 = 0;
+            while k < n_basis {
+                let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+                let c_val: f64 = bits_to_f64(vec_get(coeffs, idx));
+                let b_val: f64 = bits_to_f64(vec_get(basis_i, k));
+                sum = sum + c_val * b_val;
+                k = k + 1;
+            }
+            i = i + 1;
+        }
+        vec_push(output, f64_to_bits(sum));
+        j = j + 1;
+    }
+
+    // Build cache
+    let cache: i64 = vec_new();
+    vec_push(cache, input);        // [0] input
+    vec_push(cache, basis_cache);  // [1] basis evaluations
+    vec_push(cache, output);       // [2] output
+
+    cache
+}
+
+/// Compute coefficient gradients given output gradients.
+///
+/// For coefficient c_{i,j,k}: grad = dL/dy_j * B_k(x_i)
+/// where dL/dy_j is the upstream gradient for output j.
+///
+/// Arguments:
+///   layer       - layer handle
+///   cache       - cache from kan_forward_cached
+///   grad_output - handle to vec of out_dim f64_to_bits gradient values
+///
+/// Returns: handle to vec of in_dim*out_dim*n_basis f64_to_bits gradient values
+fn kan_backward_coeffs(layer: i64, cache: i64, grad_output: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let basis_cache: i64 = vec_get(cache, 1);
+
+    let n_coeffs: i64 = in_dim * out_dim * n_basis;
+    let grads: i64 = vec_new();
+
+    // Initialize gradients to zero
+    var c: i64 = 0;
+    while c < n_coeffs {
+        vec_push(grads, f64_to_bits(0.0));
+        c = c + 1;
+    }
+
+    // Accumulate gradients
+    var i: i64 = 0;
+    while i < in_dim {
+        let basis_i: i64 = vec_get(basis_cache, i);
+        var j: i64 = 0;
+        while j < out_dim {
+            let dy_j: f64 = bits_to_f64(vec_get(grad_output, j));
+            var k: i64 = 0;
+            while k < n_basis {
+                let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+                let b_val: f64 = bits_to_f64(vec_get(basis_i, k));
+                let grad_val: f64 = dy_j * b_val;
+                let prev: f64 = bits_to_f64(vec_get(grads, idx));
+                vec_set(grads, idx, f64_to_bits(prev + grad_val));
+                k = k + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    grads
+}
+
+/// Compute input gradients given output gradients.
+///
+/// For input x_i: grad = Σ_j dL/dy_j * dφ_{i,j}/dx_i
+/// This requires differentiating the B-splines, which we approximate
+/// numerically: dB_k/dx ≈ (B_k(x+h) - B_k(x-h)) / (2h)
+///
+/// Arguments:
+///   layer       - layer handle
+///   cache       - cache from kan_forward_cached
+///   grad_output - handle to vec of out_dim f64_to_bits gradient values
+///
+/// Returns: handle to vec of in_dim f64_to_bits input gradient values
+fn kan_backward_input(layer: i64, cache: i64, grad_output: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let degree: i64 = vec_get(layer, KAN_DEGREE());
+    let knots: i64 = vec_get(layer, KAN_KNOTS());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let input: i64 = vec_get(cache, 0);
+
+    let h: f64 = 0.0001;  // Step size for numerical differentiation
+    let grad_input: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < in_dim {
+        let x_i: f64 = bits_to_f64(vec_get(input, i));
+        var grad_xi: f64 = 0.0;
+
+        var j: i64 = 0;
+        while j < out_dim {
+            let dy_j: f64 = bits_to_f64(vec_get(grad_output, j));
+
+            // Evaluate spline at x+h and x-h
+            let x_plus: i64 = f64_to_bits(x_i + h);
+            let x_minus: i64 = f64_to_bits(x_i - h);
+            let basis_plus: i64 = bspline_basis_iterative(x_plus, knots, degree);
+            let basis_minus: i64 = bspline_basis_iterative(x_minus, knots, degree);
+
+            // Compute dφ_{i,j}/dx_i ≈ Σ_k c_{i,j,k} * (B_k(x+h) - B_k(x-h)) / (2h)
+            var dphi: f64 = 0.0;
+            var k: i64 = 0;
+            while k < n_basis {
+                let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+                let c_val: f64 = bits_to_f64(vec_get(coeffs, idx));
+                let bp: f64 = bits_to_f64(vec_get(basis_plus, k));
+                let bm: f64 = bits_to_f64(vec_get(basis_minus, k));
+                dphi = dphi + c_val * (bp - bm) / (2.0 * h);
+                k = k + 1;
+            }
+
+            grad_xi = grad_xi + dy_j * dphi;
+            j = j + 1;
+        }
+
+        vec_push(grad_input, f64_to_bits(grad_xi));
+        i = i + 1;
+    }
+
+    grad_input
+}
+
+/// Apply gradient update to coefficients (SGD step).
+///
+/// c_{i,j,k} -= lr * grad_{i,j,k}
+///
+/// Arguments:
+///   layer - layer handle
+///   grads - gradient vec from kan_backward_coeffs
+///   lr    - learning rate (f64_to_bits)
+///
+/// Returns: 0 on success
+fn kan_update_coeffs(layer: i64, grads: i64, lr: i64) -> i64 {
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let n: i64 = vec_len(coeffs);
+    let lr_val: f64 = bits_to_f64(lr);
+
+    var c: i64 = 0;
+    while c < n {
+        let old_val: f64 = bits_to_f64(vec_get(coeffs, c));
+        let grad_val: f64 = bits_to_f64(vec_get(grads, c));
+        let new_val: f64 = old_val - lr_val * grad_val;
+        vec_set(coeffs, c, f64_to_bits(new_val));
+        c = c + 1;
+    }
+
+    0
+}
+
+// =============================================================================
+// KAN Regularization
+// =============================================================================
+
+/// L1 regularization penalty for a layer (sparsity inducing).
+///
+/// Penalty = λ * Σ |c_{i,j,k}|
+///
+/// Returns: penalty value (f64_to_bits)
+fn kan_l1_penalty(layer: i64, lambda: i64) -> i64 {
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let n: i64 = vec_len(coeffs);
+    let lam: f64 = bits_to_f64(lambda);
+    var sum: f64 = 0.0;
+
+    var c: i64 = 0;
+    while c < n {
+        let val: f64 = bits_to_f64(vec_get(coeffs, c));
+        sum = sum + kan_f64_abs(val);
+        c = c + 1;
+    }
+
+    f64_to_bits(lam * sum)
+}
+
+/// L2 regularization penalty for a layer (weight decay).
+///
+/// Penalty = λ * Σ c_{i,j,k}²
+///
+/// Returns: penalty value (f64_to_bits)
+fn kan_l2_penalty(layer: i64, lambda: i64) -> i64 {
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let n: i64 = vec_len(coeffs);
+    let lam: f64 = bits_to_f64(lambda);
+    var sum: f64 = 0.0;
+
+    var c: i64 = 0;
+    while c < n {
+        let val: f64 = bits_to_f64(vec_get(coeffs, c));
+        sum = sum + val * val;
+        c = c + 1;
+    }
+
+    f64_to_bits(lam * sum)
+}
+
+// =============================================================================
+// KAN Pruning
+// =============================================================================
+
+/// Prune edges whose spline coefficients are all below tolerance.
+///
+/// Sets all coefficients of pruned edges to exactly zero.
+///
+/// Arguments:
+///   layer     - layer handle
+///   tolerance - threshold (f64_to_bits) for pruning
+///
+/// Returns: number of edges pruned
+fn kan_prune_edges(layer: i64, tolerance: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let tol: f64 = bits_to_f64(tolerance);
+    var pruned: i64 = 0;
+
+    var i: i64 = 0;
+    while i < in_dim {
+        var j: i64 = 0;
+        while j < out_dim {
+            // Check if all coefficients for this edge are small
+            var max_abs: f64 = 0.0;
+            var k: i64 = 0;
+            while k < n_basis {
+                let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+                let c_val: f64 = bits_to_f64(vec_get(coeffs, idx));
+                let abs_c: f64 = kan_f64_abs(c_val);
+                if abs_c > max_abs { max_abs = abs_c; }
+                k = k + 1;
+            }
+
+            // Prune if max absolute coefficient is below tolerance
+            if max_abs < tol {
+                k = 0;
+                while k < n_basis {
+                    let idx: i64 = kan_coeff_index(out_dim, n_basis, i, j, k);
+                    vec_set(coeffs, idx, f64_to_bits(0.0));
+                    k = k + 1;
+                }
+                pruned = pruned + 1;
+            }
+
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    pruned
+}
+
+// =============================================================================
+// KAN Grid Refinement
+// =============================================================================
+
+/// Create a layer with a finer knot grid (more basis functions).
+///
+/// This enables progressive refinement: start with coarse splines
+/// and add resolution where needed. New coefficients are initialized
+/// to zero (the old approximation is not transferred).
+///
+/// Arguments:
+///   layer         - original layer handle
+///   new_n_basis   - number of basis functions in refined layer
+///
+/// Returns: handle to new refined layer
+fn kan_refine_grid(layer: i64, new_n_basis: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let degree: i64 = vec_get(layer, KAN_DEGREE());
+
+    kan_layer_new(in_dim, out_dim, new_n_basis, degree)
+}
+
+// =============================================================================
+// KAN Summary / Diagnostics
+// =============================================================================
+
+/// Print a summary of a KAN layer.
+///
+/// Shows dimensions, basis count, degree, and coefficient statistics.
+fn kan_layer_summary(layer: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, KAN_IN_DIM());
+    let out_dim: i64 = vec_get(layer, KAN_OUT_DIM());
+    let n_basis: i64 = vec_get(layer, KAN_N_BASIS());
+    let degree: i64 = vec_get(layer, KAN_DEGREE());
+    let coeffs: i64 = vec_get(layer, KAN_COEFFS());
+    let n_coeffs: i64 = vec_len(coeffs);
+
+    print("  KAN Layer: ");
+    print_i64(in_dim);
+    print(" -> ");
+    print_i64(out_dim);
+    print(" (");
+    print_i64(n_basis);
+    print(" basis, degree ");
+    print_i64(degree);
+    print(", ");
+    print_i64(n_coeffs);
+    println(" params)");
+
+    // Compute coefficient statistics
+    var sum_abs: f64 = 0.0;
+    var max_abs: f64 = 0.0;
+    var c: i64 = 0;
+    while c < n_coeffs {
+        let val: f64 = bits_to_f64(vec_get(coeffs, c));
+        let abs_val: f64 = kan_f64_abs(val);
+        sum_abs = sum_abs + abs_val;
+        if abs_val > max_abs { max_abs = abs_val; }
+        c = c + 1;
+    }
+
+    let tol: i64 = f64_to_bits(0.0001);
+    let active: i64 = kan_active_edges(layer, tol);
+    let total_edges: i64 = in_dim * out_dim;
+
+    print("    Active edges: ");
+    print_i64(active);
+    print(" / ");
+    print_i64(total_edges);
+    println("");
+
+    print("    Mean |coeff|: ");
+    if n_coeffs > 0 {
+        let mean_abs: f64 = sum_abs / bits_to_f64(f64_to_bits(n_coeffs));
+        print_f64(mean_abs);
+    } else {
+        print("0.0");
+    }
+    println("");
+
+    print("    Max  |coeff|: ");
+    print_f64(max_abs);
+    println("");
+
+    0
+}
+
+/// Print a summary of a KAN network.
+fn kan_network_summary(net: i64) -> i64 {
+    let n_layers: i64 = vec_get(net, NET_N_LAYERS());
+    let total_params: i64 = kan_network_param_count(net);
+
+    println("KAN Network Summary:");
+    print("  Layers: ");
+    print_i64(n_layers);
+    println("");
+    print("  Total params: ");
+    print_i64(total_params);
+    println("");
+    println("  Architecture:");
+
+    var l: i64 = 0;
+    while l < n_layers {
+        let layer: i64 = vec_get(net, NET_LAYERS_START() + l);
+        print("    Layer ");
+        print_i64(l);
+        println(":");
+        kan_layer_summary(layer);
+        l = l + 1;
+    }
+
+    0
+}

@@ -1,6 +1,6 @@
 # Neural IR and Differentiable Execution
 
-**Version 0.16.0**
+**Version 0.17.0**
 
 ---
 
@@ -79,7 +79,7 @@ Neural gates support two modes at runtime, controlled via the `neural_set_traini
 
 ## Contract Logic
 
-Contracts ensure safety guarantees even with probabilistic gates:
+Contracts enable safety validation when preconditions hold:
 
 ### Requires (Preconditions)
 
@@ -266,7 +266,7 @@ neural_gate learnable_branch(x: f64) -> bool
 
 ![Meta-Gradient Annealing](../diagrams/meta-gradient-annealing.svg)
 
-Instead of manually tuning temperature schedules, Simplex can **learn optimal schedules** through meta-gradients. By wrapping the temperature (τ) as a dual number, the system calculates how changes in the cooling rate affect the final loss.
+Instead of manually tuning temperature schedules, Simplex can **learn adaptive schedules** through meta-gradients. By wrapping the temperature (τ) as a dual number, the system calculates how changes in the cooling rate affect the final loss.
 
 ### Visual Overview: Two Training Scenarios
 
@@ -304,7 +304,7 @@ Temperature (τ)              Loss
 
 For complex patterns, the meta-gradient detects when loss plateaus (stuck in local minima). When `∂L/∂τ > 0`, it signals re-heating would help—the system automatically increases τ to explore, then re-cools to converge.
 
-> **Key Insight:** "Temperature (τᵢ) controls the 'hardness' of Neural Gates. Simplex learns the best τᵢ schedule using Meta-Gradients."
+> **Key Insight:** "Temperature (τᵢ) controls the 'hardness' of Neural Gates. Simplex learns adaptive τᵢ schedules using meta-gradients."
 
 See [Meta-Gradient Temperature Control](09-cognitive-hive.md#meta-gradient-temperature-control) for additional implementation details.
 
@@ -403,11 +403,11 @@ fn train_step(data: &Batch) {
 
 ### Neurosymbolic Transition
 
-Self-learning annealing enables automatic transition from **Neural Network** (fuzzy/probabilistic) to **Symbolic Program** (discrete/exact):
+Self-learning annealing enables automatic transition from **Neural Network** (fuzzy/probabilistic) to **Symbolic Program** (discrete/deterministic):
 
 1. The compiler figures out when the "search phase" is over
 2. Gates automatically transition from soft to hard
-3. No human intervention required to find optimal annealing schedule
+3. No human intervention required to find a good annealing schedule
 
 ---
 

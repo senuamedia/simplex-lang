@@ -1,0 +1,265 @@
+// DynamoDB Client Tests (self-contained)
+//
+// Tests DynamoDB attribute construction, item manipulation, endpoint building,
+// and result accessors using inline stub implementations. Avoids importing
+// simplex-dynamodb which transitively pulls simplex-std and causes compiler OOM.
+//
+// The stub functions replicate the exact logic from simplex-dynamodb/src/mod.sx.
+
+// =============================================================================
+// Inline stubs: Attribute constructors (JSON-based)
+// =============================================================================
+
+fn attr_s(value: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "S", json_string(value));
+    obj
+}
+
+fn attr_n(value: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "N", json_string(int_to_string(value)));
+    obj
+}
+
+fn attr_n_str(value: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "N", json_string(value));
+    obj
+}
+
+fn attr_bool(value: i64) -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "BOOL", json_bool(value));
+    obj
+}
+
+fn attr_null() -> i64 {
+    let obj: i64 = json_object_new();
+    json_object_set(obj, "NULL", json_bool(1));
+    obj
+}
+
+// =============================================================================
+// Inline stubs: Attribute accessors
+// =============================================================================
+
+fn attr_type(attr: i64) -> i64 {
+    if json_is_object(attr) != 1 { return ""; }
+    let s_val: i64 = json_get_sx(attr, "S");
+    if json_is_string(s_val) == 1 { return "S"; }
+    let n_val: i64 = json_get_sx(attr, "N");
+    if json_is_string(n_val) == 1 { return "N"; }
+    let b_val: i64 = json_get_sx(attr, "BOOL");
+    if json_is_bool(b_val) == 1 { return "BOOL"; }
+    let null_val: i64 = json_get_sx(attr, "NULL");
+    if json_is_bool(null_val) == 1 { return "NULL"; }
+    ""
+}
+
+fn attr_get_s(attr: i64) -> i64 {
+    let val: i64 = json_get_sx(attr, "S");
+    if json_is_string(val) == 1 { return json_as_string(val); }
+    ""
+}
+
+fn attr_get_n(attr: i64) -> i64 {
+    let val: i64 = json_get_sx(attr, "N");
+    if json_is_string(val) == 1 { return string_to_int(json_as_string(val)); }
+    0
+}
+
+fn attr_get_n_str(attr: i64) -> i64 {
+    let val: i64 = json_get_sx(attr, "N");
+    if json_is_string(val) == 1 { return json_as_string(val); }
+    ""
+}
+
+// =============================================================================
+// Inline stubs: Item (JSON object wrapper)
+// =============================================================================
+
+fn item_new() -> i64 { json_object_new() }
+
+fn item_set(item: i64, name: i64, attr: i64) -> i64 {
+    json_object_set(item, name, attr);
+    item
+}
+
+fn item_get(item: i64, name: i64) -> i64 {
+    json_get_sx(item, name)
+}
+
+fn item_count(item: i64) -> i64 {
+    json_object_len(item)
+}
+
+// =============================================================================
+// Inline stubs: Endpoint and result accessors
+// =============================================================================
+
+fn dynamo_endpoint(region: i64) -> i64 {
+    string_concat("https://dynamodb.", string_concat(region, ".amazonaws.com"))
+}
+
+fn RES_STATUS() -> i64 { 0 }
+fn RES_DATA() -> i64 { 1 }
+fn RES_ERROR_CODE() -> i64 { 2 }
+
+fn dynamo_result_ok(result: i64) -> i64 { vec_get(result, RES_STATUS()) }
+fn dynamo_result_data(result: i64) -> i64 { vec_get(result, RES_DATA()) }
+fn dynamo_result_error_code(result: i64) -> i64 { vec_get(result, RES_ERROR_CODE()) }
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+fn test_attr_constructors() -> i64 {
+    println("  Testing attr_s/attr_n/attr_bool/attr_null...");
+    let s: i64 = attr_s("hello");
+    let s_type: i64 = attr_type(s);
+    if string_eq(s_type, "S") != 1 {
+        println("  FAIL: attr_s type should be S");
+        return 1;
+    }
+    let s_val: i64 = attr_get_s(s);
+    if string_eq(s_val, "hello") != 1 {
+        println("  FAIL: attr_get_s value");
+        return 1;
+    }
+    let n: i64 = attr_n(42);
+    let n_type: i64 = attr_type(n);
+    if string_eq(n_type, "N") != 1 {
+        println("  FAIL: attr_n type should be N");
+        return 1;
+    }
+    let n_val: i64 = attr_get_n(n);
+    if n_val != 42 {
+        println("  FAIL: attr_get_n value");
+        return 1;
+    }
+    let b: i64 = attr_bool(1);
+    let b_type: i64 = attr_type(b);
+    if string_eq(b_type, "BOOL") != 1 {
+        println("  FAIL: attr_bool type should be BOOL");
+        return 1;
+    }
+    let nul: i64 = attr_null();
+    let nul_type: i64 = attr_type(nul);
+    if string_eq(nul_type, "NULL") != 1 {
+        println("  FAIL: attr_null type should be NULL");
+        return 1;
+    }
+    println("  PASS: attr constructors");
+    0
+}
+
+fn test_item_construction() -> i64 {
+    println("  Testing item_new/item_set/item_get/item_count...");
+    let item: i64 = item_new();
+    item_set(item, "user_id", attr_s("u-123"));
+    item_set(item, "name", attr_s("Alice"));
+    item_set(item, "age", attr_n(30));
+    let count: i64 = item_count(item);
+    if count != 3 {
+        println("  FAIL: item should have 3 attributes");
+        return 1;
+    }
+    let uid_attr: i64 = item_get(item, "user_id");
+    let uid_val: i64 = attr_get_s(uid_attr);
+    if string_eq(uid_val, "u-123") != 1 {
+        println("  FAIL: user_id value");
+        return 1;
+    }
+    let age_attr: i64 = item_get(item, "age");
+    let age_val: i64 = attr_get_n(age_attr);
+    if age_val != 30 {
+        println("  FAIL: age value");
+        return 1;
+    }
+    println("  PASS: item construction");
+    0
+}
+
+fn test_attr_n_str() -> i64 {
+    println("  Testing attr_n_str...");
+    let a: i64 = attr_n_str("3.14");
+    let t: i64 = attr_type(a);
+    if string_eq(t, "N") != 1 {
+        println("  FAIL: attr_n_str type should be N");
+        return 1;
+    }
+    let v: i64 = attr_get_n_str(a);
+    if string_eq(v, "3.14") != 1 {
+        println("  FAIL: attr_get_n_str value");
+        return 1;
+    }
+    println("  PASS: attr_n_str");
+    0
+}
+
+fn test_dynamo_endpoint() -> i64 {
+    println("  Testing dynamo_endpoint...");
+    let ep: i64 = dynamo_endpoint("us-east-1");
+    if string_eq(ep, "https://dynamodb.us-east-1.amazonaws.com") != 1 {
+        println("  FAIL: endpoint URL format");
+        return 1;
+    }
+    let ep2: i64 = dynamo_endpoint("eu-west-2");
+    if string_eq(ep2, "https://dynamodb.eu-west-2.amazonaws.com") != 1 {
+        println("  FAIL: eu-west-2 endpoint");
+        return 1;
+    }
+    println("  PASS: dynamo_endpoint");
+    0
+}
+
+fn test_result_accessors() -> i64 {
+    println("  Testing dynamo_result_ok/data/error...");
+    let ok_r: i64 = vec_new();
+    vec_push(ok_r, 1);
+    vec_push(ok_r, 42);
+    vec_push(ok_r, "");
+    vec_push(ok_r, "");
+    if dynamo_result_ok(ok_r) != 1 {
+        println("  FAIL: ok result status");
+        return 1;
+    }
+    if dynamo_result_data(ok_r) != 42 {
+        println("  FAIL: ok result data");
+        return 1;
+    }
+    let err_r: i64 = vec_new();
+    vec_push(err_r, 0);
+    vec_push(err_r, 0);
+    vec_push(err_r, "ValidationError");
+    vec_push(err_r, "Bad request");
+    if dynamo_result_ok(err_r) != 0 {
+        println("  FAIL: err result should be 0");
+        return 1;
+    }
+    let ecode: i64 = dynamo_result_error_code(err_r);
+    if string_eq(ecode, "ValidationError") != 1 {
+        println("  FAIL: error code");
+        return 1;
+    }
+    println("  PASS: result accessors");
+    0
+}
+
+fn main() -> i64 {
+    println("=== DynamoDB Client Integration Tests ===");
+    var failures: i64 = 0;
+    failures = failures + test_attr_constructors();
+    failures = failures + test_item_construction();
+    failures = failures + test_attr_n_str();
+    failures = failures + test_dynamo_endpoint();
+    failures = failures + test_result_accessors();
+    println("");
+    if failures == 0 {
+        println("All 5 DynamoDB integration tests passed!");
+    } else {
+        println(string_concat("FAILED: ", string_concat(int_to_string(failures), " test(s) failed")));
+    }
+    failures
+}

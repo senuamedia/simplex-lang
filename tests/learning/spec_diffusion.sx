@@ -1,0 +1,69 @@
+use diffusion;
+
+fn main() -> i64 {
+    println(string_from("=== Diffusion Language Model Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create diffusion config
+    let config: i64 = diffusion_new(1000, 32, 100);
+    let mask_tok: i64 = diffusion_mask_token(config);
+    // Default mask token
+    if mask_tok < 0 {
+        println(string_from("FAIL: mask token should be >= 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: diffusion_new / diffusion_mask_token"));
+    }
+
+    // Test 2: Set mask token
+    diffusion_set_mask_token(config, 999);
+    let mt2: i64 = diffusion_mask_token(config);
+    if mt2 != 999 {
+        println(string_from("FAIL: mask token should be 999"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: diffusion_set_mask_token"));
+    }
+
+    // Test 3: Forward noising process
+    let tokens: i64 = vec_new();
+    vec_push(tokens, 10);
+    vec_push(tokens, 20);
+    vec_push(tokens, 30);
+    vec_push(tokens, 40);
+    let noised: i64 = diffusion_forward(config, tokens, 50, 123);
+    if vec_len(noised) != 4 {
+        println(string_from("FAIL: noised should have same length"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: diffusion_forward"));
+    }
+
+    // Test 4: Full mask
+    let masked: i64 = diffusion_full_mask(config, 5);
+    if vec_len(masked) != 5 {
+        println(string_from("FAIL: full mask length should be 5"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: diffusion_full_mask"));
+    }
+
+    // Test 5: Count masks in a token sequence
+    let test_toks: i64 = vec_new();
+    vec_push(test_toks, 999);
+    vec_push(test_toks, 5);
+    vec_push(test_toks, 999);
+    vec_push(test_toks, 7);
+    let mc: i64 = diffusion_mask_count(test_toks, 999);
+    if mc != 2 {
+        println(string_from("FAIL: should have 2 masks"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: diffusion_mask_count"));
+    }
+
+    if failures == 0 {
+        println(string_from("All diffusion tests passed"));
+    }
+    failures
+}

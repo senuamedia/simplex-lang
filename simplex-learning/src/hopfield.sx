@@ -1,0 +1,950 @@
+// simplex-learning::hopfield - Modern Hopfield Associative Memory
+//
+// Implements modern (continuous) Hopfield networks with exponentially large
+// storage capacity. Classical Hopfield networks store O(N) patterns in N
+// neurons; modern Hopfield networks achieve O(exp(N)) capacity via a
+// continuous energy function with sharp minima controlled by inverse
+// temperature beta.
+//
+// # Core Update Rule
+//
+// Given stored patterns X = [x_1, ..., x_M] (M patterns of dimension N):
+//   x_new = softmax(beta * X^T * x) * X
+// This is equivalent to transformer attention with Q=x, K=X, V=X.
+//
+// # Energy Function
+//
+// E(x) = -lse(beta, X^T x) + 0.5 * ||x||^2 + const
+// where lse(beta, z) = (1/beta) * log(sum_i exp(beta * z_i))
+//
+// # Data Layout (vec handles)
+//
+// All floating-point values stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set.
+//
+// Network: [pattern_dim, beta_bits, n_patterns, patterns_handle]
+//   patterns_handle: vec of pattern handles (each pattern is a vec of f64_bits)
+//
+// Layer: [input_dim, pattern_dim, n_heads, W_Q_handle, W_K_handle, patterns_handle, beta_bits]
+//
+// # References
+//
+// Ramsauer et al. "Hopfield Networks is All You Need" (2020)
+// Krotov & Hopfield "Dense Associative Memory for Pattern Recognition" (2016)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Constants (as functions - no const in compiled path)
+// =============================================================================
+
+fn HOP_DIM() -> i64 { 0 }
+fn HOP_BETA() -> i64 { 1 }
+fn HOP_N_PATTERNS() -> i64 { 2 }
+fn HOP_PATTERNS() -> i64 { 3 }
+
+fn LAYER_INPUT_DIM() -> i64 { 0 }
+fn LAYER_PATTERN_DIM() -> i64 { 1 }
+fn LAYER_N_HEADS() -> i64 { 2 }
+fn LAYER_WQ() -> i64 { 3 }
+fn LAYER_WK() -> i64 { 4 }
+fn LAYER_PATTERNS() -> i64 { 5 }
+fn LAYER_BETA() -> i64 { 6 }
+
+// =============================================================================
+// Floating-point helpers
+// =============================================================================
+
+fn hop_f64_abs(x: f64) -> f64 {
+    if x < 0.0 { 0.0 - x } else { x }
+}
+
+fn hop_f64_max(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
+
+fn hop_f64_min(a: f64, b: f64) -> f64 {
+    if a < b { a } else { b }
+}
+
+fn hop_exp(x: f64) -> f64 {
+    var arg: f64 = x;
+    if arg > 20.0 { arg = 20.0; }
+    if arg < 0.0 - 20.0 { arg = 0.0 - 20.0; }
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 30 {
+        term = term * arg / (i as f64);
+        result = result + term;
+        i = i + 1;
+    }
+    result
+}
+
+fn hop_ln(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 - 30.0; }
+    let ln2: f64 = 0.6931471805599453;
+    var m: f64 = x;
+    var k: i64 = 0;
+    while m >= 2.0 {
+        m = m / 2.0;
+        k = k + 1;
+    }
+    while m < 1.0 {
+        m = m * 2.0;
+        k = k - 1;
+    }
+    // ln(m) for m in [1, 2) via series around 1
+    let t: f64 = (m - 1.0) / (m + 1.0);
+    let t2: f64 = t * t;
+    let ln_m: f64 = 2.0 * t * (1.0 + t2 / 3.0 + t2 * t2 / 5.0 + t2 * t2 * t2 / 7.0);
+    ln_m + (k as f64) * ln2
+}
+
+fn hop_sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    var guess: f64 = x;
+    if guess > 1.0 { guess = guess / 2.0; }
+    var i: i64 = 0;
+    while i < 20 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    guess
+}
+
+// =============================================================================
+// Softmax
+// =============================================================================
+
+/// Softmax over a vec of f64_bits logits.
+/// Returns a new vec of f64_bits probabilities.
+fn softmax_vec(logits: i64, n: i64) -> i64 {
+    let result: i64 = vec_new();
+
+    // Find max for numerical stability
+    var max_val: f64 = 0.0 - 1000000.0;
+    var i: i64 = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    // Compute exp(x - max) and sum
+    var sum: f64 = 0.0;
+    let exps: i64 = vec_new();
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        let e: f64 = hop_exp(v - max_val);
+        vec_push(exps, f64_to_bits(e));
+        sum = sum + e;
+        i = i + 1;
+    }
+
+    // Normalize
+    i = 0;
+    while i < n {
+        let e: f64 = bits_to_f64(vec_get(exps, i));
+        var p: f64 = 0.0;
+        if sum > 0.0 {
+            p = e / sum;
+        }
+        vec_push(result, f64_to_bits(p));
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Matrix-Vector Multiply
+// =============================================================================
+
+/// Matrix-vector multiply: result = M * v
+/// M is stored as flat vec of f64_bits, row-major, shape (rows x cols).
+/// v is a vec of f64_bits, length = cols.
+/// Returns a new vec of f64_bits, length = rows.
+fn mat_vec_mul(matrix: i64, vec_v: i64, rows: i64, cols: i64) -> i64 {
+    let result: i64 = vec_new();
+    var r: i64 = 0;
+    while r < rows {
+        var sum: f64 = 0.0;
+        var c: i64 = 0;
+        while c < cols {
+            let m_val: f64 = bits_to_f64(vec_get(matrix, r * cols + c));
+            let v_val: f64 = bits_to_f64(vec_get(vec_v, c));
+            sum = sum + m_val * v_val;
+            c = c + 1;
+        }
+        vec_push(result, f64_to_bits(sum));
+        r = r + 1;
+    }
+    result
+}
+
+/// Vector dot product of two f64_bits vecs.
+fn vec_dot(a: i64, b: i64, n: i64) -> f64 {
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let av: f64 = bits_to_f64(vec_get(a, i));
+        let bv: f64 = bits_to_f64(vec_get(b, i));
+        sum = sum + av * bv;
+        i = i + 1;
+    }
+    sum
+}
+
+/// Vector L2 norm.
+fn vec_norm(v: i64, n: i64) -> f64 {
+    hop_sqrt(vec_dot(v, v, n))
+}
+
+// =============================================================================
+// Modern Hopfield Network - Core
+// =============================================================================
+
+/// Create a new modern Hopfield network.
+///
+/// Arguments:
+///   pattern_dim - dimension of each stored pattern
+///   beta        - inverse temperature (f64_bits), controls retrieval sharpness
+///                 Higher beta -> sharper retrieval (more like argmax)
+///                 Lower beta -> softer retrieval (more like average)
+///
+/// Returns: handle to network vec
+fn hopfield_new(pattern_dim: i64, beta: i64) -> i64 {
+    let net: i64 = vec_new();
+    vec_push(net, pattern_dim);    // HOP_DIM
+    vec_push(net, beta);           // HOP_BETA (f64_bits)
+    vec_push(net, 0);              // HOP_N_PATTERNS
+    vec_push(net, vec_new());      // HOP_PATTERNS (vec of pattern handles)
+    net
+}
+
+/// Store a pattern in the Hopfield network.
+///
+/// Arguments:
+///   net     - network handle
+///   pattern - handle to vec of f64_bits values, length = pattern_dim
+///
+/// Returns: index of the stored pattern
+fn hopfield_store(net: i64, pattern: i64) -> i64 {
+    let patterns: i64 = vec_get(net, HOP_PATTERNS());
+    let idx: i64 = vec_get(net, HOP_N_PATTERNS());
+
+    // Copy pattern into a new vec
+    let dim: i64 = vec_get(net, HOP_DIM());
+    let copy: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        if i < vec_len(pattern) {
+            vec_push(copy, vec_get(pattern, i));
+        } else {
+            vec_push(copy, f64_to_bits(0.0));
+        }
+        i = i + 1;
+    }
+
+    vec_push(patterns, copy);
+    vec_set(net, HOP_N_PATTERNS(), idx + 1);
+    idx
+}
+
+/// Retrieve the nearest stored pattern using the modern Hopfield update rule.
+///
+/// Update rule: x_new = X * softmax(beta * X^T * x)
+/// where X is the matrix of stored patterns (each column is a pattern).
+///
+/// Iterates up to max_steps or until convergence.
+///
+/// Arguments:
+///   net       - network handle
+///   query     - handle to vec of f64_bits values (query pattern)
+///   max_steps - maximum number of retrieval iterations
+///
+/// Returns: handle to vec of f64_bits (retrieved pattern)
+fn hopfield_retrieve(net: i64, query: i64, max_steps: i64) -> i64 {
+    let dim: i64 = vec_get(net, HOP_DIM());
+    let n_patterns: i64 = vec_get(net, HOP_N_PATTERNS());
+    let patterns: i64 = vec_get(net, HOP_PATTERNS());
+    let beta: f64 = bits_to_f64(vec_get(net, HOP_BETA()));
+
+    if n_patterns == 0 {
+        // Return a copy of the query
+        let out: i64 = vec_new();
+        var i: i64 = 0;
+        while i < dim {
+            vec_push(out, vec_get(query, i));
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Current state = query (copy)
+    var state: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(state, vec_get(query, i));
+        i = i + 1;
+    }
+
+    var step: i64 = 0;
+    while step < max_steps {
+        let new_state: i64 = hopfield_retrieve_one_step_internal(net, state);
+
+        // Check convergence: ||new - old|| < epsilon
+        var diff_sq: f64 = 0.0;
+        i = 0;
+        while i < dim {
+            let d: f64 = bits_to_f64(vec_get(new_state, i)) - bits_to_f64(vec_get(state, i));
+            diff_sq = diff_sq + d * d;
+            i = i + 1;
+        }
+
+        state = new_state;
+
+        if diff_sq < 0.000001 {
+            return state;
+        }
+        step = step + 1;
+    }
+    state
+}
+
+/// Single retrieval step: x_new = X * softmax(beta * X^T * x)
+fn hopfield_retrieve_one_step(net: i64, query: i64) -> i64 {
+    hopfield_retrieve_one_step_internal(net, query)
+}
+
+fn hopfield_retrieve_one_step_internal(net: i64, state: i64) -> i64 {
+    let dim: i64 = vec_get(net, HOP_DIM());
+    let n_patterns: i64 = vec_get(net, HOP_N_PATTERNS());
+    let patterns: i64 = vec_get(net, HOP_PATTERNS());
+    let beta: f64 = bits_to_f64(vec_get(net, HOP_BETA()));
+
+    // Compute similarities: s_i = beta * <x_i, state>
+    let similarities: i64 = vec_new();
+    var m: i64 = 0;
+    while m < n_patterns {
+        let pat: i64 = vec_get(patterns, m);
+        let sim: f64 = beta * vec_dot(pat, state, dim);
+        vec_push(similarities, f64_to_bits(sim));
+        m = m + 1;
+    }
+
+    // Softmax over similarities
+    let weights: i64 = softmax_vec(similarities, n_patterns);
+
+    // Compute weighted combination: x_new = sum_i w_i * x_i
+    let new_state: i64 = vec_new();
+    var d: i64 = 0;
+    while d < dim {
+        var val: f64 = 0.0;
+        m = 0;
+        while m < n_patterns {
+            let w: f64 = bits_to_f64(vec_get(weights, m));
+            let pat: i64 = vec_get(patterns, m);
+            let pv: f64 = bits_to_f64(vec_get(pat, d));
+            val = val + w * pv;
+            m = m + 1;
+        }
+        vec_push(new_state, f64_to_bits(val));
+        d = d + 1;
+    }
+    new_state
+}
+
+// =============================================================================
+// Energy Function
+// =============================================================================
+
+/// Compute the energy of a state in the modern Hopfield network.
+///
+/// E(x) = -lse(beta, X^T x) + 0.5 * ||x||^2
+/// where lse(beta, z) = (1/beta) * log(sum_i exp(beta * z_i))
+///
+/// Lower energy = more stable state (closer to a stored pattern).
+///
+/// Arguments:
+///   net   - network handle
+///   state - handle to vec of f64_bits values
+///
+/// Returns: energy value (f64_bits)
+fn hopfield_energy(net: i64, state: i64) -> i64 {
+    let dim: i64 = vec_get(net, HOP_DIM());
+    let n_patterns: i64 = vec_get(net, HOP_N_PATTERNS());
+    let patterns: i64 = vec_get(net, HOP_PATTERNS());
+    let beta: f64 = bits_to_f64(vec_get(net, HOP_BETA()));
+
+    if n_patterns == 0 {
+        // Energy is just 0.5 * ||x||^2
+        let norm_sq: f64 = vec_dot(state, state, dim);
+        return f64_to_bits(0.5 * norm_sq);
+    }
+
+    // Compute X^T * x: similarities[i] = <pattern_i, state>
+    var max_sim: f64 = 0.0 - 1000000.0;
+    let sims: i64 = vec_new();
+    var m: i64 = 0;
+    while m < n_patterns {
+        let pat: i64 = vec_get(patterns, m);
+        let sim: f64 = vec_dot(pat, state, dim);
+        vec_push(sims, f64_to_bits(sim));
+        if sim > max_sim { max_sim = sim; }
+        m = m + 1;
+    }
+
+    // log-sum-exp: (1/beta) * log(sum_i exp(beta * (sim_i - max_sim))) + max_sim
+    var sum_exp: f64 = 0.0;
+    m = 0;
+    while m < n_patterns {
+        let sim: f64 = bits_to_f64(vec_get(sims, m));
+        sum_exp = sum_exp + hop_exp(beta * (sim - max_sim));
+        m = m + 1;
+    }
+    let lse: f64 = max_sim + hop_ln(sum_exp) / beta;
+
+    // Energy = -lse + 0.5 * ||x||^2
+    let norm_sq: f64 = vec_dot(state, state, dim);
+    let energy: f64 = 0.0 - lse + 0.5 * norm_sq;
+    f64_to_bits(energy)
+}
+
+/// Theoretical capacity of the modern Hopfield network.
+///
+/// Classical: O(N) for N neurons
+/// Modern: O(exp(N/2)) for dimension N with polynomial error
+///
+/// Returns the dimension (as a proxy for exponential capacity).
+fn hopfield_capacity(net: i64) -> i64 {
+    vec_get(net, HOP_DIM())
+}
+
+// =============================================================================
+// Memory Operations
+// =============================================================================
+
+/// Get the number of stored patterns.
+fn hopfield_pattern_count(net: i64) -> i64 {
+    vec_get(net, HOP_N_PATTERNS())
+}
+
+/// Get the pattern dimension.
+fn hopfield_pattern_dim(net: i64) -> i64 {
+    vec_get(net, HOP_DIM())
+}
+
+/// Clear all stored patterns.
+fn hopfield_clear(net: i64) -> i64 {
+    vec_set(net, HOP_N_PATTERNS(), 0);
+    vec_set(net, HOP_PATTERNS(), vec_new());
+    0
+}
+
+/// Remove a specific pattern by index.
+/// Replaces it with the last pattern and decrements count.
+fn hopfield_remove(net: i64, index: i64) -> i64 {
+    let n: i64 = vec_get(net, HOP_N_PATTERNS());
+    if index >= n { return -1; }
+    if index < 0 { return -1; }
+
+    let patterns: i64 = vec_get(net, HOP_PATTERNS());
+
+    if index < n - 1 {
+        // Swap with last
+        let last: i64 = vec_get(patterns, n - 1);
+        vec_set(patterns, index, last);
+    }
+
+    // Decrement count (we can't shrink the vec, but count controls access)
+    vec_set(net, HOP_N_PATTERNS(), n - 1);
+    0
+}
+
+// =============================================================================
+// Retrieval Quality Metrics
+// =============================================================================
+
+/// Compute the dot product overlap between two patterns.
+/// Measures how similar two patterns are (cosine similarity * norms).
+///
+/// Arguments:
+///   pattern_a, pattern_b - vec handles of f64_bits values
+///   dim - dimension of patterns
+///
+/// Returns: overlap value (f64_bits)
+fn hopfield_overlap(pattern_a: i64, pattern_b: i64, dim: i64) -> i64 {
+    let dot: f64 = vec_dot(pattern_a, pattern_b, dim);
+    f64_to_bits(dot)
+}
+
+/// Compute the L2 retrieval error between original and retrieved patterns.
+///
+/// error = ||original - retrieved||_2
+///
+/// Returns: error value (f64_bits)
+fn hopfield_retrieval_error(original: i64, retrieved: i64, dim: i64) -> i64 {
+    var sum_sq: f64 = 0.0;
+    var i: i64 = 0;
+    while i < dim {
+        let a: f64 = bits_to_f64(vec_get(original, i));
+        let b: f64 = bits_to_f64(vec_get(retrieved, i));
+        let d: f64 = a - b;
+        sum_sq = sum_sq + d * d;
+        i = i + 1;
+    }
+    f64_to_bits(hop_sqrt(sum_sq))
+}
+
+/// Check if a pattern is a fixed point of the Hopfield dynamics.
+///
+/// A fixed point satisfies: update(x) = x (within tolerance).
+///
+/// Returns: 1 if fixed point, 0 otherwise
+fn hopfield_is_fixed_point(net: i64, pattern: i64) -> i64 {
+    let dim: i64 = vec_get(net, HOP_DIM());
+    let updated: i64 = hopfield_retrieve_one_step(net, pattern);
+
+    var diff_sq: f64 = 0.0;
+    var i: i64 = 0;
+    while i < dim {
+        let a: f64 = bits_to_f64(vec_get(pattern, i));
+        let b: f64 = bits_to_f64(vec_get(updated, i));
+        let d: f64 = a - b;
+        diff_sq = diff_sq + d * d;
+        i = i + 1;
+    }
+
+    if diff_sq < 0.0001 { 1 } else { 0 }
+}
+
+// =============================================================================
+// Continuous Hopfield: Attention-Based Interface
+// =============================================================================
+
+/// Hopfield-based attention mechanism.
+///
+/// Computes: softmax(beta * Q * K^T) * K
+/// This is mathematically equivalent to the modern Hopfield retrieval step,
+/// and also equivalent to transformer self-attention when beta = 1/sqrt(d).
+///
+/// Arguments:
+///   queries  - flat vec of f64_bits, shape (n_queries x dim), row-major
+///   keys     - flat vec of f64_bits, shape (n_keys x dim), row-major
+///   beta     - inverse temperature (f64_bits)
+///   n_queries - number of query vectors
+///   n_keys    - number of key vectors
+///   dim       - dimension of each vector
+///
+/// Returns: flat vec of f64_bits, shape (n_queries x dim), retrieved patterns
+fn hopfield_attention(queries: i64, keys: i64, beta: i64, n_queries: i64, n_keys: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    let b: f64 = bits_to_f64(beta);
+
+    var q: i64 = 0;
+    while q < n_queries {
+        // Compute attention scores: score[k] = beta * <query_q, key_k>
+        let scores: i64 = vec_new();
+        var k: i64 = 0;
+        while k < n_keys {
+            var dot: f64 = 0.0;
+            var d: i64 = 0;
+            while d < dim {
+                let qv: f64 = bits_to_f64(vec_get(queries, q * dim + d));
+                let kv: f64 = bits_to_f64(vec_get(keys, k * dim + d));
+                dot = dot + qv * kv;
+                d = d + 1;
+            }
+            vec_push(scores, f64_to_bits(b * dot));
+            k = k + 1;
+        }
+
+        // Softmax over scores
+        let weights: i64 = softmax_vec(scores, n_keys);
+
+        // Weighted sum of keys (values = keys in Hopfield formulation)
+        var d: i64 = 0;
+        while d < dim {
+            var val: f64 = 0.0;
+            k = 0;
+            while k < n_keys {
+                let w: f64 = bits_to_f64(vec_get(weights, k));
+                let kv: f64 = bits_to_f64(vec_get(keys, k * dim + d));
+                val = val + w * kv;
+                k = k + 1;
+            }
+            vec_push(result, f64_to_bits(val));
+            d = d + 1;
+        }
+        q = q + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Hopfield Layer (for neural network integration)
+// =============================================================================
+
+/// Create a Hopfield layer for integration with neural networks.
+///
+/// Arguments:
+///   input_dim   - dimension of input features
+///   pattern_dim - dimension of stored patterns (projection target)
+///   n_heads     - number of attention heads
+///
+/// Returns: handle to layer vec
+fn hopfield_layer_new(input_dim: i64, pattern_dim: i64, n_heads: i64) -> i64 {
+    let layer: i64 = vec_new();
+    vec_push(layer, input_dim);       // LAYER_INPUT_DIM
+    vec_push(layer, pattern_dim);     // LAYER_PATTERN_DIM
+    vec_push(layer, n_heads);         // LAYER_N_HEADS
+
+    // Initialize projection weights W_Q (input_dim x pattern_dim) with small values
+    let wq: i64 = vec_new();
+    var i: i64 = 0;
+    let total_wq: i64 = input_dim * pattern_dim;
+    while i < total_wq {
+        // Simple initialization: 1/sqrt(input_dim)
+        let scale: f64 = 1.0 / hop_sqrt(input_dim as f64);
+        // Deterministic pseudo-random: alternate positive/negative
+        var val: f64 = scale;
+        if i % 2 == 1 { val = 0.0 - scale; }
+        // Add slight variation based on index
+        let idx_frac: f64 = (i as f64) / (total_wq as f64);
+        val = val * (0.5 + idx_frac);
+        vec_push(wq, f64_to_bits(val));
+        i = i + 1;
+    }
+    vec_push(layer, wq);             // LAYER_WQ
+
+    // W_K (same shape, different init)
+    let wk: i64 = vec_new();
+    i = 0;
+    while i < total_wq {
+        let scale: f64 = 1.0 / hop_sqrt(input_dim as f64);
+        var val: f64 = scale;
+        if i % 3 == 0 { val = 0.0 - scale; }
+        let idx_frac: f64 = (i as f64) / (total_wq as f64);
+        val = val * (0.5 + idx_frac);
+        vec_push(wk, f64_to_bits(val));
+        i = i + 1;
+    }
+    vec_push(layer, wk);             // LAYER_WK
+
+    // Stored patterns (initially empty)
+    vec_push(layer, vec_new());       // LAYER_PATTERNS
+
+    // Default beta = 1/sqrt(pattern_dim) (like transformer scaling)
+    let default_beta: f64 = 1.0 / hop_sqrt(pattern_dim as f64);
+    vec_push(layer, f64_to_bits(default_beta));  // LAYER_BETA
+
+    layer
+}
+
+/// Forward pass through a Hopfield layer.
+///
+/// Projects input through W_Q, computes Hopfield attention with stored patterns,
+/// and returns the retrieved pattern.
+///
+/// Arguments:
+///   layer - layer handle
+///   input - vec of f64_bits, length = input_dim
+///
+/// Returns: vec of f64_bits, length = pattern_dim
+fn hopfield_layer_forward(layer: i64, input: i64) -> i64 {
+    let input_dim: i64 = vec_get(layer, LAYER_INPUT_DIM());
+    let pattern_dim: i64 = vec_get(layer, LAYER_PATTERN_DIM());
+    let wq: i64 = vec_get(layer, LAYER_WQ());
+    let patterns_vec: i64 = vec_get(layer, LAYER_PATTERNS());
+    let beta_bits: i64 = vec_get(layer, LAYER_BETA());
+    let n_patterns: i64 = vec_len(patterns_vec);
+
+    // Project input: query = W_Q * input
+    let query: i64 = mat_vec_mul(wq, input, pattern_dim, input_dim);
+
+    if n_patterns == 0 {
+        // No stored patterns; return the projection directly
+        return query;
+    }
+
+    // Build keys matrix from stored patterns (flat, n_patterns x pattern_dim)
+    let keys_flat: i64 = vec_new();
+    var m: i64 = 0;
+    while m < n_patterns {
+        let pat: i64 = vec_get(patterns_vec, m);
+        var d: i64 = 0;
+        while d < pattern_dim {
+            vec_push(keys_flat, vec_get(pat, d));
+            d = d + 1;
+        }
+        m = m + 1;
+    }
+
+    // Use hopfield_attention with 1 query
+    let queries_flat: i64 = vec_new();
+    var d: i64 = 0;
+    while d < pattern_dim {
+        vec_push(queries_flat, vec_get(query, d));
+        d = d + 1;
+    }
+
+    hopfield_attention(queries_flat, keys_flat, beta_bits, 1, n_patterns, pattern_dim)
+}
+
+// =============================================================================
+// Pattern Utilities
+// =============================================================================
+
+/// Create a pattern vec from a list of integer values.
+/// Converts each integer to f64_bits.
+/// Arguments:
+///   values - vec of i64 values
+///   n      - number of values
+/// Returns: vec of f64_bits
+fn pattern_from_ints(values: i64, n: i64) -> i64 {
+    let pat: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let v: i64 = vec_get(values, i);
+        vec_push(pat, f64_to_bits(v as f64));
+        i = i + 1;
+    }
+    pat
+}
+
+/// Create a zero pattern of given dimension.
+fn pattern_zeros(dim: i64) -> i64 {
+    let pat: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(pat, f64_to_bits(0.0));
+        i = i + 1;
+    }
+    pat
+}
+
+/// Create a pattern with all values set to val (f64_bits).
+fn pattern_fill(dim: i64, val: i64) -> i64 {
+    let pat: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(pat, val);
+        i = i + 1;
+    }
+    pat
+}
+
+/// Copy a pattern.
+fn pattern_copy(pattern: i64, dim: i64) -> i64 {
+    let copy: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(copy, vec_get(pattern, i));
+        i = i + 1;
+    }
+    copy
+}
+
+/// Add noise to a pattern (flip a fraction of components).
+///
+/// Arguments:
+///   pattern    - original pattern (vec of f64_bits)
+///   dim        - dimension
+///   n_flip     - number of components to perturb
+///   flip_delta - perturbation magnitude (f64_bits)
+///
+/// Returns: noisy copy of the pattern
+fn pattern_add_noise(pattern: i64, dim: i64, n_flip: i64, flip_delta: i64) -> i64 {
+    let noisy: i64 = pattern_copy(pattern, dim);
+    let delta: f64 = bits_to_f64(flip_delta);
+
+    // Deterministic noise: perturb the first n_flip components
+    var i: i64 = 0;
+    while i < n_flip {
+        if i < dim {
+            let old_val: f64 = bits_to_f64(vec_get(noisy, i));
+            var new_val: f64 = old_val + delta;
+            if i % 2 == 0 {
+                new_val = old_val - delta;
+            }
+            vec_set(noisy, i, f64_to_bits(new_val));
+        }
+        i = i + 1;
+    }
+    noisy
+}
+
+/// Cosine similarity between two patterns.
+fn pattern_cosine_similarity(a: i64, b: i64, dim: i64) -> i64 {
+    let dot: f64 = vec_dot(a, b, dim);
+    let na: f64 = vec_norm(a, dim);
+    let nb: f64 = vec_norm(b, dim);
+    var denom: f64 = na * nb;
+    if denom < 0.000001 { denom = 0.000001; }
+    f64_to_bits(dot / denom)
+}
+
+// =============================================================================
+// Batch Operations
+// =============================================================================
+
+/// Store multiple patterns at once.
+///
+/// Arguments:
+///   net         - network handle
+///   patterns    - vec of pattern handles
+///   n_patterns  - number of patterns to store
+///
+/// Returns: number of patterns stored
+fn hopfield_store_batch(net: i64, batch_patterns: i64, n_patterns: i64) -> i64 {
+    var i: i64 = 0;
+    while i < n_patterns {
+        let pat: i64 = vec_get(batch_patterns, i);
+        hopfield_store(net, pat);
+        i = i + 1;
+    }
+    n_patterns
+}
+
+/// Retrieve patterns for a batch of queries.
+///
+/// Arguments:
+///   net       - network handle
+///   queries   - vec of query pattern handles
+///   n_queries - number of queries
+///   max_steps - max retrieval steps per query
+///
+/// Returns: vec of retrieved pattern handles
+fn hopfield_retrieve_batch(net: i64, queries: i64, n_queries: i64, max_steps: i64) -> i64 {
+    let results: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_queries {
+        let query: i64 = vec_get(queries, i);
+        let retrieved: i64 = hopfield_retrieve(net, query, max_steps);
+        vec_push(results, retrieved);
+        i = i + 1;
+    }
+    results
+}
+
+// =============================================================================
+// Network Analysis
+// =============================================================================
+
+/// Compute the similarity matrix between all stored patterns.
+///
+/// Returns a flat vec of f64_bits, shape (n x n) where n = pattern count.
+/// sim[i*n + j] = <pattern_i, pattern_j>
+fn hopfield_similarity_matrix(net: i64) -> i64 {
+    let n: i64 = vec_get(net, HOP_N_PATTERNS());
+    let patterns: i64 = vec_get(net, HOP_PATTERNS());
+    let dim: i64 = vec_get(net, HOP_DIM());
+    let result: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < n {
+        let pi: i64 = vec_get(patterns, i);
+        var j: i64 = 0;
+        while j < n {
+            let pj: i64 = vec_get(patterns, j);
+            let sim: f64 = vec_dot(pi, pj, dim);
+            vec_push(result, f64_to_bits(sim));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Find the pattern most similar to a query (without running dynamics).
+/// Returns the index of the closest pattern, or -1 if no patterns stored.
+fn hopfield_nearest_pattern(net: i64, query: i64) -> i64 {
+    let n: i64 = vec_get(net, HOP_N_PATTERNS());
+    let patterns: i64 = vec_get(net, HOP_PATTERNS());
+    let dim: i64 = vec_get(net, HOP_DIM());
+
+    if n == 0 { return -1; }
+
+    var best_idx: i64 = 0;
+    var best_sim: f64 = 0.0 - 1000000.0;
+
+    var i: i64 = 0;
+    while i < n {
+        let pat: i64 = vec_get(patterns, i);
+        let sim: f64 = vec_dot(pat, query, dim);
+        if sim > best_sim {
+            best_sim = sim;
+            best_idx = i;
+        }
+        i = i + 1;
+    }
+    best_idx
+}
+
+/// Get a stored pattern by index.
+/// Returns handle to pattern vec, or -1 if out of range.
+fn hopfield_get_pattern(net: i64, index: i64) -> i64 {
+    let n: i64 = vec_get(net, HOP_N_PATTERNS());
+    if index < 0 { return -1; }
+    if index >= n { return -1; }
+    let patterns: i64 = vec_get(net, HOP_PATTERNS());
+    vec_get(patterns, index)
+}
+
+// =============================================================================
+// Energy Landscape Analysis
+// =============================================================================
+
+/// Compute energies for a batch of states.
+///
+/// Arguments:
+///   net    - network handle
+///   states - vec of state handles
+///   n      - number of states
+///
+/// Returns: vec of f64_bits energy values
+fn hopfield_energy_batch(net: i64, states: i64, n: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let state: i64 = vec_get(states, i);
+        let e: i64 = hopfield_energy(net, state);
+        vec_push(result, e);
+        i = i + 1;
+    }
+    result
+}
+
+/// Check if energy decreased between two states.
+/// Returns 1 if energy_new < energy_old, 0 otherwise.
+fn hopfield_energy_decreased(net: i64, old_state: i64, new_state: i64) -> i64 {
+    let e_old: f64 = bits_to_f64(hopfield_energy(net, old_state));
+    let e_new: f64 = bits_to_f64(hopfield_energy(net, new_state));
+    if e_new < e_old { 1 } else { 0 }
+}
+
+// =============================================================================
+// Summary
+// =============================================================================
+
+/// Print a summary of the Hopfield network.
+fn hopfield_summary(net: i64) -> i64 {
+    println("=== Modern Hopfield Network Summary ===");
+    print("  Pattern dimension: ");
+    print_i64(vec_get(net, HOP_DIM()));
+    println("");
+    print("  Stored patterns: ");
+    print_i64(vec_get(net, HOP_N_PATTERNS()));
+    println("");
+    print("  Beta (bits): ");
+    print_i64(vec_get(net, HOP_BETA()));
+    println("");
+    print("  Capacity class: O(exp(");
+    print_i64(vec_get(net, HOP_DIM()));
+    println("))");
+    0
+}

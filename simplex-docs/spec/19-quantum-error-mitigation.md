@@ -22,7 +22,7 @@ probabilistic error cancellation for advanced mitigation.
 │   │Noise Sim│ │ ZNE │ │ PEC │ │Error Correct. ││
 │   └─────────┘ └─────┘ └─────┘ └──────────────┘│
 ├─────────────────────────────────────────────────┤
-│           Backend Layer (v0.14.0)                │
+│           Backend Layer (v0.17.0)                │
 │   LocalSimulator | Braket | IBM | Azure          │
 └─────────────────────────────────────────────────┘
 ```

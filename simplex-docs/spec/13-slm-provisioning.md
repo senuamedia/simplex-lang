@@ -54,7 +54,7 @@ Simplex implements a hierarchical SLM architecture with three distinct levels:
 
 ### Level 1: Specialist Anima
 
-Each specialist has an individual **Anima** (cognitive soul) with:
+Each specialist has an individual **Anima** (agent state manager) with:
 - Personal episodic memories (experiences)
 - Personal semantic memories (facts)
 - Personal beliefs (30% revision threshold)
@@ -617,7 +617,7 @@ The SLM provisioning architecture enables Simplex applications to:
 
 ---
 
-*"Many minds, one model, shared consciousness."*
+*"Many specialists, one model, shared context."*
 
 ---
 

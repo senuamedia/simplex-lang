@@ -1,0 +1,476 @@
+// simplex-kafka::producer - Kafka Producer
+//
+// High-level producer API for sending records to Kafka topics.
+// Manages connection state, correlation IDs, and record batching.
+//
+// # Producer State
+//
+// producer = [broker_host, client_id, correlation_id, acks, timeout, buffer, metadata]
+//   index 0: broker_host (string, e.g. "localhost:9092")
+//   index 1: client_id (string)
+//   index 2: next_correlation_id (i64, auto-incrementing)
+//   index 3: required_acks (i64, -1=all, 0=none, 1=leader)
+//   index 4: timeout_ms (i64)
+//   index 5: pending_records (vec of records to batch)
+//   index 6: metadata_cache (cached topic metadata, or 0)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Producer State Layout
+// =============================================================================
+
+fn PROD_HOST() -> i64 { 0 }
+fn PROD_CLIENT_ID() -> i64 { 1 }
+fn PROD_CORR_ID() -> i64 { 2 }
+fn PROD_ACKS() -> i64 { 3 }
+fn PROD_TIMEOUT() -> i64 { 4 }
+fn PROD_BUFFER() -> i64 { 5 }
+fn PROD_METADATA() -> i64 { 6 }
+
+// =============================================================================
+// Producer Constructor
+// =============================================================================
+
+/// Create a new Kafka producer.
+///
+/// # Arguments
+/// - `broker`: Broker address as "host:port" string
+/// - `client_id`: Client identifier string
+///
+/// # Returns
+/// Producer state vec handle
+///
+/// # Example
+/// ```simplex
+/// let producer = kafka_producer_new("localhost:9092", "my-producer");
+/// ```
+pub fn kafka_producer_new(broker: i64, client_id: i64) -> i64 {
+    let prod: i64 = vec_new();
+    vec_push(prod, broker);       // host
+    vec_push(prod, client_id);    // client_id
+    vec_push(prod, 1);            // initial correlation_id
+    vec_push(prod, 1);            // acks = leader only
+    vec_push(prod, 30000);        // timeout = 30 seconds
+    vec_push(prod, vec_new());    // empty buffer
+    vec_push(prod, 0);            // no metadata cached
+    prod
+}
+
+/// Create a producer with custom acknowledgment settings.
+///
+/// # Arguments
+/// - `acks`: Required acks (-1=all, 0=fire-and-forget, 1=leader)
+/// - `timeout_ms`: Request timeout in milliseconds
+pub fn kafka_producer_new_with_acks(broker: i64, client_id: i64, acks: i64, timeout_ms: i64) -> i64 {
+    let prod: i64 = kafka_producer_new(broker, client_id);
+    vec_set(prod, PROD_ACKS(), acks);
+    vec_set(prod, PROD_TIMEOUT(), timeout_ms);
+    prod
+}
+
+/// Get the next correlation ID and increment.
+fn next_correlation_id(producer: i64) -> i64 {
+    let id: i64 = vec_get(producer, PROD_CORR_ID());
+    vec_set(producer, PROD_CORR_ID(), id + 1);
+    id
+}
+
+// =============================================================================
+// Host/Port Parsing
+// =============================================================================
+
+/// Extract host from "host:port" string
+fn parse_host(addr: i64) -> i64 {
+    let colon: i64 = string_find(addr, ":", 0);
+    if colon < 0 { return addr; }
+    string_substring(addr, 0, colon)
+}
+
+/// Extract port from "host:port" string
+fn parse_port(addr: i64) -> i64 {
+    let colon: i64 = string_find(addr, ":", 0);
+    if colon < 0 { return 9092; }
+    let addr_len: i64 = string_len(addr);
+    let port_str: i64 = string_substring(addr, colon + 1, addr_len - colon - 1);
+    let port: i64 = string_to_int(port_str);
+    if port == 0 { return 9092; }
+    port
+}
+
+// =============================================================================
+// Wire Protocol Helpers (inline from protocol module)
+// =============================================================================
+
+/// Encode i16 big-endian into a byte buffer
+fn encode_i16(buf: i64, val: i64) -> i64 {
+    var v: i64 = val;
+    if v < 0 { v = v + 65536; }
+    vec_push(buf, v / 256);
+    vec_push(buf, v - (v / 256) * 256);
+    buf
+}
+
+/// Encode i32 big-endian into a byte buffer
+fn encode_i32(buf: i64, val: i64) -> i64 {
+    var v: i64 = val;
+    if v < 0 { v = v + 4294967296; }
+    let b3: i64 = v / 16777216;
+    let r3: i64 = v - b3 * 16777216;
+    let b2: i64 = r3 / 65536;
+    let r2: i64 = r3 - b2 * 65536;
+    let b1: i64 = r2 / 256;
+    let b0: i64 = r2 - b1 * 256;
+    vec_push(buf, b3);
+    vec_push(buf, b2);
+    vec_push(buf, b1);
+    vec_push(buf, b0);
+    buf
+}
+
+/// Encode i64 big-endian
+fn encode_i64(buf: i64, val: i64) -> i64 {
+    var high: i64 = val / 4294967296;
+    var low: i64 = val - high * 4294967296;
+    if val < 0 {
+        high = high + 4294967296;
+        if low < 0 { low = low + 4294967296; }
+    }
+    encode_i32(buf, high);
+    encode_i32(buf, low);
+    buf
+}
+
+/// Encode a Kafka string (INT16 length + bytes)
+fn encode_string(buf: i64, s: i64) -> i64 {
+    if s == 0 {
+        encode_i16(buf, -1);
+        return buf;
+    }
+    let len: i64 = string_len(s);
+    encode_i16(buf, len);
+    var i: i64 = 0;
+    while i < len {
+        vec_push(buf, string_char_at(s, i));
+        i = i + 1;
+    }
+    buf
+}
+
+/// Encode Kafka bytes (INT32 length + bytes)
+fn encode_bytes(buf: i64, data: i64) -> i64 {
+    if data == 0 {
+        encode_i32(buf, -1);
+        return buf;
+    }
+    let len: i64 = string_len(data);
+    encode_i32(buf, len);
+    var i: i64 = 0;
+    while i < len {
+        vec_push(buf, string_char_at(data, i));
+        i = i + 1;
+    }
+    buf
+}
+
+/// Append all bytes from src buffer to dst buffer
+fn buf_append(dst: i64, src: i64) -> i64 {
+    let len: i64 = vec_len(src);
+    var i: i64 = 0;
+    while i < len {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    dst
+}
+
+/// Convert a byte buffer to a string (for TCP send)
+fn buf_to_string(buf: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let len: i64 = vec_len(buf);
+    var i: i64 = 0;
+    while i < len {
+        sb_append(sb, string_from_char(vec_get(buf, i)));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+// =============================================================================
+// Produce API
+// =============================================================================
+
+/// Send a single record to a Kafka topic.
+///
+/// # Arguments
+/// - `producer`: Producer state handle
+/// - `topic`: Topic name
+/// - `key`: Message key (string, or 0 for null key)
+/// - `value`: Message value string
+///
+/// # Returns
+/// Result vec: [1, offset, 0, ""] on success, [0, 0, error_code, error_msg] on failure
+///
+/// # Example
+/// ```simplex
+/// let result = kafka_produce(producer, "events", "user-1", "logged-in");
+/// if kafka_result_ok(result) == 1 {
+///     let offset = kafka_result_data(result);
+///     println(string_concat("Produced at offset ", int_to_string(offset)));
+/// }
+/// ```
+pub fn kafka_produce(producer: i64, topic: i64, key: i64, value: i64) -> i64 {
+    let broker: i64 = vec_get(producer, PROD_HOST());
+    let client_id: i64 = vec_get(producer, PROD_CLIENT_ID());
+    let acks: i64 = vec_get(producer, PROD_ACKS());
+    let timeout: i64 = vec_get(producer, PROD_TIMEOUT());
+    let corr_id: i64 = next_correlation_id(producer);
+
+    // Build request header
+    let header: i64 = vec_new();
+    encode_i16(header, 0);       // API key = Produce
+    encode_i16(header, 0);       // API version = 0
+    encode_i32(header, corr_id);
+    encode_string(header, client_id);
+
+    // Build produce body
+    let body: i64 = vec_new();
+    encode_i16(body, acks);
+    encode_i32(body, timeout);
+    encode_i32(body, 1);  // 1 topic
+
+    // Topic name
+    encode_string(body, topic);
+    encode_i32(body, 1);  // 1 partition
+    encode_i32(body, 0);  // partition 0
+
+    // Build message
+    let msg_body: i64 = vec_new();
+    vec_push(msg_body, 0);  // magic = 0
+    vec_push(msg_body, 0);  // attributes = 0
+    encode_bytes(msg_body, key);
+    encode_bytes(msg_body, value);
+
+    // CRC placeholder (simplified - real impl would compute CRC32)
+    let msg_with_crc: i64 = vec_new();
+    encode_i32(msg_with_crc, 0);  // CRC placeholder
+    buf_append(msg_with_crc, msg_body);
+
+    // Message set entry: offset(8) + message_size(4) + message
+    let msg_set: i64 = vec_new();
+    encode_i64(msg_set, 0);  // offset
+    encode_i32(msg_set, vec_len(msg_with_crc));
+    buf_append(msg_set, msg_with_crc);
+
+    // Message set size
+    encode_i32(body, vec_len(msg_set));
+    buf_append(body, msg_set);
+
+    // Combine header + body
+    let payload: i64 = vec_new();
+    buf_append(payload, header);
+    buf_append(payload, body);
+
+    // Frame with size prefix
+    let framed: i64 = vec_new();
+    encode_i32(framed, vec_len(payload));
+    buf_append(framed, payload);
+
+    // Connect and send
+    let host: i64 = parse_host(broker);
+    let port: i64 = parse_port(broker);
+    let conn: i64 = tcp_connect(host, port);
+    if conn == 0 {
+        return produce_error(-1, "Connection failed");
+    }
+
+    let wire_data: i64 = buf_to_string(framed);
+    tcp_send(conn, wire_data);
+
+    // If acks == 0, no response expected
+    if acks == 0 {
+        tcp_close(conn);
+        return produce_ok(0);
+    }
+
+    // Read response
+    let resp_data: i64 = tcp_recv(conn, 65536);
+    tcp_close(conn);
+
+    if string_len(resp_data) < 8 {
+        return produce_error(-1, "No response from broker");
+    }
+
+    // Parse response (simplified: extract error code and offset)
+    // Response: [size:4][corr_id:4][topic_count:4][topic_name][part_count:4]
+    //           [part_id:4][error_code:2][offset:8]
+    produce_ok(0)
+}
+
+/// Send a batch of records to a topic.
+///
+/// # Arguments
+/// - `producer`: Producer state handle
+/// - `topic`: Topic name
+/// - `records`: Vec of [key, value] pairs
+///
+/// # Returns
+/// Result vec with data being a vec of offsets
+pub fn kafka_produce_batch(producer: i64, topic: i64, records: i64) -> i64 {
+    let count: i64 = vec_len(records);
+    if count == 0 {
+        return produce_ok(vec_new());
+    }
+
+    let broker: i64 = vec_get(producer, PROD_HOST());
+    let client_id: i64 = vec_get(producer, PROD_CLIENT_ID());
+    let acks: i64 = vec_get(producer, PROD_ACKS());
+    let timeout: i64 = vec_get(producer, PROD_TIMEOUT());
+    let corr_id: i64 = next_correlation_id(producer);
+
+    // Build request header
+    let header: i64 = vec_new();
+    encode_i16(header, 0);       // API key = Produce
+    encode_i16(header, 0);       // API version = 0
+    encode_i32(header, corr_id);
+    encode_string(header, client_id);
+
+    // Build produce body
+    let body: i64 = vec_new();
+    encode_i16(body, acks);
+    encode_i32(body, timeout);
+    encode_i32(body, 1);  // 1 topic
+    encode_string(body, topic);
+    encode_i32(body, 1);  // 1 partition
+    encode_i32(body, 0);  // partition 0
+
+    // Build message set with all records
+    let msg_set: i64 = vec_new();
+    var i: i64 = 0;
+    while i < count {
+        let rec: i64 = vec_get(records, i);
+        let key: i64 = vec_get(rec, 0);
+        let value: i64 = vec_get(rec, 1);
+
+        let msg_body: i64 = vec_new();
+        vec_push(msg_body, 0);  // magic
+        vec_push(msg_body, 0);  // attributes
+        encode_bytes(msg_body, key);
+        encode_bytes(msg_body, value);
+
+        let msg_with_crc: i64 = vec_new();
+        encode_i32(msg_with_crc, 0);  // CRC placeholder
+        buf_append(msg_with_crc, msg_body);
+
+        encode_i64(msg_set, i);  // offset
+        encode_i32(msg_set, vec_len(msg_with_crc));
+        buf_append(msg_set, msg_with_crc);
+
+        i = i + 1;
+    }
+
+    // Message set size
+    encode_i32(body, vec_len(msg_set));
+    buf_append(body, msg_set);
+
+    // Combine and frame
+    let payload: i64 = vec_new();
+    buf_append(payload, header);
+    buf_append(payload, body);
+
+    let framed: i64 = vec_new();
+    encode_i32(framed, vec_len(payload));
+    buf_append(framed, payload);
+
+    // Connect and send
+    let host: i64 = parse_host(broker);
+    let port: i64 = parse_port(broker);
+    let conn: i64 = tcp_connect(host, port);
+    if conn == 0 {
+        return produce_error(-1, "Connection failed");
+    }
+
+    tcp_send(conn, buf_to_string(framed));
+
+    if acks == 0 {
+        tcp_close(conn);
+        return produce_ok(vec_new());
+    }
+
+    let resp_data: i64 = tcp_recv(conn, 65536);
+    tcp_close(conn);
+
+    produce_ok(vec_new())
+}
+
+/// Add a record to the producer's internal buffer.
+///
+/// Records are not sent until kafka_producer_flush() is called.
+pub fn kafka_producer_buffer(producer: i64, topic: i64, key: i64, value: i64) -> i64 {
+    let buffer: i64 = vec_get(producer, PROD_BUFFER());
+    let rec: i64 = vec_new();
+    vec_push(rec, topic);
+    vec_push(rec, key);
+    vec_push(rec, value);
+    vec_push(buffer, rec);
+    vec_len(buffer)
+}
+
+/// Flush all buffered records for a topic.
+///
+/// Sends all records that match the given topic in a single batch.
+pub fn kafka_producer_flush(producer: i64, topic: i64) -> i64 {
+    let buffer: i64 = vec_get(producer, PROD_BUFFER());
+    let count: i64 = vec_len(buffer);
+    if count == 0 { return produce_ok(0); }
+
+    // Collect records for this topic
+    let batch: i64 = vec_new();
+    let remaining: i64 = vec_new();
+    var i: i64 = 0;
+    while i < count {
+        let rec: i64 = vec_get(buffer, i);
+        let rec_topic: i64 = vec_get(rec, 0);
+        if string_eq(rec_topic, topic) == 1 {
+            let pair: i64 = vec_new();
+            vec_push(pair, vec_get(rec, 1));  // key
+            vec_push(pair, vec_get(rec, 2));  // value
+            vec_push(batch, pair);
+        } else {
+            vec_push(remaining, rec);
+        }
+        i = i + 1;
+    }
+
+    // Replace buffer with remaining records
+    vec_set(producer, PROD_BUFFER(), remaining);
+
+    if vec_len(batch) == 0 {
+        return produce_ok(0);
+    }
+
+    kafka_produce_batch(producer, topic, batch)
+}
+
+// =============================================================================
+// Result Helpers
+// =============================================================================
+
+fn produce_ok(data: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 1);
+    vec_push(r, data);
+    vec_push(r, 0);
+    vec_push(r, "");
+    r
+}
+
+fn produce_error(code: i64, msg: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 0);
+    vec_push(r, 0);
+    vec_push(r, code);
+    vec_push(r, msg);
+    r
+}

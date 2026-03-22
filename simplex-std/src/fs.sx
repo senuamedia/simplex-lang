@@ -1,0 +1,802 @@
+// simplex-std::fs - File System Operations
+//
+// File I/O, directory management, and path manipulation utilities.
+// All values are i64 handles (vec-backed). Strings use string_from().
+//
+// # File Operations
+//
+// - fs_read: read file contents to string
+// - fs_write: write string to file (overwrite)
+// - fs_append: append string to file
+// - fs_exists: check if path exists
+// - fs_delete: delete a file
+// - fs_copy: copy a file
+// - fs_rename: rename/move a file
+//
+// # Directory Operations
+//
+// - fs_mkdir: create directory
+// - fs_mkdir_all: create directory and parents
+// - fs_rmdir: remove empty directory
+// - fs_list: list directory entries
+// - fs_is_dir: check if path is a directory
+// - fs_is_file: check if path is a file
+//
+// # File Info
+//
+// - fs_stat: get file size and timestamps
+// - fs_size: get file size in bytes
+//
+// # Path Helpers
+//
+// - path_join: join two path segments
+// - path_parent: get parent directory
+// - path_filename: get filename from path
+// - path_ext: get file extension
+// - path_stem: get filename without extension
+// - path_is_absolute: check if path is absolute
+// - path_normalize: normalize path separators
+//
+// # Example
+//
+// ```simplex
+// fn main() -> i64 {
+//     let content: i64 = fs_read(string_from("data.txt"));
+//     if content != 0 {
+//         println(content);
+//     }
+//     fs_write(string_from("output.txt"), string_from("hello"));
+//     0
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn intrinsic_file_read(path: i64) -> i64;
+extern fn intrinsic_file_write(path: i64, content: i64) -> i64;
+extern fn intrinsic_file_append(path: i64, content: i64) -> i64;
+extern fn intrinsic_file_delete(path: i64) -> i64;
+extern fn intrinsic_file_rename(old_path: i64, new_path: i64) -> i64;
+extern fn intrinsic_mkdir(path: i64) -> i64;
+extern fn intrinsic_rmdir(path: i64) -> i64;
+extern fn intrinsic_dir_list(path: i64) -> i64;
+extern fn intrinsic_is_dir(path: i64) -> i64;
+extern fn intrinsic_file_stat(path: i64) -> i64;
+extern fn intrinsic_file_read_bytes(path: i64) -> i64;
+extern fn intrinsic_file_write_bytes(path: i64, bytes: i64) -> i64;
+extern fn string_join_vec(v: i64, sep: i64) -> i64;
+extern fn string_last_index_of(s: i64, needle: i64) -> i64;
+extern fn string_substr(s: i64, start: i64, end_pos: i64) -> i64;
+extern fn time_ms() -> i64;
+
+// =============================================================================
+// Path Separator
+// =============================================================================
+
+fn PATH_SEP() -> i64 { string_from("/") }
+
+// Stat field indices
+fn STAT_SIZE() -> i64 { 0 }
+fn STAT_MTIME() -> i64 { 1 }
+fn STAT_ATIME() -> i64 { 2 }
+fn STAT_IS_DIR() -> i64 { 3 }
+fn STAT_IS_FILE() -> i64 { 4 }
+fn STAT_PERMISSIONS() -> i64 { 5 }
+
+// =============================================================================
+// File Read/Write Operations
+// =============================================================================
+
+/// Read file contents to a string.
+///
+/// Returns the file content as a string handle, or 0 on failure.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+///
+/// # Returns
+/// i64 string handle with file contents, or 0 on error
+fn fs_read(path: i64) -> i64 {
+    intrinsic_file_read(path)
+}
+
+/// Write a string to a file (overwrites existing content).
+///
+/// Creates the file if it does not exist.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+/// * `content` - i64 string handle for the content to write
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_write(path: i64, content: i64) -> i64 {
+    intrinsic_file_write(path, content)
+}
+
+/// Append a string to a file.
+///
+/// Creates the file if it does not exist.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+/// * `content` - i64 string handle for the content to append
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_append(path: i64, content: i64) -> i64 {
+    intrinsic_file_append(path, content)
+}
+
+/// Check if a file or directory exists.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the path
+///
+/// # Returns
+/// 1 if exists, 0 if not
+fn fs_exists(path: i64) -> i64 {
+    file_exists(path)
+}
+
+/// Delete a file.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_delete(path: i64) -> i64 {
+    intrinsic_file_delete(path)
+}
+
+/// Copy a file from source to destination.
+///
+/// # Arguments
+/// * `src` - i64 string handle for source path
+/// * `dst` - i64 string handle for destination path
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_copy(src: i64, dst: i64) -> i64 {
+    let content: i64 = fs_read(src);
+    if content == 0 {
+        return 0;
+    }
+    fs_write(dst, content)
+}
+
+/// Rename or move a file.
+///
+/// # Arguments
+/// * `old_path` - i64 string handle for current path
+/// * `new_path` - i64 string handle for new path
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_rename(old_path: i64, new_path: i64) -> i64 {
+    intrinsic_file_rename(old_path, new_path)
+}
+
+// =============================================================================
+// Directory Operations
+// =============================================================================
+
+/// Create a directory.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the directory path
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_mkdir(path: i64) -> i64 {
+    intrinsic_mkdir(path)
+}
+
+/// Create a directory and all parent directories.
+///
+/// Similar to `mkdir -p`.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the directory path
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_mkdir_all(path: i64) -> i64 {
+    // Split path into components and create each level
+    let parts: i64 = string_split(path, PATH_SEP());
+    let count: i64 = vec_len(parts);
+
+    if count == 0 {
+        return 0;
+    }
+
+    var current: i64 = string_from("");
+    var i: i64 = 0;
+
+    // Handle absolute paths (starts with /)
+    if path_is_absolute(path) == 1 {
+        current = string_from("/");
+    }
+
+    while i < count {
+        let part: i64 = vec_get(parts, i);
+        if string_len(part) > 0 {
+            if string_len(current) > 0 {
+                if string_eq(current, string_from("/")) != 1 {
+                    current = string_concat(current, PATH_SEP());
+                }
+            }
+            current = string_concat(current, part);
+
+            if fs_exists(current) != 1 {
+                let result: i64 = intrinsic_mkdir(current);
+                if result != 1 {
+                    return 0;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    1
+}
+
+/// Remove an empty directory.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the directory path
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_rmdir(path: i64) -> i64 {
+    intrinsic_rmdir(path)
+}
+
+/// List entries in a directory.
+///
+/// Returns a vec of string handles (file/directory names).
+///
+/// # Arguments
+/// * `path` - i64 string handle for the directory path
+///
+/// # Returns
+/// i64 vec handle with entry names, or 0 on failure
+fn fs_list(path: i64) -> i64 {
+    intrinsic_dir_list(path)
+}
+
+/// Check if a path is a directory.
+///
+/// # Returns
+/// 1 if directory, 0 otherwise
+fn fs_is_dir(path: i64) -> i64 {
+    intrinsic_is_dir(path)
+}
+
+/// Check if a path is a file.
+///
+/// # Returns
+/// 1 if file, 0 otherwise
+fn fs_is_file(path: i64) -> i64 {
+    if fs_exists(path) == 1 {
+        if fs_is_dir(path) == 1 {
+            return 0;
+        }
+        return 1;
+    }
+    0
+}
+
+// =============================================================================
+// File Info / Stat
+// =============================================================================
+
+/// Get file statistics.
+///
+/// Returns a vec: [size, mtime_ms, atime_ms, is_dir, is_file, permissions]
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+///
+/// # Returns
+/// i64 vec handle with stat info, or 0 on failure
+fn fs_stat(path: i64) -> i64 {
+    intrinsic_file_stat(path)
+}
+
+/// Get file size in bytes.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+///
+/// # Returns
+/// file size in bytes, or -1 on failure
+fn fs_size(path: i64) -> i64 {
+    let stat: i64 = fs_stat(path);
+    if stat == 0 {
+        return -1;
+    }
+    vec_get(stat, STAT_SIZE())
+}
+
+/// Get file modification time in milliseconds since epoch.
+///
+/// # Returns
+/// mtime in ms, or -1 on failure
+fn fs_mtime(path: i64) -> i64 {
+    let stat: i64 = fs_stat(path);
+    if stat == 0 {
+        return -1;
+    }
+    vec_get(stat, STAT_MTIME())
+}
+
+// =============================================================================
+// File Reading Utilities
+// =============================================================================
+
+/// Read a file and split into lines.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+///
+/// # Returns
+/// vec of string handles (lines), or 0 on failure
+fn fs_read_lines(path: i64) -> i64 {
+    let content: i64 = fs_read(path);
+    if content == 0 {
+        return 0;
+    }
+    string_split(content, string_from("\n"))
+}
+
+/// Write a vec of lines to a file.
+///
+/// Lines are joined with newline characters.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+/// * `lines` - vec of string handles
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_write_lines(path: i64, lines: i64) -> i64 {
+    let content: i64 = string_join_vec(lines, string_from("\n"));
+    fs_write(path, content)
+}
+
+/// Read a file as bytes (returns a vec of i64 byte values).
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+///
+/// # Returns
+/// vec of i64 byte values, or 0 on failure
+fn fs_read_bytes(path: i64) -> i64 {
+    intrinsic_file_read_bytes(path)
+}
+
+/// Write bytes to a file.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+/// * `bytes` - vec of i64 byte values
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn fs_write_bytes(path: i64, bytes: i64) -> i64 {
+    intrinsic_file_write_bytes(path, bytes)
+}
+
+// =============================================================================
+// Path Helpers
+// =============================================================================
+
+/// Join two path segments with the platform separator.
+///
+/// Handles trailing/leading separators intelligently.
+///
+/// # Arguments
+/// * `a` - i64 string handle for the first segment
+/// * `b` - i64 string handle for the second segment
+///
+/// # Returns
+/// i64 string handle for the joined path
+fn path_join(a: i64, b: i64) -> i64 {
+    let a_len: i64 = string_len(a);
+    let b_len: i64 = string_len(b);
+
+    if a_len == 0 {
+        return b;
+    }
+    if b_len == 0 {
+        return a;
+    }
+
+    // Check if b is absolute
+    if path_is_absolute(b) == 1 {
+        return b;
+    }
+
+    // Check if a ends with separator
+    let a_last: i64 = string_char_at(a, a_len - 1);
+    let sep_char: i64 = string_char_at(PATH_SEP(), 0);
+
+    // Check if b starts with separator
+    let b_first: i64 = string_char_at(b, 0);
+
+    if a_last == sep_char {
+        if b_first == sep_char {
+            // a ends with /, b starts with / -> skip one
+            return string_concat(a, string_substr(b, 1, b_len));
+        }
+        return string_concat(a, b);
+    } else {
+        if b_first == sep_char {
+            return string_concat(a, b);
+        }
+        return string_concat(string_concat(a, PATH_SEP()), b);
+    }
+}
+
+/// Get the parent directory of a path.
+///
+/// # Arguments
+/// * `p` - i64 string handle for the path
+///
+/// # Returns
+/// i64 string handle for the parent, or "." if no parent
+fn path_parent(p: i64) -> i64 {
+    let len: i64 = string_len(p);
+    if len == 0 {
+        return string_from(".");
+    }
+
+    // Find last separator
+    let last_sep: i64 = string_last_index_of(p, PATH_SEP());
+    if last_sep < 0 {
+        return string_from(".");
+    }
+    if last_sep == 0 {
+        return string_from("/");
+    }
+
+    string_substr(p, 0, last_sep)
+}
+
+/// Get the filename from a path (last component).
+///
+/// # Arguments
+/// * `p` - i64 string handle for the path
+///
+/// # Returns
+/// i64 string handle for the filename
+fn path_filename(p: i64) -> i64 {
+    let len: i64 = string_len(p);
+    if len == 0 {
+        return string_from("");
+    }
+
+    let last_sep: i64 = string_last_index_of(p, PATH_SEP());
+    if last_sep < 0 {
+        return p;
+    }
+
+    string_substr(p, last_sep + 1, len)
+}
+
+/// Get the file extension (without the dot).
+///
+/// # Arguments
+/// * `p` - i64 string handle for the path
+///
+/// # Returns
+/// i64 string handle for the extension, or empty string if none
+fn path_ext(p: i64) -> i64 {
+    let filename: i64 = path_filename(p);
+    let len: i64 = string_len(filename);
+    if len == 0 {
+        return string_from("");
+    }
+
+    // Find last dot
+    let last_dot: i64 = string_last_index_of(filename, string_from("."));
+    if last_dot < 0 {
+        return string_from("");
+    }
+    if last_dot == 0 {
+        // Dotfiles like ".gitignore" have no extension
+        return string_from("");
+    }
+
+    string_substr(filename, last_dot + 1, len)
+}
+
+/// Get the filename without extension (stem).
+///
+/// # Arguments
+/// * `p` - i64 string handle for the path
+///
+/// # Returns
+/// i64 string handle for the stem
+fn path_stem(p: i64) -> i64 {
+    let filename: i64 = path_filename(p);
+    let len: i64 = string_len(filename);
+    if len == 0 {
+        return string_from("");
+    }
+
+    let last_dot: i64 = string_last_index_of(filename, string_from("."));
+    if last_dot <= 0 {
+        return filename;
+    }
+
+    string_substr(filename, 0, last_dot)
+}
+
+/// Check if a path is absolute.
+///
+/// # Returns
+/// 1 if absolute, 0 if relative
+fn path_is_absolute(p: i64) -> i64 {
+    let len: i64 = string_len(p);
+    if len == 0 {
+        return 0;
+    }
+    let first: i64 = string_char_at(p, 0);
+    let slash: i64 = string_char_at(string_from("/"), 0);
+    if first == slash {
+        return 1;
+    }
+    0
+}
+
+/// Normalize a path by resolving ".." and "." components.
+///
+/// # Arguments
+/// * `p` - i64 string handle for the path
+///
+/// # Returns
+/// i64 string handle for the normalized path
+fn path_normalize(p: i64) -> i64 {
+    let parts: i64 = string_split(p, PATH_SEP());
+    let count: i64 = vec_len(parts);
+    let result: i64 = vec_new();
+    let is_abs: i64 = path_is_absolute(p);
+
+    var i: i64 = 0;
+    while i < count {
+        let part: i64 = vec_get(parts, i);
+        let part_len: i64 = string_len(part);
+
+        if part_len == 0 {
+            // Skip empty segments (from double slashes)
+        } else if string_eq(part, string_from(".")) == 1 {
+            // Skip current directory references
+        } else if string_eq(part, string_from("..")) == 1 {
+            // Go up one level
+            let result_len: i64 = vec_len(result);
+            if result_len > 0 {
+                vec_pop(result);
+            }
+        } else {
+            vec_push(result, part);
+        }
+        i = i + 1;
+    }
+
+    let joined: i64 = string_join_vec(result, PATH_SEP());
+    if is_abs == 1 {
+        return string_concat(string_from("/"), joined);
+    }
+    if string_len(joined) == 0 {
+        return string_from(".");
+    }
+    joined
+}
+
+/// Check if a path has a specific extension.
+///
+/// # Arguments
+/// * `p` - i64 string handle for the path
+/// * `ext` - i64 string handle for the extension (without dot)
+///
+/// # Returns
+/// 1 if matches, 0 otherwise
+fn path_has_ext(p: i64, ext: i64) -> i64 {
+    let file_ext: i64 = path_ext(p);
+    string_eq(file_ext, ext)
+}
+
+/// Change the extension of a path.
+///
+/// # Arguments
+/// * `p` - i64 string handle for the path
+/// * `new_ext` - i64 string handle for the new extension (without dot)
+///
+/// # Returns
+/// i64 string handle for the path with new extension
+fn path_with_ext(p: i64, new_ext: i64) -> i64 {
+    let parent: i64 = path_parent(p);
+    let stem: i64 = path_stem(p);
+
+    let new_filename: i64 = string_concat(
+        string_concat(stem, string_from(".")),
+        new_ext
+    );
+
+    if string_eq(parent, string_from(".")) == 1 {
+        return new_filename;
+    }
+    path_join(parent, new_filename)
+}
+
+// =============================================================================
+// Directory Walking
+// =============================================================================
+
+/// List files in a directory recursively.
+///
+/// Returns a flat vec of full path string handles.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the directory path
+///
+/// # Returns
+/// vec of string handles (full paths), or 0 on failure
+fn fs_walk(path: i64) -> i64 {
+    let result: i64 = vec_new();
+    fs_walk_recursive(path, result);
+    result
+}
+
+/// Internal recursive directory walker.
+fn fs_walk_recursive(path: i64, result: i64) -> i64 {
+    let entries: i64 = fs_list(path);
+    if entries == 0 {
+        return 0;
+    }
+
+    let count: i64 = vec_len(entries);
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(entries, i);
+        let full_path: i64 = path_join(path, entry);
+
+        if fs_is_dir(full_path) == 1 {
+            // Skip . and ..
+            if string_eq(entry, string_from(".")) != 1 {
+                if string_eq(entry, string_from("..")) != 1 {
+                    fs_walk_recursive(full_path, result);
+                }
+            }
+        } else {
+            vec_push(result, full_path);
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// List files matching an extension in a directory.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the directory path
+/// * `ext` - i64 string handle for the extension (without dot)
+///
+/// # Returns
+/// vec of string handles (matching filenames)
+fn fs_list_ext(path: i64, ext: i64) -> i64 {
+    let entries: i64 = fs_list(path);
+    if entries == 0 {
+        return vec_new();
+    }
+
+    let result: i64 = vec_new();
+    let count: i64 = vec_len(entries);
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(entries, i);
+        if path_has_ext(entry, ext) == 1 {
+            vec_push(result, entry);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Temporary Files
+// =============================================================================
+
+/// Create a temporary file path.
+///
+/// Returns a string handle for a unique temp file path.
+/// The file is NOT created; the caller must write to it.
+///
+/// # Arguments
+/// * `prefix` - i64 string handle for filename prefix
+///
+/// # Returns
+/// i64 string handle for the temp path
+fn fs_temp_path(prefix: i64) -> i64 {
+    let ts: i64 = time_ms();
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("/tmp/"));
+    vec_push(parts, prefix);
+    vec_push(parts, string_from("_"));
+    vec_push(parts, int_to_string(ts));
+    vec_push(parts, string_from(".tmp"));
+    string_join_vec(parts, string_from(""))
+}
+
+/// Create a temporary directory path.
+///
+/// Returns a string handle for a unique temp directory path.
+/// The directory IS created.
+///
+/// # Arguments
+/// * `prefix` - i64 string handle for directory prefix
+///
+/// # Returns
+/// i64 string handle for the temp dir path, or 0 on failure
+fn fs_temp_dir(prefix: i64) -> i64 {
+    let path: i64 = fs_temp_path(prefix);
+    // Remove .tmp suffix for directories
+    let len: i64 = string_len(path);
+    let dir_path: i64 = string_substr(path, 0, len - 4);
+    if fs_mkdir(dir_path) == 1 {
+        return dir_path;
+    }
+    0
+}
+
+// =============================================================================
+// Convenience Helpers
+// =============================================================================
+
+/// Read a file, returning a default value if the file doesn't exist.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the file path
+/// * `default` - i64 string handle for the default value
+///
+/// # Returns
+/// file content or default string handle
+fn fs_read_or(path: i64, default: i64) -> i64 {
+    let content: i64 = fs_read(path);
+    if content == 0 {
+        return default;
+    }
+    content
+}
+
+/// Ensure a directory exists, creating it if needed.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the directory path
+///
+/// # Returns
+/// 1 if directory exists or was created, 0 on failure
+fn fs_ensure_dir(path: i64) -> i64 {
+    if fs_exists(path) == 1 {
+        if fs_is_dir(path) == 1 {
+            return 1;
+        }
+        return 0; // exists but is a file
+    }
+    fs_mkdir_all(path)
+}
+
+/// Get the current working directory.
+///
+/// # Returns
+/// i64 string handle for the current directory
+fn fs_cwd() -> i64 {
+    string_from(".")
+}

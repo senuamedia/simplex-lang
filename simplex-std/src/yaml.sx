@@ -27,32 +27,10 @@
 // Copyright (c) 2025-2026 Rod Higgins
 // Licensed under AGPL-3.0
 
-// =============================================================================
-// Runtime Extern Declarations
-// =============================================================================
-
-extern fn vec_new() -> i64;
-extern fn vec_push(v: i64, val: i64) -> i64;
-extern fn vec_get(v: i64, idx: i64) -> i64;
-extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
-extern fn vec_len(v: i64) -> i64;
-
-extern fn string_concat(a: i64, b: i64) -> i64;
-extern fn string_length(s: i64) -> i64;
-extern fn string_char_at(s: i64, idx: i64) -> i64;
-extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
-extern fn string_from_char(c: i64) -> i64;
-extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
-extern fn string_find(s: i64, needle: i64, start: i64) -> i64;
-extern fn string_trim(s: i64) -> i64;
-
-extern fn sb_new() -> i64;
-extern fn sb_append(sb: i64, s: i64);
-extern fn sb_append_char(sb: i64, c: i64);
-extern fn sb_to_string(sb: i64) -> i64;
-
-extern fn println(s: i64);
-extern fn int_to_string(n: i64) -> i64;
+// Wrapper for string_substring using built-in intrinsic_string_slice
+fn yaml_substring(s: i64, start: i64, length: i64) -> i64 {
+    intrinsic_string_slice(s, start, start + length)
+}
 
 // =============================================================================
 // Type Tag Constants
@@ -176,7 +154,7 @@ pub fn yaml_get(value: i64, key: i64) -> i64 {
     var i: i64 = 0;
     while i < count {
         let k: i64 = vec_get(keys, i);
-        if intrinsic_string_eq(k, key) == 1 {
+        if string_eq(k, key) == 1 {
             return vec_get(vals, i);
         }
         i = i + 1;
@@ -240,7 +218,7 @@ pub fn yaml_set(mapping: i64, key: i64, value: i64) -> i64 {
     var i: i64 = 0;
     while i < count {
         let k: i64 = vec_get(keys, i);
-        if intrinsic_string_eq(k, key) == 1 {
+        if string_eq(k, key) == 1 {
             vec_set(vals, i, value);
             return mapping;
         }
@@ -267,19 +245,19 @@ pub fn yaml_push(sequence: i64, item: i64) -> i64 {
 /// Split input into lines, returning a vec of line strings.
 fn yaml_split_lines(input: i64) -> i64 {
     let lines: i64 = vec_new();
-    let len: i64 = string_length(input);
+    let len: i64 = string_len(input);
     var start: i64 = 0;
     var i: i64 = 0;
 
     while i < len {
         let c: i64 = string_char_at(input, i);
         if c == CH_LF() {
-            let line: i64 = string_substring(input, start, i - start);
+            let line: i64 = yaml_substring(input, start, i - start);
             vec_push(lines, line);
             start = i + 1;
             i = i + 1;
         } else if c == CH_CR() {
-            let line: i64 = string_substring(input, start, i - start);
+            let line: i64 = yaml_substring(input, start, i - start);
             vec_push(lines, line);
             i = i + 1;
             if i < len {
@@ -295,7 +273,7 @@ fn yaml_split_lines(input: i64) -> i64 {
 
     // Last line (may have no trailing newline)
     if start < len {
-        let line: i64 = string_substring(input, start, len - start);
+        let line: i64 = yaml_substring(input, start, len - start);
         vec_push(lines, line);
     }
 
@@ -304,7 +282,7 @@ fn yaml_split_lines(input: i64) -> i64 {
 
 /// Count leading spaces in a line
 fn line_indent(line: i64) -> i64 {
-    let len: i64 = string_length(line);
+    let len: i64 = string_len(line);
     var i: i64 = 0;
     while i < len {
         let c: i64 = string_char_at(line, i);
@@ -319,7 +297,7 @@ fn line_indent(line: i64) -> i64 {
 /// Check if a line is blank or comment-only
 fn is_blank_or_comment(line: i64) -> i64 {
     let trimmed: i64 = string_trim(line);
-    let len: i64 = string_length(trimmed);
+    let len: i64 = string_len(trimmed);
     if len == 0 { return 1; }
     if string_char_at(trimmed, 0) == CH_HASH() { return 1; }
     0
@@ -328,7 +306,7 @@ fn is_blank_or_comment(line: i64) -> i64 {
 /// Strip inline comment from a value string.
 /// Only strips comments preceded by a space + #
 fn strip_inline_comment(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = 0;
     var in_dquote: i64 = 0;
     var in_squote: i64 = 0;
@@ -351,7 +329,7 @@ fn strip_inline_comment(s: i64) -> i64 {
             if i > 0 {
                 let prev: i64 = string_char_at(s, i - 1);
                 if prev == CH_SPACE() {
-                    let result: i64 = string_substring(s, 0, i - 1);
+                    let result: i64 = yaml_substring(s, 0, i - 1);
                     return string_trim(result);
                 }
             }
@@ -363,7 +341,7 @@ fn strip_inline_comment(s: i64) -> i64 {
 
 /// Unquote a YAML string value (remove surrounding quotes and handle escapes)
 fn yaml_unquote(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     if len < 2 { return s; }
 
     let first: i64 = string_char_at(s, 0);
@@ -372,7 +350,7 @@ fn yaml_unquote(s: i64) -> i64 {
     // Double-quoted string
     if first == CH_DQUOTE() {
         if last == CH_DQUOTE() {
-            let inner: i64 = string_substring(s, 1, len - 2);
+            let inner: i64 = yaml_substring(s, 1, len - 2);
             return yaml_unescape_dquote(inner);
         }
     }
@@ -380,7 +358,7 @@ fn yaml_unquote(s: i64) -> i64 {
     // Single-quoted string
     if first == CH_SQUOTE() {
         if last == CH_SQUOTE() {
-            let inner: i64 = string_substring(s, 1, len - 2);
+            let inner: i64 = yaml_substring(s, 1, len - 2);
             return yaml_unescape_squote(inner);
         }
     }
@@ -390,7 +368,7 @@ fn yaml_unquote(s: i64) -> i64 {
 
 /// Unescape a double-quoted YAML string (handles \n, \t, \\, \")
 fn yaml_unescape_dquote(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = 0;
 
@@ -430,7 +408,7 @@ fn yaml_unescape_dquote(s: i64) -> i64 {
 
 /// Unescape a single-quoted YAML string (only '' -> ')
 fn yaml_unescape_squote(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = 0;
 
@@ -460,11 +438,11 @@ fn yaml_unescape_squote(s: i64) -> i64 {
 
 /// Check if a scalar string represents null
 fn is_null_scalar(s: i64) -> i64 {
-    if intrinsic_string_eq(s, "null") == 1 { return 1; }
-    if intrinsic_string_eq(s, "Null") == 1 { return 1; }
-    if intrinsic_string_eq(s, "NULL") == 1 { return 1; }
-    if intrinsic_string_eq(s, "~") == 1 { return 1; }
-    if string_length(s) == 0 { return 1; }
+    if string_eq(s, "null") == 1 { return 1; }
+    if string_eq(s, "Null") == 1 { return 1; }
+    if string_eq(s, "NULL") == 1 { return 1; }
+    if string_eq(s, "~") == 1 { return 1; }
+    if string_len(s) == 0 { return 1; }
     0
 }
 
@@ -476,7 +454,7 @@ fn is_null_scalar(s: i64) -> i64 {
 /// Returns vec: [yaml_value, end_position]
 fn parse_flow_mapping(s: i64, start: i64) -> i64 {
     let mapping: i64 = yaml_mapping_new();
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = start;  // position after '{'
 
     // Skip whitespace
@@ -601,7 +579,7 @@ fn parse_flow_mapping(s: i64, start: i64) -> i64 {
 /// Returns vec: [yaml_value, end_position]
 fn parse_flow_sequence(s: i64, start: i64) -> i64 {
     let seq: i64 = yaml_sequence_new();
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = start;  // position after '['
 
     // Skip whitespace
@@ -696,7 +674,7 @@ fn parse_flow_sequence(s: i64, start: i64) -> i64 {
 /// Handles quoted strings properly.
 /// Returns vec: [string_value, end_position]
 fn parse_flow_scalar(s: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = start;
 
     // Check for quoted string
@@ -729,7 +707,7 @@ fn parse_flow_scalar(s: i64, start: i64) -> i64 {
 
 /// Parse a flow-style quoted string
 fn parse_flow_quoted(s: i64, start: i64, quote: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     sb_append_char(sb, quote);
     var i: i64 = start + 1;  // skip opening quote
@@ -765,7 +743,7 @@ fn parse_flow_quoted(s: i64, start: i64, quote: i64) -> i64 {
 
 /// Parse a value until a specific delimiter char (unquoted)
 fn parse_flow_value_until(s: i64, start: i64, delim: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = start;
 
@@ -822,7 +800,7 @@ fn parse_flow_value_until(s: i64, start: i64, delim: i64) -> i64 {
 
 /// Find the colon position in a mapping line (first ': ' or trailing ':')
 fn find_colon_sep(line: i64, indent: i64) -> i64 {
-    let len: i64 = string_length(line);
+    let len: i64 = string_len(line);
     var i: i64 = indent;
     var in_dquote: i64 = 0;
     var in_squote: i64 = 0;
@@ -891,14 +869,14 @@ fn parse_block(lines: i64, line_idx_ref: i64, min_indent: i64) -> i64 {
         return yaml_null_value();
     }
 
-    let len: i64 = string_length(first_line);
+    let len: i64 = string_len(first_line);
 
     // Check first non-space character
     let first_char: i64 = string_char_at(first_line, indent);
 
     // Flow mapping
     if first_char == CH_LBRACE() {
-        let content: i64 = string_substring(first_line, indent, len - indent);
+        let content: i64 = yaml_substring(first_line, indent, len - indent);
         let flow_result: i64 = parse_flow_mapping(content, 1);
         idx = idx + 1;
         vec_set(line_idx_ref, 0, idx);
@@ -907,7 +885,7 @@ fn parse_block(lines: i64, line_idx_ref: i64, min_indent: i64) -> i64 {
 
     // Flow sequence
     if first_char == CH_LBRACKET() {
-        let content: i64 = string_substring(first_line, indent, len - indent);
+        let content: i64 = yaml_substring(first_line, indent, len - indent);
         let flow_result: i64 = parse_flow_sequence(content, 1);
         idx = idx + 1;
         vec_set(line_idx_ref, 0, idx);
@@ -943,7 +921,7 @@ fn parse_block(lines: i64, line_idx_ref: i64, min_indent: i64) -> i64 {
     }
 
     // Plain scalar
-    let content: i64 = string_substring(first_line, indent, len - indent);
+    let content: i64 = yaml_substring(first_line, indent, len - indent);
     let stripped: i64 = strip_inline_comment(content);
     let unquoted: i64 = yaml_unquote(string_trim(stripped));
     idx = idx + 1;
@@ -995,11 +973,11 @@ fn parse_block_mapping(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64 
                     // Not a mapping entry, stop
                     done = 1;
                 } else {
-                    let key_str: i64 = string_substring(line, indent, colon_pos - indent);
+                    let key_str: i64 = yaml_substring(line, indent, colon_pos - indent);
                     let key_trimmed: i64 = string_trim(key_str);
                     let key_unquoted: i64 = yaml_unquote(key_trimmed);
 
-                    let line_len: i64 = string_length(line);
+                    let line_len: i64 = string_len(line);
                     let after_colon: i64 = colon_pos + 1;
 
                     // Check for value on same line
@@ -1008,10 +986,10 @@ fn parse_block_mapping(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64 
                         if string_char_at(line, after_colon) == CH_SPACE() {
                             let val_start: i64 = after_colon + 1;
                             if val_start < line_len {
-                                let val_part: i64 = string_substring(line, val_start, line_len - val_start);
+                                let val_part: i64 = yaml_substring(line, val_start, line_len - val_start);
                                 let val_trimmed: i64 = string_trim(val_part);
 
-                                if string_length(val_trimmed) > 0 {
+                                if string_len(val_trimmed) > 0 {
                                     let first_vc: i64 = string_char_at(val_trimmed, 0);
 
                                     // Flow mapping inline
@@ -1103,7 +1081,7 @@ fn parse_block_sequence(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64
                 vec_set(line_idx_ref, 0, idx);
             } else {
                 // Check for '- '
-                let line_len: i64 = string_length(line);
+                let line_len: i64 = string_len(line);
                 if string_char_at(line, indent) != CH_DASH() {
                     done = 1;
                 } else {
@@ -1126,10 +1104,10 @@ fn parse_block_sequence(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64
                             let nested: i64 = parse_block(lines, line_idx_ref, block_indent + 2);
                             yaml_push(seq, nested);
                         } else {
-                            let val_part: i64 = string_substring(line, val_start, line_len - val_start);
+                            let val_part: i64 = yaml_substring(line, val_start, line_len - val_start);
                             let val_trimmed: i64 = string_trim(val_part);
 
-                            if string_length(val_trimmed) == 0 {
+                            if string_len(val_trimmed) == 0 {
                                 yaml_push(seq, yaml_null_value());
                                 idx = idx + 1;
                                 vec_set(line_idx_ref, 0, idx);
@@ -1154,7 +1132,7 @@ fn parse_block_sequence(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64
                                         // Re-parse from val_start as a mapping with indent = val_start
                                         // We create a temporary line view
                                         let nested_mapping: i64 = yaml_mapping_new();
-                                        let key_str: i64 = string_substring(line, val_start, colon_pos - val_start);
+                                        let key_str: i64 = yaml_substring(line, val_start, colon_pos - val_start);
                                         let key_t: i64 = string_trim(key_str);
                                         let key_uq: i64 = yaml_unquote(key_t);
 
@@ -1165,7 +1143,7 @@ fn parse_block_sequence(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64
                                             if string_char_at(line, after_col) == CH_SPACE() {
                                                 let vstart: i64 = after_col + 1;
                                                 if vstart < line_len {
-                                                    let vstr: i64 = string_substring(line, vstart, line_len - vstart);
+                                                    let vstr: i64 = yaml_substring(line, vstart, line_len - vstart);
                                                     let vt: i64 = string_trim(vstr);
                                                     let stripped: i64 = strip_inline_comment(vt);
                                                     let uq: i64 = yaml_unquote(string_trim(stripped));
@@ -1217,9 +1195,9 @@ fn parse_block_sequence(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64
                                                     if nc < 0 {
                                                         more_keys = 0;
                                                     } else {
-                                                        let nk: i64 = string_substring(nl, ni, nc - ni);
+                                                        let nk: i64 = yaml_substring(nl, ni, nc - ni);
                                                         let nkt: i64 = yaml_unquote(string_trim(nk));
-                                                        let nl_len: i64 = string_length(nl);
+                                                        let nl_len: i64 = string_len(nl);
                                                         let nac: i64 = nc + 1;
                                                         var nhas_inline: i64 = 0;
 
@@ -1227,7 +1205,7 @@ fn parse_block_sequence(lines: i64, line_idx_ref: i64, block_indent: i64) -> i64
                                                             if string_char_at(nl, nac) == CH_SPACE() {
                                                                 let nvs: i64 = nac + 1;
                                                                 if nvs < nl_len {
-                                                                    let nvstr: i64 = string_substring(nl, nvs, nl_len - nvs);
+                                                                    let nvstr: i64 = yaml_substring(nl, nvs, nl_len - nvs);
                                                                     let nvt: i64 = string_trim(nvstr);
                                                                     let nstripped: i64 = strip_inline_comment(nvt);
                                                                     let nuq: i64 = yaml_unquote(string_trim(nstripped));
@@ -1297,7 +1275,7 @@ fn parse_literal_block_content(lines: i64, line_idx_ref: i64, block_indent: i64)
     while idx < line_count {
         let line: i64 = vec_get(lines, idx);
         let indent: i64 = line_indent(line);
-        let line_len: i64 = string_length(line);
+        let line_len: i64 = string_len(line);
 
         // Blank line within block
         if line_len == 0 {
@@ -1324,7 +1302,7 @@ fn parse_literal_block_content(lines: i64, line_idx_ref: i64, block_indent: i64)
                     si = si + 1;
                 }
             }
-            let content: i64 = string_substring(line, content_indent, line_len - content_indent);
+            let content: i64 = yaml_substring(line, content_indent, line_len - content_indent);
             sb_append(sb, content);
             first_content = 0;
             idx = idx + 1;
@@ -1357,7 +1335,7 @@ fn parse_folded_block_content(lines: i64, line_idx_ref: i64, block_indent: i64) 
     while idx < line_count {
         let line: i64 = vec_get(lines, idx);
         let indent: i64 = line_indent(line);
-        let line_len: i64 = string_length(line);
+        let line_len: i64 = string_len(line);
 
         if line_len == 0 {
             prev_blank = 1;
@@ -1377,7 +1355,7 @@ fn parse_folded_block_content(lines: i64, line_idx_ref: i64, block_indent: i64) 
                 sb_append_char(sb, CH_SPACE());
             }
 
-            let content: i64 = string_substring(line, content_indent, line_len - content_indent);
+            let content: i64 = yaml_substring(line, content_indent, line_len - content_indent);
             sb_append(sb, content);
             first_content = 0;
             idx = idx + 1;
@@ -1414,7 +1392,7 @@ pub fn yaml_parse(input: i64) -> i64 {
     let first: i64 = vec_get(lines, 0);
     let trimmed: i64 = string_trim(first);
     var start_line: i64 = 0;
-    if intrinsic_string_eq(trimmed, "---") == 1 {
+    if string_eq(trimmed, "---") == 1 {
         start_line = 1;
     }
 
@@ -1617,17 +1595,17 @@ fn yaml_write_indent(sb: i64, depth: i64, indent_size: i64) -> i64 {
 
 /// Check if a scalar string needs quoting in YAML output
 fn yaml_needs_quoting(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     if len == 0 { return 1; }
 
     // Check for reserved words
-    if intrinsic_string_eq(s, "true") == 1 { return 1; }
-    if intrinsic_string_eq(s, "false") == 1 { return 1; }
-    if intrinsic_string_eq(s, "null") == 1 { return 1; }
-    if intrinsic_string_eq(s, "True") == 1 { return 1; }
-    if intrinsic_string_eq(s, "False") == 1 { return 1; }
-    if intrinsic_string_eq(s, "Null") == 1 { return 1; }
-    if intrinsic_string_eq(s, "~") == 1 { return 1; }
+    if string_eq(s, "true") == 1 { return 1; }
+    if string_eq(s, "false") == 1 { return 1; }
+    if string_eq(s, "null") == 1 { return 1; }
+    if string_eq(s, "True") == 1 { return 1; }
+    if string_eq(s, "False") == 1 { return 1; }
+    if string_eq(s, "Null") == 1 { return 1; }
+    if string_eq(s, "~") == 1 { return 1; }
 
     // Check first char for special meaning
     let first: i64 = string_char_at(s, 0);
@@ -1664,7 +1642,7 @@ fn yaml_needs_quoting(s: i64) -> i64 {
 /// Write a double-quoted YAML string
 fn yaml_write_quoted(sb: i64, s: i64) -> i64 {
     sb_append_char(sb, CH_DQUOTE());
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = 0;
     while i < len {
         let c: i64 = string_char_at(s, i);

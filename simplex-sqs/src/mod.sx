@@ -1,0 +1,963 @@
+// simplex-sqs - Amazon SQS Client Library
+//
+// Pure Simplex implementation of the Amazon Simple Queue Service (SQS) client.
+// Uses the AWS HTTP Query API with SigV4 signing from simplex-aws.
+//
+// # SQS API Overview
+//
+// SQS uses an XML-based Query API over HTTPS:
+//   - Requests: HTTP POST with URL-encoded Action parameters
+//   - Responses: XML documents with operation results
+//
+// # Data Model
+//
+// Messages are represented as vec handles:
+//   message = [message_id, receipt_handle, body, attributes_vec]
+//   attributes_vec = [[name, value], [name, value], ...]
+//
+// # Usage
+//
+// ```simplex
+// use simplex_sqs::{sqs_send, sqs_receive, sqs_delete};
+// use simplex_aws::auth::{aws_config_new, aws_config_set_date};
+//
+// let config = aws_config_new(key, secret, "us-east-1", "sqs");
+// let msg_id = sqs_send(queue_url, "Hello, World!", config);
+// let messages = sqs_receive(queue_url, 10, 20, config);
+// let receipt = sqs_msg_receipt(vec_get(messages, 0));
+// sqs_delete(queue_url, receipt, config);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Message Vec Layout
+// =============================================================================
+//
+// message = [message_id, receipt_handle, body, attributes_vec, md5_of_body]
+//   index 0: message_id (string handle)
+//   index 1: receipt_handle (string handle)
+//   index 2: body (string handle)
+//   index 3: attributes_vec (vec of [name, value] pairs)
+//   index 4: md5_of_body (string handle)
+
+fn MSG_ID() -> i64 { 0 }
+fn MSG_RECEIPT() -> i64 { 1 }
+fn MSG_BODY() -> i64 { 2 }
+fn MSG_ATTRS() -> i64 { 3 }
+fn MSG_MD5() -> i64 { 4 }
+
+// =============================================================================
+// SQS Result Layout
+// =============================================================================
+//
+// result = [status, data, error_code, error_message]
+//   index 0: status (1 = ok, 0 = error)
+//   index 1: data (message_id for send, messages vec for receive, 1 for delete)
+//   index 2: error_code (string, empty on success)
+//   index 3: error_message (string, empty on success)
+
+fn RES_STATUS() -> i64 { 0 }
+fn RES_DATA() -> i64 { 1 }
+fn RES_ERROR_CODE() -> i64 { 2 }
+fn RES_ERROR_MSG() -> i64 { 3 }
+
+// =============================================================================
+// Message Accessors
+// =============================================================================
+
+/// Get the message ID from a message vec
+pub fn sqs_msg_id(msg: i64) -> i64 {
+    vec_get(msg, MSG_ID())
+}
+
+/// Get the receipt handle from a message vec
+pub fn sqs_msg_receipt(msg: i64) -> i64 {
+    vec_get(msg, MSG_RECEIPT())
+}
+
+/// Get the body from a message vec
+pub fn sqs_msg_body(msg: i64) -> i64 {
+    vec_get(msg, MSG_BODY())
+}
+
+/// Get the attributes vec from a message vec
+pub fn sqs_msg_attrs(msg: i64) -> i64 {
+    vec_get(msg, MSG_ATTRS())
+}
+
+/// Get the MD5 hash of the body from a message vec
+pub fn sqs_msg_md5(msg: i64) -> i64 {
+    vec_get(msg, MSG_MD5())
+}
+
+/// Create a new message vec
+pub fn sqs_msg_new(id: i64, receipt: i64, body: i64, attrs: i64, md5: i64) -> i64 {
+    let msg: i64 = vec_new();
+    vec_push(msg, id);
+    vec_push(msg, receipt);
+    vec_push(msg, body);
+    vec_push(msg, attrs);
+    vec_push(msg, md5);
+    msg
+}
+
+// =============================================================================
+// Result Accessors
+// =============================================================================
+
+/// Check if result indicates success
+pub fn sqs_result_ok(result: i64) -> i64 {
+    vec_get(result, RES_STATUS())
+}
+
+/// Get the data from a result
+pub fn sqs_result_data(result: i64) -> i64 {
+    vec_get(result, RES_DATA())
+}
+
+/// Get the error code from a result
+pub fn sqs_result_error_code(result: i64) -> i64 {
+    vec_get(result, RES_ERROR_CODE())
+}
+
+/// Get the error message from a result
+pub fn sqs_result_error_msg(result: i64) -> i64 {
+    vec_get(result, RES_ERROR_MSG())
+}
+
+/// Create a success result
+fn result_ok(data: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 1);
+    vec_push(r, data);
+    vec_push(r, "");
+    vec_push(r, "");
+    r
+}
+
+/// Create an error result
+fn result_err(code: i64, msg: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 0);
+    vec_push(r, 0);
+    vec_push(r, code);
+    vec_push(r, msg);
+    r
+}
+
+// =============================================================================
+// URL Encoding
+// =============================================================================
+
+/// URL-encode a string for SQS query parameters
+fn sqs_url_encode(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len == 0 { return ""; }
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(s, i);
+        // Unreserved: A-Z a-z 0-9 - _ . ~
+        if ch >= 65 {
+            if ch <= 90 {
+                sb_append_char(sb, ch);
+                i = i + 1;
+                continue;
+            }
+        }
+        if ch >= 97 {
+            if ch <= 122 {
+                sb_append_char(sb, ch);
+                i = i + 1;
+                continue;
+            }
+        }
+        if ch >= 48 {
+            if ch <= 57 {
+                sb_append_char(sb, ch);
+                i = i + 1;
+                continue;
+            }
+        }
+        if ch == 45 { sb_append_char(sb, ch); i = i + 1; continue; }
+        if ch == 95 { sb_append_char(sb, ch); i = i + 1; continue; }
+        if ch == 46 { sb_append_char(sb, ch); i = i + 1; continue; }
+        if ch == 126 { sb_append_char(sb, ch); i = i + 1; continue; }
+        // Percent-encode
+        sb_append_char(sb, 37); // '%'
+        let hi: i64 = ch / 16;
+        let lo: i64 = ch - hi * 16;
+        sb_append_char(sb, hex_upper(hi));
+        sb_append_char(sb, hex_upper(lo));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Convert 0-15 to uppercase hex digit
+fn hex_upper(val: i64) -> i64 {
+    if val < 10 { val + 48 } else { val - 10 + 65 }
+}
+
+// =============================================================================
+// SQS Request Body Construction
+// =============================================================================
+
+/// Build a SendMessage request body.
+///
+/// Format: Action=SendMessage&QueueUrl=...&MessageBody=...&Version=2012-11-05
+fn build_send_body(queue_url: i64, message_body: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=SendMessage");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+    sb_append(sb, "&MessageBody=");
+    sb_append(sb, sqs_url_encode(message_body));
+    sb_append(sb, "&Version=2012-11-05");
+    sb_to_string(sb)
+}
+
+/// Build a SendMessage request body with delay.
+fn build_send_body_delayed(queue_url: i64, message_body: i64, delay: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=SendMessage");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+    sb_append(sb, "&MessageBody=");
+    sb_append(sb, sqs_url_encode(message_body));
+    sb_append(sb, "&DelaySeconds=");
+    sb_append(sb, int_to_string(delay));
+    sb_append(sb, "&Version=2012-11-05");
+    sb_to_string(sb)
+}
+
+/// Build a ReceiveMessage request body.
+///
+/// Format: Action=ReceiveMessage&QueueUrl=...&MaxNumberOfMessages=N&WaitTimeSeconds=N
+fn build_receive_body(queue_url: i64, max_messages: i64, wait_time: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=ReceiveMessage");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+    sb_append(sb, "&MaxNumberOfMessages=");
+    sb_append(sb, int_to_string(max_messages));
+    sb_append(sb, "&WaitTimeSeconds=");
+    sb_append(sb, int_to_string(wait_time));
+    sb_append(sb, "&AttributeName.1=All");
+    sb_append(sb, "&Version=2012-11-05");
+    sb_to_string(sb)
+}
+
+/// Build a DeleteMessage request body.
+///
+/// Format: Action=DeleteMessage&QueueUrl=...&ReceiptHandle=...
+fn build_delete_body(queue_url: i64, receipt_handle: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=DeleteMessage");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+    sb_append(sb, "&ReceiptHandle=");
+    sb_append(sb, sqs_url_encode(receipt_handle));
+    sb_append(sb, "&Version=2012-11-05");
+    sb_to_string(sb)
+}
+
+/// Build a GetQueueAttributes request body.
+fn build_get_attrs_body(queue_url: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=GetQueueAttributes");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+    sb_append(sb, "&AttributeName.1=All");
+    sb_append(sb, "&Version=2012-11-05");
+    sb_to_string(sb)
+}
+
+/// Build a PurgeQueue request body.
+fn build_purge_body(queue_url: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=PurgeQueue");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+    sb_append(sb, "&Version=2012-11-05");
+    sb_to_string(sb)
+}
+
+/// Build a ChangeMessageVisibility request body.
+fn build_change_visibility_body(queue_url: i64, receipt_handle: i64, timeout: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=ChangeMessageVisibility");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+    sb_append(sb, "&ReceiptHandle=");
+    sb_append(sb, sqs_url_encode(receipt_handle));
+    sb_append(sb, "&VisibilityTimeout=");
+    sb_append(sb, int_to_string(timeout));
+    sb_append(sb, "&Version=2012-11-05");
+    sb_to_string(sb)
+}
+
+// =============================================================================
+// XML Response Parsing
+// =============================================================================
+//
+// SQS returns XML responses. We implement a minimal XML tag extractor
+// to parse SQS-specific response formats without a full XML parser.
+
+/// Extract the text content between <tag> and </tag> from XML.
+/// Returns empty string if tag not found.
+/// Searches from the given start position.
+pub fn xml_extract_tag(xml: i64, tag: i64, start: i64) -> i64 {
+    let open_tag: i64 = string_concat("<", string_concat(tag, ">"));
+    let close_tag: i64 = string_concat("</", string_concat(tag, ">"));
+
+    let open_pos: i64 = string_find(xml, open_tag, start);
+    if open_pos < 0 { return ""; }
+
+    let content_start: i64 = open_pos + string_len(open_tag);
+    let close_pos: i64 = string_find(xml, close_tag, content_start);
+    if close_pos < 0 { return ""; }
+
+    string_substring(xml, content_start, close_pos - content_start)
+}
+
+/// Extract the text content and update a position tracker.
+/// Returns a pair vec: [content, next_position]
+pub fn xml_extract_tag_pos(xml: i64, tag: i64, start: i64) -> i64 {
+    let open_tag: i64 = string_concat("<", string_concat(tag, ">"));
+    let close_tag: i64 = string_concat("</", string_concat(tag, ">"));
+
+    let open_pos: i64 = string_find(xml, open_tag, start);
+    if open_pos < 0 {
+        let result: i64 = vec_new();
+        vec_push(result, "");
+        vec_push(result, -1);
+        return result;
+    }
+
+    let content_start: i64 = open_pos + string_len(open_tag);
+    let close_pos: i64 = string_find(xml, close_tag, content_start);
+    if close_pos < 0 {
+        let result: i64 = vec_new();
+        vec_push(result, "");
+        vec_push(result, -1);
+        return result;
+    }
+
+    let next_pos: i64 = close_pos + string_len(close_tag);
+    let content: i64 = string_substring(xml, content_start, close_pos - content_start);
+
+    let result: i64 = vec_new();
+    vec_push(result, content);
+    vec_push(result, next_pos);
+    result
+}
+
+/// Check if XML response contains an error
+pub fn xml_has_error(xml: i64) -> i64 {
+    let err_pos: i64 = string_find(xml, "<ErrorResponse", 0);
+    if err_pos >= 0 { return 1; }
+    let err_pos2: i64 = string_find(xml, "<Error>", 0);
+    if err_pos2 >= 0 { return 1; }
+    0
+}
+
+/// Extract error code from SQS XML error response
+pub fn xml_error_code(xml: i64) -> i64 {
+    xml_extract_tag(xml, "Code", 0)
+}
+
+/// Extract error message from SQS XML error response
+pub fn xml_error_message(xml: i64) -> i64 {
+    xml_extract_tag(xml, "Message", 0)
+}
+
+/// Parse a SendMessage response XML.
+///
+/// Example response:
+/// ```xml
+/// <SendMessageResponse>
+///   <SendMessageResult>
+///     <MessageId>abc-123</MessageId>
+///     <MD5OfMessageBody>...</MD5OfMessageBody>
+///   </SendMessageResult>
+/// </SendMessageResponse>
+/// ```
+pub fn parse_send_response(xml: i64) -> i64 {
+    if xml_has_error(xml) == 1 {
+        let code: i64 = xml_error_code(xml);
+        let msg: i64 = xml_error_message(xml);
+        return result_err(code, msg);
+    }
+    let msg_id: i64 = xml_extract_tag(xml, "MessageId", 0);
+    if string_len(msg_id) == 0 {
+        return result_err("ParseError", "No MessageId in response");
+    }
+    result_ok(msg_id)
+}
+
+/// Parse a ReceiveMessage response XML.
+///
+/// Example response:
+/// ```xml
+/// <ReceiveMessageResponse>
+///   <ReceiveMessageResult>
+///     <Message>
+///       <MessageId>abc-123</MessageId>
+///       <ReceiptHandle>xyz-789</ReceiptHandle>
+///       <MD5OfBody>...</MD5OfBody>
+///       <Body>Hello</Body>
+///       <Attribute>
+///         <Name>SenderId</Name>
+///         <Value>123456</Value>
+///       </Attribute>
+///     </Message>
+///   </ReceiveMessageResult>
+/// </ReceiveMessageResponse>
+/// ```
+pub fn parse_receive_response(xml: i64) -> i64 {
+    if xml_has_error(xml) == 1 {
+        let code: i64 = xml_error_code(xml);
+        let msg: i64 = xml_error_message(xml);
+        return result_err(code, msg);
+    }
+
+    let messages: i64 = vec_new();
+    var search_pos: i64 = 0;
+
+    // Find all <Message> blocks
+    while search_pos >= 0 {
+        let msg_start: i64 = string_find(xml, "<Message>", search_pos);
+        if msg_start < 0 {
+            search_pos = -1;
+            continue;
+        }
+        let msg_end: i64 = string_find(xml, "</Message>", msg_start);
+        if msg_end < 0 {
+            search_pos = -1;
+            continue;
+        }
+
+        let msg_xml: i64 = string_substring(xml, msg_start, msg_end - msg_start + 10);
+
+        // Extract fields
+        let msg_id: i64 = xml_extract_tag(msg_xml, "MessageId", 0);
+        let receipt: i64 = xml_extract_tag(msg_xml, "ReceiptHandle", 0);
+        let body: i64 = xml_extract_tag(msg_xml, "Body", 0);
+        let md5: i64 = xml_extract_tag(msg_xml, "MD5OfBody", 0);
+
+        // Extract attributes
+        let attrs: i64 = vec_new();
+        var attr_pos: i64 = 0;
+        while attr_pos >= 0 {
+            let attr_start: i64 = string_find(msg_xml, "<Attribute>", attr_pos);
+            if attr_start < 0 {
+                attr_pos = -1;
+                continue;
+            }
+            let attr_end: i64 = string_find(msg_xml, "</Attribute>", attr_start);
+            if attr_end < 0 {
+                attr_pos = -1;
+                continue;
+            }
+            let attr_xml: i64 = string_substring(msg_xml, attr_start, attr_end - attr_start + 12);
+            let attr_name: i64 = xml_extract_tag(attr_xml, "Name", 0);
+            let attr_value: i64 = xml_extract_tag(attr_xml, "Value", 0);
+            let pair: i64 = vec_new();
+            vec_push(pair, attr_name);
+            vec_push(pair, attr_value);
+            vec_push(attrs, pair);
+            attr_pos = attr_end + 12;
+        }
+
+        let message: i64 = sqs_msg_new(msg_id, receipt, body, attrs, md5);
+        vec_push(messages, message);
+
+        search_pos = msg_end + 10;
+    }
+
+    result_ok(messages)
+}
+
+/// Parse a DeleteMessage response XML.
+pub fn parse_delete_response(xml: i64) -> i64 {
+    if xml_has_error(xml) == 1 {
+        let code: i64 = xml_error_code(xml);
+        let msg: i64 = xml_error_message(xml);
+        return result_err(code, msg);
+    }
+    result_ok(1)
+}
+
+/// Parse a GetQueueAttributes response XML.
+///
+/// Returns a vec of [name, value] pairs.
+pub fn parse_get_attrs_response(xml: i64) -> i64 {
+    if xml_has_error(xml) == 1 {
+        let code: i64 = xml_error_code(xml);
+        let msg: i64 = xml_error_message(xml);
+        return result_err(code, msg);
+    }
+
+    let attrs: i64 = vec_new();
+    var search_pos: i64 = 0;
+    while search_pos >= 0 {
+        let attr_start: i64 = string_find(xml, "<Attribute>", search_pos);
+        if attr_start < 0 {
+            search_pos = -1;
+            continue;
+        }
+        let attr_end: i64 = string_find(xml, "</Attribute>", attr_start);
+        if attr_end < 0 {
+            search_pos = -1;
+            continue;
+        }
+        let attr_xml: i64 = string_substring(xml, attr_start, attr_end - attr_start + 12);
+        let name: i64 = xml_extract_tag(attr_xml, "Name", 0);
+        let value: i64 = xml_extract_tag(attr_xml, "Value", 0);
+        let pair: i64 = vec_new();
+        vec_push(pair, name);
+        vec_push(pair, value);
+        vec_push(attrs, pair);
+        search_pos = attr_end + 12;
+    }
+
+    result_ok(attrs)
+}
+
+// =============================================================================
+// AWS SigV4 Signing (inline for SQS)
+// =============================================================================
+//
+// Simplified SigV4 signing that adds required headers to HTTP requests.
+// Uses the same HMAC chain as simplex-aws but operates directly on
+// HTTP request objects.
+
+/// Build SQS-specific headers with content-type
+fn sqs_headers(config: i64, body: i64) -> i64 {
+    let headers: i64 = vec_new();
+
+    // Content-Type for SQS Query API
+    let ct_pair: i64 = vec_new();
+    vec_push(ct_pair, "content-type");
+    vec_push(ct_pair, "application/x-www-form-urlencoded");
+    vec_push(headers, ct_pair);
+
+    headers
+}
+
+/// Extract host from a queue URL
+fn sqs_host_from_url(queue_url: i64) -> i64 {
+    let scheme_pos: i64 = string_find(queue_url, "://", 0);
+    var start: i64 = 0;
+    if scheme_pos >= 0 {
+        start = scheme_pos + 3;
+    }
+    let slash_pos: i64 = string_find(queue_url, "/", start);
+    if slash_pos >= 0 {
+        return string_substring(queue_url, start, slash_pos - start);
+    }
+    let url_len: i64 = string_len(queue_url);
+    string_substring(queue_url, start, url_len - start)
+}
+
+/// Build SQS service endpoint URL from queue URL
+fn sqs_endpoint(queue_url: i64) -> i64 {
+    queue_url
+}
+
+// =============================================================================
+// Public API - Send / Receive / Delete
+// =============================================================================
+
+/// Send a message to an SQS queue.
+///
+/// # Arguments
+/// - `queue_url`: Full SQS queue URL (e.g. "https://sqs.us-east-1.amazonaws.com/123/MyQueue")
+/// - `body`: Message body string
+/// - `config`: AWS config from aws_config_new()
+///
+/// # Returns
+/// Result vec: [1, message_id, "", ""] on success, [0, 0, error_code, error_msg] on failure
+///
+/// # Example
+/// ```simplex
+/// let result = sqs_send(queue_url, "Hello, SQS!", config);
+/// if sqs_result_ok(result) == 1 {
+///     let msg_id = sqs_result_data(result);
+///     println(string_concat("Sent message: ", msg_id));
+/// }
+/// ```
+pub fn sqs_send(queue_url: i64, body: i64, config: i64) -> i64 {
+    let request_body: i64 = build_send_body(queue_url, body);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    // Build request
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    // Send request
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    // Parse response
+    if status >= 200 {
+        if status < 300 {
+            return parse_send_response(resp_body);
+        }
+    }
+
+    // HTTP error
+    if xml_has_error(resp_body) == 1 {
+        let code: i64 = xml_error_code(resp_body);
+        let msg: i64 = xml_error_message(resp_body);
+        return result_err(code, msg);
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}
+
+/// Send a message with a delay (in seconds, 0-900).
+pub fn sqs_send_delayed(queue_url: i64, body: i64, delay: i64, config: i64) -> i64 {
+    let request_body: i64 = build_send_body_delayed(queue_url, body, delay);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_send_response(resp_body);
+        }
+    }
+    if xml_has_error(resp_body) == 1 {
+        return result_err(xml_error_code(resp_body), xml_error_message(resp_body));
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}
+
+/// Receive messages from an SQS queue.
+///
+/// # Arguments
+/// - `queue_url`: Full SQS queue URL
+/// - `max`: Maximum number of messages to receive (1-10)
+/// - `wait`: Long poll wait time in seconds (0-20)
+/// - `config`: AWS config
+///
+/// # Returns
+/// Result vec with data being a vec of message vecs
+///
+/// # Example
+/// ```simplex
+/// let result = sqs_receive(queue_url, 10, 20, config);
+/// if sqs_result_ok(result) == 1 {
+///     let messages = sqs_result_data(result);
+///     var i = 0;
+///     while i < vec_len(messages) {
+///         let msg = vec_get(messages, i);
+///         println(sqs_msg_body(msg));
+///         i = i + 1;
+///     }
+/// }
+/// ```
+pub fn sqs_receive(queue_url: i64, max: i64, wait: i64, config: i64) -> i64 {
+    // Clamp max to 1-10
+    var max_clamped: i64 = max;
+    if max_clamped < 1 { max_clamped = 1; }
+    if max_clamped > 10 { max_clamped = 10; }
+
+    // Clamp wait to 0-20
+    var wait_clamped: i64 = wait;
+    if wait_clamped < 0 { wait_clamped = 0; }
+    if wait_clamped > 20 { wait_clamped = 20; }
+
+    let request_body: i64 = build_receive_body(queue_url, max_clamped, wait_clamped);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_receive_response(resp_body);
+        }
+    }
+    if xml_has_error(resp_body) == 1 {
+        return result_err(xml_error_code(resp_body), xml_error_message(resp_body));
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}
+
+/// Delete a message from an SQS queue.
+///
+/// # Arguments
+/// - `queue_url`: Full SQS queue URL
+/// - `receipt`: Receipt handle from received message
+/// - `config`: AWS config
+///
+/// # Returns
+/// Result vec: [1, 1, "", ""] on success
+///
+/// # Example
+/// ```simplex
+/// let result = sqs_delete(queue_url, receipt_handle, config);
+/// if sqs_result_ok(result) == 1 {
+///     println("Message deleted");
+/// }
+/// ```
+pub fn sqs_delete(queue_url: i64, receipt: i64, config: i64) -> i64 {
+    let request_body: i64 = build_delete_body(queue_url, receipt);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_delete_response(resp_body);
+        }
+    }
+    if xml_has_error(resp_body) == 1 {
+        return result_err(xml_error_code(resp_body), xml_error_message(resp_body));
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}
+
+/// Change the visibility timeout of a received message.
+///
+/// # Arguments
+/// - `queue_url`: Full SQS queue URL
+/// - `receipt`: Receipt handle from received message
+/// - `timeout`: New visibility timeout in seconds
+/// - `config`: AWS config
+pub fn sqs_change_visibility(queue_url: i64, receipt: i64, timeout: i64, config: i64) -> i64 {
+    let request_body: i64 = build_change_visibility_body(queue_url, receipt, timeout);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    if status >= 200 {
+        if status < 300 {
+            return result_ok(1);
+        }
+    }
+    if xml_has_error(resp_body) == 1 {
+        return result_err(xml_error_code(resp_body), xml_error_message(resp_body));
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}
+
+/// Get queue attributes.
+///
+/// # Arguments
+/// - `queue_url`: Full SQS queue URL
+/// - `config`: AWS config
+///
+/// # Returns
+/// Result vec with data being a vec of [name, value] attribute pairs
+pub fn sqs_get_attributes(queue_url: i64, config: i64) -> i64 {
+    let request_body: i64 = build_get_attrs_body(queue_url);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    if status >= 200 {
+        if status < 300 {
+            return parse_get_attrs_response(resp_body);
+        }
+    }
+    if xml_has_error(resp_body) == 1 {
+        return result_err(xml_error_code(resp_body), xml_error_message(resp_body));
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}
+
+/// Purge all messages from a queue.
+pub fn sqs_purge(queue_url: i64, config: i64) -> i64 {
+    let request_body: i64 = build_purge_body(queue_url);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    if status >= 200 {
+        if status < 300 {
+            return result_ok(1);
+        }
+    }
+    if xml_has_error(resp_body) == 1 {
+        return result_err(xml_error_code(resp_body), xml_error_message(resp_body));
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}
+
+// =============================================================================
+// Batch Operations
+// =============================================================================
+
+/// Send a batch of messages (up to 10).
+///
+/// # Arguments
+/// - `queue_url`: Full SQS queue URL
+/// - `bodies`: Vec of message body strings
+/// - `config`: AWS config
+///
+/// # Returns
+/// Result vec with data being a vec of message IDs
+pub fn sqs_send_batch(queue_url: i64, bodies: i64, config: i64) -> i64 {
+    let count: i64 = vec_len(bodies);
+    if count == 0 { return result_ok(vec_new()); }
+    if count > 10 { return result_err("ValidationError", "Batch size exceeds 10"); }
+
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=SendMessageBatch");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+
+    var i: i64 = 0;
+    while i < count {
+        let idx: i64 = i + 1;
+        sb_append(sb, "&SendMessageBatchRequestEntry.");
+        sb_append(sb, int_to_string(idx));
+        sb_append(sb, ".Id=msg");
+        sb_append(sb, int_to_string(idx));
+        sb_append(sb, "&SendMessageBatchRequestEntry.");
+        sb_append(sb, int_to_string(idx));
+        sb_append(sb, ".MessageBody=");
+        sb_append(sb, sqs_url_encode(vec_get(bodies, i)));
+        i = i + 1;
+    }
+    sb_append(sb, "&Version=2012-11-05");
+
+    let request_body: i64 = sb_to_string(sb);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    if status >= 200 {
+        if status < 300 {
+            // Parse batch response - extract all MessageId tags
+            let ids: i64 = vec_new();
+            var pos: i64 = 0;
+            while pos >= 0 {
+                let result: i64 = xml_extract_tag_pos(resp_body, "MessageId", pos);
+                let msg_id: i64 = vec_get(result, 0);
+                let next: i64 = vec_get(result, 1);
+                if next < 0 {
+                    pos = -1;
+                    continue;
+                }
+                vec_push(ids, msg_id);
+                pos = next;
+            }
+            return result_ok(ids);
+        }
+    }
+    if xml_has_error(resp_body) == 1 {
+        return result_err(xml_error_code(resp_body), xml_error_message(resp_body));
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}
+
+/// Delete a batch of messages (up to 10).
+///
+/// # Arguments
+/// - `queue_url`: Full SQS queue URL
+/// - `receipts`: Vec of receipt handle strings
+/// - `config`: AWS config
+pub fn sqs_delete_batch(queue_url: i64, receipts: i64, config: i64) -> i64 {
+    let count: i64 = vec_len(receipts);
+    if count == 0 { return result_ok(1); }
+    if count > 10 { return result_err("ValidationError", "Batch size exceeds 10"); }
+
+    let sb: i64 = sb_new();
+    sb_append(sb, "Action=DeleteMessageBatch");
+    sb_append(sb, "&QueueUrl=");
+    sb_append(sb, sqs_url_encode(queue_url));
+
+    var i: i64 = 0;
+    while i < count {
+        let idx: i64 = i + 1;
+        sb_append(sb, "&DeleteMessageBatchRequestEntry.");
+        sb_append(sb, int_to_string(idx));
+        sb_append(sb, ".Id=msg");
+        sb_append(sb, int_to_string(idx));
+        sb_append(sb, "&DeleteMessageBatchRequestEntry.");
+        sb_append(sb, int_to_string(idx));
+        sb_append(sb, ".ReceiptHandle=");
+        sb_append(sb, sqs_url_encode(vec_get(receipts, i)));
+        i = i + 1;
+    }
+    sb_append(sb, "&Version=2012-11-05");
+
+    let request_body: i64 = sb_to_string(sb);
+    let host: i64 = sqs_host_from_url(queue_url);
+
+    let req: i64 = http_request_new("POST", queue_url);
+    http_request_header(req, "Content-Type", "application/x-www-form-urlencoded");
+    http_request_header(req, "Host", host);
+    http_request_body(req, request_body);
+
+    let resp: i64 = http_request_send(req);
+    let status: i64 = http_response_status(resp);
+    let resp_body: i64 = http_response_body(resp);
+
+    if status >= 200 {
+        if status < 300 {
+            return result_ok(1);
+        }
+    }
+    if xml_has_error(resp_body) == 1 {
+        return result_err(xml_error_code(resp_body), xml_error_message(resp_body));
+    }
+    result_err("HttpError", string_concat("HTTP ", int_to_string(status)))
+}

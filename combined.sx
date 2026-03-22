@@ -7985,7 +7985,7 @@ fn emit_intrinsic_ptr_ptr_ptr_ptr(cg: i64, name: i64, arg1: i64, arg2: i64, arg3
 // Self-hosted compiler CLI with build, run, check, repl, and fmt commands
 
 // Version
-fn VERSION() -> i64 { string_from("0.16.0") }
+fn VERSION() -> i64 { string_from("0.17.0") }
 
 // CLI argument parsing result
 // Layout: command(0), input_files(1), output_file(2), emit_type(3), verbose(4), force(5), show_deps(6), auto_deps(7)
@@ -8821,7 +8821,7 @@ fn repl_state_vars(state: i64) -> i64 {
 
 // Run the REPL
 fn run_repl() -> i64 {
-    println("Simplex REPL v0.3.0");
+    println("Simplex REPL v0.17.0");
     println("Type expressions to evaluate. Type 'exit' or Ctrl-D to quit.");
     println("");
 

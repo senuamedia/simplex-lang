@@ -1,0 +1,1052 @@
+// simplex-std::test_framework - Advanced Test Framework
+//
+// A comprehensive test framework for Simplex with test suites, rich assertion
+// functions, duration tracking, skip support, and formatted reports.
+//
+// All values are i64 handles (vec-backed). Strings use string_from().
+//
+// # Test Suite Lifecycle
+//
+// 1. Create a suite with test_suite_new()
+// 2. Run individual test functions, collecting pass/fail results
+// 3. Add results with test_add()
+// 4. Generate reports with test_report() or test_run_suite()
+//
+// # Assertions
+//
+// - assert_eq_i64: compare i64 values
+// - assert_eq_str: compare string handles
+// - assert_true / assert_false: boolean checks
+// - assert_ne_i64: not-equal for i64
+// - assert_gt / assert_lt / assert_ge / assert_le: ordering checks
+// - assert_contains: substring check
+// - assert_in_range: range check for i64
+//
+// # Example
+//
+// ```simplex
+// fn main() -> i64 {
+//     let suite: i64 = test_suite_new(string_from("my tests"));
+//     let r1: i64 = assert_eq_i64(2 + 2, 4, string_from("addition"));
+//     test_add(suite, string_from("basic addition"), r1);
+//     let report: i64 = test_run_suite(suite);
+//     // report is vec [total, passed, failed, skipped]
+//     let failures: i64 = vec_get(report, 2);
+//     failures
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Internal Constants (as functions - no const keyword)
+// =============================================================================
+
+fn STATUS_PASS() -> i64 { 1 }
+fn STATUS_FAIL() -> i64 { 0 }
+fn STATUS_SKIP() -> i64 { 2 }
+
+// Suite field indices
+fn SUITE_NAME() -> i64 { 0 }
+fn SUITE_TESTS() -> i64 { 1 }
+fn SUITE_START_TIME() -> i64 { 2 }
+fn SUITE_END_TIME() -> i64 { 3 }
+
+// Test entry field indices
+fn ENTRY_NAME() -> i64 { 0 }
+fn ENTRY_STATUS() -> i64 { 1 }
+fn ENTRY_DURATION() -> i64 { 2 }
+fn ENTRY_MESSAGE() -> i64 { 3 }
+
+// =============================================================================
+// Suite Creation and Management
+// =============================================================================
+
+/// Create a new test suite.
+///
+/// Returns a handle to a suite vec:
+///   [name, tests_vec, start_time_ms, end_time_ms]
+///
+/// # Arguments
+/// * `name` - i64 string handle for the suite name
+///
+/// # Returns
+/// i64 handle to the suite
+fn test_suite_new(name: i64) -> i64 {
+    let suite: i64 = vec_new();
+    vec_push(suite, name);              // index 0: suite name
+    let tests: i64 = vec_new();
+    vec_push(suite, tests);             // index 1: tests list
+    vec_push(suite, get_time_ms());         // index 2: start time
+    vec_push(suite, 0);                 // index 3: end time (filled on run)
+    suite
+}
+
+/// Add a test result to a suite.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+/// * `name` - i64 string handle for the test name
+/// * `passed` - 1 for pass, 0 for fail, 2 for skip
+///
+/// # Returns
+/// The entry handle
+fn test_add(suite: i64, name: i64, passed: i64) -> i64 {
+    let entry: i64 = vec_new();
+    vec_push(entry, name);              // index 0: test name
+    vec_push(entry, passed);            // index 1: status
+    vec_push(entry, 0);                 // index 2: duration (ms)
+    vec_push(entry, string_from(""));   // index 3: message
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    vec_push(tests, entry);
+    entry
+}
+
+/// Add a test result with a message.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+/// * `name` - i64 string handle for the test name
+/// * `passed` - 1 for pass, 0 for fail, 2 for skip
+/// * `msg` - i64 string handle for an additional message
+///
+/// # Returns
+/// The entry handle
+fn test_add_msg(suite: i64, name: i64, passed: i64, msg: i64) -> i64 {
+    let entry: i64 = vec_new();
+    vec_push(entry, name);
+    vec_push(entry, passed);
+    vec_push(entry, 0);
+    vec_push(entry, msg);
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    vec_push(tests, entry);
+    entry
+}
+
+/// Add a test result with duration tracking.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+/// * `name` - i64 string handle for the test name
+/// * `passed` - 1 for pass, 0 for fail, 2 for skip
+/// * `duration_ms` - test duration in milliseconds
+///
+/// # Returns
+/// The entry handle
+fn test_add_timed(suite: i64, name: i64, passed: i64, duration_ms: i64) -> i64 {
+    let entry: i64 = vec_new();
+    vec_push(entry, name);
+    vec_push(entry, passed);
+    vec_push(entry, duration_ms);
+    vec_push(entry, string_from(""));
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    vec_push(tests, entry);
+    entry
+}
+
+/// Skip a test with a reason.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+/// * `name` - i64 string handle for the test name
+/// * `reason` - i64 string handle for the skip reason
+///
+/// # Returns
+/// The entry handle
+fn test_skip(suite: i64, name: i64, reason: i64) -> i64 {
+    let entry: i64 = vec_new();
+    vec_push(entry, name);
+    vec_push(entry, STATUS_SKIP());
+    vec_push(entry, 0);
+    vec_push(entry, reason);
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    vec_push(tests, entry);
+    entry
+}
+
+// =============================================================================
+// Suite Execution and Reporting
+// =============================================================================
+
+/// Run a suite and return summary as a vec [total, passed, failed, skipped].
+///
+/// This finalizes the suite by recording the end time and counting results.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+///
+/// # Returns
+/// A vec handle with [total, passed, failed, skipped]
+fn test_run_suite(suite: i64) -> i64 {
+    // Record end time
+    vec_set(suite, SUITE_END_TIME(), get_time_ms());
+
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    let total: i64 = vec_len(tests);
+    var passed: i64 = 0;
+    var failed: i64 = 0;
+    var skipped: i64 = 0;
+
+    var i: i64 = 0;
+    while i < total {
+        let entry: i64 = vec_get(tests, i);
+        let status: i64 = vec_get(entry, ENTRY_STATUS());
+        if status == STATUS_PASS() {
+            passed = passed + 1;
+        } else if status == STATUS_SKIP() {
+            skipped = skipped + 1;
+        } else {
+            failed = failed + 1;
+        }
+        i = i + 1;
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, total);
+    vec_push(result, passed);
+    vec_push(result, failed);
+    vec_push(result, skipped);
+    result
+}
+
+/// Format test results as a string report.
+///
+/// Returns a string handle containing the formatted report with
+/// suite name, individual test results, and a summary line.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+///
+/// # Returns
+/// i64 string handle with the formatted report
+fn test_report(suite: i64) -> i64 {
+    let name: i64 = vec_get(suite, SUITE_NAME());
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    let total: i64 = vec_len(tests);
+    let start_t: i64 = vec_get(suite, SUITE_START_TIME());
+    let end_t: i64 = vec_get(suite, SUITE_END_TIME());
+
+    var passed: i64 = 0;
+    var failed: i64 = 0;
+    var skipped: i64 = 0;
+
+    // Build the report string
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("=== Test Suite: "));
+    vec_push(parts, name);
+    vec_push(parts, string_from(" ===\n"));
+
+    var i: i64 = 0;
+    while i < total {
+        let entry: i64 = vec_get(tests, i);
+        let test_name: i64 = vec_get(entry, ENTRY_NAME());
+        let status: i64 = vec_get(entry, ENTRY_STATUS());
+        let duration: i64 = vec_get(entry, ENTRY_DURATION());
+        let msg: i64 = vec_get(entry, ENTRY_MESSAGE());
+
+        vec_push(parts, string_from("  test "));
+        vec_push(parts, test_name);
+        vec_push(parts, string_from(" ... "));
+
+        if status == STATUS_PASS() {
+            vec_push(parts, string_from("ok"));
+            passed = passed + 1;
+        } else if status == STATUS_SKIP() {
+            vec_push(parts, string_from("SKIPPED"));
+            skipped = skipped + 1;
+        } else {
+            vec_push(parts, string_from("FAILED"));
+            failed = failed + 1;
+        }
+
+        if duration > 0 {
+            vec_push(parts, string_from(" ("));
+            vec_push(parts, int_to_string(duration));
+            vec_push(parts, string_from("ms)"));
+        }
+
+        // Show message for failures and skips
+        if status == STATUS_FAIL() {
+            if string_len(msg) > 0 {
+                vec_push(parts, string_from(" - "));
+                vec_push(parts, msg);
+            }
+        } else if status == STATUS_SKIP() {
+            if string_len(msg) > 0 {
+                vec_push(parts, string_from(" - "));
+                vec_push(parts, msg);
+            }
+        }
+
+        vec_push(parts, string_from("\n"));
+        i = i + 1;
+    }
+
+    // Summary
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("--- Suite Summary ---\n"));
+    vec_push(parts, string_from("  Total:   "));
+    vec_push(parts, int_to_string(total));
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("  Passed:  "));
+    vec_push(parts, int_to_string(passed));
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("  Failed:  "));
+    vec_push(parts, int_to_string(failed));
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("  Skipped: "));
+    vec_push(parts, int_to_string(skipped));
+    vec_push(parts, string_from("\n"));
+
+    // Duration
+    if end_t > start_t {
+        let elapsed: i64 = end_t - start_t;
+        vec_push(parts, string_from("  Duration: "));
+        vec_push(parts, int_to_string(elapsed));
+        vec_push(parts, string_from("ms\n"));
+    }
+
+    // Overall result
+    if failed == 0 {
+        vec_push(parts, string_from("  Result: PASS\n"));
+    } else {
+        vec_push(parts, string_from("  Result: FAIL\n"));
+    }
+
+    string_join(parts, string_from(""))
+}
+
+/// Print the test report to stdout.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+fn test_print_report(suite: i64) -> i64 {
+    let report: i64 = test_report(suite);
+    println(report);
+    0
+}
+
+// =============================================================================
+// Suite Query Functions
+// =============================================================================
+
+/// Get the number of tests in a suite.
+fn test_count(suite: i64) -> i64 {
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    vec_len(tests)
+}
+
+/// Get the number of passed tests in a suite.
+fn test_passed_count(suite: i64) -> i64 {
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    let total: i64 = vec_len(tests);
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < total {
+        let entry: i64 = vec_get(tests, i);
+        if vec_get(entry, ENTRY_STATUS()) == STATUS_PASS() {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+/// Get the number of failed tests in a suite.
+fn test_failed_count(suite: i64) -> i64 {
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    let total: i64 = vec_len(tests);
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < total {
+        let entry: i64 = vec_get(tests, i);
+        if vec_get(entry, ENTRY_STATUS()) == STATUS_FAIL() {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+/// Get the number of skipped tests in a suite.
+fn test_skipped_count(suite: i64) -> i64 {
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    let total: i64 = vec_len(tests);
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < total {
+        let entry: i64 = vec_get(tests, i);
+        if vec_get(entry, ENTRY_STATUS()) == STATUS_SKIP() {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+/// Check if all tests in the suite passed (no failures).
+///
+/// Returns 1 if all passed, 0 if any failed.
+fn test_all_passed(suite: i64) -> i64 {
+    if test_failed_count(suite) == 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Get the name of the Nth test entry.
+fn test_get_name(suite: i64, index: i64) -> i64 {
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    let entry: i64 = vec_get(tests, index);
+    vec_get(entry, ENTRY_NAME())
+}
+
+/// Get the status of the Nth test entry.
+fn test_get_status(suite: i64, index: i64) -> i64 {
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    let entry: i64 = vec_get(tests, index);
+    vec_get(entry, ENTRY_STATUS())
+}
+
+// =============================================================================
+// Assertion Functions - Core
+// =============================================================================
+
+/// Assert that two i64 values are equal.
+///
+/// # Arguments
+/// * `actual` - the actual value
+/// * `expected` - the expected value
+/// * `msg` - i64 string handle describing the assertion
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_eq_i64(actual: i64, expected: i64, msg: i64) -> i64 {
+    if actual == expected {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL: "));
+        println(msg);
+        println(string_concat(string_from("    expected: "), int_to_string(expected)));
+        println(string_concat(string_from("    actual:   "), int_to_string(actual)));
+        0
+    }
+}
+
+/// Assert that two string handles are equal.
+///
+/// # Arguments
+/// * `actual` - i64 string handle for actual value
+/// * `expected` - i64 string handle for expected value
+/// * `msg` - i64 string handle describing the assertion
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_eq_str(actual: i64, expected: i64, msg: i64) -> i64 {
+    if string_eq(actual, expected) == 1 {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL: "));
+        println(msg);
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("    expected: '"));
+        vec_push(parts, expected);
+        vec_push(parts, string_from("'"));
+        println(string_join(parts, string_from("")));
+        let parts2: i64 = vec_new();
+        vec_push(parts2, string_from("    actual:   '"));
+        vec_push(parts2, actual);
+        vec_push(parts2, string_from("'"));
+        println(string_join(parts2, string_from("")));
+        0
+    }
+}
+
+/// Assert that a condition is true (non-zero).
+///
+/// # Arguments
+/// * `condition` - i64 value, non-zero means true
+/// * `msg` - i64 string handle describing the assertion
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_true(condition: i64, msg: i64) -> i64 {
+    if condition != 0 {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected true): "));
+        println(msg);
+        0
+    }
+}
+
+/// Assert that a condition is false (zero).
+///
+/// # Arguments
+/// * `condition` - i64 value, zero means false
+/// * `msg` - i64 string handle describing the assertion
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_false(condition: i64, msg: i64) -> i64 {
+    if condition == 0 {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected false): "));
+        println(msg);
+        0
+    }
+}
+
+// =============================================================================
+// Assertion Functions - Extended
+// =============================================================================
+
+/// Assert that two i64 values are not equal.
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_ne_i64(actual: i64, expected: i64, msg: i64) -> i64 {
+    if actual != expected {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected not equal): "));
+        println(msg);
+        println(string_concat(string_from("    both are: "), int_to_string(actual)));
+        0
+    }
+}
+
+/// Assert that actual > expected.
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_gt(actual: i64, expected: i64, msg: i64) -> i64 {
+    if actual > expected {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected >): "));
+        println(msg);
+        println(string_concat(string_from("    actual:   "), int_to_string(actual)));
+        println(string_concat(string_from("    expected: > "), int_to_string(expected)));
+        0
+    }
+}
+
+/// Assert that actual < expected.
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_lt(actual: i64, expected: i64, msg: i64) -> i64 {
+    if actual < expected {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected <): "));
+        println(msg);
+        println(string_concat(string_from("    actual:   "), int_to_string(actual)));
+        println(string_concat(string_from("    expected: < "), int_to_string(expected)));
+        0
+    }
+}
+
+/// Assert that actual >= expected.
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_ge(actual: i64, expected: i64, msg: i64) -> i64 {
+    if actual >= expected {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected >=): "));
+        println(msg);
+        println(string_concat(string_from("    actual:   "), int_to_string(actual)));
+        println(string_concat(string_from("    expected: >= "), int_to_string(expected)));
+        0
+    }
+}
+
+/// Assert that actual <= expected.
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_le(actual: i64, expected: i64, msg: i64) -> i64 {
+    if actual <= expected {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected <=): "));
+        println(msg);
+        println(string_concat(string_from("    actual:   "), int_to_string(actual)));
+        println(string_concat(string_from("    expected: <= "), int_to_string(expected)));
+        0
+    }
+}
+
+/// Assert that a string contains a substring.
+///
+/// # Arguments
+/// * `haystack` - i64 string handle to search in
+/// * `needle` - i64 string handle to search for
+/// * `msg` - i64 string handle describing the assertion
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_contains(haystack: i64, needle: i64, msg: i64) -> i64 {
+    if string_contains(haystack, needle) == 1 {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected contains): "));
+        println(msg);
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("    string:    '"));
+        vec_push(parts, haystack);
+        vec_push(parts, string_from("'"));
+        println(string_join(parts, string_from("")));
+        let parts2: i64 = vec_new();
+        vec_push(parts2, string_from("    substring: '"));
+        vec_push(parts2, needle);
+        vec_push(parts2, string_from("'"));
+        println(string_join(parts2, string_from("")));
+        0
+    }
+}
+
+/// Assert that an i64 value is in range [lo, hi] inclusive.
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_in_range(value: i64, lo: i64, hi: i64, msg: i64) -> i64 {
+    if value >= lo {
+        if value <= hi {
+            return 1;
+        }
+    }
+    println(string_from("  ASSERT FAIL (expected in range): "));
+    println(msg);
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("    value: "));
+    vec_push(parts, int_to_string(value));
+    vec_push(parts, string_from(", range: ["));
+    vec_push(parts, int_to_string(lo));
+    vec_push(parts, string_from(", "));
+    vec_push(parts, int_to_string(hi));
+    vec_push(parts, string_from("]"));
+    println(string_join(parts, string_from("")));
+    0
+}
+
+/// Assert that a vec handle is not empty.
+///
+/// # Returns
+/// 1 if pass (non-empty), 0 if fail (empty or null)
+fn assert_not_empty(v: i64, msg: i64) -> i64 {
+    if v == 0 {
+        println(string_from("  ASSERT FAIL (expected non-empty, got null): "));
+        println(msg);
+        return 0;
+    }
+    if vec_len(v) > 0 {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected non-empty): "));
+        println(msg);
+        0
+    }
+}
+
+/// Assert that a value is zero (null/false).
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_zero(value: i64, msg: i64) -> i64 {
+    if value == 0 {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected zero): "));
+        println(msg);
+        println(string_concat(string_from("    actual: "), int_to_string(value)));
+        0
+    }
+}
+
+/// Assert that a value is non-zero (not null/true).
+///
+/// # Returns
+/// 1 if pass, 0 if fail
+fn assert_nonzero(value: i64, msg: i64) -> i64 {
+    if value != 0 {
+        1
+    } else {
+        println(string_from("  ASSERT FAIL (expected nonzero): "));
+        println(msg);
+        0
+    }
+}
+
+// =============================================================================
+// Timer Integration
+// =============================================================================
+
+/// Start a timer and return the start timestamp in milliseconds.
+fn test_timer_start() -> i64 {
+    get_time_ms()
+}
+
+/// End a timer and return elapsed milliseconds.
+///
+/// # Arguments
+/// * `start` - the start timestamp from test_timer_start()
+///
+/// # Returns
+/// elapsed time in milliseconds
+fn test_timer_elapsed(start: i64) -> i64 {
+    let now: i64 = get_time_ms();
+    now - start
+}
+
+/// Run a test function with automatic timing.
+///
+/// Calls the test function, measures duration, and adds the result to the suite.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+/// * `name` - i64 string handle for the test name
+/// * `test_fn_result` - the result of calling the test function (1=pass, 0=fail)
+/// * `start_time` - the timer start from test_timer_start()
+///
+/// # Returns
+/// The entry handle
+fn test_add_auto_timed(suite: i64, name: i64, test_fn_result: i64, start_time: i64) -> i64 {
+    let elapsed: i64 = test_timer_elapsed(start_time);
+    test_add_timed(suite, name, test_fn_result, elapsed)
+}
+
+// =============================================================================
+// Test Group Support
+// =============================================================================
+
+/// Create a test group (sub-suite) within a parent suite.
+///
+/// Groups are represented as nested suites. After the group is complete,
+/// call test_merge_group() to roll up results into the parent.
+///
+/// # Arguments
+/// * `name` - i64 string handle for the group name
+///
+/// # Returns
+/// A new suite handle for the group
+fn test_group_new(name: i64) -> i64 {
+    test_suite_new(name)
+}
+
+/// Merge a group's results into a parent suite.
+///
+/// Each test in the group is added to the parent with a prefixed name.
+///
+/// # Arguments
+/// * `parent` - the parent suite handle
+/// * `group` - the group suite handle
+///
+/// # Returns
+/// 0 on success
+fn test_merge_group(parent: i64, group: i64) -> i64 {
+    let group_name: i64 = vec_get(group, SUITE_NAME());
+    let tests: i64 = vec_get(group, SUITE_TESTS());
+    let total: i64 = vec_len(tests);
+
+    var i: i64 = 0;
+    while i < total {
+        let entry: i64 = vec_get(tests, i);
+        let test_name: i64 = vec_get(entry, ENTRY_NAME());
+        let status: i64 = vec_get(entry, ENTRY_STATUS());
+        let duration: i64 = vec_get(entry, ENTRY_DURATION());
+        let msg: i64 = vec_get(entry, ENTRY_MESSAGE());
+
+        // Build prefixed name: "group::test"
+        let prefixed: i64 = string_concat(
+            string_concat(group_name, string_from("::")),
+            test_name
+        );
+
+        let new_entry: i64 = vec_new();
+        vec_push(new_entry, prefixed);
+        vec_push(new_entry, status);
+        vec_push(new_entry, duration);
+        vec_push(new_entry, msg);
+
+        let parent_tests: i64 = vec_get(parent, SUITE_TESTS());
+        vec_push(parent_tests, new_entry);
+
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Failure List
+// =============================================================================
+
+/// Get a list of failed test names from a suite.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+///
+/// # Returns
+/// A vec of string handles (the names of failed tests)
+fn test_failures(suite: i64) -> i64 {
+    let tests: i64 = vec_get(suite, SUITE_TESTS());
+    let total: i64 = vec_len(tests);
+    let failures: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < total {
+        let entry: i64 = vec_get(tests, i);
+        let status: i64 = vec_get(entry, ENTRY_STATUS());
+        if status == STATUS_FAIL() {
+            let name: i64 = vec_get(entry, ENTRY_NAME());
+            vec_push(failures, name);
+        }
+        i = i + 1;
+    }
+    failures
+}
+
+/// Print only the failed tests from a suite.
+///
+/// # Arguments
+/// * `suite` - the suite handle
+///
+/// # Returns
+/// The number of failures
+fn test_print_failures(suite: i64) -> i64 {
+    let fails: i64 = test_failures(suite);
+    let count: i64 = vec_len(fails);
+
+    if count == 0 {
+        println(string_from("No failures."));
+        return 0;
+    }
+
+    println(string_from("--- Failed Tests ---"));
+    var i: i64 = 0;
+    while i < count {
+        let name: i64 = vec_get(fails, i);
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("  FAIL: "));
+        vec_push(parts, name);
+        println(string_join(parts, string_from("")));
+        i = i + 1;
+    }
+    count
+}
+
+// =============================================================================
+// Compact Assertion Helpers (for inline use)
+// =============================================================================
+
+/// Check equality and return a human-readable status string.
+///
+/// # Returns
+/// i64 string handle: "PASS" or "FAIL: ..."
+fn check_eq_i64(actual: i64, expected: i64, label: i64) -> i64 {
+    if actual == expected {
+        string_from("PASS")
+    } else {
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("FAIL: "));
+        vec_push(parts, label);
+        vec_push(parts, string_from(" (expected "));
+        vec_push(parts, int_to_string(expected));
+        vec_push(parts, string_from(", got "));
+        vec_push(parts, int_to_string(actual));
+        vec_push(parts, string_from(")"));
+        string_join(parts, string_from(""))
+    }
+}
+
+/// Accumulator for pass/fail tracking across many assertions.
+///
+/// Returns a new tracker vec: [total, passed, failed]
+fn assert_tracker_new() -> i64 {
+    let t: i64 = vec_new();
+    vec_push(t, 0);  // total
+    vec_push(t, 0);  // passed
+    vec_push(t, 0);  // failed
+    t
+}
+
+/// Record a result in a tracker.
+///
+/// # Arguments
+/// * `tracker` - handle from assert_tracker_new()
+/// * `result` - 1 for pass, 0 for fail
+fn assert_tracker_record(tracker: i64, result: i64) -> i64 {
+    let total: i64 = vec_get(tracker, 0);
+    vec_set(tracker, 0, total + 1);
+    if result == 1 {
+        let p: i64 = vec_get(tracker, 1);
+        vec_set(tracker, 1, p + 1);
+    } else {
+        let f: i64 = vec_get(tracker, 2);
+        vec_set(tracker, 2, f + 1);
+    }
+    result
+}
+
+/// Get the number of failures from a tracker.
+fn assert_tracker_failures(tracker: i64) -> i64 {
+    vec_get(tracker, 2)
+}
+
+/// Check if the tracker has no failures.
+///
+/// # Returns
+/// 1 if all passed, 0 if any failed
+fn assert_tracker_ok(tracker: i64) -> i64 {
+    if vec_get(tracker, 2) == 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Print a tracker summary.
+fn assert_tracker_summary(tracker: i64) -> i64 {
+    let total: i64 = vec_get(tracker, 0);
+    let passed: i64 = vec_get(tracker, 1);
+    let failed: i64 = vec_get(tracker, 2);
+
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("Assertions: "));
+    vec_push(parts, int_to_string(total));
+    vec_push(parts, string_from(" total, "));
+    vec_push(parts, int_to_string(passed));
+    vec_push(parts, string_from(" passed, "));
+    vec_push(parts, int_to_string(failed));
+    vec_push(parts, string_from(" failed"));
+    println(string_join(parts, string_from("")));
+    0
+}
+
+// =============================================================================
+// Suite Comparison
+// =============================================================================
+
+/// Compare two suite runs and report differences.
+///
+/// Returns a vec of string handles describing tests that changed status.
+///
+/// # Arguments
+/// * `baseline` - suite handle for baseline run
+/// * `current` - suite handle for current run
+///
+/// # Returns
+/// vec of change description strings
+fn test_compare_suites(baseline: i64, current: i64) -> i64 {
+    let changes: i64 = vec_new();
+    let base_tests: i64 = vec_get(baseline, SUITE_TESTS());
+    let curr_tests: i64 = vec_get(current, SUITE_TESTS());
+    let base_count: i64 = vec_len(base_tests);
+    let curr_count: i64 = vec_len(curr_tests);
+
+    // Compare tests by index (assumes same ordering)
+    let limit: i64 = base_count;
+    // Compare up to the smaller count
+    var i: i64 = 0;
+    while i < base_count {
+        if i < curr_count {
+            let be: i64 = vec_get(base_tests, i);
+            let ce: i64 = vec_get(curr_tests, i);
+            let bs: i64 = vec_get(be, ENTRY_STATUS());
+            let cs: i64 = vec_get(ce, ENTRY_STATUS());
+
+            if bs != cs {
+                let name: i64 = vec_get(ce, ENTRY_NAME());
+                let parts: i64 = vec_new();
+                vec_push(parts, name);
+                vec_push(parts, string_from(": "));
+                vec_push(parts, status_label(bs));
+                vec_push(parts, string_from(" -> "));
+                vec_push(parts, status_label(cs));
+                vec_push(changes, string_join(parts, string_from("")));
+            }
+        }
+        i = i + 1;
+    }
+
+    // New tests in current that exceed baseline count
+    var j: i64 = base_count;
+    while j < curr_count {
+        let ce: i64 = vec_get(curr_tests, j);
+        let name: i64 = vec_get(ce, ENTRY_NAME());
+        let parts: i64 = vec_new();
+        vec_push(parts, name);
+        vec_push(parts, string_from(": NEW ("));
+        vec_push(parts, status_label(vec_get(ce, ENTRY_STATUS())));
+        vec_push(parts, string_from(")"));
+        vec_push(changes, string_join(parts, string_from("")));
+        j = j + 1;
+    }
+
+    changes
+}
+
+/// Convert a status code to a label string.
+fn status_label(status: i64) -> i64 {
+    if status == STATUS_PASS() {
+        string_from("PASS")
+    } else if status == STATUS_SKIP() {
+        string_from("SKIP")
+    } else {
+        string_from("FAIL")
+    }
+}
+
+// =============================================================================
+// Convenience: Quick Suite Runner
+// =============================================================================
+
+/// Run a quick test and print a one-line result.
+///
+/// # Arguments
+/// * `name` - i64 string handle for test name
+/// * `passed` - 1 for pass, 0 for fail
+///
+/// # Returns
+/// passed value (for chaining)
+fn test_quick(name: i64, passed: i64) -> i64 {
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("test "));
+    vec_push(parts, name);
+    if passed == 1 {
+        vec_push(parts, string_from(" ... ok"));
+    } else {
+        vec_push(parts, string_from(" ... FAILED"));
+    }
+    println(string_join(parts, string_from("")));
+    passed
+}
+
+/// Run a list of test result pairs and return total failures.
+///
+/// # Arguments
+/// * `results` - vec of [name, passed] pairs (flat: name0, result0, name1, result1, ...)
+///
+/// # Returns
+/// number of failures
+fn test_run_quick_batch(results: i64) -> i64 {
+    let count: i64 = vec_len(results);
+    var failures: i64 = 0;
+    var i: i64 = 0;
+    while i + 1 < count {
+        let name: i64 = vec_get(results, i);
+        let passed: i64 = vec_get(results, i + 1);
+        test_quick(name, passed);
+        if passed != 1 {
+            failures = failures + 1;
+        }
+        i = i + 2;
+    }
+    failures
+}

@@ -1,0 +1,23 @@
+# simplex-sqs - Amazon SQS Client Library
+#
+# Pure Simplex implementation of Amazon Simple Queue Service (SQS) client.
+# Uses AWS HTTP Query API with Signature V4 signing.
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-sqs"
+version = "0.17.0"
+description = "Amazon SQS message queue client for Simplex"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+simplex-aws = { path = "../simplex-aws" }
+
+[features]
+default = ["full"]
+full = []          # Full SQS API support

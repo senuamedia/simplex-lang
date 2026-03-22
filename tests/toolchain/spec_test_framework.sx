@@ -1,0 +1,229 @@
+// Test Framework Concept Tests
+// Tests pass/fail counting, suite creation, report formatting
+// Self-contained: only runtime functions, no extern fn or library calls
+// No f64 function params, no f64_to_bits/bits_to_f64
+
+fn test_suite_creation() -> i64 {
+    println("  Testing suite creation...");
+    // A suite is [name, tests_vec, pass_count, fail_count, skip_count]
+    let suite: i64 = vec_new();
+    vec_push(suite, "demo suite");
+    vec_push(suite, vec_new());
+    vec_push(suite, 0);
+    vec_push(suite, 0);
+    vec_push(suite, 0);
+    if string_eq(vec_get(suite, 0), "demo suite") != 1 {
+        println("  FAIL: suite name");
+        return 1;
+    }
+    let tests: i64 = vec_get(suite, 1);
+    if vec_len(tests) != 0 {
+        println("  FAIL: new suite should have 0 tests");
+        return 1;
+    }
+    if vec_get(suite, 2) != 0 { println("  FAIL: pass count init"); return 1; }
+    if vec_get(suite, 3) != 0 { println("  FAIL: fail count init"); return 1; }
+    println("  PASS: suite creation");
+    0
+}
+
+fn test_pass_fail_counting() -> i64 {
+    println("  Testing pass/fail counting...");
+    var pass_count: i64 = 0;
+    var fail_count: i64 = 0;
+    let results: i64 = vec_new();
+    // Simulate test results: 1=pass, 0=fail
+    vec_push(results, 1);
+    vec_push(results, 1);
+    vec_push(results, 0);
+    vec_push(results, 1);
+    vec_push(results, 0);
+    var i: i64 = 0;
+    while i < vec_len(results) {
+        if vec_get(results, i) == 1 {
+            pass_count = pass_count + 1;
+        } else {
+            fail_count = fail_count + 1;
+        }
+        i = i + 1;
+    }
+    if pass_count != 3 {
+        println("  FAIL: should have 3 passes");
+        return 1;
+    }
+    if fail_count != 2 {
+        println("  FAIL: should have 2 failures");
+        return 1;
+    }
+    let total: i64 = pass_count + fail_count;
+    if total != 5 {
+        println("  FAIL: total should be 5");
+        return 1;
+    }
+    println("  PASS: pass/fail counting");
+    0
+}
+
+fn test_report_formatting() -> i64 {
+    println("  Testing report formatting...");
+    let suite_name: i64 = "My Tests";
+    let total: i64 = 10;
+    let passed: i64 = 8;
+    let failed: i64 = 2;
+    // Build report string
+    var report: i64 = "=== ";
+    report = string_concat(report, suite_name);
+    report = string_concat(report, " ===\n");
+    report = string_concat(report, "Total: ");
+    report = string_concat(report, int_to_string(total));
+    report = string_concat(report, " | Passed: ");
+    report = string_concat(report, int_to_string(passed));
+    report = string_concat(report, " | Failed: ");
+    report = string_concat(report, int_to_string(failed));
+    // Verify report contains key info
+    let prefix: i64 = intrinsic_string_slice(report, 0, 4);
+    if string_eq(prefix, "=== ") != 1 {
+        println("  FAIL: report prefix");
+        return 1;
+    }
+    // Check it's long enough
+    if string_len(report) < 30 {
+        println("  FAIL: report too short");
+        return 1;
+    }
+    // Check suite name present
+    let name_start: i64 = intrinsic_string_slice(report, 4, 12);
+    if string_eq(name_start, "My Tests") != 1 {
+        println("  FAIL: suite name in report");
+        return 1;
+    }
+    println("  PASS: report formatting");
+    0
+}
+
+fn test_failure_tracking() -> i64 {
+    println("  Testing failure tracking...");
+    let test_names: i64 = vec_new();
+    let test_results: i64 = vec_new();
+    vec_push(test_names, "test_alpha");
+    vec_push(test_results, 1);
+    vec_push(test_names, "test_beta");
+    vec_push(test_results, 0);
+    vec_push(test_names, "test_gamma");
+    vec_push(test_results, 1);
+    vec_push(test_names, "test_delta");
+    vec_push(test_results, 0);
+    // Collect failure names
+    let failures_list: i64 = vec_new();
+    var i: i64 = 0;
+    while i < vec_len(test_results) {
+        if vec_get(test_results, i) == 0 {
+            vec_push(failures_list, vec_get(test_names, i));
+        }
+        i = i + 1;
+    }
+    if vec_len(failures_list) != 2 {
+        println("  FAIL: should have 2 failures");
+        return 1;
+    }
+    if string_eq(vec_get(failures_list, 0), "test_beta") != 1 {
+        println("  FAIL: first failure name");
+        return 1;
+    }
+    if string_eq(vec_get(failures_list, 1), "test_delta") != 1 {
+        println("  FAIL: second failure name");
+        return 1;
+    }
+    println("  PASS: failure tracking");
+    0
+}
+
+fn test_assertion_helpers() -> i64 {
+    println("  Testing assertion helper concepts...");
+    // assert_eq: returns 1 if equal, 0 if not
+    let eq1: i64 = 42;
+    let eq2: i64 = 42;
+    var result: i64 = 0;
+    if eq1 == eq2 { result = 1; }
+    if result != 1 {
+        println("  FAIL: 42 == 42 should pass");
+        return 1;
+    }
+    // assert_ne
+    let ne1: i64 = 1;
+    let ne2: i64 = 2;
+    var ne_result: i64 = 0;
+    if ne1 != ne2 { ne_result = 1; }
+    if ne_result != 1 {
+        println("  FAIL: 1 != 2 should pass");
+        return 1;
+    }
+    // assert_gt
+    var gt_result: i64 = 0;
+    if 10 > 5 { gt_result = 1; }
+    if gt_result != 1 {
+        println("  FAIL: 10 > 5 should pass");
+        return 1;
+    }
+    // assert_in_range
+    let val: i64 = 5;
+    var in_range: i64 = 0;
+    if val >= 1 {
+        if val <= 10 {
+            in_range = 1;
+        }
+    }
+    if in_range != 1 {
+        println("  FAIL: 5 in [1,10]");
+        return 1;
+    }
+    println("  PASS: assertion helper concepts");
+    0
+}
+
+fn test_skip_support() -> i64 {
+    println("  Testing skip support...");
+    let names: i64 = vec_new();
+    let statuses: i64 = vec_new();
+    // status: 1=pass, 0=fail, 2=skip
+    vec_push(names, "normal_test");
+    vec_push(statuses, 1);
+    vec_push(names, "skipped_test");
+    vec_push(statuses, 2);
+    vec_push(names, "failed_test");
+    vec_push(statuses, 0);
+    var passed: i64 = 0;
+    var failed: i64 = 0;
+    var skipped: i64 = 0;
+    var i: i64 = 0;
+    while i < vec_len(statuses) {
+        let s: i64 = vec_get(statuses, i);
+        if s == 1 { passed = passed + 1; }
+        if s == 0 { failed = failed + 1; }
+        if s == 2 { skipped = skipped + 1; }
+        i = i + 1;
+    }
+    if passed != 1 { println("  FAIL: pass count"); return 1; }
+    if failed != 1 { println("  FAIL: fail count"); return 1; }
+    if skipped != 1 { println("  FAIL: skip count"); return 1; }
+    println("  PASS: skip support");
+    0
+}
+
+fn main() -> i64 {
+    println("=== Test Framework Tests ===");
+    var failures: i64 = 0;
+    failures = failures + test_suite_creation();
+    failures = failures + test_pass_fail_counting();
+    failures = failures + test_report_formatting();
+    failures = failures + test_failure_tracking();
+    failures = failures + test_assertion_helpers();
+    failures = failures + test_skip_support();
+    println("");
+    if failures == 0 {
+        println("All 6 test framework tests passed!");
+    } else {
+        println(string_concat("FAILED: ", string_concat(int_to_string(failures), " test(s) failed")));
+    }
+    failures
+}

@@ -1,0 +1,65 @@
+use fs;
+
+fn main() -> i64 {
+    println(string_from("=== FS Library Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: path_join
+    let joined: i64 = path_join(string_from("/usr"), string_from("local"));
+    if string_eq(joined, string_from("/usr/local")) != 1 {
+        println(string_from("FAIL: path_join"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: path_join"));
+    }
+
+    // Test 2: path_ext
+    let ext: i64 = path_ext(string_from("/home/user/file.txt"));
+    if string_eq(ext, string_from("txt")) != 1 {
+        println(string_from("FAIL: path_ext should be txt"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: path_ext"));
+    }
+
+    // Test 3: path_parent
+    let parent: i64 = path_parent(string_from("/home/user/file.txt"));
+    if string_eq(parent, string_from("/home/user")) != 1 {
+        println(string_from("FAIL: path_parent"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: path_parent"));
+    }
+
+    // Test 4: path_filename
+    let fname: i64 = path_filename(string_from("/home/user/readme.md"));
+    if string_eq(fname, string_from("readme.md")) != 1 {
+        println(string_from("FAIL: path_filename"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: path_filename"));
+    }
+
+    // Test 5: path_stem
+    let stem: i64 = path_stem(string_from("/data/report.csv"));
+    if string_eq(stem, string_from("report")) != 1 {
+        println(string_from("FAIL: path_stem"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: path_stem"));
+    }
+
+    // Test 6: path_is_absolute
+    let is_abs: i64 = path_is_absolute(string_from("/etc/config"));
+    if is_abs != 1 {
+        println(string_from("FAIL: should be absolute"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: path_is_absolute"));
+    }
+
+    if failures == 0 {
+        println(string_from("All FS tests passed"));
+    }
+    failures
+}

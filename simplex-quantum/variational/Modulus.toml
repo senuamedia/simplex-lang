@@ -6,7 +6,7 @@
 
 [package]
 name = "simplex-quantum-variational"
-version = "0.16.0"
+version = "0.17.0"
 description = "Variational quantum algorithms -- VQE, QAOA, parameter-shift gradients"
 authors = ["Rod Higgins"]
 license = "AGPL-3.0"

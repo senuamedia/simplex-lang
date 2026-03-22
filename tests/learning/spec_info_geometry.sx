@@ -1,0 +1,85 @@
+use info_geometry;
+
+fn main() -> i64 {
+    println(string_from("=== Information Geometry Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: KL divergence of identical distributions should be ~0
+    let p1: i64 = vec_new();
+    vec_push(p1, f64_to_bits(0.25));
+    vec_push(p1, f64_to_bits(0.25));
+    vec_push(p1, f64_to_bits(0.25));
+    vec_push(p1, f64_to_bits(0.25));
+    let kl_self: i64 = kl_divergence(p1, p1, 4);
+    // KL(P,P) should be 0 (bit pattern of 0.0 is 0)
+    if kl_self != f64_to_bits(0.0) {
+        println(string_from("FAIL: KL(P,P) should be 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: KL(P,P) = 0"));
+    }
+
+    // Test 2: KL divergence should be non-negative for different distributions
+    let q1: i64 = vec_new();
+    vec_push(q1, f64_to_bits(0.6));
+    vec_push(q1, f64_to_bits(0.2));
+    vec_push(q1, f64_to_bits(0.1));
+    vec_push(q1, f64_to_bits(0.1));
+    let kl_pq: i64 = kl_divergence(p1, q1, 4);
+    // KL should be > 0 for different distributions (positive f64 bit pattern > 0)
+    if kl_pq <= 0 {
+        println(string_from("FAIL: KL(P,Q) should be > 0 for P != Q"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: KL >= 0 (Gibbs inequality)"));
+    }
+
+    // Test 3: Entropy of uniform should be positive
+    let h: i64 = entropy(p1, 4);
+    // Entropy of uniform(4) = ln(4) > 0
+    if h <= 0 {
+        println(string_from("FAIL: entropy of uniform should be > 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: entropy of uniform distribution"));
+    }
+
+    // Test 4: Fisher diagonal from a gradient
+    let grad: i64 = vec_new();
+    vec_push(grad, f64_to_bits(0.5));
+    vec_push(grad, f64_to_bits(0.0 - 0.3));
+    vec_push(grad, f64_to_bits(0.1));
+    let fisher: i64 = fisher_diagonal(0, grad);
+    // fisher[0] = 0.5^2 = 0.25 (positive bits)
+    if vec_len(fisher) != 3 {
+        println(string_from("FAIL: fisher should have 3 elements"));
+        failures = failures + 1;
+    } else {
+        let f0: i64 = vec_get(fisher, 0);
+        if f0 > 0 {
+            println(string_from("PASS: fisher_diagonal"));
+        } else {
+            println(string_from("FAIL: fisher[0] should be positive"));
+            failures = failures + 1;
+        }
+    }
+
+    // Test 5: Natural gradient step produces output of correct size
+    let params: i64 = vec_new();
+    vec_push(params, f64_to_bits(1.0));
+    vec_push(params, f64_to_bits(2.0));
+    vec_push(params, f64_to_bits(3.0));
+    let damping: i64 = f64_to_bits(0.0001);
+    let nat_grad: i64 = natural_gradient(grad, fisher, damping);
+    if vec_len(nat_grad) != 3 {
+        println(string_from("FAIL: natural gradient should have 3 elements"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: natural_gradient"));
+    }
+
+    if failures == 0 {
+        println(string_from("All information geometry tests passed"));
+    }
+    failures
+}

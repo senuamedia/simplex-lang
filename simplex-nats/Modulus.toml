@@ -11,7 +11,7 @@
 
 [package]
 name = "simplex-nats"
-version = "0.16.0"
+version = "0.17.0"
 description = "NATS messaging client for Simplex - pub/sub, request/reply, queue groups"
 authors = ["Rod Higgins", "Simplex Team"]
 license = "AGPL-3.0"

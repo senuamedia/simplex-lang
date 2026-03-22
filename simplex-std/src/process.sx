@@ -1,0 +1,566 @@
+// simplex-std::process - Process Management
+//
+// Functions for spawning and managing external processes.
+// All values are i64 handles (vec-backed). Strings use string_from().
+//
+// # Running Processes
+//
+// - process_run: run a command synchronously, get [exit_code, stdout, stderr]
+// - process_spawn: spawn an async process
+// - process_wait: wait for a spawned process to complete
+// - process_kill: kill a running process
+//
+// # Environment Variables
+//
+// - process_env_get: get an environment variable
+// - process_env_set: set an environment variable
+// - process_env_unset: unset an environment variable
+// - process_env_all: get all environment variables
+//
+// # Process Info
+//
+// - process_pid: get current process ID
+// - process_cwd: get current working directory
+// - process_chdir: change working directory
+// - process_exit: exit with a code
+//
+// # Example
+//
+// ```simplex
+// fn main() -> i64 {
+//     let args: i64 = vec_new();
+//     vec_push(args, string_from("-la"));
+//     let result: i64 = process_run(string_from("ls"), args);
+//     let exit_code: i64 = vec_get(result, 0);
+//     let stdout: i64 = vec_get(result, 1);
+//     println(stdout);
+//     exit_code
+// }
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Runtime Extern Declarations
+// =============================================================================
+
+extern fn intrinsic_process_spawn(cmd: i64) -> i64;
+extern fn intrinsic_process_wait(pid: i64) -> i64;
+extern fn intrinsic_process_kill(pid: i64) -> i64;
+extern fn intrinsic_env_get(name: i64) -> i64;
+extern fn intrinsic_env_set(name: i64, value: i64) -> i64;
+extern fn intrinsic_env_unset(name: i64) -> i64;
+extern fn intrinsic_getpid() -> i64;
+extern fn intrinsic_cwd() -> i64;
+extern fn intrinsic_chdir(path: i64) -> i64;
+extern fn string_join_vec(v: i64, sep: i64) -> i64;
+
+// =============================================================================
+// Result Field Indices
+// =============================================================================
+
+fn RESULT_EXIT_CODE() -> i64 { 0 }
+fn RESULT_STDOUT() -> i64 { 1 }
+fn RESULT_STDERR() -> i64 { 2 }
+
+// Spawn handle field indices
+fn SPAWN_PID() -> i64 { 0 }
+fn SPAWN_STATUS() -> i64 { 1 }
+
+// Status values
+fn PROC_RUNNING() -> i64 { 0 }
+fn PROC_EXITED() -> i64 { 1 }
+fn PROC_KILLED() -> i64 { 2 }
+fn PROC_ERROR() -> i64 { -1 }
+
+// =============================================================================
+// Synchronous Execution
+// =============================================================================
+
+/// Run a command synchronously and capture output.
+///
+/// Blocks until the command completes. Returns a vec with:
+///   [exit_code, stdout_string, stderr_string]
+///
+/// # Arguments
+/// * `cmd` - i64 string handle for the command
+/// * `args` - i64 vec handle of string handles for arguments
+///
+/// # Returns
+/// i64 vec handle with [exit_code, stdout, stderr]
+fn process_run(cmd: i64, args: i64) -> i64 {
+    let full_cmd: i64 = process_build_command(cmd, args);
+    intrinsic_process_run(full_cmd)
+}
+
+/// Run a command with a string of arguments (shell-style).
+///
+/// # Arguments
+/// * `cmd_line` - i64 string handle for the full command line
+///
+/// # Returns
+/// i64 vec handle with [exit_code, stdout, stderr]
+fn process_run_shell(cmd_line: i64) -> i64 {
+    intrinsic_process_run(cmd_line)
+}
+
+/// Run a command and return only the exit code.
+///
+/// # Arguments
+/// * `cmd` - i64 string handle for the command
+/// * `args` - i64 vec handle of string handles for arguments
+///
+/// # Returns
+/// exit code (i64)
+fn process_run_status(cmd: i64, args: i64) -> i64 {
+    let result: i64 = process_run(cmd, args);
+    if result == 0 {
+        return -1;
+    }
+    vec_get(result, RESULT_EXIT_CODE())
+}
+
+/// Run a command and return stdout as a string.
+///
+/// # Arguments
+/// * `cmd` - i64 string handle for the command
+/// * `args` - i64 vec handle of string handles for arguments
+///
+/// # Returns
+/// i64 string handle for stdout, or 0 on failure
+fn process_run_output(cmd: i64, args: i64) -> i64 {
+    let result: i64 = process_run(cmd, args);
+    if result == 0 {
+        return 0;
+    }
+    vec_get(result, RESULT_STDOUT())
+}
+
+// =============================================================================
+// Asynchronous Execution
+// =============================================================================
+
+/// Spawn a process asynchronously.
+///
+/// Returns immediately with a handle that can be used with process_wait().
+///
+/// # Arguments
+/// * `cmd` - i64 string handle for the command
+/// * `args` - i64 vec handle of string handles for arguments
+///
+/// # Returns
+/// i64 handle to the spawned process, or 0 on failure
+fn process_spawn(cmd: i64, args: i64) -> i64 {
+    let full_cmd: i64 = process_build_command(cmd, args);
+    let pid: i64 = intrinsic_process_spawn(full_cmd);
+    if pid <= 0 {
+        return 0;
+    }
+
+    let handle: i64 = vec_new();
+    vec_push(handle, pid);              // 0: PID
+    vec_push(handle, PROC_RUNNING());   // 1: status
+    handle
+}
+
+/// Wait for a spawned process to complete.
+///
+/// Blocks until the process exits.
+///
+/// # Arguments
+/// * `handle` - i64 handle from process_spawn()
+///
+/// # Returns
+/// i64 vec handle with [exit_code, stdout, stderr]
+fn process_wait(handle: i64) -> i64 {
+    if handle == 0 {
+        return process_error_result(string_from("null handle"));
+    }
+
+    let pid: i64 = vec_get(handle, SPAWN_PID());
+    let result: i64 = intrinsic_process_wait(pid);
+
+    vec_set(handle, SPAWN_STATUS(), PROC_EXITED());
+    result
+}
+
+/// Kill a running process.
+///
+/// # Arguments
+/// * `handle` - i64 handle from process_spawn()
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn process_kill(handle: i64) -> i64 {
+    if handle == 0 {
+        return 0;
+    }
+
+    let pid: i64 = vec_get(handle, SPAWN_PID());
+    let result: i64 = intrinsic_process_kill(pid);
+
+    if result == 1 {
+        vec_set(handle, SPAWN_STATUS(), PROC_KILLED());
+    }
+    result
+}
+
+/// Check if a spawned process is still running.
+///
+/// # Arguments
+/// * `handle` - i64 handle from process_spawn()
+///
+/// # Returns
+/// 1 if running, 0 if exited/killed
+fn process_is_running(handle: i64) -> i64 {
+    if handle == 0 {
+        return 0;
+    }
+    let status: i64 = vec_get(handle, SPAWN_STATUS());
+    if status == PROC_RUNNING() {
+        1
+    } else {
+        0
+    }
+}
+
+/// Get the PID of a spawned process.
+///
+/// # Arguments
+/// * `handle` - i64 handle from process_spawn()
+///
+/// # Returns
+/// process ID (i64)
+fn process_get_pid(handle: i64) -> i64 {
+    if handle == 0 {
+        return -1;
+    }
+    vec_get(handle, SPAWN_PID())
+}
+
+// =============================================================================
+// Environment Variables
+// =============================================================================
+
+/// Get an environment variable.
+///
+/// # Arguments
+/// * `name` - i64 string handle for the variable name
+///
+/// # Returns
+/// i64 string handle for the value, or 0 if not set
+fn process_env_get(name: i64) -> i64 {
+    intrinsic_env_get(name)
+}
+
+/// Set an environment variable.
+///
+/// # Arguments
+/// * `name` - i64 string handle for the variable name
+/// * `value` - i64 string handle for the value
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn process_env_set(name: i64, value: i64) -> i64 {
+    intrinsic_env_set(name, value)
+}
+
+/// Unset an environment variable.
+///
+/// # Arguments
+/// * `name` - i64 string handle for the variable name
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn process_env_unset(name: i64) -> i64 {
+    intrinsic_env_unset(name)
+}
+
+/// Get an environment variable with a default fallback.
+///
+/// # Arguments
+/// * `name` - i64 string handle for the variable name
+/// * `default` - i64 string handle for the default value
+///
+/// # Returns
+/// i64 string handle for the value
+fn process_env_get_or(name: i64, default: i64) -> i64 {
+    let val: i64 = process_env_get(name);
+    if val == 0 {
+        return default;
+    }
+    val
+}
+
+/// Check if an environment variable is set.
+///
+/// # Returns
+/// 1 if set, 0 if not
+fn process_env_has(name: i64) -> i64 {
+    let val: i64 = process_env_get(name);
+    if val == 0 {
+        0
+    } else {
+        1
+    }
+}
+
+// =============================================================================
+// Process Info
+// =============================================================================
+
+/// Get the current process ID.
+///
+/// # Returns
+/// process ID (i64)
+fn process_pid() -> i64 {
+    intrinsic_getpid()
+}
+
+/// Get the current working directory.
+///
+/// # Returns
+/// i64 string handle for the current directory
+fn process_cwd() -> i64 {
+    intrinsic_cwd()
+}
+
+/// Change the current working directory.
+///
+/// # Arguments
+/// * `path` - i64 string handle for the new directory
+///
+/// # Returns
+/// 1 on success, 0 on failure
+fn process_chdir(path: i64) -> i64 {
+    intrinsic_chdir(path)
+}
+
+/// Exit the process with a status code.
+///
+/// This function does not return.
+///
+/// # Arguments
+/// * `code` - exit code (0 = success)
+fn process_exit(code: i64) -> i64 {
+    exit(code);
+    0 // unreachable
+}
+
+// =============================================================================
+// Command Argument Helpers
+// =============================================================================
+
+/// Build a full command line from a command and argument vec.
+///
+/// # Arguments
+/// * `cmd` - i64 string handle for the command
+/// * `args` - i64 vec handle of string handles
+///
+/// # Returns
+/// i64 string handle for the full command line
+fn process_build_command(cmd: i64, args: i64) -> i64 {
+    let parts: i64 = vec_new();
+    vec_push(parts, cmd);
+
+    let count: i64 = vec_len(args);
+    var i: i64 = 0;
+    while i < count {
+        let arg: i64 = vec_get(args, i);
+        vec_push(parts, arg);
+        i = i + 1;
+    }
+
+    string_join_vec(parts, string_from(" "))
+}
+
+/// Create an argument vector from individual string handles.
+///
+/// Convenience function for building arg vecs without manual vec_push.
+///
+/// # Arguments
+/// * `a1` through `a4` - string handles (pass 0 to skip)
+///
+/// # Returns
+/// i64 vec handle of arguments
+fn process_args1(a1: i64) -> i64 {
+    let args: i64 = vec_new();
+    if a1 != 0 { vec_push(args, a1); }
+    args
+}
+
+fn process_args2(a1: i64, a2: i64) -> i64 {
+    let args: i64 = vec_new();
+    if a1 != 0 { vec_push(args, a1); }
+    if a2 != 0 { vec_push(args, a2); }
+    args
+}
+
+fn process_args3(a1: i64, a2: i64, a3: i64) -> i64 {
+    let args: i64 = vec_new();
+    if a1 != 0 { vec_push(args, a1); }
+    if a2 != 0 { vec_push(args, a2); }
+    if a3 != 0 { vec_push(args, a3); }
+    args
+}
+
+fn process_args4(a1: i64, a2: i64, a3: i64, a4: i64) -> i64 {
+    let args: i64 = vec_new();
+    if a1 != 0 { vec_push(args, a1); }
+    if a2 != 0 { vec_push(args, a2); }
+    if a3 != 0 { vec_push(args, a3); }
+    if a4 != 0 { vec_push(args, a4); }
+    args
+}
+
+// =============================================================================
+// Pipeline Support
+// =============================================================================
+
+/// Run a pipeline of commands where each command's stdout feeds the next's stdin.
+///
+/// # Arguments
+/// * `commands` - vec of command-line string handles
+///
+/// # Returns
+/// vec handle with [exit_code, final_stdout, final_stderr]
+fn process_pipeline(commands: i64) -> i64 {
+    let count: i64 = vec_len(commands);
+    if count == 0 {
+        return process_error_result(string_from("empty pipeline"));
+    }
+
+    // For a single command, just run it
+    if count == 1 {
+        let cmd: i64 = vec_get(commands, 0);
+        return intrinsic_process_run(cmd);
+    }
+
+    // Build piped command string
+    let piped: i64 = string_join_vec(commands, string_from(" | "));
+    intrinsic_process_run(piped)
+}
+
+// =============================================================================
+// Error Helpers
+// =============================================================================
+
+/// Create an error result vec.
+///
+/// # Arguments
+/// * `msg` - error message string handle
+///
+/// # Returns
+/// vec [exit_code=-1, stdout="", stderr=msg]
+fn process_error_result(msg: i64) -> i64 {
+    let result: i64 = vec_new();
+    vec_push(result, -1);
+    vec_push(result, string_from(""));
+    vec_push(result, msg);
+    result
+}
+
+/// Check if a process result indicates success.
+///
+/// # Arguments
+/// * `result` - vec from process_run()
+///
+/// # Returns
+/// 1 if exit_code == 0, 0 otherwise
+fn process_result_ok(result: i64) -> i64 {
+    if result == 0 {
+        return 0;
+    }
+    let code: i64 = vec_get(result, RESULT_EXIT_CODE());
+    if code == 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// Get stdout from a process result.
+fn process_result_stdout(result: i64) -> i64 {
+    if result == 0 {
+        return string_from("");
+    }
+    vec_get(result, RESULT_STDOUT())
+}
+
+/// Get stderr from a process result.
+fn process_result_stderr(result: i64) -> i64 {
+    if result == 0 {
+        return string_from("");
+    }
+    vec_get(result, RESULT_STDERR())
+}
+
+/// Get exit code from a process result.
+fn process_result_code(result: i64) -> i64 {
+    if result == 0 {
+        return -1;
+    }
+    vec_get(result, RESULT_EXIT_CODE())
+}
+
+// =============================================================================
+// Convenience: Run and Check
+// =============================================================================
+
+/// Run a command and assert it succeeds (exit code 0).
+///
+/// Prints stderr if the command fails.
+///
+/// # Arguments
+/// * `cmd` - i64 string handle for the command
+/// * `args` - i64 vec handle of string handles
+///
+/// # Returns
+/// stdout string handle on success, 0 on failure
+fn process_run_checked(cmd: i64, args: i64) -> i64 {
+    let result: i64 = process_run(cmd, args);
+    if result == 0 {
+        println(string_from("ERROR: process_run returned null"));
+        return 0;
+    }
+
+    let code: i64 = vec_get(result, RESULT_EXIT_CODE());
+    if code != 0 {
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("ERROR: command '"));
+        vec_push(parts, cmd);
+        vec_push(parts, string_from("' failed with exit code "));
+        vec_push(parts, int_to_string(code));
+        println(string_join_vec(parts, string_from("")));
+
+        let stderr: i64 = vec_get(result, RESULT_STDERR());
+        if string_len(stderr) > 0 {
+            println(string_from("stderr:"));
+            println(stderr);
+        }
+        return 0;
+    }
+
+    vec_get(result, RESULT_STDOUT())
+}
+
+/// Run a shell command and return trimmed stdout.
+///
+/// # Arguments
+/// * `cmd_line` - full command line string handle
+///
+/// # Returns
+/// trimmed stdout string handle, or 0 on failure
+fn process_shell_output(cmd_line: i64) -> i64 {
+    let result: i64 = intrinsic_process_run(cmd_line);
+    if result == 0 {
+        return 0;
+    }
+    let code: i64 = vec_get(result, RESULT_EXIT_CODE());
+    if code != 0 {
+        return 0;
+    }
+    let stdout: i64 = vec_get(result, RESULT_STDOUT());
+    string_trim(stdout)
+}

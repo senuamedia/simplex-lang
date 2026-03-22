@@ -213,7 +213,7 @@ hive MyHive {
 sxpm model install simplex-cognitive-7b
 ```
 
-3. **Use shared consciousness**:
+3. **Use shared memory**:
 ```simplex
 // Contribute to shared memory
 hive.mnemonic.learn("Fact discovered by specialist")
@@ -294,7 +294,7 @@ Thanks to all contributors who made v0.5.0 possible!
 
 ---
 
-*"Many minds, one model, shared consciousness."*
+*"Many specialists, one model, shared context."*
 
 ---
 

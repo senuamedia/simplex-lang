@@ -19,7 +19,3 @@
 // Copyright (c) 2025-2026 Rod Higgins
 // Licensed under AGPL-3.0
 
-fn main() -> i64 {
-    println(string_from("quantum module index"));
-    0
-}

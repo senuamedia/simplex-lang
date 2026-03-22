@@ -28,33 +28,10 @@
 // Copyright (c) 2025-2026 Rod Higgins
 // Licensed under AGPL-3.0
 
-// =============================================================================
-// Runtime Extern Declarations
-// =============================================================================
-
-extern fn vec_new() -> i64;
-extern fn vec_push(v: i64, val: i64) -> i64;
-extern fn vec_get(v: i64, idx: i64) -> i64;
-extern fn vec_set(v: i64, idx: i64, val: i64) -> i64;
-extern fn vec_len(v: i64) -> i64;
-
-extern fn string_concat(a: i64, b: i64) -> i64;
-extern fn string_length(s: i64) -> i64;
-extern fn string_char_at(s: i64, idx: i64) -> i64;
-extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
-extern fn string_from_char(c: i64) -> i64;
-extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
-extern fn string_find(s: i64, needle: i64, start: i64) -> i64;
-extern fn string_trim(s: i64) -> i64;
-extern fn string_starts_with(s: i64, prefix: i64) -> i64;
-
-extern fn sb_new() -> i64;
-extern fn sb_append(sb: i64, s: i64);
-extern fn sb_append_char(sb: i64, c: i64);
-extern fn sb_to_string(sb: i64) -> i64;
-
-extern fn println(s: i64);
-extern fn int_to_string(n: i64) -> i64;
+// Wrapper for string_substring using built-in intrinsic_string_slice
+fn xml_substr(s: i64, start: i64, length: i64) -> i64 {
+    intrinsic_string_slice(s, start, start + length)
+}
 
 // =============================================================================
 // Node Type Constants
@@ -205,6 +182,7 @@ pub fn xml_child_at(element: i64, index: i64) -> i64 {
 
 /// Get the text content of a node (text/CDATA content, or concatenated text of element children)
 pub fn xml_text(node: i64) -> i64 {
+    var i: i64 = 0;
     let ntype: i64 = xml_node_type(node);
     if ntype == NODE_TEXT() {
         return vec_get(node, 1);
@@ -216,7 +194,7 @@ pub fn xml_text(node: i64) -> i64 {
         let sb: i64 = sb_new();
         let children: i64 = vec_get(node, ELEM_CHILDREN());
         let count: i64 = vec_len(children);
-        var i: i64 = 0;
+        i = 0;
         while i < count {
             let child: i64 = vec_get(children, i);
             let ct: i64 = xml_node_type(child);
@@ -260,7 +238,7 @@ pub fn xml_get_attr(element: i64, name: i64) -> i64 {
     while i < count {
         let pair: i64 = vec_get(attrs, i);
         let attr_name: i64 = vec_get(pair, 0);
-        if intrinsic_string_eq(attr_name, name) == 1 {
+        if string_eq(attr_name, name) == 1 {
             return vec_get(pair, 1);
         }
         i = i + 1;
@@ -276,7 +254,7 @@ pub fn xml_has_attr(element: i64, name: i64) -> i64 {
     var i: i64 = 0;
     while i < count {
         let pair: i64 = vec_get(attrs, i);
-        if intrinsic_string_eq(vec_get(pair, 0), name) == 1 {
+        if string_eq(vec_get(pair, 0), name) == 1 {
             return 1;
         }
         i = i + 1;
@@ -294,7 +272,7 @@ pub fn xml_set_attr(element: i64, name: i64, value: i64) -> i64 {
     var i: i64 = 0;
     while i < count {
         let pair: i64 = vec_get(attrs, i);
-        if intrinsic_string_eq(vec_get(pair, 0), name) == 1 {
+        if string_eq(vec_get(pair, 0), name) == 1 {
             vec_set(pair, 1, value);
             return element;
         }
@@ -319,7 +297,7 @@ pub fn xml_remove_attr(element: i64, name: i64) -> i64 {
     var i: i64 = 0;
     while i < count {
         let pair: i64 = vec_get(attrs, i);
-        if intrinsic_string_eq(vec_get(pair, 0), name) == 0 {
+        if string_eq(vec_get(pair, 0), name) == 0 {
             vec_push(new_attrs, pair);
         }
         i = i + 1;
@@ -352,7 +330,7 @@ pub fn xml_add_text(parent: i64, text: i64) -> i64 {
 
 /// Decode XML entity references in a string
 fn xml_decode_entities(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = 0;
 
@@ -381,7 +359,7 @@ fn xml_decode_entities(s: i64) -> i64 {
 /// Parse a single entity reference starting at &
 /// Returns vec: [decoded_char, end_position]
 fn parse_entity(s: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let result: i64 = vec_new();
 
     // Find the semicolon
@@ -407,40 +385,40 @@ fn parse_entity(s: i64, start: i64) -> i64 {
 
     // Extract entity name
     let name_len: i64 = i - start - 1;
-    let entity_name: i64 = string_substring(s, start + 1, name_len);
+    let entity_name: i64 = xml_substr(s, start + 1, name_len);
 
     // Match known entities
-    if intrinsic_string_eq(entity_name, "amp") == 1 {
+    if string_eq(entity_name, "amp") == 1 {
         vec_push(result, CH_AMP());
         vec_push(result, i + 1);
         return result;
     }
-    if intrinsic_string_eq(entity_name, "lt") == 1 {
+    if string_eq(entity_name, "lt") == 1 {
         vec_push(result, CH_LT());
         vec_push(result, i + 1);
         return result;
     }
-    if intrinsic_string_eq(entity_name, "gt") == 1 {
+    if string_eq(entity_name, "gt") == 1 {
         vec_push(result, CH_GT());
         vec_push(result, i + 1);
         return result;
     }
-    if intrinsic_string_eq(entity_name, "quot") == 1 {
+    if string_eq(entity_name, "quot") == 1 {
         vec_push(result, CH_DQUOTE());
         vec_push(result, i + 1);
         return result;
     }
-    if intrinsic_string_eq(entity_name, "apos") == 1 {
+    if string_eq(entity_name, "apos") == 1 {
         vec_push(result, CH_SQUOTE());
         vec_push(result, i + 1);
         return result;
     }
 
     // Numeric character reference &#NNN; or &#xHHH;
-    if string_length(entity_name) > 0 {
-        if string_char_at(entity_name, 0) == CH_HASH() {
-            let num_str: i64 = string_substring(entity_name, 1, string_length(entity_name) - 1);
-            if string_length(num_str) > 0 {
+    if string_len(entity_name) > 0 {
+        if string_char_at(entity_name, 0) == 35 {
+            let num_str: i64 = xml_substr(entity_name, 1, string_len(entity_name) - 1);
+            if string_len(num_str) > 0 {
                 // Simple decimal parsing
                 if string_char_at(num_str, 0) == 120 {
                     // hex: &#xHH; - simplified, just pass through
@@ -466,7 +444,7 @@ fn parse_entity(s: i64, start: i64) -> i64 {
 
 /// Parse a decimal integer string
 fn parse_decimal(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var result: i64 = 0;
     var i: i64 = 0;
     while i < len {
@@ -487,7 +465,7 @@ fn parse_decimal(s: i64) -> i64 {
 
 /// Encode special characters as XML entity references
 fn xml_encode_entities(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = 0;
     while i < len {
@@ -530,7 +508,7 @@ fn is_ws(c: i64) -> i64 {
 
 /// Skip whitespace starting at position
 fn skip_ws(s: i64, pos: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = pos;
     while i < len {
         if is_ws(string_char_at(s, i)) == 0 {
@@ -565,7 +543,7 @@ fn is_name_char(c: i64) -> i64 {
 /// Parse an XML name (tag name or attribute name)
 /// Returns vec: [name_string, end_position]
 fn parse_name(s: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = start;
 
@@ -588,7 +566,7 @@ fn parse_name(s: i64, start: i64) -> i64 {
 /// Parse an attribute value (quoted string after =)
 /// Returns vec: [value_string, end_position]
 fn parse_attr_value(s: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = start;
 
     if i >= len {
@@ -636,7 +614,7 @@ fn parse_attr_value(s: i64, start: i64) -> i64 {
 /// Returns vec: [attrs_vec, end_position]
 fn parse_attributes(s: i64, start: i64) -> i64 {
     let attrs: i64 = vec_new();
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = start;
 
     var done: i64 = 0;
@@ -658,7 +636,7 @@ fn parse_attributes(s: i64, start: i64) -> i64 {
                 let attr_name: i64 = vec_get(name_result, 0);
                 i = vec_get(name_result, 1);
 
-                if string_length(attr_name) == 0 {
+                if string_len(attr_name) == 0 {
                     done = 1;
                 } else {
                     i = skip_ws(s, i);
@@ -700,7 +678,7 @@ fn parse_attributes(s: i64, start: i64) -> i64 {
 /// Parse text content between tags
 /// Returns vec: [text_string, end_position]
 fn parse_text_content(s: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = start;
 
@@ -725,7 +703,7 @@ fn parse_text_content(s: i64, start: i64) -> i64 {
 /// Start is positioned after '<![CDATA['
 /// Returns vec: [text_string, end_position]
 fn parse_cdata_content(s: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = start;
 
@@ -757,7 +735,7 @@ fn parse_cdata_content(s: i64, start: i64) -> i64 {
 /// Start is positioned after '<!--'
 /// Returns vec: [text_string, end_position]
 fn parse_comment_content(s: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     let sb: i64 = sb_new();
     var i: i64 = start;
 
@@ -788,8 +766,14 @@ fn parse_comment_content(s: i64, start: i64) -> i64 {
 /// Parse a single XML node (element, text, comment, CDATA, or PI)
 /// Returns vec: [node, end_position]
 fn parse_node(s: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var i: i64 = skip_ws(s, start);
+    var di: i64 = 0;
+    var pi: i64 = 0;
+    var pos: i64 = 0;
+    var self_closing: i64 = 0;
+    var child_done: i64 = 0;
+    var ci: i64 = 0;
 
     if i >= len {
         let result: i64 = vec_new();
@@ -808,7 +792,7 @@ fn parse_node(s: i64, start: i64) -> i64 {
 
         // Only create text node if non-empty after trimming
         let trimmed: i64 = string_trim(text_str);
-        if string_length(trimmed) > 0 {
+        if string_len(trimmed) > 0 {
             let text_node: i64 = xml_text_new(text_str);
             let result: i64 = vec_new();
             vec_push(result, text_node);
@@ -863,8 +847,8 @@ fn parse_node(s: i64, start: i64) -> i64 {
 
         // CDATA <![CDATA[...]]>
         if after_lt + 7 < len {
-            let check_cdata: i64 = string_substring(s, after_lt, 8);
-            if intrinsic_string_eq(check_cdata, "![CDATA[") == 1 {
+            let check_cdata: i64 = xml_substr(s, after_lt, 8);
+            if string_eq(check_cdata, "![CDATA[") == 1 {
                 let cdata_result: i64 = parse_cdata_content(s, after_lt + 8);
                 let cdata_text: i64 = vec_get(cdata_result, 0);
                 let cdata_end: i64 = vec_get(cdata_result, 1);
@@ -877,7 +861,7 @@ fn parse_node(s: i64, start: i64) -> i64 {
         }
 
         // DOCTYPE or other declaration - skip to >
-        var di: i64 = after_lt;
+        di = after_lt;
         while di < len {
             if string_char_at(s, di) == CH_GT() {
                 di = di + 1;
@@ -893,7 +877,7 @@ fn parse_node(s: i64, start: i64) -> i64 {
 
     // Processing instruction <?...?>
     if nc == CH_QUESTION() {
-        var pi: i64 = after_lt;
+        pi = after_lt;
         while pi < len {
             if string_char_at(s, pi) == CH_QUESTION() {
                 if pi + 1 < len {
@@ -914,9 +898,9 @@ fn parse_node(s: i64, start: i64) -> i64 {
     // Opening tag <name attrs...>
     let name_result: i64 = parse_name(s, after_lt);
     let tag_name: i64 = vec_get(name_result, 0);
-    var pos: i64 = vec_get(name_result, 1);
+    pos = vec_get(name_result, 1);
 
-    if string_length(tag_name) == 0 {
+    if string_len(tag_name) == 0 {
         // Invalid tag
         let result: i64 = vec_new();
         vec_push(result, 0);
@@ -932,7 +916,7 @@ fn parse_node(s: i64, start: i64) -> i64 {
     pos = skip_ws(s, pos);
 
     // Check for self-closing tag />
-    var self_closing: i64 = 0;
+    self_closing = 0;
     if pos < len {
         if string_char_at(s, pos) == CH_SLASH() {
             self_closing = 1;
@@ -963,7 +947,7 @@ fn parse_node(s: i64, start: i64) -> i64 {
 
     // Parse children until closing tag
     let children: i64 = vec_get(element, ELEM_CHILDREN());
-    var child_done: i64 = 0;
+    child_done = 0;
     while child_done == 0 {
         if pos >= len {
             child_done = 1;
@@ -975,7 +959,7 @@ fn parse_node(s: i64, start: i64) -> i64 {
                 let text_result: i64 = parse_text_content(s, pos);
                 let text_str: i64 = vec_get(text_result, 0);
                 pos = vec_get(text_result, 1);
-                if string_length(text_str) > 0 {
+                if string_len(text_str) > 0 {
                     vec_push(children, xml_text_new(text_str));
                 }
             } else {
@@ -984,7 +968,7 @@ fn parse_node(s: i64, start: i64) -> i64 {
                 if next_pos < len {
                     if string_char_at(s, next_pos) == CH_SLASH() {
                         // Closing tag - skip it
-                        var ci: i64 = next_pos + 1;
+                        ci = next_pos + 1;
                         while ci < len {
                             if string_char_at(s, ci) == CH_GT() {
                                 ci = ci + 1;
@@ -1040,10 +1024,12 @@ fn parse_node(s: i64, start: i64) -> i64 {
 /// let tag = xml_tag(doc);  // "root"
 /// ```
 pub fn xml_parse(input: i64) -> i64 {
-    let len: i64 = string_length(input);
+    let len: i64 = string_len(input);
     if len == 0 { return 0; }
 
     var pos: i64 = 0;
+    var pi: i64 = 0;
+    var di: i64 = 0;
 
     // Skip leading whitespace and XML declaration/DTD
     var done_skipping: i64 = 0;
@@ -1059,7 +1045,7 @@ pub fn xml_parse(input: i64) -> i64 {
                 let nc: i64 = string_char_at(input, next);
                 if nc == CH_QUESTION() {
                     // PI: skip to ?>
-                    var pi: i64 = next;
+                    pi = next;
                     while pi < len {
                         if string_char_at(input, pi) == CH_QUESTION() {
                             if pi + 1 < len {
@@ -1081,7 +1067,7 @@ pub fn xml_parse(input: i64) -> i64 {
                             pos = vec_get(cr, 1);
                         } else {
                             // DOCTYPE - skip to >
-                            var di: i64 = next;
+                            di = next;
                             while di < len {
                                 if string_char_at(input, di) == CH_GT() {
                                     di = di + 1;
@@ -1141,6 +1127,9 @@ pub fn xml_stringify_pretty(node: i64, indent: i64) -> i64 {
 
 /// Internal: serialize a node
 fn xml_serialize_node(sb: i64, node: i64, depth: i64, indent: i64) -> i64 {
+    var ai: i64 = 0;
+    var text_only: i64 = 0;
+    var ci: i64 = 0;
     if node == 0 { return 0; }
     let ntype: i64 = xml_node_type(node);
 
@@ -1188,7 +1177,7 @@ fn xml_serialize_node(sb: i64, node: i64, depth: i64, indent: i64) -> i64 {
         sb_append(sb, tag);
 
         // Attributes
-        var ai: i64 = 0;
+        ai = 0;
         while ai < attr_count {
             sb_append_char(sb, CH_SPACE());
             let pair: i64 = vec_get(attrs, ai);
@@ -1214,8 +1203,8 @@ fn xml_serialize_node(sb: i64, node: i64, depth: i64, indent: i64) -> i64 {
         sb_append_char(sb, CH_GT());
 
         // Check if children are text-only
-        var text_only: i64 = 1;
-        var ci: i64 = 0;
+        text_only = 1;
+        ci = 0;
         while ci < child_count {
             let child: i64 = vec_get(children, ci);
             let ct: i64 = xml_node_type(child);
@@ -1302,21 +1291,21 @@ pub fn xml_find(node: i64, path: i64) -> i64 {
 /// Split a path on '/' characters
 fn split_path(path: i64) -> i64 {
     let parts: i64 = vec_new();
-    let len: i64 = string_length(path);
+    let len: i64 = string_len(path);
     var start: i64 = 0;
     var i: i64 = 0;
 
     while i < len {
         if string_char_at(path, i) == CH_SLASH() {
             if i > start {
-                vec_push(parts, string_substring(path, start, i - start));
+                vec_push(parts, xml_substr(path, start, i - start));
             }
             start = i + 1;
         }
         i = i + 1;
     }
     if start < len {
-        vec_push(parts, string_substring(path, start, len - start));
+        vec_push(parts, xml_substr(path, start, len - start));
     }
     parts
 }
@@ -1334,11 +1323,17 @@ fn xml_find_recursive(node: i64, parts: i64, part_idx: i64) -> i64 {
         let child: i64 = vec_get(children, i);
         if xml_is_element(child) == 1 {
             let child_tag: i64 = xml_tag(child);
-            if intrinsic_string_eq(child_tag, target) == 1 {
+            if string_eq(child_tag, target) == 1 {
                 if part_idx + 1 >= vec_len(parts) {
                     return child;
                 }
                 let found: i64 = xml_find_recursive(child, parts, part_idx + 1);
+                if found != 0 {
+                    return found;
+                }
+            } else {
+                // Recurse into non-matching children to search deeper
+                let found: i64 = xml_find_recursive(child, parts, part_idx);
                 if found != 0 {
                     return found;
                 }
@@ -1373,7 +1368,7 @@ fn xml_find_all_recursive(node: i64, tag: i64, results: i64) -> i64 {
     while i < count {
         let child: i64 = vec_get(children, i);
         if xml_is_element(child) == 1 {
-            if intrinsic_string_eq(xml_tag(child), tag) == 1 {
+            if string_eq(xml_tag(child), tag) == 1 {
                 vec_push(results, child);
             }
             xml_find_all_recursive(child, tag, results);
@@ -1392,7 +1387,7 @@ pub fn xml_first_child(element: i64, tag: i64) -> i64 {
     while i < count {
         let child: i64 = vec_get(children, i);
         if xml_is_element(child) == 1 {
-            if intrinsic_string_eq(xml_tag(child), tag) == 1 {
+            if string_eq(xml_tag(child), tag) == 1 {
                 return child;
             }
         }

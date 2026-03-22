@@ -1,0 +1,159 @@
+// Kafka Wire Protocol Integration Tests
+// Tests real functions from simplex-kafka/src/protocol.sx via use import
+
+use protocol;
+
+fn test_buf_operations() -> i64 {
+    println("  Testing buf_new/buf_put_byte/buf_get/buf_len...");
+    let b: i64 = buf_new();
+    buf_put_byte(b, 72);
+    buf_put_byte(b, 101);
+    buf_put_byte(b, 108);
+    if buf_len(b) != 3 {
+        println("  FAIL: buf length should be 3");
+        return 1;
+    }
+    if buf_get(b, 0) != 72 {
+        println("  FAIL: first byte should be 72 (H)");
+        return 1;
+    }
+    let s: i64 = buf_get_string(b, 0, 3);
+    if string_eq(s, "Hel") != 1 {
+        println("  FAIL: buf_get_string");
+        return 1;
+    }
+    println("  PASS: buf operations");
+    0
+}
+
+fn test_i16_encoding() -> i64 {
+    println("  Testing kafka_encode_i16/kafka_decode_i16...");
+    let b: i64 = buf_new();
+    kafka_encode_i16(b, 256);
+    let r: i64 = kafka_decode_i16(b, 0);
+    if vec_get(r, 0) != 256 {
+        println("  FAIL: decode 256");
+        return 1;
+    }
+    if vec_get(r, 1) != 2 {
+        println("  FAIL: offset should advance to 2");
+        return 1;
+    }
+    let b2: i64 = buf_new();
+    kafka_encode_i16(b2, 0 - 1);
+    let r2: i64 = kafka_decode_i16(b2, 0);
+    if vec_get(r2, 0) != 0 - 1 {
+        println("  FAIL: decode -1");
+        return 1;
+    }
+    println("  PASS: i16 encoding");
+    0
+}
+
+fn test_i32_encoding() -> i64 {
+    println("  Testing kafka_encode_i32/kafka_decode_i32...");
+    let b: i64 = buf_new();
+    kafka_encode_i32(b, 305419896);
+    let r: i64 = kafka_decode_i32(b, 0);
+    if vec_get(r, 0) != 305419896 {
+        println("  FAIL: decode 305419896");
+        return 1;
+    }
+    let b2: i64 = buf_new();
+    kafka_encode_i32(b2, 0 - 1);
+    let r2: i64 = kafka_decode_i32(b2, 0);
+    if vec_get(r2, 0) != 0 - 1 {
+        println("  FAIL: decode -1");
+        return 1;
+    }
+    println("  PASS: i32 encoding");
+    0
+}
+
+fn test_zigzag() -> i64 {
+    println("  Testing zigzag_encode/zigzag_decode...");
+    if zigzag_encode(0) != 0 { println("  FAIL: zz(0)"); return 1; }
+    if zigzag_encode(0 - 1) != 1 { println("  FAIL: zz(-1)"); return 1; }
+    if zigzag_encode(1) != 2 { println("  FAIL: zz(1)"); return 1; }
+    if zigzag_encode(0 - 2) != 3 { println("  FAIL: zz(-2)"); return 1; }
+    if zigzag_decode(0) != 0 { println("  FAIL: zd(0)"); return 1; }
+    if zigzag_decode(1) != 0 - 1 { println("  FAIL: zd(1)"); return 1; }
+    if zigzag_decode(2) != 1 { println("  FAIL: zd(2)"); return 1; }
+    // Roundtrip range
+    var n: i64 = 0 - 50;
+    while n <= 50 {
+        if zigzag_decode(zigzag_encode(n)) != n {
+            println("  FAIL: roundtrip");
+            return 1;
+        }
+        n = n + 1;
+    }
+    println("  PASS: zigzag");
+    0
+}
+
+fn test_request_header_and_framing() -> i64 {
+    println("  Testing kafka_request_header/kafka_frame_request...");
+    let hdr: i64 = kafka_request_header(0, 1, 42, "simplex-client");
+    // Header: api_key(2) + api_version(2) + corr_id(4) + string(2+14) = 24 bytes
+    if buf_len(hdr) < 20 {
+        println("  FAIL: header too short");
+        return 1;
+    }
+    // Decode api_key from header
+    let ak: i64 = kafka_decode_i16(hdr, 0);
+    if vec_get(ak, 0) != 0 {
+        println("  FAIL: api_key should be 0 (Produce)");
+        return 1;
+    }
+    // Frame it
+    let framed: i64 = kafka_frame_request(hdr);
+    let size_r: i64 = kafka_decode_i32(framed, 0);
+    let msg_size: i64 = vec_get(size_r, 0);
+    if msg_size != buf_len(hdr) {
+        println("  FAIL: frame size should equal header length");
+        return 1;
+    }
+    println("  PASS: request header and framing");
+    0
+}
+
+fn test_kafka_string_encoding() -> i64 {
+    println("  Testing kafka_encode_string/kafka_decode_string...");
+    let b: i64 = buf_new();
+    kafka_encode_string(b, "hello");
+    let r: i64 = kafka_decode_string(b, 0);
+    let s: i64 = vec_get(r, 0);
+    if string_eq(s, "hello") != 1 {
+        println("  FAIL: string roundtrip");
+        return 1;
+    }
+    // Null string
+    let b2: i64 = buf_new();
+    kafka_encode_string(b2, 0);
+    let r2: i64 = kafka_decode_string(b2, 0);
+    if vec_get(r2, 0) != 0 {
+        println("  FAIL: null string decode");
+        return 1;
+    }
+    println("  PASS: string encoding");
+    0
+}
+
+fn main() -> i64 {
+    println("=== Kafka Wire Protocol Integration Tests ===");
+    var failures: i64 = 0;
+    failures = failures + test_buf_operations();
+    failures = failures + test_i16_encoding();
+    failures = failures + test_i32_encoding();
+    failures = failures + test_zigzag();
+    failures = failures + test_request_header_and_framing();
+    failures = failures + test_kafka_string_encoding();
+    println("");
+    if failures == 0 {
+        println("All 6 Kafka integration tests passed!");
+    } else {
+        println(string_concat("FAILED: ", string_concat(int_to_string(failures), " test(s) failed")));
+    }
+    failures
+}

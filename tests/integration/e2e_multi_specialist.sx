@@ -44,11 +44,9 @@ fn router_route(router: i64, query: i64) -> i64;
 fn router_close(router: i64);
 
 fn vec_len(v: i64) -> i64;
-fn string_from(s: i64) -> i64;
 fn string_contains(s: i64, substr: i64) -> i64;
 fn print(s: i64);
 fn println(s: i64);
-fn print_i64(n: i64);
 fn print_string(s: i64);
 
 fn main() {

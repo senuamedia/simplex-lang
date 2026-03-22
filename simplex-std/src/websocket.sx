@@ -48,18 +48,6 @@ extern fn tcp_recv(conn: i64, max_len: i64) -> i64;
 /// TCP close connection
 extern fn tcp_close(conn: i64) -> i64;
 
-/// Create a new byte vec, returns handle
-extern fn vec_new() -> i64;
-
-/// Push a byte onto a vec
-extern fn vec_push(v: i64, byte: i64) -> i64;
-
-/// Get byte at index from vec
-extern fn vec_get(v: i64, idx: i64) -> i64;
-
-/// Get length of vec
-extern fn vec_len(v: i64) -> i64;
-
 /// Concatenate two vecs
 extern fn vec_concat(a: i64, b: i64) -> i64;
 
@@ -71,18 +59,6 @@ extern fn string_to_bytes(s: i64) -> i64;
 
 /// Bytes vec to string
 extern fn bytes_to_string(v: i64) -> i64;
-
-/// String concatenation
-extern fn string_concat(a: i64, b: i64) -> i64;
-
-/// String length
-extern fn string_length(s: i64) -> i64;
-
-/// String equality check
-extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
-
-/// Get substring
-extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
 
 /// SHA-1 hash (needed for WebSocket handshake accept key)
 extern fn sha1_hash(data: i64) -> i64;
@@ -96,14 +72,10 @@ extern fn base64_decode(s: i64) -> i64;
 /// Generate random bytes, returns vec handle
 extern fn random_bytes(count: i64) -> i64;
 
-/// Convert i64 to string
-extern fn i64_to_string(n: i64) -> i64;
-
-/// Result wrapping
-extern fn result_ok(val: i64) -> i64;
-extern fn result_err(val: i64) -> i64;
-extern fn result_is_ok(r: i64) -> i64;
-extern fn result_unwrap(r: i64) -> i64;
+// Wrapper for string_substring using built-in intrinsic_string_slice
+fn ws_substr(s: i64, start: i64, length: i64) -> i64 {
+    intrinsic_string_slice(s, start, start + length)
+}
 
 // =============================================================================
 // WebSocket Opcode Constants
@@ -692,17 +664,17 @@ fn ws_parse_client_key(request: i64) -> i64 {
     var i: i64 = 0;
     while i < req_len - header_len {
         // Check if this position matches the header name
-        var match: i64 = 1;
+        var matched: i64 = 1;
         var j: i64 = 0;
         while j < header_len {
             if vec_get(req_bytes, i + j) != vec_get(header_bytes, j) {
-                match = 0;
+                matched = 0;
                 j = header_len; // break
             }
             j = j + 1;
         }
 
-        if match == 1 {
+        if matched == 1 {
             // Found header, extract value until CR or LF
             let value_start: i64 = i + header_len;
             var value_end: i64 = value_start;
@@ -746,7 +718,7 @@ fn ws_parse_client_key(request: i64) -> i64 {
 ///
 /// # Returns
 /// Connection descriptor (packed i64), or 0 on failure
-fn ws_connect(url: i64, headers: i64) -> i64 {
+fn ws_client_connect(url: i64, headers: i64) -> i64 {
     // Parse URL: extract host, port, path
     let parsed: i64 = ws_parse_url(url);
     if parsed == 0 {
@@ -780,8 +752,8 @@ fn ws_connect(url: i64, headers: i64) -> i64 {
 
     // Validate 101 status (simplified check)
     let resp_str: i64 = bytes_to_string(response);
-    let status_check: i64 = string_substring(resp_str, 9, 3);
-    if intrinsic_string_eq(status_check, "101") != 1 {
+    let status_check: i64 = ws_substr(resp_str, 9, 3);
+    if string_eq(status_check, "101") != 1 {
         tcp_close(tcp);
         return 0;
     }
@@ -797,18 +769,18 @@ fn ws_connect(url: i64, headers: i64) -> i64 {
 /// # Returns
 /// Vec handle [host_str, port_i64, path_str] or 0 on failure
 fn ws_parse_url(url: i64) -> i64 {
-    let url_len: i64 = string_length(url);
+    let url_len: i64 = string_len(url);
     var offset: i64 = 0;
     var default_port: i64 = 80;
 
     // Check scheme
-    let ws_prefix: i64 = string_substring(url, 0, 5);
-    if intrinsic_string_eq(ws_prefix, "ws://") == 1 {
+    let ws_prefix: i64 = ws_substr(url, 0, 5);
+    if string_eq(ws_prefix, "ws://") == 1 {
         offset = 5;
         default_port = 80;
     } else {
-        let wss_prefix: i64 = string_substring(url, 0, 6);
-        if intrinsic_string_eq(wss_prefix, "wss://") == 1 {
+        let wss_prefix: i64 = ws_substr(url, 0, 6);
+        if string_eq(wss_prefix, "wss://") == 1 {
             offset = 6;
             default_port = 443;
         } else {
@@ -821,11 +793,11 @@ fn ws_parse_url(url: i64) -> i64 {
     var found_colon: i64 = 0;
     var found_slash: i64 = 0;
     while host_end < url_len {
-        let ch: i64 = string_substring(url, host_end, 1);
-        if intrinsic_string_eq(ch, ":") == 1 {
+        let ch: i64 = ws_substr(url, host_end, 1);
+        if string_eq(ch, ":") == 1 {
             found_colon = 1;
             host_end = url_len; // break
-        } else if intrinsic_string_eq(ch, "/") == 1 {
+        } else if string_eq(ch, "/") == 1 {
             found_slash = 1;
             host_end = url_len; // break
         }
@@ -836,18 +808,18 @@ fn ws_parse_url(url: i64) -> i64 {
     var pos: i64 = offset;
     var host_stop: i64 = url_len;
     while pos < url_len {
-        let ch: i64 = string_substring(url, pos, 1);
-        if intrinsic_string_eq(ch, ":") == 1 {
+        let ch: i64 = ws_substr(url, pos, 1);
+        if string_eq(ch, ":") == 1 {
             host_stop = pos;
             pos = url_len; // break
-        } else if intrinsic_string_eq(ch, "/") == 1 {
+        } else if string_eq(ch, "/") == 1 {
             host_stop = pos;
             pos = url_len; // break
         }
         pos = pos + 1;
     }
 
-    let host: i64 = string_substring(url, offset, host_stop - offset);
+    let host: i64 = ws_substr(url, offset, host_stop - offset);
 
     // Parse port if present
     var port: i64 = default_port;
@@ -857,8 +829,8 @@ fn ws_parse_url(url: i64) -> i64 {
         let after_colon: i64 = host_stop + 1;
         var port_end: i64 = after_colon;
         while port_end < url_len {
-            let ch: i64 = string_substring(url, port_end, 1);
-            if intrinsic_string_eq(ch, "/") == 1 {
+            let ch: i64 = ws_substr(url, port_end, 1);
+            if string_eq(ch, "/") == 1 {
                 port_end = url_len; // break
             }
             port_end = port_end + 1;
@@ -867,14 +839,14 @@ fn ws_parse_url(url: i64) -> i64 {
         var pe: i64 = after_colon;
         var actual_pe: i64 = url_len;
         while pe < url_len {
-            let ch: i64 = string_substring(url, pe, 1);
-            if intrinsic_string_eq(ch, "/") == 1 {
+            let ch: i64 = ws_substr(url, pe, 1);
+            if string_eq(ch, "/") == 1 {
                 actual_pe = pe;
                 pe = url_len; // break
             }
             pe = pe + 1;
         }
-        let port_str: i64 = string_substring(url, after_colon, actual_pe - after_colon);
+        let port_str: i64 = ws_substr(url, after_colon, actual_pe - after_colon);
         port = ws_parse_port(port_str);
         path_start = actual_pe;
     }
@@ -882,7 +854,7 @@ fn ws_parse_url(url: i64) -> i64 {
     // Extract path (default to "/" if none)
     var path: i64 = "/";
     if path_start < url_len {
-        path = string_substring(url, path_start, url_len - path_start);
+        path = ws_substr(url, path_start, url_len - path_start);
     }
 
     let result: i64 = vec_new();
@@ -895,11 +867,11 @@ fn ws_parse_url(url: i64) -> i64 {
 
 /// Parse a port number string to i64 (simple decimal parser)
 fn ws_parse_port(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     var result: i64 = 0;
     var i: i64 = 0;
     while i < len {
-        let ch: i64 = string_substring(s, i, 1);
+        let ch: i64 = ws_substr(s, i, 1);
         let digit: i64 = ws_char_to_digit(ch);
         if digit >= 0 {
             result = result * 10 + digit;
@@ -911,16 +883,16 @@ fn ws_parse_port(s: i64) -> i64 {
 
 /// Convert a single-character string to digit value (0-9), returns -1 if not digit
 fn ws_char_to_digit(ch: i64) -> i64 {
-    if intrinsic_string_eq(ch, "0") == 1 { return 0; }
-    if intrinsic_string_eq(ch, "1") == 1 { return 1; }
-    if intrinsic_string_eq(ch, "2") == 1 { return 2; }
-    if intrinsic_string_eq(ch, "3") == 1 { return 3; }
-    if intrinsic_string_eq(ch, "4") == 1 { return 4; }
-    if intrinsic_string_eq(ch, "5") == 1 { return 5; }
-    if intrinsic_string_eq(ch, "6") == 1 { return 6; }
-    if intrinsic_string_eq(ch, "7") == 1 { return 7; }
-    if intrinsic_string_eq(ch, "8") == 1 { return 8; }
-    if intrinsic_string_eq(ch, "9") == 1 { return 9; }
+    if string_eq(ch, "0") == 1 { return 0; }
+    if string_eq(ch, "1") == 1 { return 1; }
+    if string_eq(ch, "2") == 1 { return 2; }
+    if string_eq(ch, "3") == 1 { return 3; }
+    if string_eq(ch, "4") == 1 { return 4; }
+    if string_eq(ch, "5") == 1 { return 5; }
+    if string_eq(ch, "6") == 1 { return 6; }
+    if string_eq(ch, "7") == 1 { return 7; }
+    if string_eq(ch, "8") == 1 { return 8; }
+    if string_eq(ch, "9") == 1 { return 9; }
     -1
 }
 
@@ -949,7 +921,7 @@ fn ws_serve(addr: i64, port: i64) -> i64 {
 ///
 /// # Returns
 /// Connection descriptor, or 0 on failure
-fn ws_accept(server: i64) -> i64 {
+fn ws_accept_sx(server: i64) -> i64 {
     let tcp: i64 = tcp_accept(server);
     if tcp == 0 {
         return 0;
@@ -995,7 +967,7 @@ fn ws_accept(server: i64) -> i64 {
 ///
 /// # Returns
 /// Bytes sent, or 0 on error
-fn ws_send_text(conn: i64, message: i64) -> i64 {
+fn ws_send_text_sx(conn: i64, message: i64) -> i64 {
     if ws_conn_state(conn) != WS_STATE_OPEN() {
         return 0;
     }
@@ -1016,7 +988,7 @@ fn ws_send_text(conn: i64, message: i64) -> i64 {
 ///
 /// # Returns
 /// Bytes sent, or 0 on error
-fn ws_send_binary(conn: i64, data: i64) -> i64 {
+fn ws_send_binary_sx(conn: i64, data: i64) -> i64 {
     if ws_conn_state(conn) != WS_STATE_OPEN() {
         return 0;
     }
@@ -1249,7 +1221,7 @@ fn ws_send_pong(conn: i64, payload: i64) -> i64 {
 ///
 /// # Returns
 /// Updated connection descriptor in CLOSING state, or 0 on error
-fn ws_close(conn: i64, code: i64, reason: i64) -> i64 {
+fn ws_close_sx(conn: i64, code: i64, reason: i64) -> i64 {
     let state: i64 = ws_conn_state(conn);
     if state == WS_STATE_CLOSED() {
         return 0;
@@ -1524,16 +1496,16 @@ fn ws_has_upgrade_header(response: i64) -> i64 {
 
     var i: i64 = 0;
     while i < resp_len - target_len {
-        var match: i64 = 1;
+        var matched: i64 = 1;
         var j: i64 = 0;
         while j < target_len {
             if vec_get(resp_bytes, i + j) != vec_get(target_bytes, j) {
-                match = 0;
+                matched = 0;
                 j = target_len;
             }
             j = j + 1;
         }
-        if match == 1 {
+        if matched == 1 {
             return 1;
         }
         i = i + 1;
@@ -1551,16 +1523,16 @@ fn ws_has_connection_upgrade(response: i64) -> i64 {
 
     var i: i64 = 0;
     while i < resp_len - target_len {
-        var match: i64 = 1;
+        var matched: i64 = 1;
         var j: i64 = 0;
         while j < target_len {
             if vec_get(resp_bytes, i + j) != vec_get(target_bytes, j) {
-                match = 0;
+                matched = 0;
                 j = target_len;
             }
             j = j + 1;
         }
-        if match == 1 {
+        if matched == 1 {
             return 1;
         }
         i = i + 1;
@@ -1578,17 +1550,17 @@ fn ws_parse_accept_key(response: i64) -> i64 {
 
     var i: i64 = 0;
     while i < req_len - header_len {
-        var match: i64 = 1;
+        var matched: i64 = 1;
         var j: i64 = 0;
         while j < header_len {
             if vec_get(req_bytes, i + j) != vec_get(header_bytes, j) {
-                match = 0;
+                matched = 0;
                 j = header_len;
             }
             j = j + 1;
         }
 
-        if match == 1 {
+        if matched == 1 {
             let value_start: i64 = i + header_len;
             var actual_end: i64 = value_start;
             while actual_end < req_len {

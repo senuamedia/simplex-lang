@@ -1,0 +1,75 @@
+use interpretability;
+
+fn main() -> i64 {
+    println(string_from("=== Interpretability Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create an activation record
+    let activations: i64 = vec_new();
+    vec_push(activations, f64_to_bits(0.5));
+    vec_push(activations, f64_to_bits(1.2));
+    vec_push(activations, f64_to_bits(0.0 - 0.3));
+    vec_push(activations, f64_to_bits(0.8));
+    let record: i64 = interp_activation_record(activations, 0);
+    let n_neurons: i64 = vec_get(record, 1);
+    if n_neurons != 4 {
+        println(string_from("FAIL: should have 4 neurons"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: activation_record"));
+    }
+
+    // Test 2: Compute activation mean
+    let records: i64 = vec_new();
+    vec_push(records, record);
+    let mean_vec: i64 = activation_mean(records);
+    // mean[0] should be ~0.5 (positive bit pattern > 0)
+    let mean_bits: i64 = vec_get(mean_vec, 0);
+    if mean_bits <= 0 {
+        println(string_from("FAIL: mean[0] should be positive"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: activation_mean"));
+    }
+
+    // Test 3: Gradient attribution
+    let input: i64 = vec_new();
+    vec_push(input, f64_to_bits(1.0));
+    vec_push(input, f64_to_bits(2.0));
+    vec_push(input, f64_to_bits(3.0));
+    let grad: i64 = vec_new();
+    vec_push(grad, f64_to_bits(0.5));
+    vec_push(grad, f64_to_bits(0.0 - 0.3));
+    vec_push(grad, f64_to_bits(0.1));
+    let attr: i64 = gradient_attribution(input, grad);
+    if vec_len(attr) != 3 {
+        println(string_from("FAIL: attribution should have 3 elements"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: gradient_attribution"));
+    }
+
+    // Test 4: Linear probe creation
+    let probe: i64 = linear_probe_new(4, 2);
+    let hdim: i64 = vec_get(probe, 0);
+    if hdim != 4 {
+        println(string_from("FAIL: probe hidden_dim should be 4"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: linear_probe_new"));
+    }
+
+    // Test 5: Saliency map from attributions
+    let saliency: i64 = saliency_map(attr, 3);
+    if vec_len(saliency) != 3 {
+        println(string_from("FAIL: saliency map should have 3 elements"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: saliency_map"));
+    }
+
+    if failures == 0 {
+        println(string_from("All interpretability tests passed"));
+    }
+    failures
+}

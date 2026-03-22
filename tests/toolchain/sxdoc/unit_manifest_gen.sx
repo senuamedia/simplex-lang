@@ -3,7 +3,6 @@
 // Tests --manifest and --category CLI flags and JSON output format
 
 // External declarations matching sxdoc internals
-fn string_from(s: i64) -> i64;
 fn string_eq(a: i64, b: i64) -> i64;
 fn string_len(s: i64) -> i64;
 fn string_contains(s: i64, sub: i64) -> i64;

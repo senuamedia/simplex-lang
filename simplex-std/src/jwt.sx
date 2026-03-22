@@ -28,7 +28,7 @@
 // Licensed under AGPL-3.0
 
 // =============================================================================
-// Runtime Extern Declarations
+// Runtime Extern Declarations (non-built-in functions only)
 // =============================================================================
 
 /// SHA-256 hash returning hex string
@@ -37,44 +37,13 @@ extern fn sha256_hex(data: i64) -> i64;
 /// Generate cryptographic random token (hex string)
 extern fn generate_token(len: i64) -> i64;
 
-/// String concatenation
-extern fn string_concat(a: i64, b: i64) -> i64;
-
-/// String equality check
-extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
-
-/// String length
-extern fn string_length(s: i64) -> i64;
-
-/// Get character at position (returns ASCII code)
-extern fn string_char_at(s: i64, idx: i64) -> i64;
-
-/// Get substring
-extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
-
-/// Print to stdout
-extern fn println(s: i64) -> i64;
-
-/// Create a vec (runtime handle)
-extern fn vec_new() -> i64;
-
-/// Push value to vec
-extern fn vec_push(v: i64, val: i64) -> i64;
-
-/// Get vec element
-extern fn vec_get(v: i64, idx: i64) -> i64;
-
-/// Get vec length
-extern fn vec_len(v: i64) -> i64;
-
-/// Integer to string
-extern fn int_to_string(n: i64) -> i64;
-
-/// String to integer
-extern fn string_to_int(s: i64) -> i64;
-
 /// Get current time as unix timestamp
 extern fn time_now() -> i64;
+
+// Wrapper for string_substring using built-in intrinsic_string_slice
+fn jwt_substr(s: i64, start: i64, length: i64) -> i64 {
+    intrinsic_string_slice(s, start, start + length)
+}
 
 // =============================================================================
 // Base64url Alphabet
@@ -156,9 +125,9 @@ fn b64url_val(ch: i64) -> i64 {
 /// // encoded = "aGVsbG8"
 /// ```
 pub fn base64url_encode(data: i64) -> i64 {
-    let len: i64 = string_length(data);
-    let mut result: i64 = "";
-    let mut i: i64 = 0;
+    let len: i64 = string_len(data);
+    var result: i64 = "";
+    var i: i64 = 0;
 
     // Process 3 bytes at a time
     while i + 3 <= len {
@@ -172,7 +141,7 @@ pub fn base64url_encode(data: i64) -> i64 {
         let c2: i64 = (b1 - (b1 / 16) * 16) * 4 + b2 / 64;
         let c3: i64 = b2 - (b2 / 64) * 64;
 
-        let mut quad: i64 = "";
+        var quad: i64 = "";
         quad = string_concat(quad, string_from_char(b64url_char(c0)));
         quad = string_concat(quad, string_from_char(b64url_char(c1)));
         quad = string_concat(quad, string_from_char(b64url_char(c2)));
@@ -215,13 +184,13 @@ pub fn base64url_encode(data: i64) -> i64 {
 /// // decoded = "hello"
 /// ```
 pub fn base64url_decode(encoded: i64) -> i64 {
-    let len: i64 = string_length(encoded);
+    let len: i64 = string_len(encoded);
     if len == 0 {
         return "";
     }
 
-    let mut result: i64 = "";
-    let mut i: i64 = 0;
+    var result: i64 = "";
+    var i: i64 = 0;
 
     // Process 4 characters at a time
     while i + 4 <= len {
@@ -289,23 +258,14 @@ pub fn base64url_decode(encoded: i64) -> i64 {
 
 /// Create a single-character string from an ASCII code
 fn string_from_char(code: i64) -> i64 {
-    // Use substring of a lookup table or runtime char creation
-    // We build a 1-char string by using the runtime
-    let mut s: i64 = "";
-    // The runtime represents strings as i64 handles; we need a way to
-    // create a single character. Use string_char_create if available,
-    // otherwise build from known strings.
-    string_char_create(code)
+    intrinsic_string_from_char(code)
 }
-
-/// Runtime function to create a 1-character string from ASCII code
-extern fn string_char_create(code: i64) -> i64;
 
 /// Find first occurrence of character (ASCII code) in string, starting at pos
 /// Returns index or -1 if not found
 fn string_index_of_char(s: i64, ch: i64, start: i64) -> i64 {
-    let len: i64 = string_length(s);
-    let mut i: i64 = start;
+    let len: i64 = string_len(s);
+    var i: i64 = start;
     while i < len {
         if string_char_at(s, i) == ch {
             return i;
@@ -319,13 +279,13 @@ fn string_index_of_char(s: i64, ch: i64, start: i64) -> i64 {
 /// Returns a vec of string handles
 fn string_split_char(s: i64, delim: i64) -> i64 {
     let parts: i64 = vec_new();
-    let len: i64 = string_length(s);
-    let mut start: i64 = 0;
-    let mut i: i64 = 0;
+    let len: i64 = string_len(s);
+    var start: i64 = 0;
+    var i: i64 = 0;
 
     while i < len {
         if string_char_at(s, i) == delim {
-            let part: i64 = string_substring(s, start, i - start);
+            let part: i64 = jwt_substr(s, start, i - start);
             vec_push(parts, part);
             start = i + 1;
         }
@@ -334,7 +294,7 @@ fn string_split_char(s: i64, delim: i64) -> i64 {
 
     // Last segment
     if start <= len {
-        let part: i64 = string_substring(s, start, len - start);
+        let part: i64 = jwt_substr(s, start, len - start);
         vec_push(parts, part);
     }
 
@@ -369,8 +329,8 @@ pub fn hmac_sha256(key: i64, message: i64) -> i64 {
     let block_size: i64 = 64;
 
     // If key is longer than block size, hash it first
-    let key_len: i64 = string_length(key);
-    let mut k: i64 = key;
+    let key_len: i64 = string_len(key);
+    var k: i64 = key;
     if key_len > block_size {
         k = sha256_hex(key);
         // Convert hex back to bytes conceptually - for our purposes we
@@ -379,11 +339,11 @@ pub fn hmac_sha256(key: i64, message: i64) -> i64 {
 
     // Pad key to block_size with zeros
     // Build inner and outer padded keys
-    let mut ipad_key: i64 = "";
-    let mut opad_key: i64 = "";
-    let padded_len: i64 = string_length(k);
+    var ipad_key: i64 = "";
+    var opad_key: i64 = "";
+    let padded_len: i64 = string_len(k);
 
-    let mut i: i64 = 0;
+    var i: i64 = 0;
     while i < block_size {
         let key_byte: i64 = if i < padded_len {
             string_char_at(k, i)
@@ -414,11 +374,11 @@ fn xor_bytes(a: i64, b: i64) -> i64 {
     // Implement XOR using bit manipulation
     // XOR truth table: 0^0=0, 0^1=1, 1^0=1, 1^1=0
     // We do it bit by bit for 8 bits
-    let mut result: i64 = 0;
-    let mut bit: i64 = 1;
-    let mut aa: i64 = a;
-    let mut bb: i64 = b;
-    let mut count: i64 = 0;
+    var result: i64 = 0;
+    var bit: i64 = 1;
+    var aa: i64 = a;
+    var bb: i64 = b;
+    var count: i64 = 0;
     while count < 8 {
         let a_bit: i64 = aa - (aa / 2) * 2;
         let b_bit: i64 = bb - (bb / 2) * 2;
@@ -464,7 +424,7 @@ fn jwt_header_encode(header: i64) -> i64 {
     let alg: i64 = vec_get(header, 0);
     let typ: i64 = vec_get(header, 1);
     // Build JSON: {"alg":"HS256","typ":"JWT"}
-    let mut json: i64 = "{\"alg\":\"";
+    var json: i64 = "{\"alg\":\"";
     json = string_concat(json, alg);
     json = string_concat(json, "\",\"typ\":\"");
     json = string_concat(json, typ);
@@ -512,10 +472,10 @@ pub fn jwt_payload_new() -> i64 {
 pub fn jwt_add_claim(payload: i64, key: i64, value: i64) -> i64 {
     // Check if key already exists and update
     let len: i64 = vec_len(payload);
-    let mut i: i64 = 0;
+    var i: i64 = 0;
     while i < len {
         let existing_key: i64 = vec_get(payload, i);
-        if intrinsic_string_eq(existing_key, key) == 1 {
+        if string_eq(existing_key, key) == 1 {
             // Update existing claim - push new pair (old stays but we
             // always read last occurrence in get_claim)
             vec_push(payload, key);
@@ -636,12 +596,12 @@ pub fn jwt_set_aud(payload: i64, audience: i64) -> i64 {
 /// ```
 pub fn jwt_get_claim(payload: i64, key: i64) -> i64 {
     let len: i64 = vec_len(payload);
-    let mut found: i64 = "";
-    let mut i: i64 = 0;
+    var found: i64 = "";
+    var i: i64 = 0;
     // Scan all pairs, keep last match (handles updates)
     while i < len {
         let k: i64 = vec_get(payload, i);
-        if intrinsic_string_eq(k, key) == 1 {
+        if string_eq(k, key) == 1 {
             found = vec_get(payload, i + 1);
         }
         i = i + 2;
@@ -662,7 +622,7 @@ pub fn jwt_get_claim(payload: i64, key: i64) -> i64 {
 /// 1 if expired, 0 if valid or no expiration set
 pub fn jwt_is_expired(payload: i64) -> i64 {
     let exp_str: i64 = jwt_get_claim(payload, "exp");
-    let exp_len: i64 = string_length(exp_str);
+    let exp_len: i64 = string_len(exp_str);
     if exp_len == 0 {
         return 0;
     }
@@ -678,8 +638,8 @@ pub fn jwt_is_expired(payload: i64) -> i64 {
 /// Serialize JWT payload claims to JSON string
 fn jwt_payload_to_json(payload: i64) -> i64 {
     let len: i64 = vec_len(payload);
-    let mut json: i64 = "{";
-    let mut first: i64 = 1;
+    var json: i64 = "{";
+    var first: i64 = 1;
 
     // We need to track which keys we've already emitted (last value wins)
     // Simple approach: iterate backwards, skip keys already seen
@@ -688,17 +648,17 @@ fn jwt_payload_to_json(payload: i64) -> i64 {
     let vals_out: i64 = vec_new();
 
     // Collect last-value-wins claims by scanning forward
-    let mut i: i64 = 0;
+    var i: i64 = 0;
     while i < len {
         let key: i64 = vec_get(payload, i);
         let val: i64 = vec_get(payload, i + 1);
 
         // Check if this key is already in keys_out; if so, update
         let out_len: i64 = vec_len(keys_out);
-        let mut found: i64 = -1;
-        let mut j: i64 = 0;
+        var found: i64 = -1;
+        var j: i64 = 0;
         while j < out_len {
-            if intrinsic_string_eq(vec_get(keys_out, j), key) == 1 {
+            if string_eq(vec_get(keys_out, j), key) == 1 {
                 found = j;
             }
             j = j + 1;
@@ -717,7 +677,7 @@ fn jwt_payload_to_json(payload: i64) -> i64 {
 
     // Build JSON from deduplicated claims
     let out_len: i64 = vec_len(keys_out);
-    let mut k: i64 = 0;
+    var k: i64 = 0;
     while k < out_len {
         let key: i64 = vec_get(keys_out, k);
         let val: i64 = vec_get(vals_out, k);
@@ -750,11 +710,11 @@ fn jwt_payload_to_json(payload: i64) -> i64 {
 
 /// Check if a string contains only digit characters
 fn is_numeric_string(s: i64) -> i64 {
-    let len: i64 = string_length(s);
+    let len: i64 = string_len(s);
     if len == 0 {
         return 0;
     }
-    let mut i: i64 = 0;
+    var i: i64 = 0;
     while i < len {
         let ch: i64 = string_char_at(s, i);
         if ch < 48 { return 0; }
@@ -766,9 +726,9 @@ fn is_numeric_string(s: i64) -> i64 {
 
 /// Escape special characters in a JSON string value
 fn json_escape_string(s: i64) -> i64 {
-    let len: i64 = string_length(s);
-    let mut result: i64 = "";
-    let mut i: i64 = 0;
+    let len: i64 = string_len(s);
+    var result: i64 = "";
+    var i: i64 = 0;
 
     while i < len {
         let ch: i64 = string_char_at(s, i);
@@ -799,10 +759,10 @@ fn json_escape_string(s: i64) -> i64 {
 /// Parse a JSON payload string back into a payload vec
 fn jwt_json_to_payload(json: i64) -> i64 {
     let payload: i64 = vec_new();
-    let len: i64 = string_length(json);
+    let len: i64 = string_len(json);
 
     // Simple JSON object parser: find "key":value pairs
-    let mut i: i64 = 0;
+    var i: i64 = 0;
 
     // Skip opening brace
     while i < len {
@@ -844,7 +804,7 @@ fn jwt_json_to_payload(json: i64) -> i64 {
             if ch2 == 92 { i = i + 1; }  // skip escaped char
             i = i + 1;
         }
-        let key: i64 = string_substring(json, key_start, i - key_start);
+        let key: i64 = jwt_substr(json, key_start, i - key_start);
         i = i + 1;  // skip closing quote
 
         // Skip colon and whitespace
@@ -869,7 +829,7 @@ fn jwt_json_to_payload(json: i64) -> i64 {
                 if ch4 == 92 { i = i + 1; }  // skip escaped char
                 i = i + 1;
             }
-            let val: i64 = string_substring(json, val_start, i - val_start);
+            let val: i64 = jwt_substr(json, val_start, i - val_start);
             vec_push(payload, key);
             vec_push(payload, val);
             i = i + 1;  // skip closing quote
@@ -883,7 +843,7 @@ fn jwt_json_to_payload(json: i64) -> i64 {
                 if ch5 == 32 { break; }    // space
                 i = i + 1;
             }
-            let val2: i64 = string_substring(json, val_start2, i - val_start2);
+            let val2: i64 = jwt_substr(json, val_start2, i - val_start2);
             vec_push(payload, key);
             vec_push(payload, val2);
         }
@@ -934,7 +894,7 @@ pub fn jwt_encode(payload: i64, secret: i64) -> i64 {
     let sig_b64: i64 = base64url_encode(signature);
 
     // Assemble: header.payload.signature
-    let mut token: i64 = signing_input2;
+    var token: i64 = signing_input2;
     token = string_concat(token, ".");
     token = string_concat(token, sig_b64);
 
@@ -961,7 +921,7 @@ pub fn jwt_encode_with_header(header: i64, payload: i64, secret: i64) -> i64 {
     let signature: i64 = hmac_sha256(secret, signing_input2);
     let sig_b64: i64 = base64url_encode(signature);
 
-    let mut token: i64 = signing_input2;
+    var token: i64 = signing_input2;
     token = string_concat(token, ".");
     token = string_concat(token, sig_b64);
 
@@ -991,7 +951,7 @@ pub fn jwt_encode_with_header(header: i64, payload: i64, secret: i64) -> i64 {
 /// }
 /// ```
 pub fn jwt_verify(token: i64, secret: i64) -> i64 {
-    let len: i64 = string_length(token);
+    let len: i64 = string_len(token);
     if len == 0 {
         return 0;
     }
@@ -1007,15 +967,15 @@ pub fn jwt_verify(token: i64, secret: i64) -> i64 {
     }
 
     // Extract signing input (header.payload) and signature
-    let signing_input: i64 = string_substring(token, 0, dot2);
-    let provided_sig_b64: i64 = string_substring(token, dot2 + 1, len - dot2 - 1);
+    let signing_input: i64 = jwt_substr(token, 0, dot2);
+    let provided_sig_b64: i64 = jwt_substr(token, dot2 + 1, len - dot2 - 1);
 
     // Recompute signature
     let expected_sig: i64 = hmac_sha256(secret, signing_input);
     let expected_sig_b64: i64 = base64url_encode(expected_sig);
 
     // Compare signatures
-    intrinsic_string_eq(provided_sig_b64, expected_sig_b64)
+    string_eq(provided_sig_b64, expected_sig_b64)
 }
 
 // =============================================================================
@@ -1048,7 +1008,7 @@ pub fn jwt_decode(token: i64, secret: i64) -> i64 {
     // Extract payload portion
     let dot1: i64 = string_index_of_char(token, 46, 0);
     let dot2: i64 = string_index_of_char(token, 46, dot1 + 1);
-    let payload_b64: i64 = string_substring(token, dot1 + 1, dot2 - dot1 - 1);
+    let payload_b64: i64 = jwt_substr(token, dot1 + 1, dot2 - dot1 - 1);
 
     // Decode base64url
     let payload_json: i64 = base64url_decode(payload_b64);
@@ -1068,7 +1028,7 @@ pub fn jwt_decode(token: i64, secret: i64) -> i64 {
 /// # Returns
 /// Payload vec handle with claims, or empty vec if malformed
 pub fn jwt_decode_unsafe(token: i64) -> i64 {
-    let len: i64 = string_length(token);
+    let len: i64 = string_len(token);
     let dot1: i64 = string_index_of_char(token, 46, 0);
     if dot1 < 0 {
         return jwt_payload_new();
@@ -1078,7 +1038,7 @@ pub fn jwt_decode_unsafe(token: i64) -> i64 {
         return jwt_payload_new();
     }
 
-    let payload_b64: i64 = string_substring(token, dot1 + 1, dot2 - dot1 - 1);
+    let payload_b64: i64 = jwt_substr(token, dot1 + 1, dot2 - dot1 - 1);
     let payload_json: i64 = base64url_decode(payload_b64);
     jwt_json_to_payload(payload_json)
 }
@@ -1096,7 +1056,7 @@ pub fn jwt_get_header(token: i64) -> i64 {
         return vec_new();
     }
 
-    let header_b64: i64 = string_substring(token, 0, dot1);
+    let header_b64: i64 = jwt_substr(token, 0, dot1);
     let header_json: i64 = base64url_decode(header_b64);
 
     // Parse header JSON to extract alg and typ
@@ -1149,7 +1109,7 @@ pub fn jwt_validate(token: i64, secret: i64) -> i64 {
 /// 1 if claim exists, 0 otherwise
 pub fn jwt_has_claim(payload: i64, key: i64) -> i64 {
     let val: i64 = jwt_get_claim(payload, key);
-    let val_len: i64 = string_length(val);
+    let val_len: i64 = string_len(val);
     if val_len > 0 {
         1
     } else {

@@ -1,0 +1,78 @@
+// f64 Arithmetic Regression Tests
+// Tests every f64 operation pattern that has broken before.
+// This test MUST pass before any release.
+
+fn square_f64(x: f64) -> f64 { x * x }
+fn add_one_f64(x: f64) -> f64 { x + 1.0 }
+
+fn main() -> i64 {
+    var failures: i64 = 0;
+
+    // Basic f64 arithmetic
+    let a: f64 = 10.0;
+    let b: f64 = 3.0;
+    let sum: f64 = a + b;
+    if sum < 12.9 || sum > 13.1 { println(string_from("FAIL: 10+3")); failures = failures + 1; }
+
+    let diff: f64 = a - b;
+    if diff < 6.9 || diff > 7.1 { println(string_from("FAIL: 10-3")); failures = failures + 1; }
+
+    let prod: f64 = a * b;
+    if prod < 29.9 || prod > 30.1 { println(string_from("FAIL: 10*3")); failures = failures + 1; }
+
+    // Complex f64 subexpressions (was Bug 1)
+    let f: f64 = 2.0;
+    let complex: f64 = f * (a - b) * (a - b) + f * (a - b) * (a - b);
+    // 2*7*7 + 2*7*7 = 98 + 98 = 196
+    if complex < 195.0 || complex > 197.0 { println(string_from("FAIL: complex f64 subexpr")); failures = failures + 1; }
+
+    // Pre-computed equivalent
+    let term: f64 = f * (a - b) * (a - b);
+    let precomp: f64 = term + term;
+    if precomp < 195.0 || precomp > 197.0 { println(string_from("FAIL: precomputed f64")); failures = failures + 1; }
+
+    // Mixed i64 and f64 vars (was Bug 2)
+    var x: i64 = 30;
+    var y: i64 = 40;
+    let c: f64 = 3.0;
+    let d: f64 = 4.0;
+    let fprod: f64 = c * d;
+    // f64 op above should NOT corrupt i64 below
+    let iprod: i64 = x * y;
+    if iprod != 1200 { println(string_from("FAIL: i64 after f64")); failures = failures + 1; }
+
+    // i64 arithmetic after f64 assignment
+    var z: f64 = 5.0;
+    z = z + 1.0;
+    var w: i64 = 100;
+    w = w + 50;
+    if w != 150 { println(string_from("FAIL: i64 assign after f64")); failures = failures + 1; }
+
+    // Multiple f64 terms
+    let e: f64 = 1.0;
+    let g: f64 = 2.0;
+    let h: f64 = 3.0;
+    let multi: f64 = e + g + h;
+    if multi < 5.9 || multi > 6.1 { println(string_from("FAIL: multi f64 add")); failures = failures + 1; }
+
+    // f64 comparison operators
+    let gt_check: i64 = if a > b { 1 } else { 0 };
+    if gt_check != 1 { println(string_from("FAIL: f64 >")); failures = failures + 1; }
+
+    let lt_check: i64 = if b < a { 1 } else { 0 };
+    if lt_check != 1 { println(string_from("FAIL: f64 <")); failures = failures + 1; }
+
+    // i64 arithmetic stays correct throughout
+    let final_i: i64 = 32 + 32;
+    if final_i != 64 { println(string_from("FAIL: final i64")); failures = failures + 1; }
+
+    // Bug 3: f64 function call results combined with + (was using integer add)
+    let fn_sum: f64 = square_f64(a) + add_one_f64(b);
+    // square(10.0) + add_one(3.0) = 100.0 + 4.0 = 104.0
+    if fn_sum < 103.9 || fn_sum > 104.1 { println(string_from("FAIL: f(a)+g(b)")); failures = failures + 1; }
+
+    if failures == 0 {
+        println(string_from("PASS: all f64 arithmetic tests passed"));
+    }
+    failures
+}
