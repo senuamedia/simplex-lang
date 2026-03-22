@@ -1,0 +1,64 @@
+use test_framework;
+
+fn main() -> i64 {
+    println(string_from("=== Test Framework Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create a suite
+    let suite: i64 = test_suite_new(string_from("demo suite"));
+
+    // Test 2: Add passing and failing tests
+    test_add(suite, string_from("math works"), 1);
+    test_add(suite, string_from("always fails"), 0);
+    test_add(suite, string_from("another pass"), 1);
+
+    // Test 3: Run suite and check counts
+    let report: i64 = test_run_suite(suite);
+    let total: i64 = vec_get(report, 0);
+    let passed: i64 = vec_get(report, 1);
+    let failed: i64 = vec_get(report, 2);
+
+    if total != 3 {
+        println(string_from("FAIL: total should be 3"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: test_run_suite total"));
+    }
+
+    if passed != 2 {
+        println(string_from("FAIL: passed should be 2"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: test_run_suite passed"));
+    }
+
+    if failed != 1 {
+        println(string_from("FAIL: failed should be 1"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: test_run_suite failed"));
+    }
+
+    // Test 4: test_count
+    let cnt: i64 = test_count(suite);
+    if cnt != 3 {
+        println(string_from("FAIL: test_count should be 3"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: test_count"));
+    }
+
+    // Test 5: assert_eq_i64
+    let eq_result: i64 = assert_eq_i64(42, 42, string_from("42 == 42"));
+    if eq_result != 1 {
+        println(string_from("FAIL: assert_eq_i64"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: assert_eq_i64"));
+    }
+
+    if failures == 0 {
+        println(string_from("All test framework tests passed"));
+    }
+    failures
+}

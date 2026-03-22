@@ -1,0 +1,885 @@
+// simplex-learning::sdm - Sparse Distributed Memory (Kanerva)
+//
+// Implements Pentti Kanerva's Sparse Distributed Memory, a computational model
+// of human long-term memory. SDM stores and retrieves patterns using high-
+// dimensional binary vectors. Each hard location has an address and a counter
+// array. Writing increments/decrements counters at nearby locations; reading
+// sums counters and thresholds to recover the stored pattern.
+//
+// Also includes Hyperdimensional Computing (HDC) operations: bind (XOR),
+// bundle (majority vote), and permute (cyclic shift) for compositional
+// representations in high-dimensional space.
+//
+// # Data Layout (vec handles)
+//
+// All floating-point values stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set.
+//
+// Binary vector:  vec of i64 elements, 1 bit per element (0 or 1)
+// SDM vec:        [address_dim, n_locations, word_dim, addresses_vec,
+//                  counters_vec, access_radius]
+//   addresses_vec: vec of n_locations binary vector handles
+//   counters_vec:  vec of n_locations counter vector handles
+//     each counter vec: word_dim i64 values (signed counters)
+//
+// # References
+//
+// Kanerva, P. "Sparse Distributed Memory" (1988)
+// Kanerva, P. "Hyperdimensional Computing" (2009)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// SDM struct field indices
+// =============================================================================
+
+fn SDM_ADDR_DIM() -> i64 { 0 }
+fn SDM_N_LOCATIONS() -> i64 { 1 }
+fn SDM_WORD_DIM() -> i64 { 2 }
+fn SDM_ADDRESSES() -> i64 { 3 }
+fn SDM_COUNTERS() -> i64 { 4 }
+fn SDM_RADIUS() -> i64 { 5 }
+
+// =============================================================================
+// Pseudo-random number generation (simple LCG)
+// =============================================================================
+
+fn lcg_next(state: i64) -> i64 {
+    // Linear congruential generator
+    let a: i64 = 6364136223846793005;
+    let c: i64 = 1442695040888963407;
+    state * a + c
+}
+
+fn lcg_bit(state: i64) -> i64 {
+    // Extract one pseudo-random bit from state
+    let shifted: i64 = state / 65536;
+    if shifted < 0 {
+        let pos: i64 = 0 - shifted;
+        pos % 2
+    } else {
+        shifted % 2
+    }
+}
+
+fn abs_i64(x: i64) -> i64 {
+    if x < 0 { 0 - x } else { x }
+}
+
+// =============================================================================
+// Binary Vector Operations
+// =============================================================================
+
+/// Create a zero binary vector of given dimension.
+/// Returns handle to vec of `dim` i64 elements, all 0.
+fn bv_new(dim: i64) -> i64 {
+    let v: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(v, 0);
+        i = i + 1;
+    }
+    v
+}
+
+/// Create a random binary vector of given dimension using seed.
+/// Returns handle to vec of `dim` i64 elements, each 0 or 1.
+fn bv_random(dim: i64, seed: i64) -> i64 {
+    let v: i64 = vec_new();
+    var state: i64 = seed;
+    var i: i64 = 0;
+    while i < dim {
+        state = lcg_next(state);
+        let bit: i64 = lcg_bit(state);
+        vec_push(v, bit);
+        i = i + 1;
+    }
+    v
+}
+
+/// Set bit at position pos to val (0 or 1).
+fn bv_set_bit(v: i64, pos: i64, val: i64) -> i64 {
+    vec_set(v, pos, val);
+    0
+}
+
+/// Get bit at position pos.
+fn bv_get_bit(v: i64, pos: i64) -> i64 {
+    vec_get(v, pos)
+}
+
+/// Compute Hamming distance between two binary vectors a and b.
+/// Both must have dimension `dim`.
+fn bv_hamming(a: i64, b: i64, dim: i64) -> i64 {
+    var dist: i64 = 0;
+    var i: i64 = 0;
+    while i < dim {
+        let va: i64 = vec_get(a, i);
+        let vb: i64 = vec_get(b, i);
+        if va != vb {
+            dist = dist + 1;
+        }
+        i = i + 1;
+    }
+    dist
+}
+
+/// Bitwise XOR of two binary vectors a and b.
+/// Returns new binary vector handle.
+fn bv_xor(a: i64, b: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let va: i64 = vec_get(a, i);
+        let vb: i64 = vec_get(b, i);
+        // XOR: 0^0=0, 0^1=1, 1^0=1, 1^1=0
+        if va == vb {
+            vec_push(result, 0);
+        } else {
+            vec_push(result, 1);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Bitwise AND of two binary vectors.
+fn bv_and(a: i64, b: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let va: i64 = vec_get(a, i);
+        let vb: i64 = vec_get(b, i);
+        if va == 1 {
+            if vb == 1 {
+                vec_push(result, 1);
+            } else {
+                vec_push(result, 0);
+            }
+        } else {
+            vec_push(result, 0);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Bitwise OR of two binary vectors.
+fn bv_or(a: i64, b: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let va: i64 = vec_get(a, i);
+        let vb: i64 = vec_get(b, i);
+        if va == 1 {
+            vec_push(result, 1);
+        } else {
+            if vb == 1 {
+                vec_push(result, 1);
+            } else {
+                vec_push(result, 0);
+            }
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Bitwise NOT of a binary vector.
+fn bv_not(a: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let va: i64 = vec_get(a, i);
+        if va == 0 {
+            vec_push(result, 1);
+        } else {
+            vec_push(result, 0);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Element-wise majority vote over `n` binary vectors.
+/// `vectors` is a vec of `n` binary vector handles, each of dimension `dim`.
+/// Returns new binary vector: bit i is 1 if majority of input bits at i are 1.
+fn bv_majority(vectors: i64, n: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    let threshold: i64 = n / 2;
+    var i: i64 = 0;
+    while i < dim {
+        var count: i64 = 0;
+        var j: i64 = 0;
+        while j < n {
+            let v: i64 = vec_get(vectors, j);
+            let bit: i64 = vec_get(v, i);
+            count = count + bit;
+            j = j + 1;
+        }
+        if count > threshold {
+            vec_push(result, 1);
+        } else {
+            vec_push(result, 0);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Count the number of 1-bits in a binary vector.
+fn bv_popcount(v: i64, dim: i64) -> i64 {
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < dim {
+        count = count + vec_get(v, i);
+        i = i + 1;
+    }
+    count
+}
+
+/// Copy a binary vector.
+fn bv_copy(v: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        vec_push(result, vec_get(v, i));
+        i = i + 1;
+    }
+    result
+}
+
+/// Check if two binary vectors are equal.
+fn bv_equal(a: i64, b: i64, dim: i64) -> i64 {
+    var i: i64 = 0;
+    while i < dim {
+        if vec_get(a, i) != vec_get(b, i) {
+            return 0;
+        }
+        i = i + 1;
+    }
+    1
+}
+
+// =============================================================================
+// Hyperdimensional Computing (HDC)
+// =============================================================================
+
+/// Binding operation (XOR for binary HDC).
+/// Binding creates associations: bind(A, B) is dissimilar to both A and B,
+/// but bind(bind(A, B), B) recovers A.
+fn hdc_bind(a: i64, b: i64, dim: i64) -> i64 {
+    bv_xor(a, b, dim)
+}
+
+/// Bundling operation (majority vote for binary HDC).
+/// Bundling creates superpositions: bundle({A, B, C}) is similar to each.
+fn hdc_bundle(vectors: i64, n: i64, dim: i64) -> i64 {
+    bv_majority(vectors, n, dim)
+}
+
+/// Cyclic permutation of a binary vector (rotate left by `shift` positions).
+/// Used to encode order/sequence information in HDC.
+fn hdc_permute(v: i64, dim: i64, shift: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        let src: i64 = (i + shift) % dim;
+        vec_push(result, vec_get(v, src));
+        i = i + 1;
+    }
+    result
+}
+
+/// Cosine similarity for binary vectors: 1 - 2*hamming/dim.
+/// Returns f64_bits. Value range: [-1.0, 1.0].
+/// Identical vectors -> 1.0, orthogonal -> 0.0, complement -> -1.0.
+fn hdc_similarity(a: i64, b: i64, dim: i64) -> i64 {
+    let hamming: i64 = bv_hamming(a, b, dim);
+    // similarity = 1.0 - 2.0 * hamming / dim
+    let h_f64: f64 = bits_to_f64(f64_to_bits(hamming));
+    let d_f64: f64 = bits_to_f64(f64_to_bits(dim));
+    let sim: f64 = 1.0 - 2.0 * h_f64 / d_f64;
+    f64_to_bits(sim)
+}
+
+/// Encode an integer value as a thermometer-coded binary vector.
+/// For value v in [0, dim), sets bits 0..v to 1, rest to 0.
+fn hdc_thermometer(value: i64, dim: i64) -> i64 {
+    let result: i64 = vec_new();
+    var i: i64 = 0;
+    while i < dim {
+        if i < value {
+            vec_push(result, 1);
+        } else {
+            vec_push(result, 0);
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Encode a sequence of symbols as an HDC vector.
+/// `symbols` is a vec of `n_symbols` symbol IDs.
+/// `codebook` is a vec of binary vector handles, one per possible symbol.
+/// Uses permutation-based position encoding: result = Σ permute(codebook[s_i], i).
+fn hdc_encode_sequence(symbols: i64, n_symbols: i64, codebook: i64, dim: i64) -> i64 {
+    let parts: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_symbols {
+        let sym: i64 = vec_get(symbols, i);
+        let code: i64 = vec_get(codebook, sym);
+        let permuted: i64 = hdc_permute(code, dim, i);
+        vec_push(parts, permuted);
+        i = i + 1;
+    }
+    bv_majority(parts, n_symbols, dim)
+}
+
+/// Create a random codebook of `n_symbols` binary vectors of dimension `dim`.
+fn hdc_codebook(n_symbols: i64, dim: i64, seed: i64) -> i64 {
+    let cb: i64 = vec_new();
+    var state: i64 = seed;
+    var i: i64 = 0;
+    while i < n_symbols {
+        state = lcg_next(state);
+        let v: i64 = bv_random(dim, state);
+        vec_push(cb, v);
+        i = i + 1;
+    }
+    cb
+}
+
+// =============================================================================
+// SDM Core
+// =============================================================================
+
+/// Create a new Sparse Distributed Memory.
+///
+/// Arguments:
+///   address_dim  - dimension of address space (binary vector length)
+///   n_locations  - number of hard locations
+///   word_dim     - dimension of stored words (binary vector length)
+///
+/// Returns: handle to SDM vec.
+fn sdm_new(address_dim: i64, n_locations: i64, word_dim: i64) -> i64 {
+    let sdm: i64 = vec_new();
+    vec_push(sdm, address_dim);     // [0] address_dim
+    vec_push(sdm, n_locations);     // [1] n_locations
+    vec_push(sdm, word_dim);        // [2] word_dim
+    vec_push(sdm, vec_new());       // [3] addresses (empty, fill with init)
+    vec_push(sdm, vec_new());       // [4] counters (empty, fill with init)
+    // Default access radius: ~0.45 * address_dim (standard Kanerva threshold)
+    let radius: i64 = address_dim * 45 / 100;
+    vec_push(sdm, radius);          // [5] access_radius
+    sdm
+}
+
+/// Initialize SDM with random hard location addresses.
+/// Each location gets a random binary address and a zero counter vector.
+fn sdm_init_random(sdm: i64, seed: i64) -> i64 {
+    let address_dim: i64 = vec_get(sdm, SDM_ADDR_DIM());
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+
+    let addresses: i64 = vec_get(sdm, SDM_ADDRESSES());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+
+    var state: i64 = seed;
+    var i: i64 = 0;
+    while i < n_locations {
+        // Generate random address
+        state = lcg_next(state);
+        let addr: i64 = bv_random(address_dim, state);
+        vec_push(addresses, addr);
+
+        // Initialize counter vector to all zeros
+        let ctr: i64 = vec_new();
+        var j: i64 = 0;
+        while j < word_dim {
+            vec_push(ctr, 0);
+            j = j + 1;
+        }
+        vec_push(counters, ctr);
+
+        state = lcg_next(state);
+        i = i + 1;
+    }
+    0
+}
+
+/// Set the access radius for an SDM.
+fn sdm_set_radius(sdm: i64, radius: i64) -> i64 {
+    vec_set(sdm, SDM_RADIUS(), radius);
+    0
+}
+
+/// Get the access radius for an SDM.
+fn sdm_get_radius(sdm: i64) -> i64 {
+    vec_get(sdm, SDM_RADIUS())
+}
+
+/// Find all hard locations within access radius of the given address.
+/// Returns a vec of location indices.
+fn sdm_activated_locations(sdm: i64, address: i64) -> i64 {
+    let address_dim: i64 = vec_get(sdm, SDM_ADDR_DIM());
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let addresses: i64 = vec_get(sdm, SDM_ADDRESSES());
+    let radius: i64 = vec_get(sdm, SDM_RADIUS());
+
+    let activated: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n_locations {
+        let loc_addr: i64 = vec_get(addresses, i);
+        let dist: i64 = bv_hamming(address, loc_addr, address_dim);
+        if dist <= radius {
+            vec_push(activated, i);
+        }
+        i = i + 1;
+    }
+    activated
+}
+
+/// Write a word to the SDM at the given address.
+/// For each location within Hamming distance r of address,
+/// increment counters by +1 where word bit is 1, decrement by -1 where 0.
+fn sdm_write(sdm: i64, address: i64, word: i64) -> i64 {
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+    let activated: i64 = sdm_activated_locations(sdm, address);
+    let n_activated: i64 = vec_len(activated);
+
+    var i: i64 = 0;
+    while i < n_activated {
+        let loc_idx: i64 = vec_get(activated, i);
+        let ctr: i64 = vec_get(counters, loc_idx);
+        var j: i64 = 0;
+        while j < word_dim {
+            let bit: i64 = vec_get(word, j);
+            let old_val: i64 = vec_get(ctr, j);
+            if bit == 1 {
+                vec_set(ctr, j, old_val + 1);
+            } else {
+                vec_set(ctr, j, old_val - 1);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    n_activated
+}
+
+/// Read a word from the SDM at the given address.
+/// Sum counters of all locations within distance r, threshold to binary.
+/// Positive sum -> 1, non-positive -> 0.
+fn sdm_read(sdm: i64, address: i64) -> i64 {
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+    let activated: i64 = sdm_activated_locations(sdm, address);
+    let n_activated: i64 = vec_len(activated);
+
+    // Sum counters across activated locations
+    let sums: i64 = vec_new();
+    var j: i64 = 0;
+    while j < word_dim {
+        vec_push(sums, 0);
+        j = j + 1;
+    }
+
+    var i: i64 = 0;
+    while i < n_activated {
+        let loc_idx: i64 = vec_get(activated, i);
+        let ctr: i64 = vec_get(counters, loc_idx);
+        var k: i64 = 0;
+        while k < word_dim {
+            let old: i64 = vec_get(sums, k);
+            vec_set(sums, k, old + vec_get(ctr, k));
+            k = k + 1;
+        }
+        i = i + 1;
+    }
+
+    // Threshold to binary
+    let result: i64 = vec_new();
+    var m: i64 = 0;
+    while m < word_dim {
+        if vec_get(sums, m) > 0 {
+            vec_push(result, 1);
+        } else {
+            vec_push(result, 0);
+        }
+        m = m + 1;
+    }
+    result
+}
+
+/// Iterative retrieval: read, use result as new address, repeat until
+/// convergence or max_iters reached. This is the standard Kanerva
+/// convergent retrieval algorithm.
+fn sdm_read_iterative(sdm: i64, address: i64, max_iters: i64) -> i64 {
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let address_dim: i64 = vec_get(sdm, SDM_ADDR_DIM());
+
+    // For iterative retrieval, word_dim should equal address_dim
+    var current: i64 = bv_copy(address, address_dim);
+    var iter: i64 = 0;
+    while iter < max_iters {
+        let retrieved: i64 = sdm_read(sdm, current);
+
+        // Check convergence: if retrieved == current, stop
+        if bv_equal(retrieved, current, word_dim) == 1 {
+            return retrieved;
+        }
+
+        current = retrieved;
+        iter = iter + 1;
+    }
+    current
+}
+
+// =============================================================================
+// Online Learning
+// =============================================================================
+
+/// Single-shot learning: write a pattern to SDM.
+/// Same as sdm_write but named for the learning API.
+fn sdm_learn(sdm: i64, address: i64, word: i64) -> i64 {
+    sdm_write(sdm, address, word)
+}
+
+/// Forget a pattern: decrement counters (inverse of write).
+/// For each activated location, decrement where word bit is 1,
+/// increment where word bit is 0.
+fn sdm_forget(sdm: i64, address: i64, word: i64) -> i64 {
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+    let activated: i64 = sdm_activated_locations(sdm, address);
+    let n_activated: i64 = vec_len(activated);
+
+    var i: i64 = 0;
+    while i < n_activated {
+        let loc_idx: i64 = vec_get(activated, i);
+        let ctr: i64 = vec_get(counters, loc_idx);
+        var j: i64 = 0;
+        while j < word_dim {
+            let bit: i64 = vec_get(word, j);
+            let old_val: i64 = vec_get(ctr, j);
+            if bit == 1 {
+                vec_set(ctr, j, old_val - 1);
+            } else {
+                vec_set(ctr, j, old_val + 1);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    n_activated
+}
+
+/// Update a stored pattern: forget old_word, learn new_word at same address.
+fn sdm_update(sdm: i64, address: i64, old_word: i64, new_word: i64) -> i64 {
+    sdm_forget(sdm, address, old_word);
+    sdm_learn(sdm, address, new_word)
+}
+
+// =============================================================================
+// Statistics
+// =============================================================================
+
+/// Fraction of locations activated for a random address.
+/// Computes an estimate by sampling: pick a few random addresses and
+/// measure the average activation fraction.
+/// Returns f64_bits.
+fn sdm_utilization(sdm: i64) -> i64 {
+    let address_dim: i64 = vec_get(sdm, SDM_ADDR_DIM());
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let n_samples: i64 = 10;
+    var total_activated: i64 = 0;
+    var state: i64 = 12345;
+
+    var i: i64 = 0;
+    while i < n_samples {
+        state = lcg_next(state);
+        let addr: i64 = bv_random(address_dim, state);
+        let activated: i64 = sdm_activated_locations(sdm, addr);
+        total_activated = total_activated + vec_len(activated);
+        state = lcg_next(state);
+        i = i + 1;
+    }
+
+    let avg: f64 = bits_to_f64(f64_to_bits(total_activated)) /
+                   bits_to_f64(f64_to_bits(n_samples));
+    let frac: f64 = avg / bits_to_f64(f64_to_bits(n_locations));
+    f64_to_bits(frac)
+}
+
+/// Estimated storage capacity of the SDM.
+/// Uses the heuristic: capacity ~ n_locations * word_dim / (address_dim * ln(n_locations))
+/// Returns an integer estimate.
+fn sdm_capacity_estimate(sdm: i64) -> i64 {
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let address_dim: i64 = vec_get(sdm, SDM_ADDR_DIM());
+
+    // Approximate ln(n_locations) using integer math
+    // ln(x) ~ number of bits in x * 0.693
+    // We'll approximate: ln(n) ~ (log2(n) * 7) / 10
+    var log2_n: i64 = 0;
+    var temp: i64 = n_locations;
+    while temp > 1 {
+        temp = temp / 2;
+        log2_n = log2_n + 1;
+    }
+    if log2_n == 0 { log2_n = 1; }
+
+    // capacity ~ n_locations * word_dim / (address_dim * ln(n))
+    // Using ln ~ log2 * 7 / 10
+    let ln_approx: i64 = log2_n * 7 / 10;
+    if ln_approx == 0 {
+        return n_locations * word_dim / address_dim;
+    }
+    n_locations * word_dim / (address_dim * ln_approx)
+}
+
+/// Count the total number of non-zero counter entries across all locations.
+fn sdm_nonzero_counters(sdm: i64) -> i64 {
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+    var count: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n_locations {
+        let ctr: i64 = vec_get(counters, i);
+        var j: i64 = 0;
+        while j < word_dim {
+            if vec_get(ctr, j) != 0 {
+                count = count + 1;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+/// Get the maximum absolute counter value across all locations.
+fn sdm_max_counter(sdm: i64) -> i64 {
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+    var max_val: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n_locations {
+        let ctr: i64 = vec_get(counters, i);
+        var j: i64 = 0;
+        while j < word_dim {
+            let v: i64 = abs_i64(vec_get(ctr, j));
+            if v > max_val {
+                max_val = v;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    max_val
+}
+
+/// Reset all counters to zero.
+fn sdm_reset(sdm: i64) -> i64 {
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+
+    var i: i64 = 0;
+    while i < n_locations {
+        let ctr: i64 = vec_get(counters, i);
+        var j: i64 = 0;
+        while j < word_dim {
+            vec_set(ctr, j, 0);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Batch Operations
+// =============================================================================
+
+/// Write multiple patterns to SDM.
+/// `addresses` is a vec of `n` address handles.
+/// `words` is a vec of `n` word handles.
+fn sdm_write_batch(sdm: i64, addresses: i64, words: i64, n: i64) -> i64 {
+    var i: i64 = 0;
+    var total: i64 = 0;
+    while i < n {
+        let addr: i64 = vec_get(addresses, i);
+        let word: i64 = vec_get(words, i);
+        total = total + sdm_write(sdm, addr, word);
+        i = i + 1;
+    }
+    total
+}
+
+/// Read multiple patterns from SDM.
+/// `addresses` is a vec of `n` address handles.
+/// Returns a vec of `n` word handles.
+fn sdm_read_batch(sdm: i64, addresses: i64, n: i64) -> i64 {
+    let results: i64 = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let addr: i64 = vec_get(addresses, i);
+        let word: i64 = sdm_read(sdm, addr);
+        vec_push(results, word);
+        i = i + 1;
+    }
+    results
+}
+
+// =============================================================================
+// Content-Addressable Memory (CAM) Operations
+// =============================================================================
+
+/// Find the nearest stored pattern to a query.
+/// Write N patterns, then read at the query address to retrieve
+/// the closest stored pattern.
+fn sdm_nearest(sdm: i64, query: i64) -> i64 {
+    sdm_read(sdm, query)
+}
+
+/// Check if a pattern is stored in the SDM by writing then reading
+/// and checking Hamming distance.
+/// Returns 1 if the read-back pattern is within `threshold` Hamming
+/// distance of the original word, 0 otherwise.
+fn sdm_contains(sdm: i64, address: i64, word: i64, threshold: i64) -> i64 {
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let retrieved: i64 = sdm_read(sdm, address);
+    let dist: i64 = bv_hamming(retrieved, word, word_dim);
+    if dist <= threshold {
+        1
+    } else {
+        0
+    }
+}
+
+// =============================================================================
+// Weighted Write
+// =============================================================================
+
+/// Weighted write: increment counters by `weight` instead of 1.
+/// For stronger storage of important patterns.
+fn sdm_write_weighted(sdm: i64, address: i64, word: i64, weight: i64) -> i64 {
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+    let activated: i64 = sdm_activated_locations(sdm, address);
+    let n_activated: i64 = vec_len(activated);
+
+    var i: i64 = 0;
+    while i < n_activated {
+        let loc_idx: i64 = vec_get(activated, i);
+        let ctr: i64 = vec_get(counters, loc_idx);
+        var j: i64 = 0;
+        while j < word_dim {
+            let bit: i64 = vec_get(word, j);
+            let old_val: i64 = vec_get(ctr, j);
+            if bit == 1 {
+                vec_set(ctr, j, old_val + weight);
+            } else {
+                vec_set(ctr, j, old_val - weight);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    n_activated
+}
+
+// =============================================================================
+// Distance-Weighted Read
+// =============================================================================
+
+/// Distance-weighted read: locations closer to the address contribute more.
+/// Weight = (radius - distance + 1) for each activated location.
+fn sdm_read_weighted(sdm: i64, address: i64) -> i64 {
+    let address_dim: i64 = vec_get(sdm, SDM_ADDR_DIM());
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let addresses: i64 = vec_get(sdm, SDM_ADDRESSES());
+    let counters: i64 = vec_get(sdm, SDM_COUNTERS());
+    let radius: i64 = vec_get(sdm, SDM_RADIUS());
+
+    // Weighted sum of counters
+    let sums: i64 = vec_new();
+    var j: i64 = 0;
+    while j < word_dim {
+        vec_push(sums, 0);
+        j = j + 1;
+    }
+
+    var i: i64 = 0;
+    while i < n_locations {
+        let loc_addr: i64 = vec_get(addresses, i);
+        let dist: i64 = bv_hamming(address, loc_addr, address_dim);
+        if dist <= radius {
+            let weight: i64 = radius - dist + 1;
+            let ctr: i64 = vec_get(counters, i);
+            var k: i64 = 0;
+            while k < word_dim {
+                let old: i64 = vec_get(sums, k);
+                vec_set(sums, k, old + vec_get(ctr, k) * weight);
+                k = k + 1;
+            }
+        }
+        i = i + 1;
+    }
+
+    // Threshold to binary
+    let result: i64 = vec_new();
+    var m: i64 = 0;
+    while m < word_dim {
+        if vec_get(sums, m) > 0 {
+            vec_push(result, 1);
+        } else {
+            vec_push(result, 0);
+        }
+        m = m + 1;
+    }
+    result
+}
+
+// =============================================================================
+// SDM Summary
+// =============================================================================
+
+/// Print summary of SDM state.
+fn sdm_summary(sdm: i64) -> i64 {
+    let address_dim: i64 = vec_get(sdm, SDM_ADDR_DIM());
+    let n_locations: i64 = vec_get(sdm, SDM_N_LOCATIONS());
+    let word_dim: i64 = vec_get(sdm, SDM_WORD_DIM());
+    let radius: i64 = vec_get(sdm, SDM_RADIUS());
+
+    println("SDM Summary:");
+    print("  Address dimension: ");
+    print_i64(address_dim);
+    println("");
+    print("  Number of locations: ");
+    print_i64(n_locations);
+    println("");
+    print("  Word dimension: ");
+    print_i64(word_dim);
+    println("");
+    print("  Access radius: ");
+    print_i64(radius);
+    println("");
+    print("  Non-zero counters: ");
+    print_i64(sdm_nonzero_counters(sdm));
+    println("");
+    print("  Max counter value: ");
+    print_i64(sdm_max_counter(sdm));
+    println("");
+    0
+}

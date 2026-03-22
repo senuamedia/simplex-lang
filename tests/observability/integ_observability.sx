@@ -2,17 +2,13 @@
 // .11: Metrics, Tracing, and Logging
 
 // External declarations
-fn metrics_registry_new() -> i64;
-fn metrics_registry_global() -> i64;
-fn metrics_registry_count(reg: i64) -> i64;
-fn metrics_export_json(reg: i64) -> i64;
-fn metrics_export_prometheus(reg: i64) -> i64;
+// Note: many observability functions are auto-declared by the runtime.
+// Only declare functions NOT in the runtime's auto-declare block.
 fn metrics_registry_close(reg: i64);
 
 fn counter_new(name: i64, desc: i64) -> i64;
 fn counter_inc(counter: i64);
 fn counter_add(counter: i64, value: f64);
-fn counter_value(counter: i64) -> f64;
 fn counter_add_label(counter: i64, key: i64, value: i64);
 
 fn gauge_new(name: i64, desc: i64) -> i64;
@@ -20,19 +16,11 @@ fn gauge_set(gauge: i64, value: f64);
 fn gauge_inc(gauge: i64);
 fn gauge_dec(gauge: i64);
 fn gauge_add(gauge: i64, value: f64);
-fn gauge_value(gauge: i64) -> f64;
 
 fn histogram_new(name: i64, desc: i64) -> i64;
 fn histogram_observe(hist: i64, value: f64);
-fn histogram_sum(hist: i64) -> f64;
-fn histogram_count(hist: i64) -> i64;
-fn histogram_mean(hist: i64) -> f64;
-fn histogram_min(hist: i64) -> f64;
-fn histogram_max(hist: i64) -> f64;
-fn histogram_to_json(hist: i64) -> i64;
 
 fn tracer_new(service_name: i64) -> i64;
-fn tracer_active_spans(tracer: i64) -> i64;
 fn tracer_close(tracer: i64);
 
 fn span_start(tracer: i64, name: i64) -> i64;
@@ -41,14 +29,9 @@ fn span_end(span: i64);
 fn span_set_status(span: i64, status: i64, message: i64);
 fn span_set_attribute(span: i64, key: i64, value: i64);
 fn span_add_event(span: i64, name: i64);
-fn span_duration_us(span: i64) -> i64;
-fn span_trace_id(span: i64) -> i64;
-fn span_id(span: i64) -> i64;
-fn span_to_json(span: i64) -> i64;
 fn span_close(span: i64);
 
 fn logger_new(name: i64) -> i64;
-fn logger_global() -> i64;
 fn logger_set_level(logger: i64, level: i64);
 fn logger_set_console(logger: i64, enabled: i64);
 fn logger_set_json(logger: i64, enabled: i64);
@@ -64,9 +47,6 @@ fn log_with_span(logger: i64, level: i64, message: i64, span: i64);
 fn logger_close(logger: i64);
 
 fn timer_start(name: i64) -> i64;
-fn timer_elapsed_us(timer: i64) -> i64;
-fn timer_elapsed_ms(timer: i64) -> i64;
-fn timer_elapsed_s(timer: i64) -> f64;
 fn timer_record_to(timer: i64, histogram: i64);
 fn timer_close(timer: i64);
 

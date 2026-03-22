@@ -14,7 +14,7 @@
 
 [package]
 name = "simplex-protobuf"
-version = "0.16.0"
+version = "0.17.0"
 description = "Protocol Buffers wire format encoding/decoding for Simplex"
 authors = ["Rod Higgins", "Simplex Team"]
 license = "AGPL-3.0"

@@ -7,7 +7,7 @@
 # Categories:
 #   all, language, types, neural, stdlib, runtime, ai, integration,
 #   toolchain, basics, async, actors, learning, quantum, observability,
-#   training, contracts, math, fuzz, properties, safety, formal
+#   training, contracts, math, fuzz, properties, safety, formal, cloud
 #
 # Types (based on naming convention):
 #   all   - Run all test types
@@ -47,6 +47,44 @@ PASSED=0
 FAILED=0
 SKIPPED=0
 WARNINGS=0
+
+# Module cache directory - compiled .ll files are cached here to avoid recompilation
+MODULE_CACHE_DIR="$SCRIPT_DIR/.module_cache"
+mkdir -p "$MODULE_CACHE_DIR"
+
+# Parallel job count (0 = sequential, default)
+PARALLEL_JOBS=0
+
+# Parse -j flag from arguments and set CATEGORY, TEST_TYPE, FILE_TARGETS
+FILE_TARGETS=()
+parse_args() {
+    local args=()
+    local skip_next=0
+    for arg in "$@"; do
+        if [ "$skip_next" = "1" ]; then
+            PARALLEL_JOBS="$arg"
+            skip_next=0
+            continue
+        fi
+        case "$arg" in
+            -j)
+                skip_next=1
+                ;;
+            -j*)
+                PARALLEL_JOBS="${arg#-j}"
+                ;;
+            *)
+                args+=("$arg")
+                ;;
+        esac
+    done
+    CATEGORY="${args[0]:-all}"
+    TEST_TYPE="${args[1]:-all}"
+    # For file mode, remaining args after category are targets
+    if [ "${args[0]}" = "file" ] || [ "${args[0]}" = "f" ]; then
+        FILE_TARGETS=("${args[@]:1}")
+    fi
+}
 
 # Test type filter (unit, spec, integ, e2e, or all)
 TEST_TYPE="${2:-all}"
@@ -129,8 +167,65 @@ run_test() {
 
     # Pre-compile module dependencies BEFORE main test (needed for declare extraction)
     local LL_FILES=""
+    # Library search paths for module resolution
+    local LIB_PATHS=(
+        "$test_dir"
+        "$PROJECT_ROOT/simplex-std/src"
+        "$PROJECT_ROOT/simplex-learning/src"
+        "$PROJECT_ROOT/simplex-core/src"
+        "$PROJECT_ROOT/simplex-db/src"
+        "$PROJECT_ROOT/simplex-db/drivers"
+        "$PROJECT_ROOT/simplex-quantum/src"
+        "$PROJECT_ROOT/simplex-aws/src"
+        "$PROJECT_ROOT/simplex-sqs/src"
+        "$PROJECT_ROOT/simplex-dynamodb/src"
+        "$PROJECT_ROOT/simplex-kafka/src"
+        "$PROJECT_ROOT/simplex-vectordb/src"
+        "$PROJECT_ROOT/simplex-rag/src"
+        "$PROJECT_ROOT/simplex-guardrails/src"
+        "$PROJECT_ROOT/simplex-eval/src"
+        "$PROJECT_ROOT/simplex-prometheus/src"
+        "$PROJECT_ROOT/simplex-opentelemetry/src"
+        "$PROJECT_ROOT/simplex-protobuf/src"
+        "$PROJECT_ROOT/simplex-nats/src"
+        "$PROJECT_ROOT/tools"
+    )
     for module in $(grep -E "^use [a-z_]+;" "$test_name.sx" 2>/dev/null | sed 's/use \([a-z_]*\);/\1/' || true); do
-        if [ -f "${module}.sx" ]; then
+        local found=0
+        for search_dir in "${LIB_PATHS[@]}"; do
+            if [ -f "${search_dir}/${module}.sx" ]; then
+                # Cache key: search_dir + module name
+                local cache_key="${search_dir//\//_}_${module}"
+                local cached_ll="$MODULE_CACHE_DIR/${cache_key}.ll"
+                local source_file="${search_dir}/${module}.sx"
+
+                # Check if cached .ll exists and is newer than source .sx
+                if [ -f "$cached_ll" ] && [ "$cached_ll" -nt "$source_file" ]; then
+                    # Use cached version
+                    cp "$cached_ll" "./${module}.ll" 2>/dev/null
+                    LL_FILES="$LL_FILES ${module}.ll"
+                    found=1
+                    break
+                fi
+
+                # Compile module from its source directory
+                local mod_dir=$(pwd)
+                cd "$search_dir"
+                "$COMPILER" "${module}.sx" >/dev/null 2>&1
+                cd "$mod_dir"
+                if [ -f "${search_dir}/${module}.ll" ]; then
+                    # Cache the compiled .ll
+                    cp "${search_dir}/${module}.ll" "$cached_ll" 2>/dev/null
+                    # Copy .ll to test directory so sxc's `use` can find declarations
+                    cp "${search_dir}/${module}.ll" "./${module}.ll" 2>/dev/null
+                    LL_FILES="$LL_FILES ${module}.ll"
+                    found=1
+                    break
+                fi
+            fi
+        done
+        # Fallback: check test directory (existing behavior)
+        if [ "$found" -eq 0 ] && [ -f "${module}.sx" ]; then
             "$COMPILER" "${module}.sx" >/dev/null 2>&1
             if [ -f "${module}.ll" ]; then
                 LL_FILES="$LL_FILES ${module}.ll"
@@ -249,6 +344,9 @@ print_header() {
     if [ "$TEST_TYPE" != "all" ]; then
         echo -e "  Filter: ${CYAN}$TEST_TYPE${NC} tests only"
     fi
+    if [ "$PARALLEL_JOBS" -gt 0 ] 2>/dev/null; then
+        echo -e "  Parallel: ${CYAN}$PARALLEL_JOBS${NC} jobs"
+    fi
     echo ""
 }
 
@@ -274,8 +372,212 @@ print_summary() {
     echo "=============================================="
 }
 
+# Parallel execution support
+PARALLEL_RESULTS_DIR=""
+
+# Run a single test in a subprocess for parallel mode
+# Writes result to a file: PASS, FAIL, COMPILE_FAIL, LINK_FAIL, or SKIP
+run_test_subprocess() {
+    local test_file="$1"
+    local result_file="$2"
+    local test_name=$(basename "$test_file" .sx)
+    local test_dir=$(dirname "$test_file")
+    local display_name="${test_dir#$SCRIPT_DIR/}/$test_name"
+
+    if [[ "$test_name" == "spec_mathlib" ]] || [[ "$test_name" == "mathlib" ]] || [[ "$test_name" == "helpers" ]]; then
+        echo "SKIP" > "$result_file"
+        return
+    fi
+
+    if ! matches_type_filter "$test_name"; then
+        echo "SKIP" > "$result_file"
+        return
+    fi
+
+    local orig_dir=$(pwd)
+    cd "$test_dir"
+
+    # Pre-compile module dependencies (same logic as run_test)
+    local LL_FILES=""
+    local LIB_PATHS=(
+        "$test_dir"
+        "$PROJECT_ROOT/simplex-std/src"
+        "$PROJECT_ROOT/simplex-learning/src"
+        "$PROJECT_ROOT/simplex-core/src"
+        "$PROJECT_ROOT/simplex-db/src"
+        "$PROJECT_ROOT/simplex-db/drivers"
+        "$PROJECT_ROOT/simplex-quantum/src"
+        "$PROJECT_ROOT/simplex-aws/src"
+        "$PROJECT_ROOT/simplex-sqs/src"
+        "$PROJECT_ROOT/simplex-dynamodb/src"
+        "$PROJECT_ROOT/simplex-kafka/src"
+        "$PROJECT_ROOT/simplex-vectordb/src"
+        "$PROJECT_ROOT/simplex-rag/src"
+        "$PROJECT_ROOT/simplex-guardrails/src"
+        "$PROJECT_ROOT/simplex-eval/src"
+        "$PROJECT_ROOT/simplex-prometheus/src"
+        "$PROJECT_ROOT/simplex-opentelemetry/src"
+        "$PROJECT_ROOT/simplex-protobuf/src"
+        "$PROJECT_ROOT/simplex-nats/src"
+        "$PROJECT_ROOT/tools"
+    )
+    for module in $(grep -E "^use [a-z_]+;" "$test_name.sx" 2>/dev/null | sed 's/use \([a-z_]*\);/\1/' || true); do
+        local found=0
+        for search_dir in "${LIB_PATHS[@]}"; do
+            if [ -f "${search_dir}/${module}.sx" ]; then
+                local cache_key="${search_dir//\//_}_${module}"
+                local cached_ll="$MODULE_CACHE_DIR/${cache_key}.ll"
+                local source_file="${search_dir}/${module}.sx"
+
+                if [ -f "$cached_ll" ] && [ "$cached_ll" -nt "$source_file" ]; then
+                    cp "$cached_ll" "./${module}.ll" 2>/dev/null
+                    LL_FILES="$LL_FILES ${module}.ll"
+                    found=1
+                    break
+                fi
+
+                local mod_dir=$(pwd)
+                cd "$search_dir"
+                "$COMPILER" "${module}.sx" >/dev/null 2>&1
+                cd "$mod_dir"
+                if [ -f "${search_dir}/${module}.ll" ]; then
+                    cp "${search_dir}/${module}.ll" "$cached_ll" 2>/dev/null
+                    cp "${search_dir}/${module}.ll" "./${module}.ll" 2>/dev/null
+                    LL_FILES="$LL_FILES ${module}.ll"
+                    found=1
+                    break
+                fi
+            fi
+        done
+        if [ "$found" -eq 0 ] && [ -f "${module}.sx" ]; then
+            "$COMPILER" "${module}.sx" >/dev/null 2>&1
+            if [ -f "${module}.ll" ]; then
+                LL_FILES="$LL_FILES ${module}.ll"
+            fi
+        fi
+    done
+
+    rm -f "$test_name.ll"
+    local compile_output
+    if [ -n "$USE_PYTHON" ]; then
+        compile_output=$(python3 "$COMPILER" "$test_name.sx" 2>&1)
+    else
+        compile_output=$("$COMPILER" "$test_name.sx" 2>&1)
+    fi
+    local compile_status=$?
+
+    if [ $compile_status -ne 0 ] || [ ! -f "$test_name.ll" ]; then
+        echo "COMPILE_FAIL" > "$result_file"
+        cd "$orig_dir"
+        return
+    fi
+
+    local LINK_LIBS="-lm"
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        OPENSSL_PREFIX=$(brew --prefix openssl 2>/dev/null || echo "/usr/local/opt/openssl")
+        SQLITE_PREFIX=$(brew --prefix sqlite 2>/dev/null || echo "/usr/local/opt/sqlite")
+        LINK_LIBS="-lm -lssl -lcrypto -L$OPENSSL_PREFIX/lib -L$SQLITE_PREFIX/lib"
+    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
+        LINK_LIBS="-lm -lssl -lcrypto -lpthread"
+    fi
+
+    LL_FILES="$test_name.ll $LL_FILES"
+    if ! clang -O2 $LL_FILES "$RUNTIME" -o "$test_name.bin" $LINK_LIBS 2>/dev/null; then
+        echo "LINK_FAIL" > "$result_file"
+        rm -f "$test_name.ll"
+        cd "$orig_dir"
+        return
+    fi
+
+    if ./"$test_name.bin" >/dev/null 2>&1; then
+        echo "PASS" > "$result_file"
+    else
+        echo "FAIL" > "$result_file"
+    fi
+
+    rm -f "$test_name.ll" "$test_name.bin"
+    for module in $(grep -E "^use [a-z_]+;" "$test_name.sx" 2>/dev/null | sed 's/use \([a-z_]*\);/\1/' || true); do
+        rm -f "${module}.ll"
+    done
+    cd "$orig_dir"
+}
+
+# Run all collected tests in parallel with -j N concurrency
+run_parallel_tests() {
+    local tests_file="$1"
+    if [ ! -f "$tests_file" ] || [ ! -s "$tests_file" ]; then
+        return
+    fi
+
+    PARALLEL_RESULTS_DIR=$(mktemp -d)
+    local active_jobs=0
+    local job_idx=0
+
+    while IFS= read -r test_file; do
+        local test_name=$(basename "$test_file" .sx)
+        local test_dir=$(dirname "$test_file")
+        local display_name="${test_dir#$SCRIPT_DIR/}/$test_name"
+        local result_file="$PARALLEL_RESULTS_DIR/result_${job_idx}"
+        local info_file="$PARALLEL_RESULTS_DIR/info_${job_idx}"
+        echo "$display_name" > "$info_file"
+
+        run_test_subprocess "$test_file" "$result_file" &
+        job_idx=$((job_idx + 1))
+        active_jobs=$((active_jobs + 1))
+
+        # Throttle to PARALLEL_JOBS
+        if [ $active_jobs -ge $PARALLEL_JOBS ]; then
+            wait -n 2>/dev/null || wait
+            active_jobs=$((active_jobs - 1))
+        fi
+    done < "$tests_file"
+
+    # Wait for all remaining jobs
+    wait
+
+    # Collect results
+    local i=0
+    while [ $i -lt $job_idx ]; do
+        local result_file="$PARALLEL_RESULTS_DIR/result_${i}"
+        local info_file="$PARALLEL_RESULTS_DIR/info_${i}"
+        local display_name=$(cat "$info_file" 2>/dev/null)
+        local result=$(cat "$result_file" 2>/dev/null)
+        local test_basename=$(basename "$display_name")
+        local type_label=$(get_type_label "$test_basename")
+
+        if [ "$result" != "SKIP" ]; then
+            printf "    %-45s %s " "$display_name" "$type_label"
+            case "$result" in
+                PASS)
+                    echo -e "${GREEN}PASS${NC}"
+                    ((PASSED++))
+                    ;;
+                FAIL)
+                    echo -e "${RED}FAIL${NC}"
+                    ((FAILED++))
+                    ;;
+                COMPILE_FAIL)
+                    echo -e "${RED}COMPILE FAIL${NC}"
+                    ((FAILED++))
+                    ;;
+                LINK_FAIL)
+                    echo -e "${RED}LINK FAIL${NC}"
+                    ((FAILED++))
+                    ;;
+                *)
+                    echo -e "${RED}UNKNOWN${NC}"
+                    ((FAILED++))
+                    ;;
+            esac
+        fi
+        i=$((i + 1))
+    done
+
+    rm -rf "$PARALLEL_RESULTS_DIR"
+}
+
 print_usage() {
-    echo "Usage: ./run_tests.sh [category] [type]"
+    echo "Usage: ./run_tests.sh [-j N] [category] [type]"
     echo ""
     echo "Categories:"
     echo "  all          Run all categories"
@@ -293,6 +595,10 @@ print_usage() {
     echo "  toolchain    Compiler toolchain tests"
     echo "  integration  End-to-end integration tests"
     echo "  observability Metrics and tracing tests"
+    echo "  cloud        Cloud integration tests (AWS, SQS, DynamoDB, Kafka)"
+    echo ""
+    echo "Options:"
+    echo "  -j N         Run N tests in parallel"
     echo ""
     echo "Types (filter by naming convention):"
     echo "  all   - Run all test types (default)"
@@ -409,6 +715,11 @@ run_all_tests() {
     echo -e "${YELLOW}Formal Invariants${NC}"
     run_category "$SCRIPT_DIR/formal" "" "  "
     echo ""
+
+    # Cloud Integration Tests
+    echo -e "${YELLOW}Cloud${NC}"
+    run_category "$SCRIPT_DIR/cloud" "" "  "
+    echo ""
 }
 
 # Validate test type
@@ -425,8 +736,8 @@ validate_type() {
     esac
 }
 
-# Main execution
-CATEGORY="${1:-all}"
+# Main execution - parse args with -j support
+parse_args "$@"
 
 # Handle help
 if [ "$CATEGORY" = "-h" ] || [ "$CATEGORY" = "--help" ] || [ "$CATEGORY" = "help" ]; then
@@ -437,9 +748,8 @@ fi
 # Single file mode
 if [ "$CATEGORY" = "file" ] || [ "$CATEGORY" = "f" ]; then
     TEST_TYPE="all"
-    shift
     print_header
-    for target in "$@"; do
+    for target in "${FILE_TARGETS[@]}"; do
         if [[ "$target" == *.sx ]]; then test_file="$target"; else test_file="${target}.sx"; fi
         if [ -f "$SCRIPT_DIR/$test_file" ]; then run_test "$SCRIPT_DIR/$test_file"
         elif [ -f "$test_file" ]; then run_test "$test_file"
@@ -540,6 +850,10 @@ case "$CATEGORY" in
     formal)
         echo -e "${YELLOW}Formal Invariants${NC}"
         run_category "$SCRIPT_DIR/formal" "" "  "
+        ;;
+    cloud)
+        echo -e "${YELLOW}Cloud${NC}"
+        run_category "$SCRIPT_DIR/cloud" "" "  "
         ;;
     *)
         echo -e "${RED}Unknown category: $CATEGORY${NC}"

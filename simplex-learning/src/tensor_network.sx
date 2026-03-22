@@ -1,0 +1,1353 @@
+// simplex-learning::tensor_network - Tensor Network Compression
+//
+// Implements tensor decomposition methods for neural network compression:
+//   - Tensor Train (TT) / Matrix Product States decomposition
+//   - Truncated SVD via one-sided Jacobi rotations
+//   - Tucker decomposition (basic)
+//   - TT arithmetic: matvec, add, round (re-compress)
+//
+// Tensor Train format stores an (m x n) matrix as a chain of 3-index cores:
+//   M[i,j] = sum_r1,...,r_{d-1} G_1[i_1,r_1] G_2[r_1,i_2,r_2] ... G_d[r_{d-1},i_d]
+// This reduces O(n^2) storage to O(n*r^2) where r is the bond dimension.
+//
+// All f64 values are stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+fn tn_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn tn_sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    var guess: f64 = x;
+    if guess > 1.0 { guess = guess / 2.0; }
+    if guess < 0.001 { guess = 0.001; }
+    var i: i64 = 0;
+    while i < 30 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    guess
+}
+
+fn tn_max(a: f64, b: f64) -> f64 {
+    if a > b { return a; }
+    b
+}
+
+fn tn_min_i64(a: i64, b: i64) -> i64 {
+    if a < b { return a; }
+    b
+}
+
+fn tn_max_i64(a: i64, b: i64) -> i64 {
+    if a > b { return a; }
+    b
+}
+
+// Hypot: sqrt(a^2 + b^2) avoiding overflow
+fn tn_hypot(a: f64, b: f64) -> f64 {
+    let aa: f64 = tn_abs(a);
+    let bb: f64 = tn_abs(b);
+    if aa < 0.000000001 { return bb; }
+    if bb < 0.000000001 { return aa; }
+    if aa > bb {
+        let r: f64 = bb / aa;
+        return aa * tn_sqrt(1.0 + r * r);
+    }
+    let r: f64 = aa / bb;
+    bb * tn_sqrt(1.0 + r * r)
+}
+
+// Sign function
+fn tn_sign(x: f64) -> f64 {
+    if x >= 0.0 { return 1.0; }
+    0.0 - 1.0
+}
+
+// =============================================================================
+// Vector/Matrix utilities (f64-as-bits in vecs)
+// =============================================================================
+
+// Create a zero vector of n f64-as-bits elements
+fn tn_vec_zeros(n: i64) -> i64 {
+    let v = vec_new();
+    let zero_bits: i64 = f64_to_bits(0.0);
+    var i: i64 = 0;
+    while i < n {
+        vec_push(v, zero_bits);
+        i = i + 1;
+    }
+    v
+}
+
+// Deep copy a vec
+fn tn_vec_copy(src: i64) -> i64 {
+    let n: i64 = vec_len(src);
+    let dst = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    dst
+}
+
+// Get matrix element M[row, col] from flat vec (row-major)
+fn mat_get(m: i64, cols: i64, row: i64, col: i64) -> f64 {
+    bits_to_f64(vec_get(m, row * cols + col))
+}
+
+// Set matrix element M[row, col] in flat vec (row-major)
+fn mat_set(m: i64, cols: i64, row: i64, col: i64, val: f64) {
+    vec_set(m, row * cols + col, f64_to_bits(val));
+}
+
+// Create a zero matrix (rows x cols) as flat vec of f64-as-bits
+fn mat_zeros(rows: i64, cols: i64) -> i64 {
+    tn_vec_zeros(rows * cols)
+}
+
+// Create identity matrix (n x n)
+fn mat_identity(n: i64) -> i64 {
+    let m: i64 = mat_zeros(n, n);
+    var i: i64 = 0;
+    while i < n {
+        mat_set(m, n, i, i, 1.0);
+        i = i + 1;
+    }
+    m
+}
+
+// Matrix multiply: C = A (m x k) * B (k x n) -> (m x n)
+fn mat_mul(a: i64, b: i64, m: i64, k: i64, n: i64) -> i64 {
+    let c: i64 = mat_zeros(m, n);
+    var i: i64 = 0;
+    while i < m {
+        var j: i64 = 0;
+        while j < n {
+            var sum: f64 = 0.0;
+            var p: i64 = 0;
+            while p < k {
+                sum = sum + mat_get(a, k, i, p) * mat_get(b, n, p, j);
+                p = p + 1;
+            }
+            mat_set(c, n, i, j, sum);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    c
+}
+
+// Matrix transpose: A^T (m x n) -> (n x m)
+fn mat_transpose(a: i64, rows: i64, cols: i64) -> i64 {
+    let t: i64 = mat_zeros(cols, rows);
+    var i: i64 = 0;
+    while i < rows {
+        var j: i64 = 0;
+        while j < cols {
+            mat_set(t, rows, j, i, mat_get(a, cols, i, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    t
+}
+
+// Deep copy a matrix
+fn mat_copy(src: i64) -> i64 {
+    tn_vec_copy(src)
+}
+
+// =============================================================================
+// Frobenius Norm
+// =============================================================================
+
+/// Compute the Frobenius norm ||M||_F = sqrt(sum(m_ij^2))
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits
+///   n      - total number of elements
+///
+/// Returns: f64_bits Frobenius norm
+fn frobenius_norm(matrix: i64, n: i64) -> i64 {
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(matrix, i));
+        sum = sum + val * val;
+        i = i + 1;
+    }
+    f64_to_bits(tn_sqrt(sum))
+}
+
+/// Compute relative error ||M - M'||_F / ||M||_F
+///
+/// Arguments:
+///   original   - handle to flat vec of f64-as-bits
+///   compressed - handle to flat vec of f64-as-bits
+///   n          - total number of elements
+///
+/// Returns: f64_bits relative error
+fn relative_error(original: i64, compressed: i64, n: i64) -> i64 {
+    var diff_sq: f64 = 0.0;
+    var orig_sq: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let o: f64 = bits_to_f64(vec_get(original, i));
+        let c: f64 = bits_to_f64(vec_get(compressed, i));
+        let d: f64 = o - c;
+        diff_sq = diff_sq + d * d;
+        orig_sq = orig_sq + o * o;
+        i = i + 1;
+    }
+    if orig_sq < 0.0000000001 {
+        return f64_to_bits(0.0);
+    }
+    f64_to_bits(tn_sqrt(diff_sq) / tn_sqrt(orig_sq))
+}
+
+// =============================================================================
+// One-sided Jacobi SVD
+// =============================================================================
+//
+// Computes a truncated SVD of an (m x n) matrix via one-sided Jacobi rotations.
+// This is numerically stable for small matrices and avoids complex Householder
+// transformations.
+//
+// Algorithm:
+//   1. Compute B = A^T A  (n x n)
+//   2. Apply Jacobi rotations to diagonalize B, accumulating V
+//   3. Singular values sigma_i = sqrt(B_ii)
+//   4. U = A V S^{-1}
+//   5. Truncate to desired rank
+//
+// Returns a vec of 3 handles: [U_handle, S_handle, Vt_handle]
+//   U:  (m x rank) flat vec of f64-as-bits
+//   S:  (rank)     vec of f64-as-bits (singular values, descending)
+//   Vt: (rank x n) flat vec of f64-as-bits
+
+// Perform one Jacobi rotation on B (n x n) and V (n x n) for columns (p, q)
+fn jacobi_rotate(b: i64, v: i64, n: i64, p: i64, q: i64) {
+    let bpp: f64 = mat_get(b, n, p, p);
+    let bqq: f64 = mat_get(b, n, q, q);
+    let bpq: f64 = mat_get(b, n, p, q);
+
+    if tn_abs(bpq) < 0.0000000000001 {
+        return;
+    }
+
+    // Compute rotation angle
+    let tau: f64 = (bqq - bpp) / (2.0 * bpq);
+    var t: f64 = 0.0;
+    if tau >= 0.0 {
+        t = 1.0 / (tau + tn_sqrt(1.0 + tau * tau));
+    } else {
+        t = 0.0 - 1.0 / (0.0 - tau + tn_sqrt(1.0 + tau * tau));
+    }
+    let c: f64 = 1.0 / tn_sqrt(1.0 + t * t);
+    let s: f64 = t * c;
+
+    // Update B: apply rotation B <- G^T B G
+    // Update rows/cols p, q of B
+    var k: i64 = 0;
+    while k < n {
+        if k != p {
+            if k != q {
+                let bkp: f64 = mat_get(b, n, k, p);
+                let bkq: f64 = mat_get(b, n, k, q);
+                let new_kp: f64 = c * bkp + s * bkq;
+                let new_kq: f64 = 0.0 - s * bkp + c * bkq;
+                mat_set(b, n, k, p, new_kp);
+                mat_set(b, n, k, q, new_kq);
+                mat_set(b, n, p, k, new_kp);
+                mat_set(b, n, q, k, new_kq);
+            }
+        }
+        k = k + 1;
+    }
+
+    // Update diagonal and off-diagonal for (p, p), (q, q), (p, q)
+    let new_pp: f64 = c * c * bpp + 2.0 * s * c * bpq + s * s * bqq;
+    let new_qq: f64 = s * s * bpp - 2.0 * s * c * bpq + c * c * bqq;
+    mat_set(b, n, p, p, new_pp);
+    mat_set(b, n, q, q, new_qq);
+    mat_set(b, n, p, q, 0.0);
+    mat_set(b, n, q, p, 0.0);
+
+    // Update V: V <- V * G
+    var i: i64 = 0;
+    while i < n {
+        let vip: f64 = mat_get(v, n, i, p);
+        let viq: f64 = mat_get(v, n, i, q);
+        mat_set(v, n, i, p, c * vip + s * viq);
+        mat_set(v, n, i, q, 0.0 - s * vip + c * viq);
+        i = i + 1;
+    }
+}
+
+// Sort singular values descending and reorder U columns and V columns
+fn svd_sort_descending(sigma: i64, u: i64, vt: i64, m: i64, n: i64, rank: i64) {
+    // Simple selection sort
+    var i: i64 = 0;
+    while i < rank - 1 {
+        var max_idx: i64 = i;
+        var max_val: f64 = bits_to_f64(vec_get(sigma, i));
+        var j: i64 = i + 1;
+        while j < rank {
+            let val: f64 = bits_to_f64(vec_get(sigma, j));
+            if val > max_val {
+                max_val = val;
+                max_idx = j;
+            }
+            j = j + 1;
+        }
+        if max_idx != i {
+            // Swap sigma[i] and sigma[max_idx]
+            let tmp: i64 = vec_get(sigma, i);
+            vec_set(sigma, i, vec_get(sigma, max_idx));
+            vec_set(sigma, max_idx, tmp);
+
+            // Swap columns in U (m x rank): swap col i and col max_idx
+            var k: i64 = 0;
+            while k < m {
+                let ui: i64 = vec_get(u, k * rank + i);
+                let uj: i64 = vec_get(u, k * rank + max_idx);
+                vec_set(u, k * rank + i, uj);
+                vec_set(u, k * rank + max_idx, ui);
+                k = k + 1;
+            }
+
+            // Swap rows in Vt (rank x n): swap row i and row max_idx
+            var c: i64 = 0;
+            while c < n {
+                let vi: i64 = vec_get(vt, i * n + c);
+                let vj: i64 = vec_get(vt, max_idx * n + c);
+                vec_set(vt, i * n + c, vj);
+                vec_set(vt, max_idx * n + c, vi);
+                c = c + 1;
+            }
+        }
+        i = i + 1;
+    }
+}
+
+/// Truncated SVD via one-sided Jacobi rotations.
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (m x n, row-major)
+///   rows   - number of rows (m)
+///   cols   - number of columns (n)
+///   rank   - desired truncation rank
+///
+/// Returns: handle to vec of 3 handles [U, S, Vt]
+///   U:  (m x rank) flat vec of f64-as-bits
+///   S:  (rank)     vec of f64-as-bits (singular values, descending)
+///   Vt: (rank x n) flat vec of f64-as-bits
+fn svd_truncated(matrix: i64, rows: i64, cols: i64, rank: i64) -> i64 {
+    let m: i64 = rows;
+    let n: i64 = cols;
+    let r: i64 = tn_min_i64(rank, tn_min_i64(m, n));
+
+    // Step 1: Compute B = A^T A (n x n)
+    let at: i64 = mat_transpose(matrix, m, n);
+    let b: i64 = mat_mul(at, matrix, n, m, n);
+
+    // Step 2: Jacobi eigendecomposition of B
+    let v: i64 = mat_identity(n);
+    var sweep: i64 = 0;
+    while sweep < 30 {
+        var off_diag: f64 = 0.0;
+        var p: i64 = 0;
+        while p < n - 1 {
+            var q: i64 = p + 1;
+            while q < n {
+                off_diag = off_diag + tn_abs(mat_get(b, n, p, q));
+                jacobi_rotate(b, v, n, p, q);
+                q = q + 1;
+            }
+            p = p + 1;
+        }
+        // Convergence check
+        if off_diag < 0.000000001 {
+            sweep = 30;  // break
+        }
+        sweep = sweep + 1;
+    }
+
+    // Step 3: Extract singular values (sqrt of eigenvalues)
+    let sigma_full = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let eigenval: f64 = mat_get(b, n, i, i);
+        if eigenval > 0.0 {
+            vec_push(sigma_full, f64_to_bits(tn_sqrt(eigenval)));
+        } else {
+            vec_push(sigma_full, f64_to_bits(0.0));
+        }
+        i = i + 1;
+    }
+
+    // Step 4: Compute U = A V S^{-1} (only first r columns)
+    // First compute A*V (m x n)
+    let av: i64 = mat_mul(matrix, v, m, n, n);
+
+    // Build truncated U (m x r): normalize columns of AV by sigma
+    let u_trunc: i64 = mat_zeros(m, r);
+    i = 0;
+    while i < r {
+        let s_val: f64 = bits_to_f64(vec_get(sigma_full, i));
+        var row: i64 = 0;
+        while row < m {
+            if s_val > 0.0000000001 {
+                mat_set(u_trunc, r, row, i, mat_get(av, n, row, i) / s_val);
+            } else {
+                mat_set(u_trunc, r, row, i, 0.0);
+            }
+            row = row + 1;
+        }
+        i = i + 1;
+    }
+
+    // Build truncated S (r elements)
+    let sigma_trunc = vec_new();
+    i = 0;
+    while i < r {
+        vec_push(sigma_trunc, vec_get(sigma_full, i));
+        i = i + 1;
+    }
+
+    // Build Vt (r x n) from V columns
+    let vt: i64 = mat_zeros(r, n);
+    i = 0;
+    while i < r {
+        var j: i64 = 0;
+        while j < n {
+            mat_set(vt, n, i, j, mat_get(v, n, j, i));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Sort singular values descending and reorder U, Vt
+    svd_sort_descending(sigma_trunc, u_trunc, vt, m, n, r);
+
+    // Pack result
+    let result = vec_new();
+    vec_push(result, u_trunc);
+    vec_push(result, sigma_trunc);
+    vec_push(result, vt);
+    result
+}
+
+/// Estimate the effective rank of a matrix.
+/// Counts singular values above tolerance * sigma_max.
+///
+/// Arguments:
+///   matrix    - handle to flat vec of f64-as-bits (m x n)
+///   rows      - number of rows
+///   cols      - number of columns
+///   tolerance - f64_bits threshold relative to largest singular value
+///
+/// Returns: estimated rank (i64)
+fn svd_rank_estimate(matrix: i64, rows: i64, cols: i64, tolerance: i64) -> i64 {
+    let min_dim: i64 = tn_min_i64(rows, cols);
+    let svd_result: i64 = svd_truncated(matrix, rows, cols, min_dim);
+    let sigma: i64 = vec_get(svd_result, 1);
+    let n_sv: i64 = vec_len(sigma);
+
+    if n_sv == 0 { return 0; }
+
+    let tol: f64 = bits_to_f64(tolerance);
+    let s_max: f64 = bits_to_f64(vec_get(sigma, 0));  // already sorted descending
+    let thresh: f64 = tol * s_max;
+
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < n_sv {
+        let sv: f64 = bits_to_f64(vec_get(sigma, i));
+        if sv > thresh {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+// =============================================================================
+// Tensor Train (TT) Decomposition
+// =============================================================================
+//
+// A TT decomposition of an (m x n) matrix uses two cores:
+//   Core 1: (m x r) matrix   — maps row index to bond dimension
+//   Core 2: (r x n) matrix   — maps bond dimension to column index
+//
+// For higher-order tensors, there would be d cores with 3 indices each.
+// Here we implement the matrix (2D) case which is equivalent to truncated SVD
+// but expressed in the TT formalism.
+//
+// TT cores layout (vec of vec handles):
+//   cores = [core_0, core_1, ...]
+//   Each core is a flat vec of f64-as-bits.
+//   core_0: (m x r) stored row-major
+//   core_1: (r x n) stored row-major
+//
+// TT metadata layout (separate vec):
+//   [0] n_cores    i64
+//   [1] cores_vec  i64 (handle to vec of core handles)
+//   [2] ranks_vec  i64 (handle to vec: [1, r, 1] for 2D)
+//   [3] dims_vec   i64 (handle to vec: [m, n])
+
+fn TT_N_CORES() -> i64  { 0 }
+fn TT_CORES() -> i64     { 1 }
+fn TT_RANKS() -> i64     { 2 }
+fn TT_DIMS() -> i64      { 3 }
+fn TT_FIELDS() -> i64    { 4 }
+
+/// Decompose a matrix into Tensor Train format via SVD.
+///
+/// Arguments:
+///   matrix   - handle to flat vec of f64-as-bits (rows x cols, row-major)
+///   rows     - number of rows
+///   cols     - number of columns
+///   max_rank - maximum bond dimension
+///
+/// Returns: handle to TT metadata vec
+fn tt_decompose(matrix: i64, rows: i64, cols: i64, max_rank: i64) -> i64 {
+    let r: i64 = tn_min_i64(max_rank, tn_min_i64(rows, cols));
+
+    // SVD: M = U S Vt
+    let svd_result: i64 = svd_truncated(matrix, rows, cols, r);
+    let u: i64 = vec_get(svd_result, 0);      // m x r
+    let sigma: i64 = vec_get(svd_result, 1);   // r
+    let vt: i64 = vec_get(svd_result, 2);      // r x cols
+
+    // Core 0 = U * diag(sqrt(S))  shape (rows x r)
+    let core0: i64 = mat_zeros(rows, r);
+    var i: i64 = 0;
+    while i < rows {
+        var j: i64 = 0;
+        while j < r {
+            let u_val: f64 = mat_get(u, r, i, j);
+            let s_val: f64 = tn_sqrt(bits_to_f64(vec_get(sigma, j)));
+            mat_set(core0, r, i, j, u_val * s_val);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Core 1 = diag(sqrt(S)) * Vt  shape (r x cols)
+    let core1: i64 = mat_zeros(r, cols);
+    i = 0;
+    while i < r {
+        let s_val: f64 = tn_sqrt(bits_to_f64(vec_get(sigma, i)));
+        var j: i64 = 0;
+        while j < cols {
+            let vt_val: f64 = mat_get(vt, cols, i, j);
+            mat_set(core1, cols, i, j, s_val * vt_val);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Build cores vec
+    let cores = vec_new();
+    vec_push(cores, core0);
+    vec_push(cores, core1);
+
+    // Build ranks vec: [1, r, 1]
+    let ranks = vec_new();
+    vec_push(ranks, 1);
+    vec_push(ranks, r);
+    vec_push(ranks, 1);
+
+    // Build dims vec: [rows, cols]
+    let dims = vec_new();
+    vec_push(dims, rows);
+    vec_push(dims, cols);
+
+    // Build TT metadata
+    let tt = vec_new();
+    vec_push(tt, 2);       // n_cores
+    vec_push(tt, cores);   // cores vec handle
+    vec_push(tt, ranks);   // ranks
+    vec_push(tt, dims);    // dims
+    tt
+}
+
+/// Reconstruct a matrix from TT cores.
+///
+/// Arguments:
+///   tt   - handle to TT metadata
+///   rows - number of rows
+///   cols - number of columns
+///
+/// Returns: handle to flat vec of f64-as-bits (rows x cols)
+fn tt_reconstruct(tt: i64, rows: i64, cols: i64) -> i64 {
+    let cores: i64 = vec_get(tt, TT_CORES());
+    let core0: i64 = vec_get(cores, 0);  // rows x r
+    let core1: i64 = vec_get(cores, 1);  // r x cols
+
+    let ranks: i64 = vec_get(tt, TT_RANKS());
+    let r: i64 = vec_get(ranks, 1);
+
+    // Reconstruct: M = core0 * core1
+    mat_mul(core0, core1, rows, r, cols)
+}
+
+/// Compress a matrix to TT format with a target rank.
+/// This is the same as tt_decompose but named for clarity.
+///
+/// Arguments:
+///   matrix      - handle to flat vec of f64-as-bits
+///   rows        - number of rows
+///   cols        - number of columns
+///   target_rank - desired bond dimension
+///
+/// Returns: handle to TT metadata vec
+fn tt_compress(matrix: i64, rows: i64, cols: i64, target_rank: i64) -> i64 {
+    tt_decompose(matrix, rows, cols, target_rank)
+}
+
+/// Get the bond dimensions of a TT decomposition.
+///
+/// Arguments:
+///   tt - handle to TT metadata
+///
+/// Returns: handle to ranks vec [1, r1, r2, ..., 1]
+fn tt_rank(tt: i64) -> i64 {
+    vec_get(tt, TT_RANKS())
+}
+
+/// Count total parameters in TT format.
+///
+/// For a 2-core TT with ranks [1, r, 1] and dims [m, n]:
+///   params = m*r + r*n
+///
+/// Arguments:
+///   tt - handle to TT metadata
+///
+/// Returns: total parameter count
+fn tt_param_count(tt: i64) -> i64 {
+    let n_cores: i64 = vec_get(tt, TT_N_CORES());
+    let cores: i64 = vec_get(tt, TT_CORES());
+
+    var total: i64 = 0;
+    var i: i64 = 0;
+    while i < n_cores {
+        let core: i64 = vec_get(cores, i);
+        total = total + vec_len(core);
+        i = i + 1;
+    }
+    total
+}
+
+/// Compute compression ratio: original_params / tt_params.
+///
+/// Arguments:
+///   original_params - number of parameters in original matrix
+///   tt_params       - number of parameters in TT format
+///
+/// Returns: f64_bits compression ratio (>1 means compression achieved)
+fn tt_compression_ratio(original_params: i64, tt_params: i64) -> i64 {
+    if tt_params == 0 { return f64_to_bits(0.0); }
+    f64_to_bits((original_params as f64) / (tt_params as f64))
+}
+
+// =============================================================================
+// TT Operations
+// =============================================================================
+
+/// Multiply a TT-format matrix by a vector without full reconstruction.
+///
+/// For TT cores [C0 (m x r), C1 (r x n)]:
+///   result = C0 * (C1 * v)
+/// This is O(mr + rn) instead of O(mn).
+///
+/// Arguments:
+///   tt     - handle to TT metadata
+///   vector - handle to vec of f64-as-bits (length n)
+///   dim    - dimension of the vector (n)
+///
+/// Returns: handle to vec of f64-as-bits (length m)
+fn tt_matvec(tt: i64, vector: i64, dim: i64) -> i64 {
+    let cores: i64 = vec_get(tt, TT_CORES());
+    let ranks: i64 = vec_get(tt, TT_RANKS());
+    let dims: i64 = vec_get(tt, TT_DIMS());
+
+    let core0: i64 = vec_get(cores, 0);  // rows x r
+    let core1: i64 = vec_get(cores, 1);  // r x cols
+    let r: i64 = vec_get(ranks, 1);
+    let m: i64 = vec_get(dims, 0);
+    let n: i64 = vec_get(dims, 1);
+
+    // Step 1: intermediate = C1 * v  (r x n) * (n x 1) -> (r x 1)
+    let intermediate = vec_new();
+    var i: i64 = 0;
+    while i < r {
+        var sum: f64 = 0.0;
+        var j: i64 = 0;
+        while j < n {
+            sum = sum + mat_get(core1, n, i, j) * bits_to_f64(vec_get(vector, j));
+            j = j + 1;
+        }
+        vec_push(intermediate, f64_to_bits(sum));
+        i = i + 1;
+    }
+
+    // Step 2: result = C0 * intermediate  (m x r) * (r x 1) -> (m x 1)
+    let result = vec_new();
+    i = 0;
+    while i < m {
+        var sum: f64 = 0.0;
+        var j: i64 = 0;
+        while j < r {
+            sum = sum + mat_get(core0, r, i, j) * bits_to_f64(vec_get(intermediate, j));
+            j = j + 1;
+        }
+        vec_push(result, f64_to_bits(sum));
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Add two TT tensors by concatenating bond dimensions.
+///
+/// If A has rank r_a and B has rank r_b, the result has rank r_a + r_b.
+/// For 2-core TT:
+///   new_core0 = [A_core0 | B_core0]  (m x (r_a + r_b))
+///   new_core1 = [A_core1; B_core1]   ((r_a + r_b) x n)
+///
+/// Arguments:
+///   tt_a - handle to TT metadata for A
+///   tt_b - handle to TT metadata for B
+///
+/// Returns: handle to new TT metadata
+fn tt_add(tt_a: i64, tt_b: i64) -> i64 {
+    let cores_a: i64 = vec_get(tt_a, TT_CORES());
+    let cores_b: i64 = vec_get(tt_b, TT_CORES());
+    let ranks_a: i64 = vec_get(tt_a, TT_RANKS());
+    let ranks_b: i64 = vec_get(tt_b, TT_RANKS());
+    let dims: i64 = vec_get(tt_a, TT_DIMS());
+
+    let core0_a: i64 = vec_get(cores_a, 0);
+    let core0_b: i64 = vec_get(cores_b, 0);
+    let core1_a: i64 = vec_get(cores_a, 1);
+    let core1_b: i64 = vec_get(cores_b, 1);
+
+    let r_a: i64 = vec_get(ranks_a, 1);
+    let r_b: i64 = vec_get(ranks_b, 1);
+    let r_new: i64 = r_a + r_b;
+
+    let m: i64 = vec_get(dims, 0);
+    let n: i64 = vec_get(dims, 1);
+
+    // new_core0: (m x r_new) = [core0_a | core0_b]
+    let new_core0: i64 = mat_zeros(m, r_new);
+    var i: i64 = 0;
+    while i < m {
+        var j: i64 = 0;
+        while j < r_a {
+            mat_set(new_core0, r_new, i, j, mat_get(core0_a, r_a, i, j));
+            j = j + 1;
+        }
+        j = 0;
+        while j < r_b {
+            mat_set(new_core0, r_new, i, r_a + j, mat_get(core0_b, r_b, i, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // new_core1: (r_new x n) = [core1_a; core1_b]
+    let new_core1: i64 = mat_zeros(r_new, n);
+    i = 0;
+    while i < r_a {
+        var j: i64 = 0;
+        while j < n {
+            mat_set(new_core1, n, i, j, mat_get(core1_a, n, i, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < r_b {
+        var j: i64 = 0;
+        while j < n {
+            mat_set(new_core1, n, r_a + i, j, mat_get(core1_b, n, i, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Build new TT
+    let new_cores = vec_new();
+    vec_push(new_cores, new_core0);
+    vec_push(new_cores, new_core1);
+
+    let new_ranks = vec_new();
+    vec_push(new_ranks, 1);
+    vec_push(new_ranks, r_new);
+    vec_push(new_ranks, 1);
+
+    let tt = vec_new();
+    vec_push(tt, 2);
+    vec_push(tt, new_cores);
+    vec_push(tt, new_ranks);
+    vec_push(tt, dims);
+    tt
+}
+
+/// Re-compress (round) a TT tensor to a lower rank via SVD.
+///
+/// Reconstructs the full matrix and re-decomposes with max_rank.
+/// For large tensors, streaming methods would be used instead.
+///
+/// Arguments:
+///   tt       - handle to TT metadata
+///   max_rank - new maximum bond dimension
+///
+/// Returns: handle to new TT metadata with reduced rank
+fn tt_round(tt: i64, max_rank: i64) -> i64 {
+    let dims: i64 = vec_get(tt, TT_DIMS());
+    let m: i64 = vec_get(dims, 0);
+    let n: i64 = vec_get(dims, 1);
+
+    // Reconstruct and re-decompose
+    let full: i64 = tt_reconstruct(tt, m, n);
+    tt_decompose(full, m, n, max_rank)
+}
+
+// =============================================================================
+// Tucker Decomposition
+// =============================================================================
+//
+// Tucker decomposition of a matrix M (m x n):
+//   M ≈ G ×_1 A ×_2 B
+// where:
+//   G: (r1 x r2) core tensor
+//   A: (m x r1) factor matrix for mode 1
+//   B: (n x r2) factor matrix for mode 2
+//
+// This is computed via two-sided SVD:
+//   M = U S Vt
+//   A = U[:, :r1]
+//   B = V[:, :r2]
+//   G = S[:r1, :r2] (diagonal portion)
+//
+// Returns: vec of 3 handles [core_G, factor_A, factor_B]
+
+/// Tucker decomposition of a matrix.
+///
+/// Arguments:
+///   tensor - handle to flat vec of f64-as-bits (m x n)
+///   dims   - handle to vec [m, n]
+///   ranks  - handle to vec [r1, r2]
+///
+/// Returns: handle to vec [core_G, factor_A, factor_B]
+///   core_G:   (r1 x r2) flat vec
+///   factor_A: (m x r1)  flat vec
+///   factor_B: (n x r2)  flat vec
+fn tucker_decompose(tensor: i64, dims: i64, ranks: i64) -> i64 {
+    let m: i64 = vec_get(dims, 0);
+    let n: i64 = vec_get(dims, 1);
+    let r1: i64 = tn_min_i64(vec_get(ranks, 0), m);
+    let r2: i64 = tn_min_i64(vec_get(ranks, 1), n);
+
+    // Full SVD up to min(m, n)
+    let min_dim: i64 = tn_min_i64(m, n);
+    let svd_result: i64 = svd_truncated(tensor, m, n, min_dim);
+    let u_full: i64 = vec_get(svd_result, 0);    // m x min_dim
+    let sigma: i64 = vec_get(svd_result, 1);      // min_dim
+    let vt_full: i64 = vec_get(svd_result, 2);   // min_dim x n
+
+    // Factor A = U[:, :r1]  (m x r1)
+    let factor_a: i64 = mat_zeros(m, r1);
+    var i: i64 = 0;
+    while i < m {
+        var j: i64 = 0;
+        while j < r1 {
+            mat_set(factor_a, r1, i, j, mat_get(u_full, min_dim, i, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Factor B = V[:, :r2] = Vt[:r2, :]^T  (n x r2)
+    let factor_b: i64 = mat_zeros(n, r2);
+    i = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < r2 {
+            // V[i, j] = Vt[j, i]
+            mat_set(factor_b, r2, i, j, mat_get(vt_full, n, j, i));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // Core G = A^T * M * B  (r1 x r2)
+    // = A^T (m x r1)^T = (r1 x m) * M (m x n) * B (n x r2)
+    let at: i64 = mat_transpose(factor_a, m, r1);
+    let temp: i64 = mat_mul(at, tensor, r1, m, n);
+    let core_g: i64 = mat_mul(temp, factor_b, r1, n, r2);
+
+    let result = vec_new();
+    vec_push(result, core_g);
+    vec_push(result, factor_a);
+    vec_push(result, factor_b);
+    result
+}
+
+// =============================================================================
+// Compression Utilities
+// =============================================================================
+
+/// Compute dot product of two f64-as-bits vectors
+fn tn_dot(a: i64, b: i64, n: i64) -> f64 {
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        sum = sum + bits_to_f64(vec_get(a, i)) * bits_to_f64(vec_get(b, i));
+        i = i + 1;
+    }
+    sum
+}
+
+/// Matrix-vector multiply: y = A (m x n) * x (n)
+/// Returns vec of f64-as-bits (length m)
+fn tn_matvec(a: i64, x: i64, m: i64, n: i64) -> i64 {
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < m {
+        var sum: f64 = 0.0;
+        var j: i64 = 0;
+        while j < n {
+            sum = sum + mat_get(a, n, i, j) * bits_to_f64(vec_get(x, j));
+            j = j + 1;
+        }
+        vec_push(result, f64_to_bits(sum));
+        i = i + 1;
+    }
+    result
+}
+
+/// Power iteration to estimate largest singular value.
+/// Used for quick rank estimation.
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (m x n)
+///   m      - rows
+///   n      - cols
+///   iters  - number of power iterations
+///
+/// Returns: f64_bits estimated largest singular value
+fn power_iteration_sv(matrix: i64, m: i64, n: i64, iters: i64) -> i64 {
+    // Start with random-ish vector (alternating 1, -1)
+    let v = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        if i % 2 == 0 {
+            vec_push(v, f64_to_bits(1.0));
+        } else {
+            vec_push(v, f64_to_bits(0.0 - 1.0));
+        }
+        i = i + 1;
+    }
+
+    // Normalize v
+    var norm_v: f64 = 0.0;
+    i = 0;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        norm_v = norm_v + val * val;
+        i = i + 1;
+    }
+    norm_v = tn_sqrt(norm_v);
+    if norm_v > 0.0 {
+        i = 0;
+        while i < n {
+            let val: f64 = bits_to_f64(vec_get(v, i));
+            vec_set(v, i, f64_to_bits(val / norm_v));
+            i = i + 1;
+        }
+    }
+
+    let at: i64 = mat_transpose(matrix, m, n);
+
+    var sigma: f64 = 0.0;
+    var iter: i64 = 0;
+    while iter < iters {
+        // u = A * v
+        let u: i64 = tn_matvec(matrix, v, m, n);
+
+        // sigma = ||u||
+        var norm_u: f64 = 0.0;
+        i = 0;
+        while i < m {
+            let val: f64 = bits_to_f64(vec_get(u, i));
+            norm_u = norm_u + val * val;
+            i = i + 1;
+        }
+        norm_u = tn_sqrt(norm_u);
+        sigma = norm_u;
+
+        // Normalize u
+        if norm_u > 0.0000000001 {
+            i = 0;
+            while i < m {
+                let val: f64 = bits_to_f64(vec_get(u, i));
+                vec_set(u, i, f64_to_bits(val / norm_u));
+                i = i + 1;
+            }
+        }
+
+        // v = A^T * u
+        let v_new: i64 = tn_matvec(at, u, n, m);
+
+        // Normalize v_new
+        var norm_vn: f64 = 0.0;
+        i = 0;
+        while i < n {
+            let val: f64 = bits_to_f64(vec_get(v_new, i));
+            norm_vn = norm_vn + val * val;
+            i = i + 1;
+        }
+        norm_vn = tn_sqrt(norm_vn);
+        if norm_vn > 0.0000000001 {
+            i = 0;
+            while i < n {
+                let val: f64 = bits_to_f64(vec_get(v_new, i));
+                vec_set(v, i, f64_to_bits(val / norm_vn));
+                i = i + 1;
+            }
+        }
+
+        iter = iter + 1;
+    }
+
+    f64_to_bits(sigma)
+}
+
+// =============================================================================
+// TT Layer for Neural Networks
+// =============================================================================
+//
+// A TT-compressed linear layer replaces W (m x n) with TT cores.
+// Forward pass: y = TT_matvec(cores, x) + bias
+// This reduces parameters from O(mn) to O((m+n)*r).
+
+// TT Linear Layer layout:
+//   [0] in_dim     i64
+//   [1] out_dim    i64
+//   [2] tt_handle  i64 (TT metadata)
+//   [3] bias_vec   i64 (handle: out_dim f64-as-bits)
+
+fn TTL_IN_DIM() -> i64    { 0 }
+fn TTL_OUT_DIM() -> i64   { 1 }
+fn TTL_TT() -> i64        { 2 }
+fn TTL_BIAS() -> i64      { 3 }
+fn TTL_FIELDS() -> i64    { 4 }
+
+/// Create a TT-compressed linear layer from an existing weight matrix.
+///
+/// Arguments:
+///   weights  - handle to flat vec of f64-as-bits (out_dim x in_dim)
+///   bias     - handle to vec of f64-as-bits (out_dim)
+///   out_dim  - output dimension
+///   in_dim   - input dimension
+///   tt_rank  - target TT rank
+///
+/// Returns: handle to TT linear layer vec
+fn tt_linear_new(weights: i64, bias: i64, out_dim: i64, in_dim: i64, tt_rank: i64) -> i64 {
+    let tt: i64 = tt_decompose(weights, out_dim, in_dim, tt_rank);
+
+    let layer = vec_new();
+    vec_push(layer, in_dim);
+    vec_push(layer, out_dim);
+    vec_push(layer, tt);
+    vec_push(layer, bias);
+    layer
+}
+
+/// Forward pass through a TT-compressed linear layer.
+///
+/// Arguments:
+///   layer - handle to TT linear layer
+///   input - handle to vec of f64-as-bits (in_dim)
+///
+/// Returns: handle to vec of f64-as-bits (out_dim)
+fn tt_linear_forward(layer: i64, input: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, TTL_IN_DIM());
+    let out_dim: i64 = vec_get(layer, TTL_OUT_DIM());
+    let tt: i64 = vec_get(layer, TTL_TT());
+    let bias: i64 = vec_get(layer, TTL_BIAS());
+
+    // y = TT_matvec(tt, input)
+    let y: i64 = tt_matvec(tt, input, in_dim);
+
+    // y = y + bias
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < out_dim {
+        let yi: f64 = bits_to_f64(vec_get(y, i));
+        let bi: f64 = bits_to_f64(vec_get(bias, i));
+        vec_push(result, f64_to_bits(yi + bi));
+        i = i + 1;
+    }
+    result
+}
+
+/// Get the compression ratio of a TT linear layer vs dense.
+///
+/// Arguments:
+///   layer - handle to TT linear layer
+///
+/// Returns: f64_bits compression ratio
+fn tt_linear_compression(layer: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, TTL_IN_DIM());
+    let out_dim: i64 = vec_get(layer, TTL_OUT_DIM());
+    let tt: i64 = vec_get(layer, TTL_TT());
+
+    let original: i64 = in_dim * out_dim;
+    let compressed: i64 = tt_param_count(tt);
+    tt_compression_ratio(original, compressed)
+}
+
+// =============================================================================
+// Matrix Reconstruction from SVD components
+// =============================================================================
+
+/// Reconstruct matrix from SVD: M = U * diag(S) * Vt
+///
+/// Arguments:
+///   svd_result - handle to vec [U, S, Vt] from svd_truncated
+///   rows       - number of rows
+///   cols       - number of columns
+///   rank       - truncation rank
+///
+/// Returns: handle to flat vec of f64-as-bits (rows x cols)
+fn svd_reconstruct(svd_result: i64, rows: i64, cols: i64, rank: i64) -> i64 {
+    let u: i64 = vec_get(svd_result, 0);      // rows x rank
+    let sigma: i64 = vec_get(svd_result, 1);   // rank
+    let vt: i64 = vec_get(svd_result, 2);      // rank x cols
+
+    // M = U * diag(S) * Vt
+    let result: i64 = mat_zeros(rows, cols);
+    var i: i64 = 0;
+    while i < rows {
+        var j: i64 = 0;
+        while j < cols {
+            var sum: f64 = 0.0;
+            var k: i64 = 0;
+            while k < rank {
+                let u_val: f64 = mat_get(u, rank, i, k);
+                let s_val: f64 = bits_to_f64(vec_get(sigma, k));
+                let vt_val: f64 = mat_get(vt, cols, k, j);
+                sum = sum + u_val * s_val * vt_val;
+                k = k + 1;
+            }
+            mat_set(result, cols, i, j, sum);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Compression analysis utilities
+// =============================================================================
+
+/// Compute element-wise difference of two matrices.
+///
+/// Arguments:
+///   a - handle to flat vec of f64-as-bits
+///   b - handle to flat vec of f64-as-bits
+///   n - total number of elements
+///
+/// Returns: handle to flat vec of f64-as-bits (a - b)
+fn mat_diff(a: i64, b: i64, n: i64) -> i64 {
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        vec_push(result, f64_to_bits(va - vb));
+        i = i + 1;
+    }
+    result
+}
+
+/// Compute the spectral norm (largest singular value) of a matrix.
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (m x n)
+///   rows   - number of rows
+///   cols   - number of columns
+///
+/// Returns: f64_bits spectral norm
+fn spectral_norm(matrix: i64, rows: i64, cols: i64) -> i64 {
+    power_iteration_sv(matrix, rows, cols, 30)
+}
+
+/// Compute effective rank using entropy of normalized singular values.
+///
+/// effective_rank = exp(H) where H = -sum(p_i * log(p_i))
+/// and p_i = sigma_i / sum(sigma_j)
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (m x n)
+///   rows   - number of rows
+///   cols   - number of columns
+///
+/// Returns: f64_bits effective rank
+fn effective_rank(matrix: i64, rows: i64, cols: i64) -> i64 {
+    let min_dim: i64 = tn_min_i64(rows, cols);
+    let svd_result: i64 = svd_truncated(matrix, rows, cols, min_dim);
+    let sigma: i64 = vec_get(svd_result, 1);
+    let n_sv: i64 = vec_len(sigma);
+
+    // Sum of singular values
+    var sv_sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n_sv {
+        let sv: f64 = bits_to_f64(vec_get(sigma, i));
+        if sv > 0.0 {
+            sv_sum = sv_sum + sv;
+        }
+        i = i + 1;
+    }
+
+    if sv_sum < 0.0000000001 {
+        return f64_to_bits(0.0);
+    }
+
+    // Entropy H = -sum(p_i * ln(p_i))
+    var entropy: f64 = 0.0;
+    i = 0;
+    while i < n_sv {
+        let sv: f64 = bits_to_f64(vec_get(sigma, i));
+        if sv > 0.0000000001 {
+            let p: f64 = sv / sv_sum;
+            entropy = entropy - p * tn_ln(p);
+        }
+        i = i + 1;
+    }
+
+    // effective_rank = exp(H)
+    f64_to_bits(tn_exp(entropy))
+}
+
+// Approximate natural log
+fn tn_ln(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0 - 30.0; }
+    let ln2: f64 = 0.6931471805599453;
+    var m: f64 = x;
+    var k: i64 = 0;
+    while m >= 1.0 {
+        m = m / 2.0;
+        k = k + 1;
+    }
+    while m < 0.5 {
+        m = m * 2.0;
+        k = k - 1;
+    }
+    let t: f64 = (m - 1.0) / (m + 1.0);
+    let t2: f64 = t * t;
+    let ln_m: f64 = 2.0 * t * (1.0 + t2 / 3.0 + t2 * t2 / 5.0);
+    ln_m + (k as f64) * ln2
+}
+
+// Approximate exp
+fn tn_exp(x: f64) -> f64 {
+    var arg: f64 = x;
+    if arg > 20.0 { arg = 20.0; }
+    if arg < 0.0 - 20.0 { arg = 0.0 - 20.0; }
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 30 {
+        term = term * arg / (i as f64);
+        result = result + term;
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Batch TT operations
+// =============================================================================
+
+/// Apply TT-matvec to a batch of vectors.
+///
+/// Arguments:
+///   tt      - handle to TT metadata
+///   batch   - handle to vec of vec handles (each is a vector of f64-as-bits)
+///   dim     - dimension of each input vector
+///
+/// Returns: handle to vec of vec handles (output vectors)
+fn tt_matvec_batch(tt: i64, batch: i64, dim: i64) -> i64 {
+    let n_batch: i64 = vec_len(batch);
+    let results = vec_new();
+    var i: i64 = 0;
+    while i < n_batch {
+        let input: i64 = vec_get(batch, i);
+        let output: i64 = tt_matvec(tt, input, dim);
+        vec_push(results, output);
+        i = i + 1;
+    }
+    results
+}
+
+/// Compute reconstruction error of a TT decomposition.
+///
+/// Arguments:
+///   original - handle to flat vec of f64-as-bits (m x n)
+///   tt       - handle to TT metadata
+///   rows     - number of rows
+///   cols     - number of columns
+///
+/// Returns: f64_bits relative reconstruction error
+fn tt_reconstruction_error(original: i64, tt: i64, rows: i64, cols: i64) -> i64 {
+    let reconstructed: i64 = tt_reconstruct(tt, rows, cols);
+    relative_error(original, reconstructed, rows * cols)
+}
+
+/// Summary of a TT decomposition: prints rank, param count, compression ratio.
+///
+/// Arguments:
+///   tt       - handle to TT metadata
+///   rows     - original matrix rows
+///   cols     - original matrix cols
+fn tt_summary(tt: i64, rows: i64, cols: i64) {
+    let ranks: i64 = vec_get(tt, TT_RANKS());
+    let r: i64 = vec_get(ranks, 1);
+    let params: i64 = tt_param_count(tt);
+    let orig_params: i64 = rows * cols;
+    let ratio: f64 = bits_to_f64(tt_compression_ratio(orig_params, params));
+
+    print("TT Decomposition: ");
+    print_i64(rows);
+    print("x");
+    print_i64(cols);
+    print(" -> rank ");
+    print_i64(r);
+    print(", params ");
+    print_i64(params);
+    print("/");
+    print_i64(orig_params);
+    print(", ratio ");
+    print_f64(ratio);
+    println("x");
+}

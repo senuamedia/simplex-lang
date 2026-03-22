@@ -1,8 +1,8 @@
-# The Anima - Simplex's Cognitive Soul
+# The Anima - Persistent Agent State
 
 **Version 0.5.0**
 
-The `anima` is the cognitive soul of every Simplex AI agent - the beating heart, mind, and memory that gives AI systems personality, continuity, and purpose.
+The `anima` is the persistent state manager for Simplex AI agents — it provides memory, belief tracking, and intention management that give agents continuity and purpose across interactions.
 
 ---
 
@@ -27,13 +27,13 @@ In v0.5.0, the Anima integrates with the per-hive SLM architecture:
     │              │              │
     └──────────────┴──────────────┘
          HiveMnemonic (50%)
-       (Shared consciousness)
+       (Shared memory layer)
 ```
 
 **Key points**:
 - Each specialist has its own **Anima** (personal memories, beliefs)
 - All specialists share the **Hive SLM** (one model per hive)
-- The **HiveMnemonic** provides shared consciousness across specialists
+- The **HiveMnemonic** provides a shared memory layer across specialists
 - When `infer()` is called, both Anima and Mnemonic context are included
 
 ---
@@ -53,7 +53,7 @@ Traditional AI systems are stateless - each request starts fresh with no memory 
 The Anima draws inspiration from:
 - **Cognitive Psychology**: Episodic and semantic memory systems
 - **BDI Architecture**: Beliefs, Desires, Intentions model from AI research
-- **Philosophy of Mind**: The concept of an animating soul or spirit
+- **Philosophy of Mind**: The concept of persistent identity and agency (historical inspiration for the naming)
 
 ---
 

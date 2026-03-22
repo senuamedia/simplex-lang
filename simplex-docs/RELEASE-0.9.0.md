@@ -115,7 +115,7 @@ See full specification: [spec/16-edge-hive.md](spec/16-edge-hive.md)
 
 ### Self-Learning Annealing
 
-Instead of hand-tuning annealing hyperparameters, the system discovers optimal schedules through differentiable optimization:
+Instead of hand-tuning annealing hyperparameters, the system discovers improved schedules through differentiable optimisation:
 
 ```simplex
 // Self-learning annealing: the schedule learns itself
@@ -126,7 +126,7 @@ for epoch in 0..epochs {
     let (solution, meta_loss) = optimizer.anneal_with_grad(objective);
     schedule.update(meta_loss.gradient());  // Schedule improves each epoch
 }
-// After training: schedule.cool_rate, schedule.reheat_threshold are optimal
+// After training: schedule.cool_rate, schedule.reheat_threshold are learned
 ```
 
 ### Learnable Temperature Schedule

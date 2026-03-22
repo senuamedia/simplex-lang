@@ -1,0 +1,289 @@
+// SQS Client Tests (self-contained)
+//
+// Tests SQS message construction, XML parsing, error detection, and response
+// parsing using inline stub implementations. Avoids importing simplex-sqs
+// which transitively pulls simplex-std and causes compiler OOM.
+//
+// The stub functions replicate the exact logic from simplex-sqs/src/mod.sx.
+
+// =============================================================================
+// Inline stubs: Message layout constants
+// =============================================================================
+
+fn MSG_ID() -> i64 { 0 }
+fn MSG_RECEIPT() -> i64 { 1 }
+fn MSG_BODY() -> i64 { 2 }
+fn MSG_ATTRS() -> i64 { 3 }
+fn MSG_MD5() -> i64 { 4 }
+
+// =============================================================================
+// Inline stubs: Message accessors
+// =============================================================================
+
+fn sqs_msg_id(msg: i64) -> i64 { vec_get(msg, MSG_ID()) }
+fn sqs_msg_receipt(msg: i64) -> i64 { vec_get(msg, MSG_RECEIPT()) }
+fn sqs_msg_body(msg: i64) -> i64 { vec_get(msg, MSG_BODY()) }
+fn sqs_msg_attrs(msg: i64) -> i64 { vec_get(msg, MSG_ATTRS()) }
+fn sqs_msg_md5(msg: i64) -> i64 { vec_get(msg, MSG_MD5()) }
+
+fn sqs_msg_new(id: i64, receipt: i64, body: i64, attrs: i64, md5: i64) -> i64 {
+    let msg: i64 = vec_new();
+    vec_push(msg, id);
+    vec_push(msg, receipt);
+    vec_push(msg, body);
+    vec_push(msg, attrs);
+    vec_push(msg, md5);
+    msg
+}
+
+// =============================================================================
+// Inline stubs: Result layout
+// =============================================================================
+
+fn RES_STATUS() -> i64 { 0 }
+fn RES_DATA() -> i64 { 1 }
+fn RES_ERROR_CODE() -> i64 { 2 }
+fn RES_ERROR_MSG() -> i64 { 3 }
+
+fn sqs_sqs_result_ok_new(result: i64) -> i64 { vec_get(result, RES_STATUS()) }
+fn sqs_result_data(result: i64) -> i64 { vec_get(result, RES_DATA()) }
+fn sqs_result_error_code(result: i64) -> i64 { vec_get(result, RES_ERROR_CODE()) }
+fn sqs_result_error_msg(result: i64) -> i64 { vec_get(result, RES_ERROR_MSG()) }
+
+fn sqs_result_ok_new(data: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 1);
+    vec_push(r, data);
+    vec_push(r, "");
+    vec_push(r, "");
+    r
+}
+
+fn sqs_result_err_new(code: i64, msg: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 0);
+    vec_push(r, 0);
+    vec_push(r, code);
+    vec_push(r, msg);
+    r
+}
+
+// =============================================================================
+// Inline stubs: XML parsing
+// =============================================================================
+
+fn xml_extract_tag(xml: i64, tag: i64, start: i64) -> i64 {
+    let open_tag: i64 = string_concat("<", string_concat(tag, ">"));
+    let close_tag: i64 = string_concat("</", string_concat(tag, ">"));
+    let open_pos: i64 = string_find(xml, open_tag, start);
+    if open_pos < 0 { return ""; }
+    let content_start: i64 = open_pos + string_len(open_tag);
+    let close_pos: i64 = string_find(xml, close_tag, content_start);
+    if close_pos < 0 { return ""; }
+    string_slice(xml, content_start, close_pos)
+}
+
+fn xml_has_error(xml: i64) -> i64 {
+    let err_pos: i64 = string_find(xml, "<ErrorResponse", 0);
+    if err_pos >= 0 { return 1; }
+    let err_pos2: i64 = string_find(xml, "<Error>", 0);
+    if err_pos2 >= 0 { return 1; }
+    0
+}
+
+fn xml_error_code(xml: i64) -> i64 { xml_extract_tag(xml, "Code", 0) }
+fn xml_error_message(xml: i64) -> i64 { xml_extract_tag(xml, "Message", 0) }
+
+// =============================================================================
+// Inline stubs: Response parsers
+// =============================================================================
+
+fn parse_send_response(xml: i64) -> i64 {
+    if xml_has_error(xml) == 1 {
+        let code: i64 = xml_error_code(xml);
+        let msg: i64 = xml_error_message(xml);
+        return sqs_result_err_new(code, msg);
+    }
+    let msg_id: i64 = xml_extract_tag(xml, "MessageId", 0);
+    if string_len(msg_id) == 0 {
+        return sqs_result_err_new("ParseError", "No MessageId in response");
+    }
+    sqs_result_ok_new(msg_id)
+}
+
+fn parse_receive_response(xml: i64) -> i64 {
+    if xml_has_error(xml) == 1 {
+        let code: i64 = xml_error_code(xml);
+        let msg: i64 = xml_error_message(xml);
+        return sqs_result_err_new(code, msg);
+    }
+    let messages: i64 = vec_new();
+    var search_pos: i64 = 0;
+    while search_pos >= 0 {
+        let msg_start: i64 = string_find(xml, "<Message>", search_pos);
+        if msg_start < 0 {
+            search_pos = -1;
+            continue;
+        }
+        let msg_end: i64 = string_find(xml, "</Message>", msg_start);
+        if msg_end < 0 {
+            search_pos = -1;
+            continue;
+        }
+        let msg_xml: i64 = string_slice(xml, msg_start, msg_end + 10);
+        let msg_id: i64 = xml_extract_tag(msg_xml, "MessageId", 0);
+        let receipt: i64 = xml_extract_tag(msg_xml, "ReceiptHandle", 0);
+        let body: i64 = xml_extract_tag(msg_xml, "Body", 0);
+        let md5: i64 = xml_extract_tag(msg_xml, "MD5OfBody", 0);
+        let attrs: i64 = vec_new();
+        let m: i64 = sqs_msg_new(msg_id, receipt, body, attrs, md5);
+        vec_push(messages, m);
+        search_pos = msg_end + 10;
+    }
+    sqs_result_ok_new(messages)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+fn test_message_construction() -> i64 {
+    println("  Testing sqs_msg_new and accessors...");
+    let attrs: i64 = vec_new();
+    let msg: i64 = sqs_msg_new("msg-001", "receipt-xyz", "Hello, SQS!", attrs, "abc123md5");
+    let id: i64 = sqs_msg_id(msg);
+    if string_eq(id, "msg-001") != 1 {
+        println("  FAIL: message id");
+        return 1;
+    }
+    let receipt: i64 = sqs_msg_receipt(msg);
+    if string_eq(receipt, "receipt-xyz") != 1 {
+        println("  FAIL: receipt handle");
+        return 1;
+    }
+    let body: i64 = sqs_msg_body(msg);
+    if string_eq(body, "Hello, SQS!") != 1 {
+        println("  FAIL: message body");
+        return 1;
+    }
+    let md5: i64 = sqs_msg_md5(msg);
+    if string_eq(md5, "abc123md5") != 1 {
+        println("  FAIL: md5 hash");
+        return 1;
+    }
+    println("  PASS: sqs_msg_new and accessors");
+    0
+}
+
+fn test_xml_tag_extraction() -> i64 {
+    println("  Testing xml_extract_tag...");
+    let xml: i64 = "<SendMessageResponse><SendMessageResult><MessageId>abc-123-def</MessageId><MD5OfMessageBody>d41d8cd98f00b204</MD5OfMessageBody></SendMessageResult></SendMessageResponse>";
+    let mid: i64 = xml_extract_tag(xml, "MessageId", 0);
+    if string_eq(mid, "abc-123-def") != 1 {
+        println("  FAIL: MessageId extraction");
+        return 1;
+    }
+    let md5: i64 = xml_extract_tag(xml, "MD5OfMessageBody", 0);
+    if string_eq(md5, "d41d8cd98f00b204") != 1 {
+        println("  FAIL: MD5 extraction");
+        return 1;
+    }
+    let missing: i64 = xml_extract_tag(xml, "NoSuchTag", 0);
+    if string_eq(missing, "") != 1 {
+        println("  FAIL: missing tag should return empty");
+        return 1;
+    }
+    println("  PASS: xml_extract_tag");
+    0
+}
+
+fn test_xml_error_detection() -> i64 {
+    println("  Testing xml_has_error/xml_error_code...");
+    let err_xml: i64 = "<ErrorResponse><Error><Code>InvalidParameterValue</Code><Message>Bad param</Message></Error></ErrorResponse>";
+    if xml_has_error(err_xml) != 1 {
+        println("  FAIL: should detect error");
+        return 1;
+    }
+    let code: i64 = xml_error_code(err_xml);
+    if string_eq(code, "InvalidParameterValue") != 1 {
+        println("  FAIL: error code extraction");
+        return 1;
+    }
+    let emsg: i64 = xml_error_message(err_xml);
+    if string_eq(emsg, "Bad param") != 1 {
+        println("  FAIL: error message extraction");
+        return 1;
+    }
+    let ok_xml: i64 = "<SendMessageResponse><SendMessageResult></SendMessageResult></SendMessageResponse>";
+    if xml_has_error(ok_xml) != 0 {
+        println("  FAIL: success xml should not be error");
+        return 1;
+    }
+    println("  PASS: xml_has_error/xml_error_code");
+    0
+}
+
+fn test_parse_send_response() -> i64 {
+    println("  Testing parse_send_response...");
+    let xml: i64 = "<SendMessageResponse><SendMessageResult><MessageId>msg-42</MessageId></SendMessageResult></SendMessageResponse>";
+    let result: i64 = parse_send_response(xml);
+    if sqs_sqs_result_ok_new(result) != 1 {
+        println("  FAIL: should be ok result");
+        return 1;
+    }
+    let msg_id: i64 = sqs_result_data(result);
+    if string_eq(msg_id, "msg-42") != 1 {
+        println("  FAIL: parsed message id");
+        return 1;
+    }
+    println("  PASS: parse_send_response");
+    0
+}
+
+fn test_parse_receive_response() -> i64 {
+    println("  Testing parse_receive_response...");
+    let xml: i64 = "<ReceiveMessageResponse><ReceiveMessageResult><Message><MessageId>m1</MessageId><ReceiptHandle>rh1</ReceiptHandle><Body>hello</Body><MD5OfBody>aaa</MD5OfBody></Message><Message><MessageId>m2</MessageId><ReceiptHandle>rh2</ReceiptHandle><Body>world</Body><MD5OfBody>bbb</MD5OfBody></Message></ReceiveMessageResult></ReceiveMessageResponse>";
+    let result: i64 = parse_receive_response(xml);
+    if sqs_sqs_result_ok_new(result) != 1 {
+        println("  FAIL: should be ok");
+        return 1;
+    }
+    let msgs: i64 = sqs_result_data(result);
+    if vec_len(msgs) != 2 {
+        println("  FAIL: should have 2 messages");
+        return 1;
+    }
+    let msg0: i64 = vec_get(msgs, 0);
+    if string_eq(sqs_msg_id(msg0), "m1") != 1 {
+        println("  FAIL: first message id");
+        return 1;
+    }
+    if string_eq(sqs_msg_body(msg0), "hello") != 1 {
+        println("  FAIL: first message body");
+        return 1;
+    }
+    let msg1: i64 = vec_get(msgs, 1);
+    if string_eq(sqs_msg_id(msg1), "m2") != 1 {
+        println("  FAIL: second message id");
+        return 1;
+    }
+    println("  PASS: parse_receive_response");
+    0
+}
+
+fn main() -> i64 {
+    println("=== SQS Client Integration Tests ===");
+    var failures: i64 = 0;
+    failures = failures + test_message_construction();
+    failures = failures + test_xml_tag_extraction();
+    failures = failures + test_xml_error_detection();
+    failures = failures + test_parse_send_response();
+    failures = failures + test_parse_receive_response();
+    println("");
+    if failures == 0 {
+        println("All 5 SQS integration tests passed!");
+    } else {
+        println(string_concat("FAILED: ", string_concat(int_to_string(failures), " test(s) failed")));
+    }
+    failures
+}

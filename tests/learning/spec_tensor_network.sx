@@ -1,0 +1,71 @@
+use tensor_network;
+
+fn main() -> i64 {
+    println(string_from("=== Tensor Network Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Frobenius norm of identity-like matrix
+    let mat: i64 = vec_new();
+    vec_push(mat, f64_to_bits(1.0));
+    vec_push(mat, f64_to_bits(0.0));
+    vec_push(mat, f64_to_bits(0.0));
+    vec_push(mat, f64_to_bits(1.0));
+    let norm: i64 = frobenius_norm(mat, 4);
+    // sqrt(1+0+0+1) = sqrt(2) ~ 1.414, should be > 1.4
+    if norm < f64_to_bits(1.4) {
+        println(string_from("FAIL: frobenius norm should be ~1.414"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: frobenius_norm"));
+    }
+
+    // Test 2: TT decomposition of a small matrix
+    let small_mat: i64 = vec_new();
+    var i: i64 = 0;
+    while i < 16 {
+        vec_push(small_mat, f64_to_bits((i + 1) * 1.0));
+        i = i + 1;
+    }
+    let tt: i64 = tt_decompose(small_mat, 4, 4, 2);
+    let n_cores: i64 = vec_get(tt, 0);
+    if n_cores < 1 {
+        println(string_from("FAIL: should have at least 1 core"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: tt_decompose"));
+    }
+
+    // Test 3: TT param count
+    let params: i64 = tt_param_count(tt);
+    if params < 1 {
+        println(string_from("FAIL: param count should be > 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: tt_param_count"));
+    }
+
+    // Test 4: Relative error of identical vectors should be ~0
+    let orig: i64 = vec_new();
+    vec_push(orig, f64_to_bits(1.0));
+    vec_push(orig, f64_to_bits(2.0));
+    vec_push(orig, f64_to_bits(3.0));
+    vec_push(orig, f64_to_bits(4.0));
+    let compressed: i64 = vec_new();
+    vec_push(compressed, f64_to_bits(1.0));
+    vec_push(compressed, f64_to_bits(2.0));
+    vec_push(compressed, f64_to_bits(3.0));
+    vec_push(compressed, f64_to_bits(4.0));
+    let rel_err: i64 = relative_error(orig, compressed, 4);
+    // Should be 0.0 (bit pattern 0)
+    if rel_err != f64_to_bits(0.0) {
+        println(string_from("FAIL: identical should have 0 error"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: relative_error"));
+    }
+
+    if failures == 0 {
+        println(string_from("All tensor network tests passed"));
+    }
+    failures
+}

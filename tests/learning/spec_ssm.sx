@@ -1,0 +1,67 @@
+use ssm;
+
+fn main() -> i64 {
+    println(string_from("=== State Space Model Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create S4 layer (state_dim=4, input_dim=2)
+    let layer: i64 = s4_layer_new(4, 2);
+    let sd: i64 = s4_state_dim(layer);
+    if sd != 4 {
+        println(string_from("FAIL: state_dim should be 4"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: s4_layer_new state_dim"));
+    }
+
+    // Test 2: Initial state should be zeros
+    let state: i64 = s4_get_state(layer);
+    // Zero f64 has bit pattern 0
+    let s0: i64 = vec_get(state, 0);
+    if s0 != f64_to_bits(0.0) {
+        println(string_from("FAIL: initial state should be 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: initial state is zero"));
+    }
+
+    // Test 3: Reset state
+    s4_reset_state(layer);
+    let state2: i64 = s4_get_state(layer);
+    let s2_0: i64 = vec_get(state2, 0);
+    if s2_0 != f64_to_bits(0.0) {
+        println(string_from("FAIL: reset state should be 0"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: s4_reset_state"));
+    }
+
+    // Test 4: Forward pass with a single timestep
+    let input_seq: i64 = vec_new();
+    let u0: i64 = vec_new();
+    vec_push(u0, f64_to_bits(1.0));
+    vec_push(u0, f64_to_bits(0.5));
+    vec_push(input_seq, u0);
+    let output: i64 = s4_forward(layer, input_seq);
+    if vec_len(output) != 1 {
+        println(string_from("FAIL: should have 1 output timestep"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: s4_forward single step"));
+    }
+
+    // Test 5: State should be non-zero after forward pass
+    let state3: i64 = s4_get_state(layer);
+    let s3_0: i64 = vec_get(state3, 0);
+    if s3_0 == f64_to_bits(0.0) {
+        println(string_from("FAIL: state should change after forward"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: state changed after forward"));
+    }
+
+    if failures == 0 {
+        println(string_from("All SSM tests passed"));
+    }
+    failures
+}

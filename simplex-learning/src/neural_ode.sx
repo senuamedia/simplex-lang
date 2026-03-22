@@ -1,0 +1,1165 @@
+// Neural ODEs & Continuous Depth Networks for Simplex
+//
+// Neural Ordinary Differential Equations treat network depth as continuous,
+// using ODE solvers to compute forward passes instead of discrete layers.
+//
+// This module provides:
+//   - ODE Solvers: Euler, RK4, adaptive step-size
+//   - ODE integration: trajectory and final-state solvers
+//   - Neural ODE layer: MLP-parameterized dynamics
+//   - Continuous normalizing flow: log-probability via trace
+//
+// All float values are stored as i64 via f64_to_bits / bits_to_f64.
+// Collections are vec handles (i64).
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Method constants (returned via fn to avoid const)
+// =============================================================================
+
+fn METHOD_EULER() -> i64    { 1 }
+fn METHOD_RK4() -> i64      { 2 }
+fn METHOD_ADAPTIVE() -> i64 { 3 }
+
+// =============================================================================
+// NODE layer field indices
+// =============================================================================
+//
+// NeuralODELayer layout:
+//   [0] state_dim     i64
+//   [1] hidden_dim    i64
+//   [2] w1_vec        i64 (handle: weights state_dim x hidden_dim, f64-as-bits)
+//   [3] b1_vec        i64 (handle: biases hidden_dim, f64-as-bits)
+//   [4] w2_vec        i64 (handle: weights hidden_dim x state_dim, f64-as-bits)
+//   [5] b2_vec        i64 (handle: biases state_dim, f64-as-bits)
+//   [6] step_count    i64
+
+fn NODE_STATE_DIM() -> i64   { 0 }
+fn NODE_HIDDEN_DIM() -> i64  { 1 }
+fn NODE_W1() -> i64          { 2 }
+fn NODE_B1() -> i64          { 3 }
+fn NODE_W2() -> i64          { 4 }
+fn NODE_B2() -> i64          { 5 }
+fn NODE_STEP_COUNT() -> i64  { 6 }
+fn NODE_FIELDS() -> i64      { 7 }
+
+// Trajectory result layout:
+//   [0] n_steps     i64
+//   [1] states_vec  i64 (handle: vec of state vec handles)
+//   [2] times_vec   i64 (handle: vec of f64-as-bits time values)
+
+fn TRAJ_N_STEPS() -> i64   { 0 }
+fn TRAJ_STATES() -> i64    { 1 }
+fn TRAJ_TIMES() -> i64     { 2 }
+
+// Adaptive step result layout:
+//   [0] new_state_vec  i64 (handle)
+//   [1] new_t          i64 (f64-as-bits)
+//   [2] new_dt         i64 (f64-as-bits)
+
+fn ADAP_STATE() -> i64 { 0 }
+fn ADAP_T() -> i64     { 1 }
+fn ADAP_DT() -> i64    { 2 }
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+fn ode_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn ode_sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    var guess: f64 = x;
+    if guess > 1.0 { guess = guess / 2.0; }
+    if guess < 0.001 { guess = 0.001; }
+    var i: i64 = 0;
+    while i < 30 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    guess
+}
+
+fn ode_max(a: f64, b: f64) -> f64 {
+    if a > b { return a; }
+    b
+}
+
+fn ode_min(a: f64, b: f64) -> f64 {
+    if a < b { return a; }
+    b
+}
+
+// Approximate pow(x, 0.2) = x^(1/5) using Newton's method
+// Solves g^5 = x iteratively
+fn ode_pow_0_2(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    var g: f64 = 1.0;
+    var i: i64 = 0;
+    while i < 40 {
+        let g4: f64 = g * g * g * g;
+        let g5: f64 = g4 * g;
+        g = g - (g5 - x) / (5.0 * g4);
+        if g < 0.0001 { g = 0.0001; }
+        i = i + 1;
+    }
+    g
+}
+
+// =============================================================================
+// Vector arithmetic helpers
+// =============================================================================
+
+// Create a deep copy of a state vector
+fn vec_copy(src: i64) -> i64 {
+    let n: i64 = vec_len(src);
+    let dst = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    dst
+}
+
+// vec_add: result[i] = a[i] + b[i]
+fn vec_add_f64(a: i64, b: i64) -> i64 {
+    let n: i64 = vec_len(a);
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        vec_push(result, f64_to_bits(va + vb));
+        i = i + 1;
+    }
+    result
+}
+
+// vec_scale: result[i] = a[i] * scalar
+fn vec_scale_f64(a: i64, scalar: f64) -> i64 {
+    let n: i64 = vec_len(a);
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        vec_push(result, f64_to_bits(va * scalar));
+        i = i + 1;
+    }
+    result
+}
+
+// vec_add_scaled: result[i] = a[i] + b[i] * scalar
+fn vec_add_scaled(a: i64, b: i64, scalar: f64) -> i64 {
+    let n: i64 = vec_len(a);
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        vec_push(result, f64_to_bits(va + vb * scalar));
+        i = i + 1;
+    }
+    result
+}
+
+// vec_sub: result[i] = a[i] - b[i]
+fn vec_sub_f64(a: i64, b: i64) -> i64 {
+    let n: i64 = vec_len(a);
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let va: f64 = bits_to_f64(vec_get(a, i));
+        let vb: f64 = bits_to_f64(vec_get(b, i));
+        vec_push(result, f64_to_bits(va - vb));
+        i = i + 1;
+    }
+    result
+}
+
+// L2 norm of a vector
+fn vec_norm(v: i64) -> f64 {
+    let n: i64 = vec_len(v);
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let val: f64 = bits_to_f64(vec_get(v, i));
+        sum = sum + val * val;
+        i = i + 1;
+    }
+    ode_sqrt(sum)
+}
+
+// Max absolute element in a vector
+fn vec_max_abs(v: i64) -> f64 {
+    let n: i64 = vec_len(v);
+    var mx: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        let val: f64 = ode_abs(bits_to_f64(vec_get(v, i)));
+        if val > mx { mx = val; }
+        i = i + 1;
+    }
+    mx
+}
+
+// =============================================================================
+// Simple dynamics function evaluator
+// =============================================================================
+
+// Evaluate dynamics for a simple linear system: dx/dt = A * x
+// where A is stored as a flat vec of f64-as-bits (n x n matrix).
+//
+// Arguments:
+//   state      - handle to vec of f64-as-bits (state vector)
+//   dynamics_fn - handle to dynamics data:
+//                 for linear: flat matrix vec (n x n, f64-as-bits)
+//                 for NODE: NeuralODELayer handle
+//   is_node    - 0 for linear dynamics, 1 for Neural ODE dynamics
+//
+// Returns: handle to vec of f64-as-bits (derivative vector)
+fn eval_dynamics_linear(state: i64, matrix: i64) -> i64 {
+    let n: i64 = vec_len(state);
+    let result = vec_new();
+
+    var i: i64 = 0;
+    while i < n {
+        var sum: f64 = 0.0;
+        var j: i64 = 0;
+        while j < n {
+            let a: f64 = bits_to_f64(vec_get(matrix, i * n + j));
+            let x: f64 = bits_to_f64(vec_get(state, j));
+            sum = sum + a * x;
+            j = j + 1;
+        }
+        vec_push(result, f64_to_bits(sum));
+        i = i + 1;
+    }
+
+    result
+}
+
+// Evaluate Neural ODE dynamics: f(x,t) = W2 * tanh(W1 * x + b1) + b2
+//
+// Arguments:
+//   layer - handle to NeuralODELayer
+//   state - handle to vec of f64-as-bits (state vector, dim = state_dim)
+//
+// Returns: handle to vec of f64-as-bits (derivative vector, dim = state_dim)
+fn eval_dynamics_node(layer: i64, state: i64) -> i64 {
+    let state_dim: i64 = vec_get(layer, NODE_STATE_DIM());
+    let hidden_dim: i64 = vec_get(layer, NODE_HIDDEN_DIM());
+    let w1: i64 = vec_get(layer, NODE_W1());
+    let b1: i64 = vec_get(layer, NODE_B1());
+    let w2: i64 = vec_get(layer, NODE_W2());
+    let b2: i64 = vec_get(layer, NODE_B2());
+
+    // hidden = tanh(W1 * state + b1)
+    let hidden = vec_new();
+    var h: i64 = 0;
+    while h < hidden_dim {
+        var sum: f64 = bits_to_f64(vec_get(b1, h));
+        var j: i64 = 0;
+        while j < state_dim {
+            let w: f64 = bits_to_f64(vec_get(w1, h * state_dim + j));
+            let x: f64 = bits_to_f64(vec_get(state, j));
+            sum = sum + w * x;
+            j = j + 1;
+        }
+        // tanh approximation via exp: tanh(x) = (exp(2x)-1)/(exp(2x)+1)
+        let e2x: f64 = exp(2.0 * sum);
+        let tanh_val: f64 = (e2x - 1.0) / (e2x + 1.0);
+        vec_push(hidden, f64_to_bits(tanh_val));
+        h = h + 1;
+    }
+
+    // output = W2 * hidden + b2
+    let output = vec_new();
+    var s: i64 = 0;
+    while s < state_dim {
+        var sum2: f64 = bits_to_f64(vec_get(b2, s));
+        h = 0;
+        while h < hidden_dim {
+            let w: f64 = bits_to_f64(vec_get(w2, s * hidden_dim + h));
+            let hv: f64 = bits_to_f64(vec_get(hidden, h));
+            sum2 = sum2 + w * hv;
+            h = h + 1;
+        }
+        vec_push(output, f64_to_bits(sum2));
+        s = s + 1;
+    }
+
+    output
+}
+
+// =============================================================================
+// ODE Solvers
+// =============================================================================
+
+// Euler step: x(t+dt) = x(t) + dt * f(x(t), t)
+//
+// Arguments:
+//   state       - handle to vec of f64-as-bits (current state)
+//   dynamics_fn - handle to dynamics (linear matrix or NODE layer)
+//   dt          - time step size (f64-as-bits)
+//
+// Returns: handle to vec of f64-as-bits (new state)
+fn euler_step(state: i64, dynamics_fn: i64, dt: i64) -> i64 {
+    let dt_f64: f64 = bits_to_f64(dt);
+    let deriv: i64 = eval_dynamics_linear(state, dynamics_fn);
+    vec_add_scaled(state, deriv, dt_f64)
+}
+
+// Runge-Kutta 4th order step.
+//
+// k1 = f(x, t)
+// k2 = f(x + dt/2 * k1, t + dt/2)
+// k3 = f(x + dt/2 * k2, t + dt/2)
+// k4 = f(x + dt * k3, t + dt)
+// x_new = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+//
+// Arguments:
+//   state       - handle to vec of f64-as-bits (current state)
+//   dynamics_fn - handle to dynamics (linear matrix)
+//   t           - current time (f64-as-bits)
+//   dt          - time step size (f64-as-bits)
+//
+// Returns: handle to vec of f64-as-bits (new state)
+fn rk4_step(state: i64, dynamics_fn: i64, t: i64, dt: i64) -> i64 {
+    let dt_f64: f64 = bits_to_f64(dt);
+    let half_dt: f64 = dt_f64 / 2.0;
+
+    // k1 = f(x, t)
+    let k1: i64 = eval_dynamics_linear(state, dynamics_fn);
+
+    // k2 = f(x + dt/2 * k1, t + dt/2)
+    let x_k2: i64 = vec_add_scaled(state, k1, half_dt);
+    let k2: i64 = eval_dynamics_linear(x_k2, dynamics_fn);
+
+    // k3 = f(x + dt/2 * k2, t + dt/2)
+    let x_k3: i64 = vec_add_scaled(state, k2, half_dt);
+    let k3: i64 = eval_dynamics_linear(x_k3, dynamics_fn);
+
+    // k4 = f(x + dt * k3, t + dt)
+    let x_k4: i64 = vec_add_scaled(state, k3, dt_f64);
+    let k4: i64 = eval_dynamics_linear(x_k4, dynamics_fn);
+
+    // x_new = x + dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+    let n: i64 = vec_len(state);
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        let x0: f64 = bits_to_f64(vec_get(state, i));
+        let kv1: f64 = bits_to_f64(vec_get(k1, i));
+        let kv2: f64 = bits_to_f64(vec_get(k2, i));
+        let kv3: f64 = bits_to_f64(vec_get(k3, i));
+        let kv4: f64 = bits_to_f64(vec_get(k4, i));
+        let weighted: f64 = kv1 + 2.0 * kv2 + 2.0 * kv3 + kv4;
+        vec_push(result, f64_to_bits(x0 + dt_f64 / 6.0 * weighted));
+        i = i + 1;
+    }
+
+    result
+}
+
+// Adaptive step-size control using embedded RK4(5).
+//
+// Computes both an RK4 step and an RK5-like estimate (using one extra
+// stage), then adjusts dt based on the error estimate.
+//
+// Arguments:
+//   state       - handle to vec of f64-as-bits (current state)
+//   dynamics_fn - handle to dynamics (linear matrix)
+//   t           - current time (f64-as-bits)
+//   dt          - current time step (f64-as-bits)
+//   tolerance   - error tolerance (f64-as-bits)
+//
+// Returns: handle to [new_state_vec, new_t_bits, new_dt_bits]
+fn adaptive_step(state: i64, dynamics_fn: i64, t: i64, dt: i64, tolerance: i64) -> i64 {
+    let dt_f64: f64 = bits_to_f64(dt);
+    let tol: f64 = bits_to_f64(tolerance);
+    let t_f64: f64 = bits_to_f64(t);
+
+    // Compute RK4 solution with current dt
+    let rk4_result: i64 = rk4_step(state, dynamics_fn, t, dt);
+
+    // Compute two half-steps for error estimate
+    let half_dt: i64 = f64_to_bits(dt_f64 / 2.0);
+    let half_t: i64 = f64_to_bits(t_f64 + dt_f64 / 2.0);
+    let mid_state: i64 = rk4_step(state, dynamics_fn, t, half_dt);
+    let rk4_half: i64 = rk4_step(mid_state, dynamics_fn, half_t, half_dt);
+
+    // Error estimate: difference between full step and two half steps
+    let error_vec: i64 = vec_sub_f64(rk4_half, rk4_result);
+    let error_norm: f64 = vec_max_abs(error_vec);
+
+    // Safety factor for step-size control
+    let safety: f64 = 0.9;
+    var new_dt: f64 = dt_f64;
+
+    if error_norm > 0.0 {
+        // Optimal step-size factor: (tol / error)^(1/5) for RK4
+        let ratio: f64 = tol / error_norm;
+        let factor: f64 = safety * ode_pow_0_2(ratio);
+
+        // Clamp growth/shrink factor
+        var clamped: f64 = factor;
+        if clamped > 5.0 { clamped = 5.0; }
+        if clamped < 0.1 { clamped = 0.1; }
+
+        new_dt = dt_f64 * clamped;
+    } else {
+        // Error is zero, double the step
+        new_dt = dt_f64 * 2.0;
+    }
+
+    // Use the more accurate (two half-steps) result
+    let new_t: f64 = t_f64 + dt_f64;
+
+    let result = vec_new();
+    vec_push(result, rk4_half);               // [0] new_state
+    vec_push(result, f64_to_bits(new_t));     // [1] new_t
+    vec_push(result, f64_to_bits(new_dt));    // [2] new_dt
+    result
+}
+
+// =============================================================================
+// ODE Integration
+// =============================================================================
+
+// Integrate an ODE from t_start to t_end, returning the full trajectory.
+//
+// Arguments:
+//   initial        - handle to vec of f64-as-bits (initial state)
+//   dynamics_fn_id - handle to dynamics (linear matrix or NODE layer)
+//   t_start        - start time (f64-as-bits)
+//   t_end          - end time (f64-as-bits)
+//   dt             - time step (f64-as-bits)
+//   method         - integration method: EULER=1, RK4=2, ADAPTIVE=3
+//
+// Returns: handle to trajectory vec [n_steps, states_vec, times_vec]
+fn ode_solve(initial: i64, dynamics_fn_id: i64, t_start: i64, t_end: i64, dt: i64, method: i64) -> i64 {
+    let t0: f64 = bits_to_f64(t_start);
+    let t1: f64 = bits_to_f64(t_end);
+    var dt_f64: f64 = bits_to_f64(dt);
+
+    // Ensure we integrate forward
+    if t1 <= t0 {
+        let empty_traj = vec_new();
+        let states = vec_new();
+        let times = vec_new();
+        vec_push(states, vec_copy(initial));
+        vec_push(times, t_start);
+        vec_push(empty_traj, 1);
+        vec_push(empty_traj, states);
+        vec_push(empty_traj, times);
+        return empty_traj;
+    }
+
+    let states = vec_new();
+    let times = vec_new();
+
+    // Record initial state
+    vec_push(states, vec_copy(initial));
+    vec_push(times, t_start);
+
+    var current_state: i64 = vec_copy(initial);
+    var current_t: f64 = t0;
+    var step_count: i64 = 0;
+
+    // Maximum steps to prevent infinite loop
+    let max_steps: i64 = 100000;
+
+    while current_t < t1 {
+        if step_count >= max_steps { break; }
+
+        // Adjust dt for final step
+        var step_dt: f64 = dt_f64;
+        if current_t + step_dt > t1 {
+            step_dt = t1 - current_t;
+        }
+        if step_dt <= 0.0 { break; }
+
+        let step_dt_bits: i64 = f64_to_bits(step_dt);
+        let t_bits: i64 = f64_to_bits(current_t);
+
+        if method == METHOD_EULER() {
+            current_state = euler_step(current_state, dynamics_fn_id, step_dt_bits);
+            current_t = current_t + step_dt;
+        } else {
+            if method == METHOD_RK4() {
+                current_state = rk4_step(current_state, dynamics_fn_id, t_bits, step_dt_bits);
+                current_t = current_t + step_dt;
+            } else {
+                if method == METHOD_ADAPTIVE() {
+                    let tol_bits: i64 = f64_to_bits(0.0001);
+                    let adap: i64 = adaptive_step(current_state, dynamics_fn_id, t_bits, step_dt_bits, tol_bits);
+                    current_state = vec_get(adap, ADAP_STATE());
+                    current_t = bits_to_f64(vec_get(adap, ADAP_T()));
+                    dt_f64 = bits_to_f64(vec_get(adap, ADAP_DT()));
+                } else {
+                    // Default to Euler
+                    current_state = euler_step(current_state, dynamics_fn_id, step_dt_bits);
+                    current_t = current_t + step_dt;
+                }
+            }
+        }
+
+        vec_push(states, vec_copy(current_state));
+        vec_push(times, f64_to_bits(current_t));
+        step_count = step_count + 1;
+    }
+
+    let traj = vec_new();
+    vec_push(traj, step_count + 1);  // [0] n_steps (including initial)
+    vec_push(traj, states);          // [1] states_vec
+    vec_push(traj, times);           // [2] times_vec
+    traj
+}
+
+// Integrate an ODE and return only the final state (memory efficient).
+//
+// Arguments:
+//   initial        - handle to vec of f64-as-bits (initial state)
+//   dynamics_fn_id - handle to dynamics (linear matrix)
+//   t_start        - start time (f64-as-bits)
+//   t_end          - end time (f64-as-bits)
+//   dt             - time step (f64-as-bits)
+//
+// Returns: handle to vec of f64-as-bits (final state)
+fn ode_solve_final(initial: i64, dynamics_fn_id: i64, t_start: i64, t_end: i64, dt: i64) -> i64 {
+    let t0: f64 = bits_to_f64(t_start);
+    let t1: f64 = bits_to_f64(t_end);
+    let dt_f64: f64 = bits_to_f64(dt);
+
+    if t1 <= t0 {
+        return vec_copy(initial);
+    }
+
+    var current_state: i64 = vec_copy(initial);
+    var current_t: f64 = t0;
+    let max_steps: i64 = 100000;
+    var step_count: i64 = 0;
+
+    while current_t < t1 {
+        if step_count >= max_steps { break; }
+
+        var step_dt: f64 = dt_f64;
+        if current_t + step_dt > t1 {
+            step_dt = t1 - current_t;
+        }
+        if step_dt <= 0.0 { break; }
+
+        // Use RK4 for accuracy
+        let t_bits: i64 = f64_to_bits(current_t);
+        let step_dt_bits: i64 = f64_to_bits(step_dt);
+        current_state = rk4_step(current_state, dynamics_fn_id, t_bits, step_dt_bits);
+        current_t = current_t + step_dt;
+        step_count = step_count + 1;
+    }
+
+    current_state
+}
+
+// =============================================================================
+// Neural ODE Layer
+// =============================================================================
+
+// Create a new Neural ODE layer.
+//
+// The dynamics network is a 2-layer MLP:
+//   f(x) = W2 * tanh(W1 * x + b1) + b2
+//
+// Weights are initialized with a small deterministic sinusoidal pattern.
+//
+// Arguments:
+//   state_dim  - dimensionality of the state vector
+//   hidden_dim - width of the hidden layer in the dynamics MLP
+//
+// Returns: handle to NeuralODELayer vec
+fn node_layer_new(state_dim: i64, hidden_dim: i64) -> i64 {
+    // W1: hidden_dim x state_dim
+    let w1 = vec_new();
+    let total_w1: i64 = hidden_dim * state_dim;
+    var i: i64 = 0;
+    let scale1: f64 = 1.0 / ode_sqrt(state_dim as f64);
+    while i < total_w1 {
+        let seed: f64 = ((i as f64) + 0.5) * 0.6183;
+        let val: f64 = sin(seed) * scale1;
+        vec_push(w1, f64_to_bits(val));
+        i = i + 1;
+    }
+
+    // b1: hidden_dim (zeros)
+    let b1 = vec_new();
+    i = 0;
+    while i < hidden_dim {
+        vec_push(b1, f64_to_bits(0.0));
+        i = i + 1;
+    }
+
+    // W2: state_dim x hidden_dim
+    let w2 = vec_new();
+    let total_w2: i64 = state_dim * hidden_dim;
+    i = 0;
+    let scale2: f64 = 1.0 / ode_sqrt(hidden_dim as f64);
+    while i < total_w2 {
+        let seed: f64 = ((i as f64) + 0.5) * 0.4729;
+        let val: f64 = sin(seed) * scale2 * 0.1;  // Small output scale
+        vec_push(w2, f64_to_bits(val));
+        i = i + 1;
+    }
+
+    // b2: state_dim (zeros)
+    let b2 = vec_new();
+    i = 0;
+    while i < state_dim {
+        vec_push(b2, f64_to_bits(0.0));
+        i = i + 1;
+    }
+
+    let layer = vec_new();
+    vec_push(layer, state_dim);   // [0]
+    vec_push(layer, hidden_dim);  // [1]
+    vec_push(layer, w1);          // [2]
+    vec_push(layer, b1);          // [3]
+    vec_push(layer, w2);          // [4]
+    vec_push(layer, b2);          // [5]
+    vec_push(layer, 0);           // [6] step_count
+    layer
+}
+
+// Forward pass through the Neural ODE layer.
+//
+// Integrates the dynamics network from t=0 to t=1 using RK4,
+// returning only the final state.
+//
+// Arguments:
+//   layer   - handle to NeuralODELayer
+//   input   - handle to vec of f64-as-bits (input state)
+//   t_span  - integration duration (f64-as-bits), typically 1.0
+//   dt      - integration step size (f64-as-bits)
+//
+// Returns: handle to vec of f64-as-bits (output state)
+fn node_forward(layer: i64, input: i64, t_span: i64, dt: i64) -> i64 {
+    let t_span_f64: f64 = bits_to_f64(t_span);
+    let dt_f64: f64 = bits_to_f64(dt);
+    let state_dim: i64 = vec_get(layer, NODE_STATE_DIM());
+
+    var current: i64 = vec_copy(input);
+    var t: f64 = 0.0;
+    let max_steps: i64 = 10000;
+    var steps: i64 = 0;
+
+    while t < t_span_f64 {
+        if steps >= max_steps { break; }
+
+        var step_dt: f64 = dt_f64;
+        if t + step_dt > t_span_f64 {
+            step_dt = t_span_f64 - t;
+        }
+        if step_dt <= 0.0 { break; }
+
+        // RK4 with Neural ODE dynamics
+        let half_dt: f64 = step_dt / 2.0;
+
+        // k1 = f(current)
+        let k1: i64 = eval_dynamics_node(layer, current);
+
+        // k2 = f(current + dt/2 * k1)
+        let x_k2: i64 = vec_add_scaled(current, k1, half_dt);
+        let k2: i64 = eval_dynamics_node(layer, x_k2);
+
+        // k3 = f(current + dt/2 * k2)
+        let x_k3: i64 = vec_add_scaled(current, k2, half_dt);
+        let k3: i64 = eval_dynamics_node(layer, x_k3);
+
+        // k4 = f(current + dt * k3)
+        let x_k4: i64 = vec_add_scaled(current, k3, step_dt);
+        let k4: i64 = eval_dynamics_node(layer, x_k4);
+
+        // Update: x += dt/6 * (k1 + 2*k2 + 2*k3 + k4)
+        let new_state = vec_new();
+        var si: i64 = 0;
+        while si < state_dim {
+            let x0: f64 = bits_to_f64(vec_get(current, si));
+            let kv1: f64 = bits_to_f64(vec_get(k1, si));
+            let kv2: f64 = bits_to_f64(vec_get(k2, si));
+            let kv3: f64 = bits_to_f64(vec_get(k3, si));
+            let kv4: f64 = bits_to_f64(vec_get(k4, si));
+            let weighted: f64 = kv1 + 2.0 * kv2 + 2.0 * kv3 + kv4;
+            vec_push(new_state, f64_to_bits(x0 + step_dt / 6.0 * weighted));
+            si = si + 1;
+        }
+
+        current = new_state;
+        t = t + step_dt;
+        steps = steps + 1;
+    }
+
+    // Update step count
+    let old_steps: i64 = vec_get(layer, NODE_STEP_COUNT());
+    vec_set(layer, NODE_STEP_COUNT(), old_steps + steps);
+
+    current
+}
+
+// Full trajectory through the Neural ODE layer for visualization.
+//
+// Arguments:
+//   layer   - handle to NeuralODELayer
+//   input   - handle to vec of f64-as-bits (input state)
+//   t_span  - integration duration (f64-as-bits)
+//   dt      - integration step size (f64-as-bits)
+//
+// Returns: handle to trajectory vec [n_steps, states_vec, times_vec]
+fn node_trajectory(layer: i64, input: i64, t_span: i64, dt: i64) -> i64 {
+    let t_span_f64: f64 = bits_to_f64(t_span);
+    let dt_f64: f64 = bits_to_f64(dt);
+    let state_dim: i64 = vec_get(layer, NODE_STATE_DIM());
+
+    let states = vec_new();
+    let times = vec_new();
+
+    var current: i64 = vec_copy(input);
+    vec_push(states, vec_copy(current));
+    vec_push(times, f64_to_bits(0.0));
+
+    var t: f64 = 0.0;
+    let max_steps: i64 = 10000;
+    var steps: i64 = 0;
+
+    while t < t_span_f64 {
+        if steps >= max_steps { break; }
+
+        var step_dt: f64 = dt_f64;
+        if t + step_dt > t_span_f64 {
+            step_dt = t_span_f64 - t;
+        }
+        if step_dt <= 0.0 { break; }
+
+        // RK4 step with Neural ODE dynamics
+        let half_dt: f64 = step_dt / 2.0;
+
+        let k1: i64 = eval_dynamics_node(layer, current);
+        let x_k2: i64 = vec_add_scaled(current, k1, half_dt);
+        let k2: i64 = eval_dynamics_node(layer, x_k2);
+        let x_k3: i64 = vec_add_scaled(current, k2, half_dt);
+        let k3: i64 = eval_dynamics_node(layer, x_k3);
+        let x_k4: i64 = vec_add_scaled(current, k3, step_dt);
+        let k4: i64 = eval_dynamics_node(layer, x_k4);
+
+        let new_state = vec_new();
+        var si: i64 = 0;
+        while si < state_dim {
+            let x0: f64 = bits_to_f64(vec_get(current, si));
+            let kv1: f64 = bits_to_f64(vec_get(k1, si));
+            let kv2: f64 = bits_to_f64(vec_get(k2, si));
+            let kv3: f64 = bits_to_f64(vec_get(k3, si));
+            let kv4: f64 = bits_to_f64(vec_get(k4, si));
+            let weighted: f64 = kv1 + 2.0 * kv2 + 2.0 * kv3 + kv4;
+            vec_push(new_state, f64_to_bits(x0 + step_dt / 6.0 * weighted));
+            si = si + 1;
+        }
+
+        current = new_state;
+        t = t + step_dt;
+        steps = steps + 1;
+
+        vec_push(states, vec_copy(current));
+        vec_push(times, f64_to_bits(t));
+    }
+
+    let traj = vec_new();
+    vec_push(traj, steps + 1);  // [0] n_steps
+    vec_push(traj, states);     // [1] states_vec
+    vec_push(traj, times);      // [2] times_vec
+    traj
+}
+
+// =============================================================================
+// Continuous Normalizing Flow
+// =============================================================================
+
+// Compute log-probability change for a continuous normalizing flow.
+//
+// For a CNF, the change in log-probability is:
+//   d/dt log p(x(t)) = -trace(df/dx)
+//
+// We approximate the trace of the Jacobian using finite differences:
+//   trace(df/dx) ~ sum_i [ (f(x + eps*e_i) - f(x - eps*e_i)) / (2*eps) ]_i
+//
+// Arguments:
+//   trajectory - handle to trajectory vec [n_steps, states_vec, times_vec]
+//   dynamics   - handle to NeuralODELayer (used to evaluate dynamics)
+//
+// Returns: total log-probability change (f64-as-bits)
+fn cnf_log_prob(trajectory: i64, dynamics: i64) -> i64 {
+    let n_steps: i64 = vec_get(trajectory, TRAJ_N_STEPS());
+    let states: i64 = vec_get(trajectory, TRAJ_STATES());
+    let times: i64 = vec_get(trajectory, TRAJ_TIMES());
+    let state_dim: i64 = vec_get(dynamics, NODE_STATE_DIM());
+
+    let eps: f64 = 0.001;
+    var total_log_prob: f64 = 0.0;
+
+    if n_steps < 2 {
+        return f64_to_bits(0.0);
+    }
+
+    // For each time step, compute trace of Jacobian and integrate
+    var step: i64 = 0;
+    while step < n_steps - 1 {
+        let state: i64 = vec_get(states, step);
+        let t_curr: f64 = bits_to_f64(vec_get(times, step));
+        let t_next: f64 = bits_to_f64(vec_get(times, step + 1));
+        let dt: f64 = t_next - t_curr;
+
+        if dt <= 0.0 {
+            step = step + 1;
+            continue;
+        }
+
+        // Compute trace of Jacobian via finite differences
+        var trace: f64 = 0.0;
+        let f_center: i64 = eval_dynamics_node(dynamics, state);
+
+        var d: i64 = 0;
+        while d < state_dim {
+            // Perturb dimension d by +eps
+            let state_plus: i64 = vec_copy(state);
+            let val_plus: f64 = bits_to_f64(vec_get(state_plus, d));
+            vec_set(state_plus, d, f64_to_bits(val_plus + eps));
+            let f_plus: i64 = eval_dynamics_node(dynamics, state_plus);
+
+            // Perturb dimension d by -eps
+            let state_minus: i64 = vec_copy(state);
+            let val_minus: f64 = bits_to_f64(vec_get(state_minus, d));
+            vec_set(state_minus, d, f64_to_bits(val_minus - eps));
+            let f_minus: i64 = eval_dynamics_node(dynamics, state_minus);
+
+            // df_d/dx_d ~ (f_plus[d] - f_minus[d]) / (2*eps)
+            let fp: f64 = bits_to_f64(vec_get(f_plus, d));
+            let fm: f64 = bits_to_f64(vec_get(f_minus, d));
+            trace = trace + (fp - fm) / (2.0 * eps);
+
+            d = d + 1;
+        }
+
+        // d/dt log p = -trace(df/dx)
+        total_log_prob = total_log_prob - trace * dt;
+        step = step + 1;
+    }
+
+    f64_to_bits(total_log_prob)
+}
+
+// =============================================================================
+// Extended: Adjoint method for Neural ODE backpropagation
+// =============================================================================
+
+// Compute the adjoint state (gradient of loss w.r.t. state) backwards in time.
+//
+// The adjoint ODE is:
+//   da/dt = -a^T * df/dx
+//
+// We approximate df/dx using finite differences and integrate backwards.
+//
+// Arguments:
+//   layer       - handle to NeuralODELayer
+//   final_state - handle to vec of f64-as-bits (final state from forward pass)
+//   loss_grad   - handle to vec of f64-as-bits (dL/d(final_state))
+//   t_span      - integration time (f64-as-bits)
+//   dt          - step size (f64-as-bits)
+//
+// Returns: handle to vec of f64-as-bits (gradient w.r.t. initial state)
+fn node_adjoint(layer: i64, final_state: i64, loss_grad: i64, t_span: i64, dt: i64) -> i64 {
+    let t_span_f64: f64 = bits_to_f64(t_span);
+    let dt_f64: f64 = bits_to_f64(dt);
+    let state_dim: i64 = vec_get(layer, NODE_STATE_DIM());
+    let eps: f64 = 0.001;
+
+    // Start with adjoint = loss_grad, integrate backwards
+    var adjoint: i64 = vec_copy(loss_grad);
+    var state: i64 = vec_copy(final_state);
+    var t: f64 = t_span_f64;
+    let max_steps: i64 = 10000;
+    var steps: i64 = 0;
+
+    while t > 0.0 {
+        if steps >= max_steps { break; }
+
+        var step_dt: f64 = dt_f64;
+        if t - step_dt < 0.0 {
+            step_dt = t;
+        }
+        if step_dt <= 0.0 { break; }
+
+        // Compute Jacobian-vector product: J^T * adjoint
+        // J[i][j] = df_i/dx_j ~ (f_i(x + eps*e_j) - f_i(x - eps*e_j)) / (2*eps)
+        // (J^T * a)[j] = sum_i a[i] * J[i][j]
+        let jt_a = vec_new();
+        var j: i64 = 0;
+        while j < state_dim {
+            let state_plus: i64 = vec_copy(state);
+            let vp: f64 = bits_to_f64(vec_get(state_plus, j));
+            vec_set(state_plus, j, f64_to_bits(vp + eps));
+            let f_plus: i64 = eval_dynamics_node(layer, state_plus);
+
+            let state_minus: i64 = vec_copy(state);
+            let vm: f64 = bits_to_f64(vec_get(state_minus, j));
+            vec_set(state_minus, j, f64_to_bits(vm - eps));
+            let f_minus: i64 = eval_dynamics_node(layer, state_minus);
+
+            var dot: f64 = 0.0;
+            var i: i64 = 0;
+            while i < state_dim {
+                let a_i: f64 = bits_to_f64(vec_get(adjoint, i));
+                let jac_ij: f64 = (bits_to_f64(vec_get(f_plus, i)) - bits_to_f64(vec_get(f_minus, i))) / (2.0 * eps);
+                dot = dot + a_i * jac_ij;
+                i = i + 1;
+            }
+            vec_push(jt_a, f64_to_bits(dot));
+            j = j + 1;
+        }
+
+        // Update adjoint: a(t-dt) = a(t) + dt * J^T * a(t)   (backward, so sign flips)
+        // da/dt = -a^T * df/dx  =>  a -= dt * J^T * a
+        adjoint = vec_add_scaled(adjoint, jt_a, 0.0 - step_dt);
+
+        // Also step state backwards (reverse dynamics)
+        let deriv: i64 = eval_dynamics_node(layer, state);
+        state = vec_add_scaled(state, deriv, 0.0 - step_dt);
+
+        t = t - step_dt;
+        steps = steps + 1;
+    }
+
+    adjoint
+}
+
+// =============================================================================
+// Extended: Multiple shooting for Neural ODEs
+// =============================================================================
+
+// Divide the integration interval into segments and solve each independently.
+// This improves numerical stability for long integration times.
+//
+// Arguments:
+//   layer       - handle to NeuralODELayer
+//   input       - handle to vec of f64-as-bits (initial state)
+//   t_span      - total integration duration (f64-as-bits)
+//   dt          - step size per segment (f64-as-bits)
+//   n_segments  - number of shooting segments
+//
+// Returns: handle to vec of f64-as-bits (final state)
+fn node_multiple_shooting(layer: i64, input: i64, t_span: i64, dt: i64, n_segments: i64) -> i64 {
+    let t_total: f64 = bits_to_f64(t_span);
+    let dt_f64: f64 = bits_to_f64(dt);
+
+    var n_seg: i64 = n_segments;
+    if n_seg < 1 { n_seg = 1; }
+
+    let seg_t: f64 = t_total / (n_seg as f64);
+    let seg_t_bits: i64 = f64_to_bits(seg_t);
+
+    var current: i64 = vec_copy(input);
+    var seg: i64 = 0;
+    while seg < n_seg {
+        current = node_forward(layer, current, seg_t_bits, dt);
+        seg = seg + 1;
+    }
+
+    current
+}
+
+// =============================================================================
+// Utility: Create simple dynamics matrices
+// =============================================================================
+
+// Create a diagonal dynamics matrix A = diag(eigenvalues).
+//
+// For dx/dt = A*x with A = diag(lambda), each dimension evolves
+// independently as x_i(t) = x_i(0) * exp(lambda_i * t).
+//
+// Arguments:
+//   eigenvalues - handle to vec of f64-as-bits eigenvalues
+//
+// Returns: handle to flat matrix vec (n x n, f64-as-bits)
+fn diagonal_dynamics(eigenvalues: i64) -> i64 {
+    let n: i64 = vec_len(eigenvalues);
+    let matrix = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < n {
+            if i == j {
+                vec_push(matrix, vec_get(eigenvalues, i));
+            } else {
+                vec_push(matrix, f64_to_bits(0.0));
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    matrix
+}
+
+// Create a rotation dynamics matrix for 2D systems.
+//
+// A = [[0, -omega], [omega, 0]]
+// This produces circular motion: x(t) = R(omega*t) * x(0)
+//
+// Arguments:
+//   omega - angular velocity (f64-as-bits)
+//
+// Returns: handle to flat matrix vec (2 x 2, f64-as-bits)
+fn rotation_dynamics(omega: i64) -> i64 {
+    let w: f64 = bits_to_f64(omega);
+    let matrix = vec_new();
+    vec_push(matrix, f64_to_bits(0.0));         // [0,0]
+    vec_push(matrix, f64_to_bits(0.0 - w));     // [0,1]
+    vec_push(matrix, f64_to_bits(w));            // [1,0]
+    vec_push(matrix, f64_to_bits(0.0));         // [1,1]
+    matrix
+}
+
+// Create a damped oscillator dynamics matrix.
+//
+// A = [[-damping, -omega], [omega, -damping]]
+//
+// Arguments:
+//   omega   - angular velocity (f64-as-bits)
+//   damping - damping coefficient (f64-as-bits)
+//
+// Returns: handle to flat matrix vec (2 x 2, f64-as-bits)
+fn damped_oscillator_dynamics(omega: i64, damping: i64) -> i64 {
+    let w: f64 = bits_to_f64(omega);
+    let d: f64 = bits_to_f64(damping);
+    let matrix = vec_new();
+    vec_push(matrix, f64_to_bits(0.0 - d));     // [0,0]
+    vec_push(matrix, f64_to_bits(0.0 - w));     // [0,1]
+    vec_push(matrix, f64_to_bits(w));            // [1,0]
+    vec_push(matrix, f64_to_bits(0.0 - d));     // [1,1]
+    matrix
+}
+
+// =============================================================================
+// Utility: Trajectory analysis
+// =============================================================================
+
+// Compute the total path length of a trajectory.
+//
+// Sum of L2 distances between consecutive states.
+//
+// Arguments:
+//   trajectory - handle to trajectory vec [n_steps, states_vec, times_vec]
+//
+// Returns: total path length (f64-as-bits)
+fn trajectory_path_length(trajectory: i64) -> i64 {
+    let n_steps: i64 = vec_get(trajectory, TRAJ_N_STEPS());
+    let states: i64 = vec_get(trajectory, TRAJ_STATES());
+
+    if n_steps < 2 {
+        return f64_to_bits(0.0);
+    }
+
+    var total: f64 = 0.0;
+    var i: i64 = 1;
+    while i < n_steps {
+        let prev: i64 = vec_get(states, i - 1);
+        let curr: i64 = vec_get(states, i);
+        let diff: i64 = vec_sub_f64(curr, prev);
+        total = total + vec_norm(diff);
+        i = i + 1;
+    }
+
+    f64_to_bits(total)
+}
+
+// Get the final state from a trajectory.
+//
+// Arguments:
+//   trajectory - handle to trajectory vec
+//
+// Returns: handle to vec of f64-as-bits (final state)
+fn trajectory_final_state(trajectory: i64) -> i64 {
+    let n_steps: i64 = vec_get(trajectory, TRAJ_N_STEPS());
+    let states: i64 = vec_get(trajectory, TRAJ_STATES());
+    if n_steps == 0 {
+        return vec_new();
+    }
+    vec_get(states, n_steps - 1)
+}
+
+// Compute the maximum velocity (norm of derivative) along a trajectory.
+//
+// Arguments:
+//   trajectory  - handle to trajectory vec
+//   dynamics_fn - handle to dynamics (NeuralODELayer)
+//
+// Returns: maximum velocity norm (f64-as-bits)
+fn trajectory_max_velocity(trajectory: i64, dynamics_fn: i64) -> i64 {
+    let n_steps: i64 = vec_get(trajectory, TRAJ_N_STEPS());
+    let states: i64 = vec_get(trajectory, TRAJ_STATES());
+
+    var max_vel: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n_steps {
+        let state: i64 = vec_get(states, i);
+        let deriv: i64 = eval_dynamics_node(dynamics_fn, state);
+        let vel: f64 = vec_norm(deriv);
+        if vel > max_vel { max_vel = vel; }
+        i = i + 1;
+    }
+
+    f64_to_bits(max_vel)
+}
+
+// =============================================================================
+// Utility: Convergence checking
+// =============================================================================
+
+// Check if the ODE has reached a fixed point (derivative ~ 0).
+//
+// Arguments:
+//   state       - handle to vec of f64-as-bits
+//   dynamics_fn - handle to dynamics (linear matrix)
+//   threshold   - convergence threshold (f64-as-bits)
+//
+// Returns: 1 if converged, 0 if not
+fn is_fixed_point(state: i64, dynamics_fn: i64, threshold: i64) -> i64 {
+    let deriv: i64 = eval_dynamics_linear(state, dynamics_fn);
+    let norm: f64 = vec_norm(deriv);
+    let thresh: f64 = bits_to_f64(threshold);
+
+    if norm < thresh { return 1; }
+    0
+}
+
+// Check if two states are approximately equal.
+//
+// Arguments:
+//   a         - handle to vec of f64-as-bits
+//   b         - handle to vec of f64-as-bits
+//   tolerance - tolerance (f64-as-bits)
+//
+// Returns: 1 if approximately equal, 0 if not
+fn states_approx_equal(a: i64, b: i64, tolerance: i64) -> i64 {
+    let diff: i64 = vec_sub_f64(a, b);
+    let norm: f64 = vec_norm(diff);
+    let tol: f64 = bits_to_f64(tolerance);
+
+    if norm < tol { return 1; }
+    0
+}
+
+// =============================================================================
+// Smoke test
+// =============================================================================
+

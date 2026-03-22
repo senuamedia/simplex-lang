@@ -1,0 +1,1219 @@
+// simplex-learning::neurosymbolic - Neuro-Symbolic Hybrid Reasoning
+//
+// Integrates symbolic logic (knowledge bases, Horn clauses, unification,
+// forward/backward chaining) with neural network outputs. The bridge
+// functions allow neural perception to feed into symbolic reasoning,
+// producing explainable, verifiable conclusions.
+//
+// # Data Layout (vec handles)
+//
+// All floating-point values stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set.
+//
+// Knowledge Base:
+//   [fact_count, rule_count, facts_handle, rules_handle]
+//     facts_handle: vec of triples [subject, predicate, object] stored flat
+//     rules_handle: vec of rules [head, body_len, body0, body1, ...] stored flat
+//
+// Term representation:
+//   Terms are i64 IDs. Negative values represent variables (unbound).
+//   Positive values represent constants (ground terms).
+//   Variable: -1, -2, -3, ...
+//   Constant: 0, 1, 2, 3, ...
+//
+// Substitution:
+//   Vec of pairs [var_id, bound_term] stored flat (2 entries per binding)
+//
+// Proof tree:
+//   Vec: [goal, n_children, child0_handle, child1_handle, ...]
+//
+// # References
+//
+// Garcez et al. "Neural-Symbolic Computing" (2002)
+// Besold et al. "Neural-Symbolic Learning and Reasoning: A Survey" (2017)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Constants (as functions - no const in compiled path)
+// =============================================================================
+
+fn KB_FACT_COUNT() -> i64 { 0 }
+fn KB_RULE_COUNT() -> i64 { 1 }
+fn KB_FACTS() -> i64 { 2 }
+fn KB_RULES() -> i64 { 3 }
+
+fn TRIPLE_SIZE() -> i64 { 3 }
+
+fn TERM_WILDCARD() -> i64 { -9999 }
+
+fn UNIFY_FAIL() -> i64 { -1 }
+
+fn PROOF_GOAL() -> i64 { 0 }
+fn PROOF_N_CHILDREN() -> i64 { 1 }
+fn PROOF_CHILDREN_START() -> i64 { 2 }
+
+// Boolean-like returns
+fn TRUE() -> i64 { 1 }
+fn FALSE() -> i64 { 0 }
+
+// =============================================================================
+// Floating-point helpers
+// =============================================================================
+
+fn ns_f64_abs(x: f64) -> f64 {
+    if x < 0.0 { 0.0 - x } else { x }
+}
+
+fn ns_f64_max(a: f64, b: f64) -> f64 {
+    if a > b { a } else { b }
+}
+
+fn ns_f64_min(a: f64, b: f64) -> f64 {
+    if a < b { a } else { b }
+}
+
+fn ns_exp(x: f64) -> f64 {
+    var arg: f64 = x;
+    if arg > 20.0 { arg = 20.0; }
+    if arg < 0.0 - 20.0 { arg = 0.0 - 20.0; }
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 30 {
+        term = term * arg / (i as f64);
+        result = result + term;
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Knowledge Base - Creation and Facts
+// =============================================================================
+
+/// Create a new empty knowledge base.
+/// Returns handle to KB vec: [fact_count, rule_count, facts_handle, rules_handle]
+fn kb_new() -> i64 {
+    let kb: i64 = vec_new();
+    vec_push(kb, 0);           // fact_count
+    vec_push(kb, 0);           // rule_count
+    vec_push(kb, vec_new());   // facts vec (flat triples)
+    vec_push(kb, vec_new());   // rules vec (flat rule data)
+    kb
+}
+
+/// Add a fact triple (subject, predicate, object) to the knowledge base.
+/// Returns the index of the newly added fact.
+fn kb_add_fact(kb: i64, subject: i64, predicate: i64, object: i64) -> i64 {
+    let facts: i64 = vec_get(kb, KB_FACTS());
+    let idx: i64 = vec_get(kb, KB_FACT_COUNT());
+
+    vec_push(facts, subject);
+    vec_push(facts, predicate);
+    vec_push(facts, object);
+
+    vec_set(kb, KB_FACT_COUNT(), idx + 1);
+    idx
+}
+
+/// Add a Horn clause rule to the knowledge base.
+/// head: the conclusion fact index pattern
+/// body: handle to vec of fact patterns (premises)
+/// Rule format in rules vec: [head_subj, head_pred, head_obj, body_len, b0_s, b0_p, b0_o, ...]
+/// For simplicity, head and body are stored as fact IDs referencing the KB.
+/// Returns the index of the newly added rule.
+fn kb_add_rule(kb: i64, head: i64, body: i64) -> i64 {
+    let rules: i64 = vec_get(kb, KB_RULES());
+    let idx: i64 = vec_get(kb, KB_RULE_COUNT());
+    let body_len: i64 = vec_len(body);
+
+    // Store: [head, body_len, body_item_0, body_item_1, ...]
+    vec_push(rules, head);
+    vec_push(rules, body_len);
+    var i: i64 = 0;
+    while i < body_len {
+        vec_push(rules, vec_get(body, i));
+        i = i + 1;
+    }
+
+    vec_set(kb, KB_RULE_COUNT(), idx + 1);
+    idx
+}
+
+/// Query the knowledge base for facts matching (subject, predicate).
+/// Use TERM_WILDCARD (-9999) for either to match any value.
+/// Returns handle to vec of matching fact indices.
+fn kb_query(kb: i64, subject: i64, predicate: i64) -> i64 {
+    let results: i64 = vec_new();
+    let facts: i64 = vec_get(kb, KB_FACTS());
+    let n: i64 = vec_get(kb, KB_FACT_COUNT());
+
+    var i: i64 = 0;
+    while i < n {
+        let base: i64 = i * TRIPLE_SIZE();
+        let s: i64 = vec_get(facts, base);
+        let p: i64 = vec_get(facts, base + 1);
+
+        var match_s: i64 = 0;
+        if subject == TERM_WILDCARD() { match_s = 1; }
+        if subject == s { match_s = 1; }
+
+        var match_p: i64 = 0;
+        if predicate == TERM_WILDCARD() { match_p = 1; }
+        if predicate == p { match_p = 1; }
+
+        if match_s == 1 {
+            if match_p == 1 {
+                vec_push(results, i);
+            }
+        }
+        i = i + 1;
+    }
+    results
+}
+
+/// Get the number of facts in the knowledge base.
+fn kb_fact_count(kb: i64) -> i64 {
+    vec_get(kb, KB_FACT_COUNT())
+}
+
+/// Get the number of rules in the knowledge base.
+fn kb_rule_count(kb: i64) -> i64 {
+    vec_get(kb, KB_RULE_COUNT())
+}
+
+// =============================================================================
+// Knowledge Base - Fact Accessors
+// =============================================================================
+
+/// Get subject of fact at index.
+fn kb_fact_subject(kb: i64, idx: i64) -> i64 {
+    let facts: i64 = vec_get(kb, KB_FACTS());
+    vec_get(facts, idx * TRIPLE_SIZE())
+}
+
+/// Get predicate of fact at index.
+fn kb_fact_predicate(kb: i64, idx: i64) -> i64 {
+    let facts: i64 = vec_get(kb, KB_FACTS());
+    vec_get(facts, idx * TRIPLE_SIZE() + 1)
+}
+
+/// Get object of fact at index.
+fn kb_fact_object(kb: i64, idx: i64) -> i64 {
+    let facts: i64 = vec_get(kb, KB_FACTS());
+    vec_get(facts, idx * TRIPLE_SIZE() + 2)
+}
+
+/// Check if a specific triple exists in the KB.
+/// Returns 1 if found, 0 otherwise.
+fn kb_has_fact(kb: i64, subject: i64, predicate: i64, object: i64) -> i64 {
+    let facts: i64 = vec_get(kb, KB_FACTS());
+    let n: i64 = vec_get(kb, KB_FACT_COUNT());
+
+    var i: i64 = 0;
+    while i < n {
+        let base: i64 = i * TRIPLE_SIZE();
+        let s: i64 = vec_get(facts, base);
+        let p: i64 = vec_get(facts, base + 1);
+        let o: i64 = vec_get(facts, base + 2);
+
+        if s == subject {
+            if p == predicate {
+                if o == object {
+                    return 1;
+                }
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Rule Accessors
+// =============================================================================
+
+/// Get the head of rule at index (the conclusion).
+/// Rules are stored flat: [head, body_len, b0, b1, ...]
+/// Returns the head value.
+fn rule_head(kb: i64, rule_idx: i64) -> i64 {
+    let rules: i64 = vec_get(kb, KB_RULES());
+    // Walk the flat rules vec to find the rule_idx-th rule
+    var pos: i64 = 0;
+    var cur: i64 = 0;
+    while cur < rule_idx {
+        let blen: i64 = vec_get(rules, pos + 1);
+        pos = pos + 2 + blen;
+        cur = cur + 1;
+    }
+    vec_get(rules, pos)
+}
+
+/// Get the body length of rule at index.
+fn rule_body_len(kb: i64, rule_idx: i64) -> i64 {
+    let rules: i64 = vec_get(kb, KB_RULES());
+    var pos: i64 = 0;
+    var cur: i64 = 0;
+    while cur < rule_idx {
+        let blen: i64 = vec_get(rules, pos + 1);
+        pos = pos + 2 + blen;
+        cur = cur + 1;
+    }
+    vec_get(rules, pos + 1)
+}
+
+/// Get body element j of rule at index.
+fn rule_body_item(kb: i64, rule_idx: i64, j: i64) -> i64 {
+    let rules: i64 = vec_get(kb, KB_RULES());
+    var pos: i64 = 0;
+    var cur: i64 = 0;
+    while cur < rule_idx {
+        let blen: i64 = vec_get(rules, pos + 1);
+        pos = pos + 2 + blen;
+        cur = cur + 1;
+    }
+    vec_get(rules, pos + 2 + j)
+}
+
+// =============================================================================
+// Forward Chaining
+// =============================================================================
+
+/// Forward chaining: apply rules to derive new facts.
+///
+/// In each step, for each rule, check if all body facts are present in the KB.
+/// If so, add the head fact if not already present.
+/// Repeat up to max_steps or until no new facts are derived (fixpoint).
+///
+/// Rules use a simple encoding:
+///   head = predicate_id, body items = predicate_ids
+///   A rule fires when all body predicates have at least one fact in the KB
+///   and the head predicate is not yet present.
+///
+/// Returns the number of new facts derived.
+fn forward_chain(kb: i64, max_steps: i64) -> i64 {
+    var total_new: i64 = 0;
+    var step: i64 = 0;
+
+    while step < max_steps {
+        var new_this_step: i64 = 0;
+        let n_rules: i64 = vec_get(kb, KB_RULE_COUNT());
+
+        var r: i64 = 0;
+        while r < n_rules {
+            let head: i64 = rule_head(kb, r);
+            let blen: i64 = rule_body_len(kb, r);
+
+            // Check if all body items are present as fact predicates
+            var all_present: i64 = 1;
+            var j: i64 = 0;
+            while j < blen {
+                let body_pred: i64 = rule_body_item(kb, r, j);
+                // Check if any fact has this predicate
+                let matches: i64 = kb_query(kb, TERM_WILDCARD(), body_pred);
+                if vec_len(matches) == 0 {
+                    all_present = 0;
+                }
+                j = j + 1;
+            }
+
+            // If all body facts present and head not yet derived
+            if all_present == 1 {
+                // Check if head predicate already has a fact
+                let head_matches: i64 = kb_query(kb, TERM_WILDCARD(), head);
+                if vec_len(head_matches) == 0 {
+                    // Derive: add a new fact with head as predicate
+                    // Subject and object are set to head (self-referential marker)
+                    kb_add_fact(kb, head, head, head);
+                    new_this_step = new_this_step + 1;
+                    total_new = total_new + 1;
+                }
+            }
+            r = r + 1;
+        }
+
+        if new_this_step == 0 {
+            // Fixpoint reached
+            return total_new;
+        }
+        step = step + 1;
+    }
+    total_new
+}
+
+/// Check if a given fact predicate is derivable from existing facts and rules.
+/// Returns 1 if derivable, 0 otherwise.
+/// Uses forward chaining internally.
+fn is_derivable(kb: i64, fact: i64) -> i64 {
+    // First check if already present
+    let matches: i64 = kb_query(kb, TERM_WILDCARD(), fact);
+    if vec_len(matches) > 0 {
+        return 1;
+    }
+
+    // Try forward chaining (limited steps)
+    forward_chain(kb, 100);
+
+    // Check again
+    let matches2: i64 = kb_query(kb, TERM_WILDCARD(), fact);
+    if vec_len(matches2) > 0 {
+        return 1;
+    }
+    0
+}
+
+// =============================================================================
+// Backward Chaining
+// =============================================================================
+
+/// Backward chaining: prove a goal by working backwards from rules.
+///
+/// Given a goal (predicate ID), search for:
+///   1. A fact directly matching the goal predicate
+///   2. A rule whose head matches the goal, then recursively prove all body items
+///
+/// max_depth limits recursion depth.
+/// Returns 1 if goal is provable, 0 otherwise.
+fn backward_chain(kb: i64, goal: i64, max_depth: i64) -> i64 {
+    if max_depth <= 0 {
+        return 0;
+    }
+
+    // Base case: goal is directly present as a fact predicate
+    let matches: i64 = kb_query(kb, TERM_WILDCARD(), goal);
+    if vec_len(matches) > 0 {
+        return 1;
+    }
+
+    // Inductive case: find a rule whose head matches goal
+    let n_rules: i64 = vec_get(kb, KB_RULE_COUNT());
+    var r: i64 = 0;
+    while r < n_rules {
+        let head: i64 = rule_head(kb, r);
+        if head == goal {
+            // Try to prove all body items
+            let blen: i64 = rule_body_len(kb, r);
+            var all_proved: i64 = 1;
+            var j: i64 = 0;
+            while j < blen {
+                let body_item: i64 = rule_body_item(kb, r, j);
+                let proved: i64 = backward_chain(kb, body_item, max_depth - 1);
+                if proved == 0 {
+                    all_proved = 0;
+                }
+                j = j + 1;
+            }
+            if all_proved == 1 {
+                return 1;
+            }
+        }
+        r = r + 1;
+    }
+    0
+}
+
+/// Build a proof tree for a goal.
+///
+/// Returns handle to a proof tree vec:
+///   [goal, n_children, child0_handle, child1_handle, ...]
+/// If the goal is a base fact, n_children = 0 (leaf).
+/// If proved via a rule, children are proof trees for each body item.
+/// Returns -1 if not provable.
+fn proof_tree(kb: i64, goal: i64) -> i64 {
+    return proof_tree_depth(kb, goal, 50);
+}
+
+fn proof_tree_depth(kb: i64, goal: i64, max_depth: i64) -> i64 {
+    if max_depth <= 0 {
+        return -1;
+    }
+
+    let tree: i64 = vec_new();
+    vec_push(tree, goal);   // PROOF_GOAL
+
+    // Base case: goal is directly present as a fact
+    let matches: i64 = kb_query(kb, TERM_WILDCARD(), goal);
+    if vec_len(matches) > 0 {
+        vec_push(tree, 0);   // PROOF_N_CHILDREN = 0 (leaf)
+        return tree;
+    }
+
+    // Try rules
+    let n_rules: i64 = vec_get(kb, KB_RULE_COUNT());
+    var r: i64 = 0;
+    while r < n_rules {
+        let head: i64 = rule_head(kb, r);
+        if head == goal {
+            let blen: i64 = rule_body_len(kb, r);
+            let children: i64 = vec_new();
+            var all_proved: i64 = 1;
+            var j: i64 = 0;
+            while j < blen {
+                let body_item: i64 = rule_body_item(kb, r, j);
+                let child: i64 = proof_tree_depth(kb, body_item, max_depth - 1);
+                if child == -1 {
+                    all_proved = 0;
+                }
+                vec_push(children, child);
+                j = j + 1;
+            }
+            if all_proved == 1 {
+                vec_push(tree, blen);   // n_children
+                var k: i64 = 0;
+                while k < blen {
+                    vec_push(tree, vec_get(children, k));
+                    k = k + 1;
+                }
+                return tree;
+            }
+        }
+        r = r + 1;
+    }
+
+    // Not provable
+    -1
+}
+
+// =============================================================================
+// Unification
+// =============================================================================
+
+/// Create an empty substitution (vec of var_id, term pairs).
+fn substitution_new() -> i64 {
+    vec_new()
+}
+
+/// Add a binding var_id -> term to a substitution.
+fn substitution_add(subs: i64, var_id: i64, term: i64) -> i64 {
+    vec_push(subs, var_id);
+    vec_push(subs, term);
+    subs
+}
+
+/// Look up a variable in the substitution.
+/// Returns the bound term, or the variable itself if unbound.
+fn substitution_lookup(subs: i64, var_id: i64) -> i64 {
+    let n: i64 = vec_len(subs);
+    var i: i64 = 0;
+    while i < n {
+        let v: i64 = vec_get(subs, i);
+        let t: i64 = vec_get(subs, i + 1);
+        if v == var_id {
+            return t;
+        }
+        i = i + 2;
+    }
+    var_id
+}
+
+/// Check if a term is a variable (negative value).
+fn is_variable(term: i64) -> i64 {
+    if term < 0 {
+        if term != TERM_WILDCARD() {
+            return 1;
+        }
+    }
+    0
+}
+
+/// Unify two terms.
+///
+/// Variables (negative values) can bind to any term.
+/// Constants (non-negative values) unify only with themselves.
+/// Wildcards (TERM_WILDCARD) match anything without binding.
+///
+/// Returns a substitution handle on success, or UNIFY_FAIL (-1) on failure.
+fn unify(term1: i64, term2: i64) -> i64 {
+    let subs: i64 = substitution_new();
+    return unify_with_subs(term1, term2, subs);
+}
+
+fn unify_with_subs(term1: i64, term2: i64, subs: i64) -> i64 {
+    // Walk: apply existing substitutions
+    var t1: i64 = term1;
+    var t2: i64 = term2;
+
+    if is_variable(t1) == 1 {
+        t1 = substitution_lookup(subs, t1);
+    }
+    if is_variable(t2) == 1 {
+        t2 = substitution_lookup(subs, t2);
+    }
+
+    // Wildcards match anything
+    if t1 == TERM_WILDCARD() { return subs; }
+    if t2 == TERM_WILDCARD() { return subs; }
+
+    // Identical terms
+    if t1 == t2 { return subs; }
+
+    // Bind variable
+    if is_variable(t1) == 1 {
+        substitution_add(subs, t1, t2);
+        return subs;
+    }
+    if is_variable(t2) == 1 {
+        substitution_add(subs, t2, t1);
+        return subs;
+    }
+
+    // Both are ground and not equal -> fail
+    UNIFY_FAIL()
+}
+
+/// Apply a substitution to a term.
+/// If the term is a variable and bound in subs, return the bound value.
+/// Otherwise return the term unchanged.
+fn apply_substitution(term: i64, subs: i64) -> i64 {
+    if subs == UNIFY_FAIL() { return term; }
+    if is_variable(term) == 1 {
+        return substitution_lookup(subs, term);
+    }
+    term
+}
+
+// =============================================================================
+// Unify Triples
+// =============================================================================
+
+/// Unify two fact triples component-wise.
+/// triple1, triple2: each is [subject, predicate, object] as a vec handle.
+/// Returns substitution handle or UNIFY_FAIL.
+fn unify_triples(triple1: i64, triple2: i64) -> i64 {
+    let subs: i64 = substitution_new();
+
+    let s1: i64 = vec_get(triple1, 0);
+    let s2: i64 = vec_get(triple2, 0);
+    let r1: i64 = unify_with_subs(s1, s2, subs);
+    if r1 == UNIFY_FAIL() { return UNIFY_FAIL(); }
+
+    let p1: i64 = vec_get(triple1, 1);
+    let p2: i64 = vec_get(triple2, 1);
+    let r2: i64 = unify_with_subs(p1, p2, r1);
+    if r2 == UNIFY_FAIL() { return UNIFY_FAIL(); }
+
+    let o1: i64 = vec_get(triple1, 2);
+    let o2: i64 = vec_get(triple2, 2);
+    unify_with_subs(o1, o2, r2)
+}
+
+// =============================================================================
+// Logic Operators
+// =============================================================================
+
+/// Logical AND: returns 1 if both a and b are non-zero.
+fn logic_and(a: i64, b: i64) -> i64 {
+    if a != 0 {
+        if b != 0 {
+            return 1;
+        }
+    }
+    0
+}
+
+/// Logical OR: returns 1 if either a or b is non-zero.
+fn logic_or(a: i64, b: i64) -> i64 {
+    if a != 0 { return 1; }
+    if b != 0 { return 1; }
+    0
+}
+
+/// Logical NOT: returns 1 if a is zero, 0 otherwise.
+fn logic_not(a: i64) -> i64 {
+    if a == 0 { 1 } else { 0 }
+}
+
+/// Logical IMPLIES: a => b is equivalent to !a || b.
+fn logic_implies(a: i64, b: i64) -> i64 {
+    if a == 0 { return 1; }
+    if b != 0 { return 1; }
+    0
+}
+
+// =============================================================================
+// Neural-Symbolic Bridge
+// =============================================================================
+
+/// Neural-symbolic classification bridge.
+///
+/// Takes neural network output (a vec of confidence scores as f64_bits)
+/// and uses the knowledge base to reason about the classification.
+///
+/// Process:
+///   1. Find the argmax of neural_output (most confident class)
+///   2. Query the KB for rules/facts about that class
+///   3. Return a result vec: [predicted_class, n_supporting_facts, fact0, fact1, ...]
+///
+/// Arguments:
+///   neural_output - handle to vec of f64_bits confidence scores (one per class)
+///   kb            - knowledge base handle
+///
+/// Returns: handle to result vec
+fn ns_classify_and_reason(neural_output: i64, kb: i64) -> i64 {
+    let n: i64 = vec_len(neural_output);
+    let result: i64 = vec_new();
+
+    // Find argmax
+    var best_idx: i64 = 0;
+    var best_conf: f64 = 0.0 - 1.0;
+    var i: i64 = 0;
+    while i < n {
+        let conf: f64 = bits_to_f64(vec_get(neural_output, i));
+        if conf > best_conf {
+            best_conf = conf;
+            best_idx = i;
+        }
+        i = i + 1;
+    }
+
+    vec_push(result, best_idx);
+
+    // Query KB for facts about the predicted class (as subject)
+    let supporting: i64 = kb_query(kb, best_idx, TERM_WILDCARD());
+    let n_support: i64 = vec_len(supporting);
+    vec_push(result, n_support);
+
+    var j: i64 = 0;
+    while j < n_support {
+        vec_push(result, vec_get(supporting, j));
+        j = j + 1;
+    }
+
+    result
+}
+
+/// Confidence gate: use neural output only if confident enough.
+///
+/// Arguments:
+///   neural_conf - confidence score (f64_bits)
+///   threshold   - minimum confidence threshold (f64_bits)
+///
+/// Returns: 1 if confidence >= threshold, 0 otherwise.
+fn ns_confidence_gate(neural_conf: i64, threshold: i64) -> i64 {
+    let conf: f64 = bits_to_f64(neural_conf);
+    let thresh: f64 = bits_to_f64(threshold);
+    if conf >= thresh { 1 } else { 0 }
+}
+
+/// Generate an explanation from a proof tree.
+///
+/// Walks the proof tree and collects all goals at each level.
+/// Returns a vec of goal IDs in proof order (root first, then children depth-first).
+///
+/// Arguments:
+///   kb         - knowledge base handle
+///   conclusion - the goal to explain (predicate ID)
+///
+/// Returns: handle to vec of goal IDs forming the explanation chain,
+///          or empty vec if not provable.
+fn ns_explain(kb: i64, conclusion: i64) -> i64 {
+    let explanation: i64 = vec_new();
+    let tree: i64 = proof_tree(kb, conclusion);
+    if tree == -1 {
+        return explanation;
+    }
+    collect_proof_goals(tree, explanation);
+    explanation
+}
+
+/// Recursively collect goals from a proof tree into a flat vec.
+fn collect_proof_goals(tree: i64, goals: i64) -> i64 {
+    if tree == -1 { return 0; }
+
+    let goal: i64 = vec_get(tree, PROOF_GOAL());
+    vec_push(goals, goal);
+
+    let n_children: i64 = vec_get(tree, PROOF_N_CHILDREN());
+    var i: i64 = 0;
+    while i < n_children {
+        let child: i64 = vec_get(tree, PROOF_CHILDREN_START() + i);
+        collect_proof_goals(child, goals);
+        i = i + 1;
+    }
+    n_children
+}
+
+// =============================================================================
+// Advanced Reasoning
+// =============================================================================
+
+/// Query facts matching all three components (subject, predicate, object).
+/// Use TERM_WILDCARD for any component that should match anything.
+/// Returns handle to vec of matching fact indices.
+fn kb_query_full(kb: i64, subject: i64, predicate: i64, object: i64) -> i64 {
+    let results: i64 = vec_new();
+    let facts: i64 = vec_get(kb, KB_FACTS());
+    let n: i64 = vec_get(kb, KB_FACT_COUNT());
+
+    var i: i64 = 0;
+    while i < n {
+        let base: i64 = i * TRIPLE_SIZE();
+        let s: i64 = vec_get(facts, base);
+        let p: i64 = vec_get(facts, base + 1);
+        let o: i64 = vec_get(facts, base + 2);
+
+        var match_s: i64 = 0;
+        if subject == TERM_WILDCARD() { match_s = 1; }
+        if subject == s { match_s = 1; }
+
+        var match_p: i64 = 0;
+        if predicate == TERM_WILDCARD() { match_p = 1; }
+        if predicate == p { match_p = 1; }
+
+        var match_o: i64 = 0;
+        if object == TERM_WILDCARD() { match_o = 1; }
+        if object == o { match_o = 1; }
+
+        if match_s == 1 {
+            if match_p == 1 {
+                if match_o == 1 {
+                    vec_push(results, i);
+                }
+            }
+        }
+        i = i + 1;
+    }
+    results
+}
+
+/// Transitive closure: find all objects reachable from subject via predicate.
+///
+/// Given (subject, predicate), find all O such that:
+///   (subject, predicate, O1), (O1, predicate, O2), ... exists in KB.
+///
+/// Returns handle to vec of all reachable objects.
+fn kb_transitive_closure(kb: i64, subject: i64, predicate: i64) -> i64 {
+    let reachable: i64 = vec_new();
+    let frontier: i64 = vec_new();
+    vec_push(frontier, subject);
+
+    var visited_count: i64 = 0;
+    let visited: i64 = vec_new();
+
+    while vec_len(frontier) > visited_count {
+        let current: i64 = vec_get(frontier, visited_count);
+        visited_count = visited_count + 1;
+
+        // Check if already visited
+        var already: i64 = 0;
+        var v: i64 = 0;
+        while v < vec_len(visited) {
+            if vec_get(visited, v) == current {
+                already = 1;
+            }
+            v = v + 1;
+        }
+        if already == 1 {
+            // skip - continue loop
+        } else {
+            vec_push(visited, current);
+
+            // Find all (current, predicate, ?) facts
+            let matches: i64 = kb_query_full(kb, current, predicate, TERM_WILDCARD());
+            var m: i64 = 0;
+            while m < vec_len(matches) {
+                let fact_idx: i64 = vec_get(matches, m);
+                let obj: i64 = kb_fact_object(kb, fact_idx);
+                if obj != subject {
+                    // Add to reachable and frontier
+                    var dup: i64 = 0;
+                    var r: i64 = 0;
+                    while r < vec_len(reachable) {
+                        if vec_get(reachable, r) == obj {
+                            dup = 1;
+                        }
+                        r = r + 1;
+                    }
+                    if dup == 0 {
+                        vec_push(reachable, obj);
+                        vec_push(frontier, obj);
+                    }
+                }
+                m = m + 1;
+            }
+        }
+    }
+    reachable
+}
+
+// =============================================================================
+// Neural-Symbolic Integration: Hybrid Inference
+// =============================================================================
+
+/// Weighted hybrid inference combining neural confidence and symbolic support.
+///
+/// Arguments:
+///   neural_scores   - vec of f64_bits per-class neural confidence scores
+///   kb              - knowledge base
+///   class_ids       - vec of class IDs to evaluate
+///   neural_weight   - weight for neural score (f64_bits), 0-1
+///
+/// Returns: vec of f64_bits combined scores, same length as class_ids.
+fn ns_hybrid_inference(neural_scores: i64, kb: i64, class_ids: i64, neural_weight: i64) -> i64 {
+    let n: i64 = vec_len(class_ids);
+    let result: i64 = vec_new();
+    let nw: f64 = bits_to_f64(neural_weight);
+    let sw: f64 = 1.0 - nw;
+
+    var i: i64 = 0;
+    while i < n {
+        let cls: i64 = vec_get(class_ids, i);
+
+        // Neural score for this class
+        var neural_s: f64 = 0.0;
+        if cls < vec_len(neural_scores) {
+            neural_s = bits_to_f64(vec_get(neural_scores, cls));
+        }
+
+        // Symbolic score: fraction of rules that support this class
+        let supporting: i64 = kb_query(kb, cls, TERM_WILDCARD());
+        let n_support: i64 = vec_len(supporting);
+        let total_facts: i64 = vec_get(kb, KB_FACT_COUNT());
+        var symbolic_s: f64 = 0.0;
+        if total_facts > 0 {
+            symbolic_s = (n_support as f64) / (total_facts as f64);
+        }
+
+        let combined: f64 = nw * neural_s + sw * symbolic_s;
+        vec_push(result, f64_to_bits(combined));
+        i = i + 1;
+    }
+    result
+}
+
+/// Check consistency of the knowledge base.
+///
+/// A simple consistency check: no fact should directly contradict another.
+/// Two facts contradict if they share (subject, predicate) but differ in object,
+/// AND the predicate is marked as functional (at most one object per subject).
+///
+/// Arguments:
+///   kb           - knowledge base handle
+///   functional   - vec of predicate IDs that are functional (at most one value)
+///
+/// Returns: 0 if consistent, number of contradictions otherwise.
+fn kb_check_consistency(kb: i64, functional: i64) -> i64 {
+    let n_func: i64 = vec_len(functional);
+    var contradictions: i64 = 0;
+
+    var f: i64 = 0;
+    while f < n_func {
+        let pred: i64 = vec_get(functional, f);
+        let matches: i64 = kb_query(kb, TERM_WILDCARD(), pred);
+        let n_matches: i64 = vec_len(matches);
+
+        // For functional predicates, group by subject
+        var i: i64 = 0;
+        while i < n_matches {
+            let idx_i: i64 = vec_get(matches, i);
+            let subj_i: i64 = kb_fact_subject(kb, idx_i);
+            let obj_i: i64 = kb_fact_object(kb, idx_i);
+
+            var j: i64 = i + 1;
+            while j < n_matches {
+                let idx_j: i64 = vec_get(matches, j);
+                let subj_j: i64 = kb_fact_subject(kb, idx_j);
+                let obj_j: i64 = kb_fact_object(kb, idx_j);
+
+                if subj_i == subj_j {
+                    if obj_i != obj_j {
+                        contradictions = contradictions + 1;
+                    }
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        f = f + 1;
+    }
+    contradictions
+}
+
+// =============================================================================
+// Symbolic Abstraction from Neural Patterns
+// =============================================================================
+
+/// Extract symbolic rules from neural attention patterns.
+///
+/// Given an attention matrix (flat vec of f64_bits, n x n),
+/// extract edges where attention weight exceeds threshold.
+/// Returns rules as pairs [source, target] in a flat vec.
+///
+/// Arguments:
+///   attention   - flat vec of f64_bits, row-major n x n
+///   n           - dimension
+///   threshold   - minimum attention weight (f64_bits)
+///
+/// Returns: flat vec of [source, target] pairs
+fn ns_extract_attention_rules(attention: i64, n: i64, threshold: i64) -> i64 {
+    let rules: i64 = vec_new();
+    let thresh: f64 = bits_to_f64(threshold);
+
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < n {
+            if i != j {
+                let w: f64 = bits_to_f64(vec_get(attention, i * n + j));
+                if w >= thresh {
+                    vec_push(rules, i);
+                    vec_push(rules, j);
+                }
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    rules
+}
+
+/// Count the number of extracted attention rules (pairs).
+fn ns_attention_rule_count(rules: i64) -> i64 {
+    vec_len(rules) / 2
+}
+
+// =============================================================================
+// Symbolic Pattern Matching
+// =============================================================================
+
+/// Match a pattern against all facts in the KB.
+///
+/// Pattern is a triple [subj, pred, obj] where variables (< 0) can bind.
+/// Returns a vec of substitution handles, one per matching fact.
+fn kb_match_pattern(kb: i64, pattern: i64) -> i64 {
+    let results: i64 = vec_new();
+    let n: i64 = vec_get(kb, KB_FACT_COUNT());
+    let facts: i64 = vec_get(kb, KB_FACTS());
+
+    let ps: i64 = vec_get(pattern, 0);
+    let pp: i64 = vec_get(pattern, 1);
+    let po: i64 = vec_get(pattern, 2);
+
+    var i: i64 = 0;
+    while i < n {
+        let base: i64 = i * TRIPLE_SIZE();
+        let fs: i64 = vec_get(facts, base);
+        let fp: i64 = vec_get(facts, base + 1);
+        let fo: i64 = vec_get(facts, base + 2);
+
+        let fact_triple: i64 = vec_new();
+        vec_push(fact_triple, fs);
+        vec_push(fact_triple, fp);
+        vec_push(fact_triple, fo);
+
+        let subs: i64 = unify_triples(pattern, fact_triple);
+        if subs != UNIFY_FAIL() {
+            vec_push(results, subs);
+        }
+        i = i + 1;
+    }
+    results
+}
+
+// =============================================================================
+// Entailment and Inference Chains
+// =============================================================================
+
+/// Check if conclusion can be reached from premises via a chain of rules.
+///
+/// Uses iterative deepening: tries backward chaining at depth 1, 2, ..., max_depth.
+/// Returns the depth at which it was proved, or 0 if not provable.
+fn ns_inference_depth(kb: i64, conclusion: i64, max_depth: i64) -> i64 {
+    var depth: i64 = 1;
+    while depth <= max_depth {
+        let proved: i64 = backward_chain(kb, conclusion, depth);
+        if proved == 1 {
+            return depth;
+        }
+        depth = depth + 1;
+    }
+    0
+}
+
+/// Count the total number of provable goals from a given set.
+///
+/// Arguments:
+///   kb    - knowledge base
+///   goals - vec of predicate IDs to try proving
+///
+/// Returns: number of goals that are provable.
+fn ns_provable_count(kb: i64, goals: i64) -> i64 {
+    let n: i64 = vec_len(goals);
+    var count: i64 = 0;
+    var i: i64 = 0;
+    while i < n {
+        let g: i64 = vec_get(goals, i);
+        let proved: i64 = backward_chain(kb, g, 20);
+        if proved == 1 {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    count
+}
+
+// =============================================================================
+// Knowledge Base Merge
+// =============================================================================
+
+/// Merge two knowledge bases into a new one.
+/// All facts and rules from both are combined.
+/// Returns handle to the new merged KB.
+fn kb_merge(kb1: i64, kb2: i64) -> i64 {
+    let merged: i64 = kb_new();
+
+    // Copy facts from kb1
+    let n1: i64 = vec_get(kb1, KB_FACT_COUNT());
+    var i: i64 = 0;
+    while i < n1 {
+        let s: i64 = kb_fact_subject(kb1, i);
+        let p: i64 = kb_fact_predicate(kb1, i);
+        let o: i64 = kb_fact_object(kb1, i);
+        kb_add_fact(merged, s, p, o);
+        i = i + 1;
+    }
+
+    // Copy facts from kb2
+    let n2: i64 = vec_get(kb2, KB_FACT_COUNT());
+    i = 0;
+    while i < n2 {
+        let s: i64 = kb_fact_subject(kb2, i);
+        let p: i64 = kb_fact_predicate(kb2, i);
+        let o: i64 = kb_fact_object(kb2, i);
+        kb_add_fact(merged, s, p, o);
+        i = i + 1;
+    }
+
+    // Copy rules from kb1
+    let nr1: i64 = vec_get(kb1, KB_RULE_COUNT());
+    i = 0;
+    while i < nr1 {
+        let head: i64 = rule_head(kb1, i);
+        let blen: i64 = rule_body_len(kb1, i);
+        let body: i64 = vec_new();
+        var j: i64 = 0;
+        while j < blen {
+            vec_push(body, rule_body_item(kb1, i, j));
+            j = j + 1;
+        }
+        kb_add_rule(merged, head, body);
+        i = i + 1;
+    }
+
+    // Copy rules from kb2
+    let nr2: i64 = vec_get(kb2, KB_RULE_COUNT());
+    i = 0;
+    while i < nr2 {
+        let head: i64 = rule_head(kb2, i);
+        let blen: i64 = rule_body_len(kb2, i);
+        let body: i64 = vec_new();
+        var j: i64 = 0;
+        while j < blen {
+            vec_push(body, rule_body_item(kb2, i, j));
+            j = j + 1;
+        }
+        kb_add_rule(merged, head, body);
+        i = i + 1;
+    }
+
+    merged
+}
+
+// =============================================================================
+// Neural Confidence Aggregation
+// =============================================================================
+
+/// Aggregate neural confidence scores for a decision.
+///
+/// Given multiple neural outputs (vec of vec handles to f64_bits scores),
+/// compute the mean confidence per class.
+///
+/// Arguments:
+///   outputs     - vec of handles, each handle is a vec of f64_bits scores
+///   n_classes   - number of classes
+///   n_outputs   - number of neural outputs to aggregate
+///
+/// Returns: vec of f64_bits mean confidence per class
+fn ns_aggregate_confidence(outputs: i64, n_classes: i64, n_outputs: i64) -> i64 {
+    let result: i64 = vec_new();
+
+    var c: i64 = 0;
+    while c < n_classes {
+        var sum: f64 = 0.0;
+        var count: i64 = 0;
+        var o: i64 = 0;
+        while o < n_outputs {
+            let output: i64 = vec_get(outputs, o);
+            if c < vec_len(output) {
+                sum = sum + bits_to_f64(vec_get(output, c));
+                count = count + 1;
+            }
+            o = o + 1;
+        }
+        var mean: f64 = 0.0;
+        if count > 0 {
+            mean = sum / (count as f64);
+        }
+        vec_push(result, f64_to_bits(mean));
+        c = c + 1;
+    }
+    result
+}
+
+/// Apply softmax to a vec of f64_bits logits.
+/// Returns a new vec of f64_bits probabilities.
+fn ns_softmax(logits: i64, n: i64) -> i64 {
+    let result: i64 = vec_new();
+
+    // Find max for numerical stability
+    var max_val: f64 = 0.0 - 1000000.0;
+    var i: i64 = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        if v > max_val { max_val = v; }
+        i = i + 1;
+    }
+
+    // Compute exp(x - max) and sum
+    var sum: f64 = 0.0;
+    let exps: i64 = vec_new();
+    i = 0;
+    while i < n {
+        let v: f64 = bits_to_f64(vec_get(logits, i));
+        let e: f64 = ns_exp(v - max_val);
+        vec_push(exps, f64_to_bits(e));
+        sum = sum + e;
+        i = i + 1;
+    }
+
+    // Normalize
+    i = 0;
+    while i < n {
+        let e: f64 = bits_to_f64(vec_get(exps, i));
+        var p: f64 = 0.0;
+        if sum > 0.0 {
+            p = e / sum;
+        }
+        vec_push(result, f64_to_bits(p));
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Summary
+// =============================================================================
+
+/// Print a summary of the knowledge base.
+fn kb_summary(kb: i64) -> i64 {
+    println("=== Knowledge Base Summary ===");
+    print("  Facts: ");
+    print_i64(vec_get(kb, KB_FACT_COUNT()));
+    println("");
+    print("  Rules: ");
+    print_i64(vec_get(kb, KB_RULE_COUNT()));
+    println("");
+    0
+}

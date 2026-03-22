@@ -1,7 +1,7 @@
 # TASK-051: Diffusion Language Generation
 
 **Version:** 0.17.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P2 — Medium
 **Depends on:** v0.16.0 release, existing tensor/layer infrastructure
 

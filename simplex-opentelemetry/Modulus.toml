@@ -8,7 +8,7 @@
 
 [package]
 name = "simplex-opentelemetry"
-version = "0.16.0"
+version = "0.17.0"
 description = "OpenTelemetry distributed tracing for Simplex"
 authors = ["Rod Higgins", "Simplex Team"]
 license = "AGPL-3.0"

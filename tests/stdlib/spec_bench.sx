@@ -1,0 +1,156 @@
+// Benchmark Framework Integration Tests
+// Tests real functions from simplex-std/src/bench.sx via use import
+
+use bench;
+
+fn test_bench_new_and_iteration_count() -> i64 {
+    println("  Testing bench_new/bench_iteration_count...");
+    let b: i64 = bench_new("test bench", 10);
+    let count: i64 = bench_iteration_count(b);
+    if count != 0 {
+        println("  FAIL: new bench should have 0 completed iterations");
+        return 1;
+    }
+    println("  PASS: bench_new/bench_iteration_count");
+    0
+}
+
+fn test_bench_start_end() -> i64 {
+    println("  Testing bench_start/bench_end...");
+    let b: i64 = bench_new("timing test", 5);
+    var i: i64 = 0;
+    while i < 5 {
+        bench_start(b);
+        // do some trivial work
+        var j: i64 = 0;
+        while j < 100 {
+            j = j + 1;
+        }
+        bench_end(b);
+        i = i + 1;
+    }
+    let count: i64 = bench_iteration_count(b);
+    if count != 5 {
+        println("  FAIL: should have 5 completed iterations");
+        return 1;
+    }
+    let total: i64 = bench_total_ns(b);
+    if total < 0 {
+        println("  FAIL: total ns should not be negative");
+        return 1;
+    }
+    println("  PASS: bench_start/bench_end");
+    0
+}
+
+fn test_bench_report() -> i64 {
+    println("  Testing bench_report...");
+    let b: i64 = bench_new("report test", 3);
+    var i: i64 = 0;
+    while i < 3 {
+        bench_start(b);
+        var j: i64 = 0;
+        while j < 50 {
+            j = j + 1;
+        }
+        bench_end(b);
+        i = i + 1;
+    }
+    let report: i64 = bench_report(b);
+    // Report: [name, mean_ns, min_ns, max_ns, total_ns, iterations, median_ns]
+    if vec_len(report) != 7 {
+        println("  FAIL: report should have 7 fields");
+        return 1;
+    }
+    let iters: i64 = vec_get(report, 5);
+    if iters != 3 {
+        println("  FAIL: report iterations should be 3");
+        return 1;
+    }
+    let mean: i64 = vec_get(report, 1);
+    if mean < 0 {
+        println("  FAIL: mean should not be negative");
+        return 1;
+    }
+    println("  PASS: bench_report");
+    0
+}
+
+fn test_bench_mean_and_min_max() -> i64 {
+    println("  Testing bench_mean_ns/bench_min_ns/bench_max_ns...");
+    let b: i64 = bench_new("stats test", 4);
+    var i: i64 = 0;
+    while i < 4 {
+        bench_start(b);
+        var j: i64 = 0;
+        while j < 200 {
+            j = j + 1;
+        }
+        bench_end(b);
+        i = i + 1;
+    }
+    let mean: i64 = bench_mean_ns(b);
+    let min: i64 = bench_min_ns(b);
+    let max: i64 = bench_max_ns(b);
+    // min <= mean <= max
+    if min > mean {
+        println("  FAIL: min should be <= mean");
+        return 1;
+    }
+    if mean > max {
+        println("  FAIL: mean should be <= max");
+        return 1;
+    }
+    if max < min {
+        println("  FAIL: max should be >= min");
+        return 1;
+    }
+    println("  PASS: bench_mean_ns/min/max");
+    0
+}
+
+fn test_bench_suite() -> i64 {
+    println("  Testing bench_suite_new/bench_suite_add...");
+    let suite: i64 = bench_suite_new("my suite");
+    let b1: i64 = bench_new("fast", 2);
+    bench_start(b1);
+    bench_end(b1);
+    bench_start(b1);
+    bench_end(b1);
+    let b2: i64 = bench_new("slow", 2);
+    bench_start(b2);
+    var k: i64 = 0;
+    while k < 1000 { k = k + 1; }
+    bench_end(b2);
+    bench_start(b2);
+    k = 0;
+    while k < 1000 { k = k + 1; }
+    bench_end(b2);
+    bench_suite_add(suite, b1);
+    bench_suite_add(suite, b2);
+    // Suite vec: [name, benchmarks_vec]
+    let benchmarks: i64 = vec_get(suite, 1);
+    if vec_len(benchmarks) != 2 {
+        println("  FAIL: suite should have 2 benchmarks");
+        return 1;
+    }
+    println("  PASS: bench_suite");
+    0
+}
+
+fn main() -> i64 {
+    println("=== Benchmark Framework Integration Tests ===");
+    var failures: i64 = 0;
+    failures = failures + test_bench_new_and_iteration_count();
+    failures = failures + test_bench_start_end();
+    failures = failures + test_bench_report();
+    failures = failures + test_bench_mean_and_min_max();
+    failures = failures + test_bench_suite();
+    println("");
+    if failures == 0 {
+        println("All 5 bench integration tests passed!");
+    } else {
+        println(string_concat("FAILED: ", string_concat(int_to_string(failures), " test(s) failed")));
+    }
+    failures
+}

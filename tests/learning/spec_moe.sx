@@ -1,0 +1,82 @@
+use moe;
+
+fn main() -> i64 {
+    println(string_from("=== Mixture of Experts Integration Test ==="));
+    var failures: i64 = 0;
+
+    // Test 1: Create MoE layer (4 experts, dim 3->2, top-2)
+    let layer: i64 = moe_layer_new(4, 3, 2, 2);
+    let input: i64 = vec_new();
+    vec_push(input, f64_to_bits(1.0));
+    vec_push(input, f64_to_bits(0.5));
+    vec_push(input, f64_to_bits(0.0 - 0.3));
+
+    // Test 2: Router logits
+    let logits: i64 = moe_router_logits(layer, input);
+    if vec_len(logits) != 4 {
+        println(string_from("FAIL: should have 4 logits"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: moe_router_logits"));
+    }
+
+    // Test 3: Top-k indices
+    let top2: i64 = moe_top_k_indices(logits, 2);
+    if vec_len(top2) != 2 {
+        println(string_from("FAIL: should have 2 top indices"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: moe_top_k_indices"));
+    }
+
+    // Test 4: Softmax weights - just check we get 2 weights
+    let weights: i64 = moe_softmax_weights(logits, top2);
+    if vec_len(weights) != 2 {
+        println(string_from("FAIL: should have 2 weights"));
+        failures = failures + 1;
+    } else {
+        // Both weights should be positive (positive f64 bit pattern > 0)
+        let w0: i64 = vec_get(weights, 0);
+        let w1: i64 = vec_get(weights, 1);
+        if w0 > 0 {
+            if w1 > 0 {
+                println(string_from("PASS: moe_softmax_weights positive"));
+            } else {
+                println(string_from("FAIL: w1 not positive"));
+                failures = failures + 1;
+            }
+        } else {
+            println(string_from("FAIL: w0 not positive"));
+            failures = failures + 1;
+        }
+    }
+
+    // Test 5: Forward pass output dimension
+    let output: i64 = moe_forward(layer, input);
+    if vec_len(output) != 2 {
+        println(string_from("FAIL: output dim should be 2"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: moe_forward output dim"));
+    }
+
+    // Test 6: Utilization counts
+    let util: i64 = moe_expert_utilization(layer);
+    var total_util: i64 = 0;
+    var i: i64 = 0;
+    while i < 4 {
+        total_util = total_util + vec_get(util, i);
+        i = i + 1;
+    }
+    if total_util != 2 {
+        println(string_from("FAIL: total utilization should be 2"));
+        failures = failures + 1;
+    } else {
+        println(string_from("PASS: moe_expert_utilization"));
+    }
+
+    if failures == 0 {
+        println(string_from("All MoE tests passed"));
+    }
+    failures
+}

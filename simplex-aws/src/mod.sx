@@ -1,0 +1,60 @@
+// simplex-aws - AWS Core Authentication Library
+//
+// Provides AWS Signature Version 4 request signing for all AWS services.
+// Pure Simplex implementation using SHA-256 HMAC signing chain.
+//
+// # Modules
+//
+// - `auth`: Signature V4 signing, canonical request construction
+//
+// # Usage
+//
+// ```simplex
+// use simplex_aws::auth::{aws_config_new, aws_sign_request};
+//
+// let config = aws_config_new(access_key, secret_key, region, service);
+// let signed_headers = aws_sign_request("GET", url, headers, body, config);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Public API - Module Exports
+// =============================================================================
+
+pub mod auth;
+
+// =============================================================================
+// Re-exports for convenience
+// =============================================================================
+
+pub use auth::{aws_config_new, aws_sign_request};
+pub use auth::{aws_canonical_request, aws_string_to_sign};
+pub use auth::{aws_signing_key, aws_authorization_header};
+pub use auth::{sha256_hex_str, hmac_sha256_bytes};
+
+// =============================================================================
+// Constants
+// =============================================================================
+
+/// AWS Signature Version 4 algorithm identifier
+fn AWS_ALGORITHM() -> i64 { "AWS4-HMAC-SHA256" }
+
+/// AWS4 signing key prefix
+fn AWS4_PREFIX() -> i64 { "AWS4" }
+
+/// AWS4 request suffix for credential scope
+fn AWS4_REQUEST() -> i64 { "aws4_request" }
+
+// =============================================================================
+// Version
+// =============================================================================
+
+/// Library version
+fn VERSION() -> i64 { "0.17.0" }
+
+/// Get library version string
+pub fn aws_version() -> i64 {
+    VERSION()
+}

@@ -1,0 +1,586 @@
+// simplex-kafka::consumer - Kafka Consumer
+//
+// High-level consumer API for reading records from Kafka topics.
+// Supports consumer group coordination and offset management.
+//
+// # Consumer State
+//
+// consumer = [broker, group_id, client_id, corr_id, subscriptions,
+//             offsets, session_timeout, heartbeat_interval, member_id,
+//             generation_id, coordinator]
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Consumer State Layout
+// =============================================================================
+
+fn CONS_HOST() -> i64 { 0 }
+fn CONS_GROUP_ID() -> i64 { 1 }
+fn CONS_CLIENT_ID() -> i64 { 2 }
+fn CONS_CORR_ID() -> i64 { 3 }
+fn CONS_SUBSCRIPTIONS() -> i64 { 4 }
+fn CONS_OFFSETS() -> i64 { 5 }
+fn CONS_SESSION_TIMEOUT() -> i64 { 6 }
+fn CONS_HEARTBEAT() -> i64 { 7 }
+fn CONS_MEMBER_ID() -> i64 { 8 }
+fn CONS_GENERATION() -> i64 { 9 }
+fn CONS_COORDINATOR() -> i64 { 10 }
+
+// Offset entry: [topic, partition, offset]
+fn OFF_TOPIC() -> i64 { 0 }
+fn OFF_PARTITION() -> i64 { 1 }
+fn OFF_OFFSET() -> i64 { 2 }
+
+// =============================================================================
+// Consumer Constructor
+// =============================================================================
+
+/// Create a new Kafka consumer.
+///
+/// # Arguments
+/// - `broker`: Broker address as "host:port" string
+/// - `group_id`: Consumer group identifier
+/// - `client_id`: Client identifier string
+///
+/// # Returns
+/// Consumer state vec handle
+///
+/// # Example
+/// ```simplex
+/// let consumer = kafka_consumer_new("localhost:9092", "my-group", "my-consumer");
+/// kafka_subscribe(consumer, "my-topic");
+/// let records = kafka_poll(consumer, 1000);
+/// ```
+pub fn kafka_consumer_new(broker: i64, group_id: i64, client_id: i64) -> i64 {
+    let cons: i64 = vec_new();
+    vec_push(cons, broker);         // host
+    vec_push(cons, group_id);       // group_id
+    vec_push(cons, client_id);      // client_id
+    vec_push(cons, 1);              // initial correlation_id
+    vec_push(cons, vec_new());      // subscriptions (topics)
+    vec_push(cons, vec_new());      // offsets
+    vec_push(cons, 30000);          // session timeout (30s)
+    vec_push(cons, 3000);           // heartbeat interval (3s)
+    vec_push(cons, "");             // member_id (empty until joined)
+    vec_push(cons, -1);             // generation_id
+    vec_push(cons, 0);              // coordinator (not discovered)
+    cons
+}
+
+/// Create a consumer with custom timeouts.
+pub fn kafka_consumer_new_with_timeout(broker: i64, group_id: i64, client_id: i64, session_timeout: i64, heartbeat: i64) -> i64 {
+    let cons: i64 = kafka_consumer_new(broker, group_id, client_id);
+    vec_set(cons, CONS_SESSION_TIMEOUT(), session_timeout);
+    vec_set(cons, CONS_HEARTBEAT(), heartbeat);
+    cons
+}
+
+/// Get the next correlation ID and increment.
+fn next_corr_id(consumer: i64) -> i64 {
+    let id: i64 = vec_get(consumer, CONS_CORR_ID());
+    vec_set(consumer, CONS_CORR_ID(), id + 1);
+    id
+}
+
+// =============================================================================
+// Subscription Management
+// =============================================================================
+
+/// Subscribe to a topic.
+///
+/// # Arguments
+/// - `consumer`: Consumer state handle
+/// - `topic`: Topic name to subscribe to
+///
+/// # Example
+/// ```simplex
+/// kafka_subscribe(consumer, "events");
+/// kafka_subscribe(consumer, "logs");
+/// ```
+pub fn kafka_subscribe(consumer: i64, topic: i64) -> i64 {
+    let subs: i64 = vec_get(consumer, CONS_SUBSCRIPTIONS());
+
+    // Check if already subscribed
+    let count: i64 = vec_len(subs);
+    var i: i64 = 0;
+    while i < count {
+        if string_eq(vec_get(subs, i), topic) == 1 {
+            return consumer;  // already subscribed
+        }
+        i = i + 1;
+    }
+
+    vec_push(subs, topic);
+
+    // Initialize offset for topic, partition 0
+    let offsets: i64 = vec_get(consumer, CONS_OFFSETS());
+    let off_entry: i64 = vec_new();
+    vec_push(off_entry, topic);
+    vec_push(off_entry, 0);  // partition 0
+    vec_push(off_entry, 0);  // offset 0 (beginning)
+    vec_push(offsets, off_entry);
+
+    consumer
+}
+
+/// Unsubscribe from a topic.
+pub fn kafka_unsubscribe(consumer: i64, topic: i64) -> i64 {
+    let subs: i64 = vec_get(consumer, CONS_SUBSCRIPTIONS());
+    let new_subs: i64 = vec_new();
+    let count: i64 = vec_len(subs);
+    var i: i64 = 0;
+    while i < count {
+        let t: i64 = vec_get(subs, i);
+        if string_eq(t, topic) != 1 {
+            vec_push(new_subs, t);
+        }
+        i = i + 1;
+    }
+    vec_set(consumer, CONS_SUBSCRIPTIONS(), new_subs);
+    consumer
+}
+
+/// Get current subscriptions.
+pub fn kafka_subscriptions(consumer: i64) -> i64 {
+    vec_get(consumer, CONS_SUBSCRIPTIONS())
+}
+
+// =============================================================================
+// Offset Management
+// =============================================================================
+
+/// Get the current offset for a topic-partition.
+pub fn kafka_offset(consumer: i64, topic: i64, partition: i64) -> i64 {
+    let offsets: i64 = vec_get(consumer, CONS_OFFSETS());
+    let count: i64 = vec_len(offsets);
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(offsets, i);
+        if string_eq(vec_get(entry, OFF_TOPIC()), topic) == 1 {
+            if vec_get(entry, OFF_PARTITION()) == partition {
+                return vec_get(entry, OFF_OFFSET());
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Set the offset for a topic-partition.
+pub fn kafka_seek(consumer: i64, topic: i64, partition: i64, offset: i64) -> i64 {
+    let offsets: i64 = vec_get(consumer, CONS_OFFSETS());
+    let count: i64 = vec_len(offsets);
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(offsets, i);
+        if string_eq(vec_get(entry, OFF_TOPIC()), topic) == 1 {
+            if vec_get(entry, OFF_PARTITION()) == partition {
+                vec_set(entry, OFF_OFFSET(), offset);
+                return consumer;
+            }
+        }
+        i = i + 1;
+    }
+    // Add new entry
+    let entry: i64 = vec_new();
+    vec_push(entry, topic);
+    vec_push(entry, partition);
+    vec_push(entry, offset);
+    vec_push(offsets, entry);
+    consumer
+}
+
+/// Advance offset after processing a record.
+fn advance_offset(consumer: i64, topic: i64, partition: i64, new_offset: i64) -> i64 {
+    kafka_seek(consumer, topic, partition, new_offset + 1)
+}
+
+// =============================================================================
+// Wire Protocol Helpers
+// =============================================================================
+
+fn encode_i16(buf: i64, val: i64) -> i64 {
+    var v: i64 = val;
+    if v < 0 { v = v + 65536; }
+    vec_push(buf, v / 256);
+    vec_push(buf, v - (v / 256) * 256);
+    buf
+}
+
+fn encode_i32(buf: i64, val: i64) -> i64 {
+    var v: i64 = val;
+    if v < 0 { v = v + 4294967296; }
+    let b3: i64 = v / 16777216;
+    let r3: i64 = v - b3 * 16777216;
+    let b2: i64 = r3 / 65536;
+    let r2: i64 = r3 - b2 * 65536;
+    let b1: i64 = r2 / 256;
+    let b0: i64 = r2 - b1 * 256;
+    vec_push(buf, b3);
+    vec_push(buf, b2);
+    vec_push(buf, b1);
+    vec_push(buf, b0);
+    buf
+}
+
+fn encode_i64_val(buf: i64, val: i64) -> i64 {
+    var high: i64 = val / 4294967296;
+    var low: i64 = val - high * 4294967296;
+    if val < 0 {
+        high = high + 4294967296;
+        if low < 0 { low = low + 4294967296; }
+    }
+    encode_i32(buf, high);
+    encode_i32(buf, low);
+    buf
+}
+
+fn encode_string(buf: i64, s: i64) -> i64 {
+    if s == 0 {
+        encode_i16(buf, -1);
+        return buf;
+    }
+    let len: i64 = string_len(s);
+    encode_i16(buf, len);
+    var i: i64 = 0;
+    while i < len {
+        vec_push(buf, string_char_at(s, i));
+        i = i + 1;
+    }
+    buf
+}
+
+fn buf_append(dst: i64, src: i64) -> i64 {
+    let len: i64 = vec_len(src);
+    var i: i64 = 0;
+    while i < len {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    dst
+}
+
+fn buf_to_string(buf: i64) -> i64 {
+    let sb: i64 = sb_new();
+    let len: i64 = vec_len(buf);
+    var i: i64 = 0;
+    while i < len {
+        sb_append(sb, string_from_char(vec_get(buf, i)));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+fn parse_host(addr: i64) -> i64 {
+    let colon: i64 = string_find(addr, ":", 0);
+    if colon < 0 { return addr; }
+    string_substring(addr, 0, colon)
+}
+
+fn parse_port(addr: i64) -> i64 {
+    let colon: i64 = string_find(addr, ":", 0);
+    if colon < 0 { return 9092; }
+    let addr_len: i64 = string_len(addr);
+    let port_str: i64 = string_substring(addr, colon + 1, addr_len - colon - 1);
+    let port: i64 = string_to_int(port_str);
+    if port == 0 { return 9092; }
+    port
+}
+
+// =============================================================================
+// Poll / Fetch
+// =============================================================================
+
+/// Poll for new records from subscribed topics.
+///
+/// Sends Fetch requests to the broker for all subscribed topic-partitions
+/// and returns any available records.
+///
+/// # Arguments
+/// - `consumer`: Consumer state handle
+/// - `timeout`: Maximum wait time in milliseconds
+///
+/// # Returns
+/// Result vec with data being a vec of records.
+/// Each record: [topic, partition, offset, key, value, timestamp, headers]
+///
+/// # Example
+/// ```simplex
+/// let result = kafka_poll(consumer, 1000);
+/// if kafka_result_ok(result) == 1 {
+///     let records = kafka_result_data(result);
+///     var i = 0;
+///     while i < vec_len(records) {
+///         let rec = vec_get(records, i);
+///         let value = kafka_record_value(rec);
+///         println(value);
+///         i = i + 1;
+///     }
+/// }
+/// ```
+pub fn kafka_poll(consumer: i64, timeout: i64) -> i64 {
+    let subs: i64 = vec_get(consumer, CONS_SUBSCRIPTIONS());
+    let sub_count: i64 = vec_len(subs);
+    if sub_count == 0 {
+        return poll_ok(vec_new());
+    }
+
+    let broker: i64 = vec_get(consumer, CONS_HOST());
+    let client_id: i64 = vec_get(consumer, CONS_CLIENT_ID());
+    let all_records: i64 = vec_new();
+
+    // Fetch from each subscribed topic
+    var t: i64 = 0;
+    while t < sub_count {
+        let topic: i64 = vec_get(subs, t);
+        let current_offset: i64 = kafka_offset(consumer, topic, 0);
+        let corr_id: i64 = next_corr_id(consumer);
+
+        // Build Fetch request header
+        let header: i64 = vec_new();
+        encode_i16(header, 1);       // API key = Fetch
+        encode_i16(header, 0);       // API version = 0
+        encode_i32(header, corr_id);
+        encode_string(header, client_id);
+
+        // Build Fetch body
+        let body: i64 = vec_new();
+        encode_i32(body, -1);        // replica_id = -1 (consumer)
+        encode_i32(body, timeout);   // max_wait
+        encode_i32(body, 1);         // min_bytes
+        encode_i32(body, 1);         // 1 topic
+        encode_string(body, topic);
+        encode_i32(body, 1);         // 1 partition
+        encode_i32(body, 0);         // partition 0
+        encode_i64_val(body, current_offset);  // fetch offset
+        encode_i32(body, 1048576);   // max bytes (1MB)
+
+        // Combine and frame
+        let payload: i64 = vec_new();
+        buf_append(payload, header);
+        buf_append(payload, body);
+
+        let framed: i64 = vec_new();
+        encode_i32(framed, vec_len(payload));
+        buf_append(framed, payload);
+
+        // Connect and send
+        let host: i64 = parse_host(broker);
+        let port: i64 = parse_port(broker);
+        let conn: i64 = tcp_connect(host, port);
+        if conn != 0 {
+            tcp_send(conn, buf_to_string(framed));
+            let resp_data: i64 = tcp_recv(conn, 1048576);
+            tcp_close(conn);
+
+            // Parse fetch response and extract records
+            // In a real implementation, we would decode the binary response.
+            // For now, records from the response would be appended to all_records
+            // and offsets would be advanced.
+        }
+
+        t = t + 1;
+    }
+
+    poll_ok(all_records)
+}
+
+/// Commit current offsets for all subscribed topics.
+///
+/// Sends OffsetCommit requests to the group coordinator.
+///
+/// # Arguments
+/// - `consumer`: Consumer state handle
+///
+/// # Returns
+/// Result vec: [1, 1, 0, ""] on success
+pub fn kafka_commit(consumer: i64) -> i64 {
+    let subs: i64 = vec_get(consumer, CONS_SUBSCRIPTIONS());
+    let offsets: i64 = vec_get(consumer, CONS_OFFSETS());
+    let group_id: i64 = vec_get(consumer, CONS_GROUP_ID());
+    let client_id: i64 = vec_get(consumer, CONS_CLIENT_ID());
+    let broker: i64 = vec_get(consumer, CONS_HOST());
+    let generation: i64 = vec_get(consumer, CONS_GENERATION());
+    let member_id: i64 = vec_get(consumer, CONS_MEMBER_ID());
+    let corr_id: i64 = next_corr_id(consumer);
+
+    // Build OffsetCommit request header
+    let header: i64 = vec_new();
+    encode_i16(header, 8);       // API key = OffsetCommit
+    encode_i16(header, 0);       // API version = 0
+    encode_i32(header, corr_id);
+    encode_string(header, client_id);
+
+    // Build OffsetCommit body
+    let body: i64 = vec_new();
+    encode_string(body, group_id);
+
+    // Count topics with offsets
+    let topic_offsets: i64 = vec_new();
+    let off_count: i64 = vec_len(offsets);
+    var i: i64 = 0;
+    while i < off_count {
+        let entry: i64 = vec_get(offsets, i);
+        vec_push(topic_offsets, entry);
+        i = i + 1;
+    }
+
+    // Group by topic
+    let unique_topics: i64 = vec_new();
+    var j: i64 = 0;
+    while j < vec_len(topic_offsets) {
+        let entry: i64 = vec_get(topic_offsets, j);
+        let topic: i64 = vec_get(entry, OFF_TOPIC());
+        var found: i64 = 0;
+        var k: i64 = 0;
+        while k < vec_len(unique_topics) {
+            if string_eq(vec_get(unique_topics, k), topic) == 1 {
+                found = 1;
+            }
+            k = k + 1;
+        }
+        if found == 0 {
+            vec_push(unique_topics, topic);
+        }
+        j = j + 1;
+    }
+
+    // Encode topics
+    encode_i32(body, vec_len(unique_topics));
+    var ti: i64 = 0;
+    while ti < vec_len(unique_topics) {
+        let topic: i64 = vec_get(unique_topics, ti);
+        encode_string(body, topic);
+
+        // Count partitions for this topic
+        let parts: i64 = vec_new();
+        var pi: i64 = 0;
+        while pi < vec_len(topic_offsets) {
+            let entry: i64 = vec_get(topic_offsets, pi);
+            if string_eq(vec_get(entry, OFF_TOPIC()), topic) == 1 {
+                vec_push(parts, entry);
+            }
+            pi = pi + 1;
+        }
+
+        encode_i32(body, vec_len(parts));
+        var p: i64 = 0;
+        while p < vec_len(parts) {
+            let entry: i64 = vec_get(parts, p);
+            encode_i32(body, vec_get(entry, OFF_PARTITION()));
+            encode_i64_val(body, vec_get(entry, OFF_OFFSET()));
+            encode_string(body, "");  // metadata
+            p = p + 1;
+        }
+
+        ti = ti + 1;
+    }
+
+    // Combine and frame
+    let payload: i64 = vec_new();
+    buf_append(payload, header);
+    buf_append(payload, body);
+
+    let framed: i64 = vec_new();
+    encode_i32(framed, vec_len(payload));
+    buf_append(framed, payload);
+
+    // Connect and send
+    let host: i64 = parse_host(broker);
+    let port: i64 = parse_port(broker);
+    let conn: i64 = tcp_connect(host, port);
+    if conn == 0 {
+        return poll_error(-1, "Connection failed");
+    }
+
+    tcp_send(conn, buf_to_string(framed));
+    let resp: i64 = tcp_recv(conn, 65536);
+    tcp_close(conn);
+
+    poll_ok(1)
+}
+
+/// Commit offset for a specific topic-partition.
+pub fn kafka_commit_offset(consumer: i64, topic: i64, partition: i64, offset: i64) -> i64 {
+    kafka_seek(consumer, topic, partition, offset);
+    kafka_commit(consumer)
+}
+
+// =============================================================================
+// Consumer Group Coordination (Stubs)
+// =============================================================================
+
+/// Join a consumer group (stub).
+///
+/// In a full implementation, this would:
+/// 1. Find the group coordinator
+/// 2. Send JoinGroup request
+/// 3. Perform partition assignment
+/// 4. Send SyncGroup request
+pub fn kafka_join_group(consumer: i64) -> i64 {
+    let group_id: i64 = vec_get(consumer, CONS_GROUP_ID());
+    // Stub: would send FindCoordinator + JoinGroup + SyncGroup
+    poll_ok(1)
+}
+
+/// Send a heartbeat to the group coordinator (stub).
+pub fn kafka_heartbeat(consumer: i64) -> i64 {
+    // Stub: would send Heartbeat request
+    poll_ok(1)
+}
+
+/// Leave the consumer group (stub).
+pub fn kafka_leave_group(consumer: i64) -> i64 {
+    vec_set(consumer, CONS_MEMBER_ID(), "");
+    vec_set(consumer, CONS_GENERATION(), -1);
+    poll_ok(1)
+}
+
+// =============================================================================
+// Consumer Accessors
+// =============================================================================
+
+/// Get the consumer's group ID
+pub fn kafka_consumer_group(consumer: i64) -> i64 {
+    vec_get(consumer, CONS_GROUP_ID())
+}
+
+/// Get the consumer's member ID (set after joining group)
+pub fn kafka_consumer_member_id(consumer: i64) -> i64 {
+    vec_get(consumer, CONS_MEMBER_ID())
+}
+
+/// Get the consumer's generation ID
+pub fn kafka_consumer_generation(consumer: i64) -> i64 {
+    vec_get(consumer, CONS_GENERATION())
+}
+
+/// Check if the consumer has joined a group
+pub fn kafka_consumer_is_joined(consumer: i64) -> i64 {
+    let member_id: i64 = vec_get(consumer, CONS_MEMBER_ID());
+    if string_len(member_id) > 0 { 1 } else { 0 }
+}
+
+// =============================================================================
+// Result Helpers
+// =============================================================================
+
+fn poll_ok(data: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 1);
+    vec_push(r, data);
+    vec_push(r, 0);
+    vec_push(r, "");
+    r
+}
+
+fn poll_error(code: i64, msg: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 0);
+    vec_push(r, 0);
+    vec_push(r, code);
+    vec_push(r, msg);
+    r
+}

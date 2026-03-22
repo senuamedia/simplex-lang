@@ -1,8 +1,8 @@
 # Simplex Test Coverage
 
-**Version:** 0.16.0
-**Last Updated:** v0.15.0 Release
-**Test Results:** 215/215 passing (100%)
+**Version:** 0.17.0
+**Last Updated:** v0.17.0 Release
+**Test Results:** 228/228 passing (100%)
 
 ## Coverage Summary
 
@@ -101,6 +101,7 @@
 | 0.13.0 | 162 | 13 | 100% |
 | 0.14.0 | 171 | 14 | 100% |
 | 0.15.0 | 211 | 21 | 100% |
+| 0.17.0 | 228 | 21 | 100% |
 
 ## Coverage Gaps
 

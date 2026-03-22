@@ -1,7 +1,7 @@
 # TASK-045: Hyperbolic Embeddings — Curved Knowledge Space
 
 **Version:** 0.17.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P0 — Critical
 **Depends on:** v0.16.0 release, existing tensor/layer infrastructure
 

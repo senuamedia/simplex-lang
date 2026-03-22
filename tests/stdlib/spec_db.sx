@@ -1,358 +1,164 @@
-// simplex-db - Unified Database Connectivity Tests
-// Tests the common API layer: config, connect, query, result, pool, transactions
+// Unified Database Connectivity Integration Tests
+// Tests real functions from simplex-db/src/mod.sx via use import
 
-// Driver constants
-fn DRIVER_POSTGRES() -> i64 { 1 }
-fn DRIVER_MYSQL() -> i64 { 2 }
-fn DRIVER_SQLITE() -> i64 { 3 }
-fn DRIVER_REDIS() -> i64 { 4 }
-fn DRIVER_MONGODB() -> i64 { 5 }
+use db;
 
-fn CONN_DISCONNECTED() -> i64 { 0 }
-fn CONN_CONNECTED() -> i64 { 1 }
-fn CONN_IN_TRANSACTION() -> i64 { 2 }
-
-fn ERR_NONE() -> i64 { 0 }
-fn ERR_CONNECTION() -> i64 { 1 }
-fn ERR_TRANSACTION() -> i64 { 7 }
-
-// Test 1: Config creation and parameter setting
-fn test_config() -> i64 {
-    let config: i64 = vec_new();
-    vec_push(config, DRIVER_POSTGRES());
-    let params: i64 = vec_new();
-    vec_push(config, params);
-
-    // Set host param
-    let pair: i64 = vec_new();
-    vec_push(pair, string_from("host"));
-    vec_push(pair, string_from("localhost"));
-    vec_push(params, pair);
-
-    // Set port param
-    let pair2: i64 = vec_new();
-    vec_push(pair2, string_from("port"));
-    vec_push(pair2, string_from("5432"));
-    vec_push(params, pair2);
-
-    // Verify driver
-    if vec_get(config, 0) != DRIVER_POSTGRES() {
-        println(string_from("FAIL: config driver"));
+fn test_config_creation() -> i64 {
+    println("  Testing db_config_new/db_config_set/db_config_get...");
+    let config: i64 = db_config_new(DRIVER_POSTGRES());
+    db_config_set(config, "host", "localhost");
+    db_config_set(config, "port", "5432");
+    db_config_set(config, "database", "mydb");
+    let driver: i64 = db_config_driver(config);
+    if driver != DRIVER_POSTGRES() {
+        println("  FAIL: driver should be POSTGRES");
         return 1;
     }
-    // Verify params count
-    if vec_len(params) != 2 {
-        println(string_from("FAIL: config param count"));
+    let host: i64 = db_config_get(config, "host");
+    if string_eq(host, "localhost") != 1 {
+        println("  FAIL: host value");
         return 1;
     }
-    // Verify param lookup
-    let p: i64 = vec_get(params, 0);
-    if string_eq(vec_get(p, 1), string_from("localhost")) != 1 {
-        println(string_from("FAIL: config host value"));
+    let port: i64 = db_config_get(config, "port");
+    if string_eq(port, "5432") != 1 {
+        println("  FAIL: port value");
         return 1;
     }
-    println(string_from("PASS: test_config"));
+    let missing: i64 = db_config_get(config, "nonexistent");
+    if missing != 0 {
+        println("  FAIL: missing key should return 0");
+        return 1;
+    }
+    println("  PASS: db_config");
     0
 }
 
-// Test 2: Connection state management
-fn test_connection_state() -> i64 {
-    // Simulate connection vec: [driver, state, handle, config, error, result]
-    let conn: i64 = vec_new();
-    vec_push(conn, DRIVER_POSTGRES());
-    vec_push(conn, CONN_CONNECTED());
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-
-    // Should be connected
-    if vec_get(conn, 1) != CONN_CONNECTED() {
-        println(string_from("FAIL: should be connected"));
+fn test_connection_lifecycle() -> i64 {
+    println("  Testing db_connect/db_is_connected/db_close...");
+    let config: i64 = db_config_new(DRIVER_MYSQL());
+    let conn: i64 = db_connect(config);
+    if db_is_connected(conn) != 1 {
+        println("  FAIL: should be connected after db_connect");
         return 1;
     }
-    // Disconnect
-    vec_set(conn, 1, CONN_DISCONNECTED());
-    if vec_get(conn, 1) != CONN_DISCONNECTED() {
-        println(string_from("FAIL: should be disconnected"));
+    if db_driver(conn) != DRIVER_MYSQL() {
+        println("  FAIL: driver mismatch");
         return 1;
     }
-    println(string_from("PASS: test_connection_state"));
+    db_close(conn);
+    if db_is_connected(conn) != 0 {
+        println("  FAIL: should be disconnected after db_close");
+        return 1;
+    }
+    println("  PASS: connection lifecycle");
     0
 }
 
-// Test 3: Result structure
-fn test_result_structure() -> i64 {
-    // Result: [status, columns_vec, rows_vec, affected_rows, error_msg]
-    let result: i64 = vec_new();
-    vec_push(result, ERR_NONE());
-
-    let cols: i64 = vec_new();
-    vec_push(cols, string_from("id"));
-    vec_push(cols, string_from("name"));
-    vec_push(cols, string_from("email"));
-    vec_push(result, cols);
-
-    let rows: i64 = vec_new();
-    // Row 1: vec of [col_name, value] pairs
-    let row1: i64 = vec_new();
-    let p1: i64 = vec_new();
-    vec_push(p1, string_from("id"));
-    vec_push(p1, string_from("1"));
-    vec_push(row1, p1);
-    let p2: i64 = vec_new();
-    vec_push(p2, string_from("name"));
-    vec_push(p2, string_from("Alice"));
-    vec_push(row1, p2);
-    let p3: i64 = vec_new();
-    vec_push(p3, string_from("email"));
-    vec_push(p3, string_from("alice@example.com"));
-    vec_push(row1, p3);
-    vec_push(rows, row1);
-    vec_push(result, rows);
-
-    vec_push(result, 0);  // affected
-    vec_push(result, 0);  // no error
-
-    // Verify status
-    if vec_get(result, 0) != ERR_NONE() {
-        println(string_from("FAIL: result status"));
-        return 1;
-    }
-    // Verify column count
-    if vec_len(vec_get(result, 1)) != 3 {
-        println(string_from("FAIL: column count"));
-        return 1;
-    }
-    // Verify row count
-    if vec_len(vec_get(result, 2)) != 1 {
-        println(string_from("FAIL: row count"));
-        return 1;
-    }
-    // Verify row data by name lookup
-    let row: i64 = vec_get(rows, 0);
-    var found_name: i64 = 0;
-    var j: i64 = 0;
-    while j < vec_len(row) {
-        let pair: i64 = vec_get(row, j);
-        if string_eq(vec_get(pair, 0), string_from("name")) == 1 {
-            if string_eq(vec_get(pair, 1), string_from("Alice")) == 1 {
-                found_name = 1;
-            }
-        }
-        j = j + 1;
-    }
-    if found_name != 1 {
-        println(string_from("FAIL: row name lookup"));
-        return 1;
-    }
-    println(string_from("PASS: test_result_structure"));
-    0
-}
-
-// Test 4: Transaction state transitions
 fn test_transactions() -> i64 {
-    let conn: i64 = vec_new();
-    vec_push(conn, DRIVER_MYSQL());
-    vec_push(conn, CONN_CONNECTED());
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-
-    // Begin transaction
-    vec_set(conn, 1, CONN_IN_TRANSACTION());
-    if vec_get(conn, 1) != CONN_IN_TRANSACTION() {
-        println(string_from("FAIL: begin transaction"));
+    println("  Testing db_begin/db_commit/db_rollback...");
+    let config: i64 = db_config_new(DRIVER_SQLITE());
+    let conn: i64 = db_connect(config);
+    let begin_r: i64 = db_begin(conn);
+    if begin_r != ERR_NONE() {
+        println("  FAIL: begin should succeed");
         return 1;
     }
-    // Commit
-    vec_set(conn, 1, CONN_CONNECTED());
-    if vec_get(conn, 1) != CONN_CONNECTED() {
-        println(string_from("FAIL: commit"));
+    if db_state(conn) != CONN_IN_TRANSACTION() {
+        println("  FAIL: state should be IN_TRANSACTION");
         return 1;
     }
-    // Begin again then rollback
-    vec_set(conn, 1, CONN_IN_TRANSACTION());
-    vec_set(conn, 1, CONN_CONNECTED());
-    if vec_get(conn, 1) != CONN_CONNECTED() {
-        println(string_from("FAIL: rollback"));
+    let commit_r: i64 = db_commit(conn);
+    if commit_r != ERR_NONE() {
+        println("  FAIL: commit should succeed");
         return 1;
     }
-    println(string_from("PASS: test_transactions"));
+    if db_state(conn) != CONN_CONNECTED() {
+        println("  FAIL: state should be CONNECTED after commit");
+        return 1;
+    }
+    // Begin again, then rollback
+    db_begin(conn);
+    let rb_r: i64 = db_rollback(conn);
+    if rb_r != ERR_NONE() {
+        println("  FAIL: rollback should succeed");
+        return 1;
+    }
+    // Commit without transaction should fail
+    let bad_commit: i64 = db_commit(conn);
+    if bad_commit == ERR_NONE() {
+        println("  FAIL: commit without transaction should fail");
+        return 1;
+    }
+    println("  PASS: transactions");
     0
 }
 
-// Test 5: Connection pool
-fn test_pool() -> i64 {
-    // Pool: [config, max_size, connections_vec, available_vec]
-    let pool: i64 = vec_new();
-    vec_push(pool, 0);  // config
-    vec_push(pool, 5);  // max_size
-    let conns: i64 = vec_new();
-    vec_push(pool, conns);
-    let avail: i64 = vec_new();
-    vec_push(pool, avail);
-
-    // Create 3 connections
-    var i: i64 = 0;
-    while i < 3 {
-        let conn: i64 = vec_new();
-        vec_push(conn, DRIVER_REDIS());
-        vec_push(conn, CONN_CONNECTED());
-        vec_push(conns, conn);
-        i = i + 1;
-    }
-    if vec_len(conns) != 3 {
-        println(string_from("FAIL: pool size"));
+fn test_driver_info() -> i64 {
+    println("  Testing db_driver_name/db_driver_is_sql/db_driver_is_nosql...");
+    let pg_name: i64 = db_driver_name(DRIVER_POSTGRES());
+    if string_eq(pg_name, "postgres") != 1 {
+        println("  FAIL: postgres driver name");
         return 1;
     }
-    // Return one to available
-    vec_push(avail, vec_get(conns, 0));
-    if vec_len(avail) != 1 {
-        println(string_from("FAIL: pool available"));
+    if db_driver_is_sql(DRIVER_POSTGRES()) != 1 {
+        println("  FAIL: postgres is SQL");
         return 1;
     }
-    println(string_from("PASS: test_pool"));
+    if db_driver_is_sql(DRIVER_MYSQL()) != 1 {
+        println("  FAIL: mysql is SQL");
+        return 1;
+    }
+    if db_driver_is_nosql(DRIVER_REDIS()) != 1 {
+        println("  FAIL: redis is NoSQL");
+        return 1;
+    }
+    if db_driver_is_sql(DRIVER_REDIS()) != 0 {
+        println("  FAIL: redis is not SQL");
+        return 1;
+    }
+    println("  PASS: driver info");
     0
 }
 
-// Test 6: Driver identification
-fn test_driver_types() -> i64 {
-    // SQL drivers
-    var pg_is_sql: i64 = 0;
-    let d: i64 = DRIVER_POSTGRES();
-    if d == 1 || d == 2 || d == 3 { pg_is_sql = 1; }
-    if pg_is_sql != 1 {
-        println(string_from("FAIL: postgres is sql"));
+fn test_connection_pool() -> i64 {
+    println("  Testing db_pool_new/checkout/return/size...");
+    let config: i64 = db_config_new(DRIVER_REDIS());
+    let pool: i64 = db_pool_new(config, 10);
+    if db_pool_size(pool) != 0 {
+        println("  FAIL: empty pool should have size 0");
         return 1;
     }
-
-    // NoSQL drivers
-    var redis_is_nosql: i64 = 0;
-    let r: i64 = DRIVER_REDIS();
-    if r == 4 || r == 5 || r == 6 { redis_is_nosql = 1; }
-    if redis_is_nosql != 1 {
-        println(string_from("FAIL: redis is nosql"));
+    let conn1: i64 = db_pool_checkout(pool);
+    if db_is_connected(conn1) != 1 {
+        println("  FAIL: checked out conn should be connected");
         return 1;
     }
-
-    // Driver constants are distinct
-    if DRIVER_POSTGRES() == DRIVER_MYSQL() {
-        println(string_from("FAIL: postgres != mysql"));
+    if db_pool_size(pool) != 1 {
+        println("  FAIL: pool should have 1 connection");
         return 1;
     }
-    if DRIVER_REDIS() == DRIVER_SQLITE() {
-        println(string_from("FAIL: redis != sqlite"));
+    db_pool_return(pool, conn1);
+    if db_pool_available(pool) != 1 {
+        println("  FAIL: should have 1 available after return");
         return 1;
     }
-    println(string_from("PASS: test_driver_types"));
-    0
-}
-
-// Test 7: Key-value operations (NoSQL pattern)
-fn test_kv_operations() -> i64 {
-    // Simulate a KV store as a vec of [key, value] pairs
-    let store: i64 = vec_new();
-
-    // SET
-    let p1: i64 = vec_new();
-    vec_push(p1, string_from("user:1"));
-    vec_push(p1, string_from("Alice"));
-    vec_push(store, p1);
-
-    let p2: i64 = vec_new();
-    vec_push(p2, string_from("user:2"));
-    vec_push(p2, string_from("Bob"));
-    vec_push(store, p2);
-
-    // GET by key
-    var found: i64 = 0;
-    var i: i64 = 0;
-    while i < vec_len(store) {
-        let pair: i64 = vec_get(store, i);
-        if string_eq(vec_get(pair, 0), string_from("user:1")) == 1 {
-            if string_eq(vec_get(pair, 1), string_from("Alice")) == 1 {
-                found = 1;
-            }
-        }
-        i = i + 1;
-    }
-    if found != 1 {
-        println(string_from("FAIL: kv get"));
-        return 1;
-    }
-
-    // EXISTS
-    var exists: i64 = 0;
-    i = 0;
-    while i < vec_len(store) {
-        let pair: i64 = vec_get(store, i);
-        if string_eq(vec_get(pair, 0), string_from("user:2")) == 1 {
-            exists = 1;
-        }
-        i = i + 1;
-    }
-    if exists != 1 {
-        println(string_from("FAIL: kv exists"));
-        return 1;
-    }
-    println(string_from("PASS: test_kv_operations"));
-    0
-}
-
-// Test 8: Error handling
-fn test_error_handling() -> i64 {
-    // Disconnected connection should return error
-    let conn: i64 = vec_new();
-    vec_push(conn, DRIVER_POSTGRES());
-    vec_push(conn, CONN_DISCONNECTED());
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-    vec_push(conn, 0);
-
-    let state: i64 = vec_get(conn, 1);
-    let is_connected: i64 = if state == CONN_CONNECTED() || state == CONN_IN_TRANSACTION() { 1 } else { 0 };
-    if is_connected != 0 {
-        println(string_from("FAIL: should not be connected"));
-        return 1;
-    }
-
-    // Error result
-    let result: i64 = vec_new();
-    vec_push(result, ERR_CONNECTION());
-    vec_push(result, vec_new());
-    vec_push(result, vec_new());
-    vec_push(result, 0);
-    vec_push(result, string_from("connection refused"));
-
-    if vec_get(result, 0) == ERR_NONE() {
-        println(string_from("FAIL: should be error"));
-        return 1;
-    }
-    let err_msg: i64 = vec_get(result, 4);
-    if string_len(err_msg) < 5 {
-        println(string_from("FAIL: error message too short"));
-        return 1;
-    }
-    println(string_from("PASS: test_error_handling"));
+    println("  PASS: connection pool");
     0
 }
 
 fn main() -> i64 {
-    println(string_from("=== simplex-db Unified Database Tests ==="));
+    println("=== simplex-db Integration Tests ===");
     var failures: i64 = 0;
-    failures = failures + test_config();
-    failures = failures + test_connection_state();
-    failures = failures + test_result_structure();
+    failures = failures + test_config_creation();
+    failures = failures + test_connection_lifecycle();
     failures = failures + test_transactions();
-    failures = failures + test_pool();
-    failures = failures + test_driver_types();
-    failures = failures + test_kv_operations();
-    failures = failures + test_error_handling();
+    failures = failures + test_driver_info();
+    failures = failures + test_connection_pool();
+    println("");
     if failures == 0 {
-        println(string_from("All simplex-db tests passed!"));
+        println("All 5 simplex-db integration tests passed!");
+    } else {
+        println(string_concat("FAILED: ", string_concat(int_to_string(failures), " test(s) failed")));
     }
     failures
 }

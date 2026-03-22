@@ -1,0 +1,983 @@
+// simplex-kafka::protocol - Kafka Binary Wire Protocol
+//
+// Implements the Kafka binary protocol encoding/decoding for request/response
+// framing over TCP connections.
+//
+// # Wire Format
+//
+// All multi-byte integers are big-endian (network byte order).
+//
+// Request frame:
+//   [message_size:4][api_key:2][api_version:2][correlation_id:4][client_id_len:2][client_id][payload]
+//
+// Response frame:
+//   [message_size:4][correlation_id:4][payload]
+//
+// # Data Types
+//
+//   INT8:    1-byte signed integer
+//   INT16:   2-byte signed big-endian integer
+//   INT32:   4-byte signed big-endian integer
+//   INT64:   8-byte signed big-endian integer
+//   VARINT:  Variable-length zigzag-encoded signed integer
+//   STRING:  INT16 length + UTF-8 bytes (-1 for null)
+//   BYTES:   INT32 length + raw bytes (-1 for null)
+//   ARRAY:   INT32 count + elements
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Byte Buffer
+// =============================================================================
+//
+// A byte buffer is a vec of i64 values where each element represents one byte
+// (0-255). This is used to build and parse binary protocol messages.
+
+/// Create a new empty byte buffer
+pub fn buf_new() -> i64 {
+    vec_new()
+}
+
+/// Get the length of a byte buffer
+pub fn buf_len(buf: i64) -> i64 {
+    vec_len(buf)
+}
+
+/// Get a byte from a buffer at the given index
+pub fn buf_get(buf: i64, idx: i64) -> i64 {
+    vec_get(buf, idx)
+}
+
+/// Append a single byte (0-255) to a buffer
+pub fn buf_put_byte(buf: i64, b: i64) -> i64 {
+    vec_push(buf, b);
+    buf
+}
+
+/// Append the bytes of a string to a buffer
+pub fn buf_put_string_bytes(buf: i64, s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    var i: i64 = 0;
+    while i < len {
+        vec_push(buf, string_char_at(s, i));
+        i = i + 1;
+    }
+    buf
+}
+
+/// Extract bytes from a buffer as a string
+pub fn buf_get_string(buf: i64, offset: i64, length: i64) -> i64 {
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+    while i < length {
+        sb_append_char(sb, vec_get(buf, offset + i));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+/// Append all bytes from one buffer to another
+pub fn buf_append(dst: i64, src: i64) -> i64 {
+    let len: i64 = vec_len(src);
+    var i: i64 = 0;
+    while i < len {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    dst
+}
+
+// =============================================================================
+// Integer Encoding (Big-Endian)
+// =============================================================================
+
+/// Encode a signed 8-bit integer
+pub fn kafka_encode_i8(buf: i64, val: i64) -> i64 {
+    var v: i64 = val;
+    if v < 0 { v = v + 256; }
+    vec_push(buf, v);
+    buf
+}
+
+/// Encode a signed 16-bit integer (big-endian)
+pub fn kafka_encode_i16(buf: i64, val: i64) -> i64 {
+    var v: i64 = val;
+    if v < 0 { v = v + 65536; }
+    vec_push(buf, (v / 256));
+    vec_push(buf, (v - (v / 256) * 256));
+    buf
+}
+
+/// Encode a signed 32-bit integer (big-endian)
+pub fn kafka_encode_i32(buf: i64, val: i64) -> i64 {
+    var v: i64 = val;
+    if v < 0 { v = v + 4294967296; }
+    let b3: i64 = v / 16777216;
+    let r3: i64 = v - b3 * 16777216;
+    let b2: i64 = r3 / 65536;
+    let r2: i64 = r3 - b2 * 65536;
+    let b1: i64 = r2 / 256;
+    let b0: i64 = r2 - b1 * 256;
+    vec_push(buf, b3);
+    vec_push(buf, b2);
+    vec_push(buf, b1);
+    vec_push(buf, b0);
+    buf
+}
+
+/// Encode a signed 64-bit integer (big-endian)
+pub fn kafka_encode_i64(buf: i64, val: i64) -> i64 {
+    // High 32 bits
+    var high: i64 = val / 4294967296;
+    var low: i64 = val - high * 4294967296;
+    if val < 0 {
+        // Two's complement for negative values
+        high = high + 4294967296;
+        if low < 0 { low = low + 4294967296; }
+    }
+    kafka_encode_i32(buf, high);
+    kafka_encode_i32(buf, low);
+    buf
+}
+
+// =============================================================================
+// Integer Decoding (Big-Endian)
+// =============================================================================
+
+/// Decode a signed 16-bit integer from buffer at offset.
+/// Returns a pair vec: [value, new_offset]
+pub fn kafka_decode_i16(buf: i64, offset: i64) -> i64 {
+    let b1: i64 = vec_get(buf, offset);
+    let b0: i64 = vec_get(buf, offset + 1);
+    var val: i64 = b1 * 256 + b0;
+    // Sign extension for 16-bit
+    if val >= 32768 { val = val - 65536; }
+    let result: i64 = vec_new();
+    vec_push(result, val);
+    vec_push(result, offset + 2);
+    result
+}
+
+/// Decode a signed 32-bit integer from buffer at offset.
+/// Returns a pair vec: [value, new_offset]
+pub fn kafka_decode_i32(buf: i64, offset: i64) -> i64 {
+    let b3: i64 = vec_get(buf, offset);
+    let b2: i64 = vec_get(buf, offset + 1);
+    let b1: i64 = vec_get(buf, offset + 2);
+    let b0: i64 = vec_get(buf, offset + 3);
+    var val: i64 = b3 * 16777216 + b2 * 65536 + b1 * 256 + b0;
+    // Sign extension for 32-bit
+    if val >= 2147483648 { val = val - 4294967296; }
+    let result: i64 = vec_new();
+    vec_push(result, val);
+    vec_push(result, offset + 4);
+    result
+}
+
+/// Decode a signed 64-bit integer from buffer at offset.
+/// Returns a pair vec: [value, new_offset]
+pub fn kafka_decode_i64_val(buf: i64, offset: i64) -> i64 {
+    let hi_result: i64 = kafka_decode_i32(buf, offset);
+    let hi: i64 = vec_get(hi_result, 0);
+    let lo_result: i64 = kafka_decode_i32(buf, offset + 4);
+    let lo: i64 = vec_get(lo_result, 0);
+
+    // Reconstruct 64-bit value
+    var val: i64 = 0;
+    if hi >= 0 {
+        val = hi * 4294967296;
+    } else {
+        val = (hi + 4294967296) * 4294967296;
+    }
+    if lo >= 0 {
+        val = val + lo;
+    } else {
+        val = val + lo + 4294967296;
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, val);
+    vec_push(result, offset + 8);
+    result
+}
+
+// =============================================================================
+// Variable-Length Integer (Varint / ZigZag)
+// =============================================================================
+//
+// Kafka uses zigzag-encoded varints in newer protocol versions.
+// ZigZag encoding maps signed integers to unsigned:
+//   0 -> 0, -1 -> 1, 1 -> 2, -2 -> 3, 2 -> 4, ...
+//   encode: (n << 1) ^ (n >> 63)
+//   decode: (n >>> 1) ^ -(n & 1)
+
+/// Zigzag encode a signed integer
+pub fn zigzag_encode(n: i64) -> i64 {
+    // (n << 1) ^ (n >> 63)
+    let shifted: i64 = n * 2;
+    var sign_extend: i64 = 0;
+    if n < 0 { sign_extend = -1; }
+    // XOR with sign extension
+    if sign_extend == 0 {
+        shifted
+    } else {
+        // XOR with all 1s = bitwise NOT + 1, but for zigzag: shifted ^ (-1)
+        // -1 in binary is all 1s, so XOR flips all bits
+        // shifted XOR -1 = -(shifted + 1)
+        -(shifted + 1)
+    }
+}
+
+/// Zigzag decode an unsigned integer back to signed
+pub fn zigzag_decode(n: i64) -> i64 {
+    // (n >>> 1) ^ -(n & 1)
+    let half: i64 = n / 2;
+    let low_bit: i64 = n - (n / 2) * 2;
+    if low_bit == 0 {
+        half
+    } else {
+        -(half + 1)
+    }
+}
+
+/// Encode a varint (zigzag + variable-length encoding)
+///
+/// Each byte uses 7 bits for data and 1 bit (MSB) as continuation flag.
+pub fn kafka_encode_varint(buf: i64, val: i64) -> i64 {
+    var encoded: i64 = zigzag_encode(val);
+    // Ensure non-negative for encoding
+    if encoded < 0 { encoded = encoded + 4294967296; }
+
+    // Emit 7-bit groups with continuation bit
+    while encoded >= 128 {
+        let low7: i64 = encoded - (encoded / 128) * 128;
+        vec_push(buf, low7 + 128);  // set MSB (continuation)
+        encoded = encoded / 128;
+    }
+    vec_push(buf, encoded);  // final byte, MSB clear
+    buf
+}
+
+/// Decode a varint from buffer at offset.
+/// Returns a pair vec: [value, new_offset]
+pub fn kafka_decode_varint(buf: i64, offset: i64) -> i64 {
+    var result_val: i64 = 0;
+    var shift: i64 = 0;
+    var pos: i64 = offset;
+    var more: i64 = 1;
+
+    while more == 1 {
+        let byte: i64 = vec_get(buf, pos);
+        let low7: i64 = byte - (byte / 128) * 128;  // byte & 0x7F
+        // Multiply by power of 128 for shift
+        var multiplier: i64 = 1;
+        var s: i64 = 0;
+        while s < shift {
+            multiplier = multiplier * 2;
+            s = s + 1;
+        }
+        result_val = result_val + low7 * multiplier;
+        shift = shift + 7;
+        pos = pos + 1;
+        if byte < 128 { more = 0; }  // MSB clear = last byte
+    }
+
+    let decoded: i64 = zigzag_decode(result_val);
+    let result: i64 = vec_new();
+    vec_push(result, decoded);
+    vec_push(result, pos);
+    result
+}
+
+// =============================================================================
+// String and Bytes Encoding/Decoding
+// =============================================================================
+
+/// Encode a Kafka string (INT16 length prefix + UTF-8 bytes)
+/// Null strings are encoded as length -1
+pub fn kafka_encode_string(buf: i64, s: i64) -> i64 {
+    if s == 0 {
+        // Null string
+        kafka_encode_i16(buf, -1);
+        return buf;
+    }
+    let len: i64 = string_len(s);
+    kafka_encode_i16(buf, len);
+    buf_put_string_bytes(buf, s);
+    buf
+}
+
+/// Encode a Kafka nullable string
+pub fn kafka_encode_nullable_string(buf: i64, s: i64) -> i64 {
+    if s == 0 {
+        kafka_encode_i16(buf, -1);
+        return buf;
+    }
+    if string_len(s) == 0 {
+        kafka_encode_i16(buf, 0);
+        return buf;
+    }
+    kafka_encode_string(buf, s)
+}
+
+/// Decode a Kafka string from buffer at offset.
+/// Returns a pair vec: [string_handle_or_0, new_offset]
+pub fn kafka_decode_string(buf: i64, offset: i64) -> i64 {
+    let len_result: i64 = kafka_decode_i16(buf, offset);
+    let len: i64 = vec_get(len_result, 0);
+    let pos: i64 = vec_get(len_result, 1);
+
+    if len < 0 {
+        // Null string
+        let result: i64 = vec_new();
+        vec_push(result, 0);
+        vec_push(result, pos);
+        return result;
+    }
+
+    let s: i64 = buf_get_string(buf, pos, len);
+    let result: i64 = vec_new();
+    vec_push(result, s);
+    vec_push(result, pos + len);
+    result
+}
+
+/// Encode Kafka bytes (INT32 length prefix + raw bytes)
+/// Null bytes are encoded as length -1
+pub fn kafka_encode_bytes(buf: i64, data: i64) -> i64 {
+    if data == 0 {
+        kafka_encode_i32(buf, -1);
+        return buf;
+    }
+    let len: i64 = string_len(data);
+    kafka_encode_i32(buf, len);
+    buf_put_string_bytes(buf, data);
+    buf
+}
+
+/// Decode Kafka bytes from buffer at offset.
+/// Returns a pair vec: [string_handle_or_0, new_offset]
+pub fn kafka_decode_bytes(buf: i64, offset: i64) -> i64 {
+    let len_result: i64 = kafka_decode_i32(buf, offset);
+    let len: i64 = vec_get(len_result, 0);
+    let pos: i64 = vec_get(len_result, 1);
+
+    if len < 0 {
+        let result: i64 = vec_new();
+        vec_push(result, 0);
+        vec_push(result, pos);
+        return result;
+    }
+
+    let s: i64 = buf_get_string(buf, pos, len);
+    let result: i64 = vec_new();
+    vec_push(result, s);
+    vec_push(result, pos + len);
+    result
+}
+
+// =============================================================================
+// Request/Response Header
+// =============================================================================
+
+/// Build a Kafka request header.
+///
+/// # Format
+/// [api_key:2][api_version:2][correlation_id:4][client_id_len:2][client_id]
+///
+/// # Arguments
+/// - `api_key`: API key (e.g. 0 for Produce, 1 for Fetch)
+/// - `api_version`: API version number
+/// - `correlation_id`: Request correlation ID
+/// - `client_id`: Client ID string
+///
+/// # Returns
+/// Byte buffer with the header encoded
+pub fn kafka_request_header(api_key: i64, api_version: i64, correlation_id: i64, client_id: i64) -> i64 {
+    let buf: i64 = buf_new();
+    kafka_encode_i16(buf, api_key);
+    kafka_encode_i16(buf, api_version);
+    kafka_encode_i32(buf, correlation_id);
+    kafka_encode_string(buf, client_id);
+    buf
+}
+
+/// Frame a request by prepending the message size (INT32).
+///
+/// The size includes everything after the size field itself.
+pub fn kafka_frame_request(payload: i64) -> i64 {
+    let framed: i64 = buf_new();
+    let payload_len: i64 = vec_len(payload);
+    kafka_encode_i32(framed, payload_len);
+    buf_append(framed, payload);
+    framed
+}
+
+/// Parse a response frame header.
+///
+/// # Returns
+/// A vec: [message_size, correlation_id, payload_offset]
+pub fn kafka_response_parse(buf: i64) -> i64 {
+    let size_result: i64 = kafka_decode_i32(buf, 0);
+    let msg_size: i64 = vec_get(size_result, 0);
+
+    let corr_result: i64 = kafka_decode_i32(buf, 4);
+    let corr_id: i64 = vec_get(corr_result, 0);
+
+    let result: i64 = vec_new();
+    vec_push(result, msg_size);
+    vec_push(result, corr_id);
+    vec_push(result, 8);  // payload starts at offset 8
+    result
+}
+
+// =============================================================================
+// CRC32 Calculation (for message integrity)
+// =============================================================================
+//
+// Kafka uses CRC32C (Castagnoli) for message integrity checks.
+// We implement a simple byte-at-a-time CRC32 for protocol compliance.
+
+/// CRC32 lookup table value for a given byte.
+/// Uses the standard CRC32 polynomial 0xEDB88320.
+fn crc32_byte(byte: i64) -> i64 {
+    var crc: i64 = byte;
+    var i: i64 = 0;
+    while i < 8 {
+        let low_bit: i64 = crc - (crc / 2) * 2;
+        if low_bit == 1 {
+            crc = (crc / 2);
+            // XOR with polynomial 0xEDB88320 = 3988292384
+            // We use a simplified version for i64 arithmetic
+            crc = crc_xor(crc, 3988292384);
+        } else {
+            crc = crc / 2;
+        }
+        i = i + 1;
+    }
+    crc
+}
+
+/// XOR two positive integers (bit by bit)
+fn crc_xor(a: i64, b: i64) -> i64 {
+    var result: i64 = 0;
+    var va: i64 = a;
+    var vb: i64 = b;
+    var bit: i64 = 1;
+    var i: i64 = 0;
+    while i < 32 {
+        let ba: i64 = va - (va / 2) * 2;
+        let bb: i64 = vb - (vb / 2) * 2;
+        if ba != bb {
+            result = result + bit;
+        }
+        va = va / 2;
+        vb = vb / 2;
+        bit = bit * 2;
+        i = i + 1;
+    }
+    result
+}
+
+/// Compute CRC32 of a byte buffer range.
+pub fn crc32_compute(buf: i64, start: i64, length: i64) -> i64 {
+    var crc: i64 = 4294967295;  // 0xFFFFFFFF
+    var i: i64 = 0;
+    while i < length {
+        let byte: i64 = vec_get(buf, start + i);
+        let idx: i64 = crc_xor(crc, byte);
+        let table_idx: i64 = idx - (idx / 256) * 256;  // idx & 0xFF
+        let table_val: i64 = crc32_byte(table_idx);
+        crc = crc_xor(crc / 256, table_val);
+        i = i + 1;
+    }
+    crc_xor(crc, 4294967295)  // final XOR
+}
+
+// =============================================================================
+// Produce Request Encoding
+// =============================================================================
+//
+// Produce Request (API Key 0, Version 0):
+//   [required_acks:2][timeout:4][topic_count:4]
+//   for each topic:
+//     [topic_name][partition_count:4]
+//     for each partition:
+//       [partition_id:4][message_set_size:4][message_set]
+//
+// MessageSet (v0):
+//   [offset:8][message_size:4][crc:4][magic:1][attributes:1][key][value]
+
+/// Build a Produce request payload for a single topic/partition.
+///
+/// # Arguments
+/// - `topic`: Topic name
+/// - `partition`: Partition ID
+/// - `key`: Message key (string handle, or 0 for null)
+/// - `value`: Message value (string handle)
+/// - `acks`: Required acknowledgments (-1=all, 0=none, 1=leader)
+/// - `timeout`: Timeout in milliseconds
+///
+/// # Returns
+/// Byte buffer with the complete produce request body (after header)
+pub fn kafka_encode_produce(topic: i64, partition: i64, key: i64, value: i64, acks: i64, timeout: i64) -> i64 {
+    let buf: i64 = buf_new();
+
+    // Required acks
+    kafka_encode_i16(buf, acks);
+
+    // Timeout
+    kafka_encode_i32(buf, timeout);
+
+    // Topic count = 1
+    kafka_encode_i32(buf, 1);
+
+    // Topic name
+    kafka_encode_string(buf, topic);
+
+    // Partition count = 1
+    kafka_encode_i32(buf, 1);
+
+    // Partition ID
+    kafka_encode_i32(buf, partition);
+
+    // Build message set
+    let msg_set: i64 = build_message_v0(key, value);
+    let msg_set_len: i64 = vec_len(msg_set);
+
+    // Message set size
+    kafka_encode_i32(buf, msg_set_len);
+
+    // Append message set
+    buf_append(buf, msg_set);
+
+    buf
+}
+
+/// Build a v0 message (offset + size + CRC + magic + attrs + key + value)
+fn build_message_v0(key: i64, value: i64) -> i64 {
+    let buf: i64 = buf_new();
+
+    // Offset (8 bytes) - 0 for produce requests
+    kafka_encode_i64(buf, 0);
+
+    // Build message body first to compute CRC
+    let msg_body: i64 = buf_new();
+
+    // Magic byte = 0 (message format v0)
+    kafka_encode_i8(msg_body, 0);
+
+    // Attributes = 0 (no compression)
+    kafka_encode_i8(msg_body, 0);
+
+    // Key
+    kafka_encode_bytes(msg_body, key);
+
+    // Value
+    kafka_encode_bytes(msg_body, value);
+
+    // Compute CRC of message body
+    let crc: i64 = crc32_compute(msg_body, 0, vec_len(msg_body));
+
+    // Message size = 4 (CRC) + body length
+    let msg_size: i64 = 4 + vec_len(msg_body);
+    kafka_encode_i32(buf, msg_size);
+
+    // CRC
+    kafka_encode_i32(buf, crc);
+
+    // Message body
+    buf_append(buf, msg_body);
+
+    buf
+}
+
+// =============================================================================
+// Fetch Request Encoding
+// =============================================================================
+//
+// Fetch Request (API Key 1, Version 0):
+//   [replica_id:4][max_wait:4][min_bytes:4][topic_count:4]
+//   for each topic:
+//     [topic_name][partition_count:4]
+//     for each partition:
+//       [partition_id:4][fetch_offset:8][max_bytes:4]
+
+/// Build a Fetch request payload.
+///
+/// # Arguments
+/// - `topic`: Topic name
+/// - `partition`: Partition ID
+/// - `offset`: Fetch offset
+/// - `max_wait`: Maximum wait time in milliseconds
+/// - `min_bytes`: Minimum bytes to accumulate
+/// - `max_bytes`: Maximum bytes to fetch
+pub fn kafka_encode_fetch(topic: i64, partition: i64, offset: i64, max_wait: i64, min_bytes: i64, max_bytes: i64) -> i64 {
+    let buf: i64 = buf_new();
+
+    // Replica ID = -1 (consumer)
+    kafka_encode_i32(buf, -1);
+
+    // Max wait time
+    kafka_encode_i32(buf, max_wait);
+
+    // Min bytes
+    kafka_encode_i32(buf, min_bytes);
+
+    // Topic count = 1
+    kafka_encode_i32(buf, 1);
+
+    // Topic name
+    kafka_encode_string(buf, topic);
+
+    // Partition count = 1
+    kafka_encode_i32(buf, 1);
+
+    // Partition ID
+    kafka_encode_i32(buf, partition);
+
+    // Fetch offset
+    kafka_encode_i64(buf, offset);
+
+    // Max bytes
+    kafka_encode_i32(buf, max_bytes);
+
+    buf
+}
+
+// =============================================================================
+// Metadata Request Encoding
+// =============================================================================
+//
+// Metadata Request (API Key 3, Version 0):
+//   [topic_count:4]
+//   for each topic:
+//     [topic_name]
+
+/// Build a Metadata request for specific topics.
+pub fn kafka_encode_metadata(topics: i64) -> i64 {
+    let buf: i64 = buf_new();
+    let count: i64 = vec_len(topics);
+    kafka_encode_i32(buf, count);
+    var i: i64 = 0;
+    while i < count {
+        kafka_encode_string(buf, vec_get(topics, i));
+        i = i + 1;
+    }
+    buf
+}
+
+/// Build a Metadata request for all topics.
+pub fn kafka_encode_metadata_all() -> i64 {
+    let buf: i64 = buf_new();
+    kafka_encode_i32(buf, 0);  // 0 topics = all topics
+    buf
+}
+
+// =============================================================================
+// Fetch Response Decoding
+// =============================================================================
+
+/// Decode a Fetch response payload.
+///
+/// # Returns
+/// A vec of records: [[topic, partition, offset, key, value, timestamp, headers], ...]
+pub fn kafka_decode_fetch_response(buf: i64, offset: i64) -> i64 {
+    let records: i64 = vec_new();
+    let buf_length: i64 = vec_len(buf);
+    if offset >= buf_length { return records; }
+
+    // Topic count
+    let topic_count_r: i64 = kafka_decode_i32(buf, offset);
+    let topic_count: i64 = vec_get(topic_count_r, 0);
+    var pos: i64 = vec_get(topic_count_r, 1);
+
+    var t: i64 = 0;
+    while t < topic_count {
+        // Topic name
+        let topic_r: i64 = kafka_decode_string(buf, pos);
+        let topic: i64 = vec_get(topic_r, 0);
+        pos = vec_get(topic_r, 1);
+
+        // Partition count
+        let part_count_r: i64 = kafka_decode_i32(buf, pos);
+        let part_count: i64 = vec_get(part_count_r, 0);
+        pos = vec_get(part_count_r, 1);
+
+        var p: i64 = 0;
+        while p < part_count {
+            // Partition ID
+            let part_id_r: i64 = kafka_decode_i32(buf, pos);
+            let part_id: i64 = vec_get(part_id_r, 0);
+            pos = vec_get(part_id_r, 1);
+
+            // Error code
+            let err_r: i64 = kafka_decode_i16(buf, pos);
+            let err_code: i64 = vec_get(err_r, 0);
+            pos = vec_get(err_r, 1);
+
+            // High watermark
+            let hw_r: i64 = kafka_decode_i64_val(buf, pos);
+            pos = vec_get(hw_r, 1);
+
+            // Message set size
+            let ms_size_r: i64 = kafka_decode_i32(buf, pos);
+            let ms_size: i64 = vec_get(ms_size_r, 0);
+            pos = vec_get(ms_size_r, 1);
+
+            // Decode messages within the message set
+            let ms_end: i64 = pos + ms_size;
+            while pos < ms_end {
+                if pos + 12 > ms_end {
+                    pos = ms_end;  // not enough bytes for a message
+                    continue;
+                }
+
+                // Offset (8 bytes)
+                let off_r: i64 = kafka_decode_i64_val(buf, pos);
+                let msg_offset: i64 = vec_get(off_r, 0);
+                pos = vec_get(off_r, 1);
+
+                // Message size
+                let msize_r: i64 = kafka_decode_i32(buf, pos);
+                let msg_size: i64 = vec_get(msize_r, 0);
+                pos = vec_get(msize_r, 1);
+
+                if pos + msg_size > ms_end {
+                    pos = ms_end;  // partial message
+                    continue;
+                }
+
+                // CRC (4 bytes, skip)
+                pos = pos + 4;
+
+                // Magic byte
+                let magic: i64 = vec_get(buf, pos);
+                pos = pos + 1;
+
+                // Attributes
+                let attrs: i64 = vec_get(buf, pos);
+                pos = pos + 1;
+
+                // Key
+                let key_r: i64 = kafka_decode_bytes(buf, pos);
+                let key: i64 = vec_get(key_r, 0);
+                pos = vec_get(key_r, 1);
+
+                // Value
+                let val_r: i64 = kafka_decode_bytes(buf, pos);
+                let value: i64 = vec_get(val_r, 0);
+                pos = vec_get(val_r, 1);
+
+                // Build record
+                let rec: i64 = vec_new();
+                vec_push(rec, topic);
+                vec_push(rec, part_id);
+                vec_push(rec, msg_offset);
+                vec_push(rec, key);
+                vec_push(rec, value);
+                vec_push(rec, 0);          // timestamp (not in v0)
+                vec_push(rec, vec_new());  // headers (not in v0)
+                vec_push(records, rec);
+            }
+            p = p + 1;
+        }
+        t = t + 1;
+    }
+    records
+}
+
+// =============================================================================
+// Metadata Response Decoding
+// =============================================================================
+
+/// Decode a Metadata response.
+///
+/// # Returns
+/// A vec: [brokers_vec, topics_vec]
+///   brokers_vec: [[node_id, host, port], ...]
+///   topics_vec: [[topic_name, error_code, partitions_vec], ...]
+///     partitions_vec: [[partition_id, leader, replicas_vec, isr_vec], ...]
+pub fn kafka_decode_metadata_response(buf: i64, offset: i64) -> i64 {
+    var pos: i64 = offset;
+
+    // Broker count
+    let broker_count_r: i64 = kafka_decode_i32(buf, pos);
+    let broker_count: i64 = vec_get(broker_count_r, 0);
+    pos = vec_get(broker_count_r, 1);
+
+    let brokers: i64 = vec_new();
+    var b: i64 = 0;
+    while b < broker_count {
+        // Node ID
+        let nid_r: i64 = kafka_decode_i32(buf, pos);
+        let node_id: i64 = vec_get(nid_r, 0);
+        pos = vec_get(nid_r, 1);
+
+        // Host
+        let host_r: i64 = kafka_decode_string(buf, pos);
+        let host: i64 = vec_get(host_r, 0);
+        pos = vec_get(host_r, 1);
+
+        // Port
+        let port_r: i64 = kafka_decode_i32(buf, pos);
+        let port: i64 = vec_get(port_r, 0);
+        pos = vec_get(port_r, 1);
+
+        let broker: i64 = vec_new();
+        vec_push(broker, node_id);
+        vec_push(broker, host);
+        vec_push(broker, port);
+        vec_push(brokers, broker);
+        b = b + 1;
+    }
+
+    // Topic count
+    let topic_count_r: i64 = kafka_decode_i32(buf, pos);
+    let topic_count: i64 = vec_get(topic_count_r, 0);
+    pos = vec_get(topic_count_r, 1);
+
+    let topics: i64 = vec_new();
+    var t: i64 = 0;
+    while t < topic_count {
+        // Error code
+        let err_r: i64 = kafka_decode_i16(buf, pos);
+        let err_code: i64 = vec_get(err_r, 0);
+        pos = vec_get(err_r, 1);
+
+        // Topic name
+        let name_r: i64 = kafka_decode_string(buf, pos);
+        let topic_name: i64 = vec_get(name_r, 0);
+        pos = vec_get(name_r, 1);
+
+        // Partition count
+        let part_count_r: i64 = kafka_decode_i32(buf, pos);
+        let part_count: i64 = vec_get(part_count_r, 0);
+        pos = vec_get(part_count_r, 1);
+
+        let partitions: i64 = vec_new();
+        var p: i64 = 0;
+        while p < part_count {
+            let perr_r: i64 = kafka_decode_i16(buf, pos);
+            pos = vec_get(perr_r, 1);
+
+            let pid_r: i64 = kafka_decode_i32(buf, pos);
+            let part_id: i64 = vec_get(pid_r, 0);
+            pos = vec_get(pid_r, 1);
+
+            let leader_r: i64 = kafka_decode_i32(buf, pos);
+            let leader: i64 = vec_get(leader_r, 0);
+            pos = vec_get(leader_r, 1);
+
+            // Replicas array
+            let rep_count_r: i64 = kafka_decode_i32(buf, pos);
+            let rep_count: i64 = vec_get(rep_count_r, 0);
+            pos = vec_get(rep_count_r, 1);
+            let replicas: i64 = vec_new();
+            var r: i64 = 0;
+            while r < rep_count {
+                let rid_r: i64 = kafka_decode_i32(buf, pos);
+                vec_push(replicas, vec_get(rid_r, 0));
+                pos = vec_get(rid_r, 1);
+                r = r + 1;
+            }
+
+            // ISR array
+            let isr_count_r: i64 = kafka_decode_i32(buf, pos);
+            let isr_count: i64 = vec_get(isr_count_r, 0);
+            pos = vec_get(isr_count_r, 1);
+            let isr: i64 = vec_new();
+            var s: i64 = 0;
+            while s < isr_count {
+                let sid_r: i64 = kafka_decode_i32(buf, pos);
+                vec_push(isr, vec_get(sid_r, 0));
+                pos = vec_get(sid_r, 1);
+                s = s + 1;
+            }
+
+            let part_info: i64 = vec_new();
+            vec_push(part_info, part_id);
+            vec_push(part_info, leader);
+            vec_push(part_info, replicas);
+            vec_push(part_info, isr);
+            vec_push(partitions, part_info);
+
+            p = p + 1;
+        }
+
+        let topic_info: i64 = vec_new();
+        vec_push(topic_info, topic_name);
+        vec_push(topic_info, err_code);
+        vec_push(topic_info, partitions);
+        vec_push(topics, topic_info);
+
+        t = t + 1;
+    }
+
+    let result: i64 = vec_new();
+    vec_push(result, brokers);
+    vec_push(result, topics);
+    result
+}
+
+// =============================================================================
+// Produce Response Decoding
+// =============================================================================
+
+/// Decode a Produce response.
+///
+/// # Returns
+/// A vec of [topic, [[partition, error_code, offset], ...]]
+pub fn kafka_decode_produce_response(buf: i64, offset: i64) -> i64 {
+    var pos: i64 = offset;
+    let results: i64 = vec_new();
+
+    let topic_count_r: i64 = kafka_decode_i32(buf, pos);
+    let topic_count: i64 = vec_get(topic_count_r, 0);
+    pos = vec_get(topic_count_r, 1);
+
+    var t: i64 = 0;
+    while t < topic_count {
+        let name_r: i64 = kafka_decode_string(buf, pos);
+        let topic_name: i64 = vec_get(name_r, 0);
+        pos = vec_get(name_r, 1);
+
+        let part_count_r: i64 = kafka_decode_i32(buf, pos);
+        let part_count: i64 = vec_get(part_count_r, 0);
+        pos = vec_get(part_count_r, 1);
+
+        let partitions: i64 = vec_new();
+        var p: i64 = 0;
+        while p < part_count {
+            let pid_r: i64 = kafka_decode_i32(buf, pos);
+            let part_id: i64 = vec_get(pid_r, 0);
+            pos = vec_get(pid_r, 1);
+
+            let err_r: i64 = kafka_decode_i16(buf, pos);
+            let err_code: i64 = vec_get(err_r, 0);
+            pos = vec_get(err_r, 1);
+
+            let off_r: i64 = kafka_decode_i64_val(buf, pos);
+            let base_offset: i64 = vec_get(off_r, 0);
+            pos = vec_get(off_r, 1);
+
+            let part_result: i64 = vec_new();
+            vec_push(part_result, part_id);
+            vec_push(part_result, err_code);
+            vec_push(part_result, base_offset);
+            vec_push(partitions, part_result);
+
+            p = p + 1;
+        }
+
+        let topic_result: i64 = vec_new();
+        vec_push(topic_result, topic_name);
+        vec_push(topic_result, partitions);
+        vec_push(results, topic_result);
+
+        t = t + 1;
+    }
+
+    results
+}

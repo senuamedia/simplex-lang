@@ -1,0 +1,1230 @@
+// simplex-learning::equivariant - Geometric Equivariant Layers
+//
+// Implements layers that respect geometric symmetries:
+//   - Group representations: rotations, permutations
+//   - Equivariant linear layers: f(g·x) = g·f(x)
+//   - Graph neural network layers: permutation-equivariant message passing
+//   - Spherical harmonics (basic, low-order)
+//   - Invariant pooling: mean, max, norm
+//
+// Equivariance means a layer commutes with group transformations:
+//   If T_g is a transformation (rotation, permutation, etc.) then
+//   f(T_g · x) = T_g · f(x)
+//
+// Invariance means the output does not change under the transformation:
+//   f(T_g · x) = f(x)
+//
+// All f64 values are stored as i64 via f64_to_bits / bits_to_f64.
+// Vectors are i64 handles from vec_new / vec_push / vec_get / vec_set.
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+fn eq_abs(x: f64) -> f64 {
+    if x < 0.0 { return 0.0 - x; }
+    x
+}
+
+fn eq_sqrt(x: f64) -> f64 {
+    if x <= 0.0 { return 0.0; }
+    var guess: f64 = x;
+    if guess > 1.0 { guess = guess / 2.0; }
+    if guess < 0.001 { guess = 0.001; }
+    var i: i64 = 0;
+    while i < 30 {
+        guess = (guess + x / guess) / 2.0;
+        i = i + 1;
+    }
+    guess
+}
+
+fn eq_max(a: f64, b: f64) -> f64 {
+    if a > b { return a; }
+    b
+}
+
+fn eq_min_i64(a: i64, b: i64) -> i64 {
+    if a < b { return a; }
+    b
+}
+
+// Approximate sin via Taylor series
+fn eq_sin(x: f64) -> f64 {
+    // Reduce to [-pi, pi]
+    let pi: f64 = 3.14159265358979;
+    let two_pi: f64 = 6.28318530717959;
+    var a: f64 = x;
+    while a > pi { a = a - two_pi; }
+    while a < 0.0 - pi { a = a + two_pi; }
+    // Taylor: sin(a) = a - a^3/6 + a^5/120 - a^7/5040 + ...
+    let a2: f64 = a * a;
+    let a3: f64 = a2 * a;
+    let a5: f64 = a3 * a2;
+    let a7: f64 = a5 * a2;
+    let a9: f64 = a7 * a2;
+    let a11: f64 = a9 * a2;
+    a - a3 / 6.0 + a5 / 120.0 - a7 / 5040.0 + a9 / 362880.0 - a11 / 39916800.0
+}
+
+// Approximate cos via Taylor series
+fn eq_cos(x: f64) -> f64 {
+    let pi: f64 = 3.14159265358979;
+    let two_pi: f64 = 6.28318530717959;
+    var a: f64 = x;
+    while a > pi { a = a - two_pi; }
+    while a < 0.0 - pi { a = a + two_pi; }
+    let a2: f64 = a * a;
+    let a4: f64 = a2 * a2;
+    let a6: f64 = a4 * a2;
+    let a8: f64 = a6 * a2;
+    let a10: f64 = a8 * a2;
+    1.0 - a2 / 2.0 + a4 / 24.0 - a6 / 720.0 + a8 / 40320.0 - a10 / 3628800.0
+}
+
+// Approximate exp
+fn eq_exp(x: f64) -> f64 {
+    var arg: f64 = x;
+    if arg > 20.0 { arg = 20.0; }
+    if arg < 0.0 - 20.0 { arg = 0.0 - 20.0; }
+    var result: f64 = 1.0;
+    var term: f64 = 1.0;
+    var i: i64 = 1;
+    while i <= 30 {
+        term = term * arg / (i as f64);
+        result = result + term;
+        i = i + 1;
+    }
+    result
+}
+
+// Approximate tanh
+fn eq_tanh(x: f64) -> f64 {
+    let ep: f64 = eq_exp(x);
+    let en: f64 = eq_exp(0.0 - x);
+    let num: f64 = ep - en;
+    let den: f64 = ep + en;
+    if eq_abs(den) < 0.0000000001 { return 0.0; }
+    num / den
+}
+
+// ReLU
+fn eq_relu(x: f64) -> f64 {
+    if x > 0.0 { return x; }
+    0.0
+}
+
+// =============================================================================
+// Vector/Matrix utilities (f64-as-bits)
+// =============================================================================
+
+fn eq_vec_zeros(n: i64) -> i64 {
+    let v = vec_new();
+    let zero_bits: i64 = f64_to_bits(0.0);
+    var i: i64 = 0;
+    while i < n {
+        vec_push(v, zero_bits);
+        i = i + 1;
+    }
+    v
+}
+
+fn eq_vec_copy(src: i64) -> i64 {
+    let n: i64 = vec_len(src);
+    let dst = vec_new();
+    var i: i64 = 0;
+    while i < n {
+        vec_push(dst, vec_get(src, i));
+        i = i + 1;
+    }
+    dst
+}
+
+fn eq_mat_get(m: i64, cols: i64, row: i64, col: i64) -> f64 {
+    bits_to_f64(vec_get(m, row * cols + col))
+}
+
+fn eq_mat_set(m: i64, cols: i64, row: i64, col: i64, val: f64) {
+    vec_set(m, row * cols + col, f64_to_bits(val));
+}
+
+fn eq_mat_zeros(rows: i64, cols: i64) -> i64 {
+    eq_vec_zeros(rows * cols)
+}
+
+fn eq_mat_identity(n: i64) -> i64 {
+    let m: i64 = eq_mat_zeros(n, n);
+    var i: i64 = 0;
+    while i < n {
+        eq_mat_set(m, n, i, i, 1.0);
+        i = i + 1;
+    }
+    m
+}
+
+// Matrix multiply C = A (m x k) * B (k x n)
+fn eq_mat_mul(a: i64, b: i64, m: i64, k: i64, n: i64) -> i64 {
+    let c: i64 = eq_mat_zeros(m, n);
+    var i: i64 = 0;
+    while i < m {
+        var j: i64 = 0;
+        while j < n {
+            var sum: f64 = 0.0;
+            var p: i64 = 0;
+            while p < k {
+                sum = sum + eq_mat_get(a, k, i, p) * eq_mat_get(b, n, p, j);
+                p = p + 1;
+            }
+            eq_mat_set(c, n, i, j, sum);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    c
+}
+
+// Matrix-vector multiply: y = A (m x n) * x (n) -> (m)
+fn eq_matvec(a: i64, x: i64, m: i64, n: i64) -> i64 {
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < m {
+        var sum: f64 = 0.0;
+        var j: i64 = 0;
+        while j < n {
+            sum = sum + eq_mat_get(a, n, i, j) * bits_to_f64(vec_get(x, j));
+            j = j + 1;
+        }
+        vec_push(result, f64_to_bits(sum));
+        i = i + 1;
+    }
+    result
+}
+
+// Matrix transpose
+fn eq_mat_transpose(a: i64, rows: i64, cols: i64) -> i64 {
+    let t: i64 = eq_mat_zeros(cols, rows);
+    var i: i64 = 0;
+    while i < rows {
+        var j: i64 = 0;
+        while j < cols {
+            eq_mat_set(t, rows, j, i, eq_mat_get(a, cols, i, j));
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    t
+}
+
+// =============================================================================
+// Group Representations
+// =============================================================================
+
+/// Create a 2D rotation matrix.
+///
+/// R(θ) = [[cos(θ), -sin(θ)],
+///          [sin(θ),  cos(θ)]]
+///
+/// Arguments:
+///   angle - f64_bits rotation angle in radians
+///
+/// Returns: handle to flat vec of f64-as-bits (2 x 2, row-major)
+fn rotation_matrix_2d(angle: i64) -> i64 {
+    let theta: f64 = bits_to_f64(angle);
+    let c: f64 = eq_cos(theta);
+    let s: f64 = eq_sin(theta);
+
+    let m = vec_new();
+    vec_push(m, f64_to_bits(c));          // [0,0] = cos
+    vec_push(m, f64_to_bits(0.0 - s));    // [0,1] = -sin
+    vec_push(m, f64_to_bits(s));          // [1,0] = sin
+    vec_push(m, f64_to_bits(c));          // [1,1] = cos
+    m
+}
+
+/// Create a 3D rotation matrix around a coordinate axis.
+///
+/// Arguments:
+///   axis  - rotation axis: 0=x, 1=y, 2=z
+///   angle - f64_bits rotation angle in radians
+///
+/// Returns: handle to flat vec of f64-as-bits (3 x 3, row-major)
+fn rotation_matrix_3d(axis: i64, angle: i64) -> i64 {
+    let theta: f64 = bits_to_f64(angle);
+    let c: f64 = eq_cos(theta);
+    let s: f64 = eq_sin(theta);
+    let m: i64 = eq_mat_identity(3);
+
+    if axis == 0 {
+        // Rotation around x-axis
+        // [[1,  0,     0   ],
+        //  [0,  cos, -sin  ],
+        //  [0,  sin,  cos  ]]
+        eq_mat_set(m, 3, 1, 1, c);
+        eq_mat_set(m, 3, 1, 2, 0.0 - s);
+        eq_mat_set(m, 3, 2, 1, s);
+        eq_mat_set(m, 3, 2, 2, c);
+    }
+
+    if axis == 1 {
+        // Rotation around y-axis
+        // [[ cos, 0, sin],
+        //  [ 0,   1, 0  ],
+        //  [-sin, 0, cos]]
+        eq_mat_set(m, 3, 0, 0, c);
+        eq_mat_set(m, 3, 0, 2, s);
+        eq_mat_set(m, 3, 2, 0, 0.0 - s);
+        eq_mat_set(m, 3, 2, 2, c);
+    }
+
+    if axis == 2 {
+        // Rotation around z-axis
+        // [[cos, -sin, 0],
+        //  [sin,  cos, 0],
+        //  [0,    0,   1]]
+        eq_mat_set(m, 3, 0, 0, c);
+        eq_mat_set(m, 3, 0, 1, 0.0 - s);
+        eq_mat_set(m, 3, 1, 0, s);
+        eq_mat_set(m, 3, 1, 1, c);
+    }
+
+    m
+}
+
+/// Create a permutation matrix from a permutation vector.
+///
+/// If perm = [2, 0, 1] then P maps:
+///   e_0 -> e_2, e_1 -> e_0, e_2 -> e_1
+/// i.e., P[perm[i], i] = 1
+///
+/// Arguments:
+///   perm - handle to vec of i64 (permutation of 0..n-1)
+///   n    - dimension
+///
+/// Returns: handle to flat vec of f64-as-bits (n x n)
+fn permutation_matrix(perm: i64, n: i64) -> i64 {
+    let m: i64 = eq_mat_zeros(n, n);
+    var i: i64 = 0;
+    while i < n {
+        let target: i64 = vec_get(perm, i);
+        eq_mat_set(m, n, target, i, 1.0);
+        i = i + 1;
+    }
+    m
+}
+
+// =============================================================================
+// Equivariant Linear Layer
+// =============================================================================
+//
+// An equivariant linear layer satisfies f(ρ_in(g) x) = ρ_out(g) f(x)
+// for all group elements g. For permutation groups, this constrains the
+// weight matrix to commute with the group action.
+//
+// For a simple implementation, we store the weight matrix and the group
+// type. The equivariance constraint is enforced by symmetrizing the weights.
+//
+// Layout:
+//   [0] in_dim      i64
+//   [1] out_dim     i64
+//   [2] weights     i64 (handle: out_dim x in_dim, f64-as-bits)
+//   [3] bias        i64 (handle: out_dim, f64-as-bits)
+//   [4] group_type  i64 (0=none, 1=permutation, 2=rotation_2d, 3=rotation_3d)
+
+fn EQ_IN_DIM() -> i64     { 0 }
+fn EQ_OUT_DIM() -> i64    { 1 }
+fn EQ_WEIGHTS() -> i64    { 2 }
+fn EQ_BIAS() -> i64       { 3 }
+fn EQ_GROUP() -> i64      { 4 }
+fn EQ_FIELDS() -> i64     { 5 }
+
+fn GROUP_NONE() -> i64         { 0 }
+fn GROUP_PERMUTATION() -> i64  { 1 }
+fn GROUP_ROTATION_2D() -> i64  { 2 }
+fn GROUP_ROTATION_3D() -> i64  { 3 }
+
+/// Create a new equivariant linear layer.
+///
+/// Weights are initialized to small values (1/dim).
+/// For permutation equivariance, weights are symmetrized so that
+/// W commutes with all permutation matrices of the group.
+///
+/// Arguments:
+///   in_dim  - input dimension
+///   out_dim - output dimension
+///   group   - group type (0=none, 1=permutation, 2=rotation_2d, 3=rotation_3d)
+///
+/// Returns: handle to equivariant layer vec
+fn equiv_linear_new(in_dim: i64, out_dim: i64, group: i64) -> i64 {
+    let w: i64 = eq_mat_zeros(out_dim, in_dim);
+    let scale: f64 = 1.0 / eq_sqrt((in_dim as f64));
+
+    // Initialize weights
+    var i: i64 = 0;
+    while i < out_dim {
+        var j: i64 = 0;
+        while j < in_dim {
+            // Deterministic initialization: scale * (1 + (i*7+j*13) % 5) / 5
+            let seed: i64 = ((i * 7 + j * 13) % 5) + 1;
+            let val: f64 = scale * (seed as f64) / 5.0;
+            // Alternate signs
+            if (i + j) % 2 == 0 {
+                eq_mat_set(w, in_dim, i, j, val);
+            } else {
+                eq_mat_set(w, in_dim, i, j, 0.0 - val);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    // For permutation equivariance, symmetrize: W_sym = (W + W^T) / 2
+    // Only when in_dim == out_dim
+    if group == GROUP_PERMUTATION() {
+        if in_dim == out_dim {
+            i = 0;
+            while i < out_dim {
+                var j: i64 = i + 1;
+                while j < in_dim {
+                    let wij: f64 = eq_mat_get(w, in_dim, i, j);
+                    let wji: f64 = eq_mat_get(w, in_dim, j, i);
+                    let avg: f64 = (wij + wji) / 2.0;
+                    eq_mat_set(w, in_dim, i, j, avg);
+                    eq_mat_set(w, in_dim, j, i, avg);
+                    j = j + 1;
+                }
+                i = i + 1;
+            }
+        }
+    }
+
+    // Initialize bias to zero
+    let bias: i64 = eq_vec_zeros(out_dim);
+
+    let layer = vec_new();
+    vec_push(layer, in_dim);
+    vec_push(layer, out_dim);
+    vec_push(layer, w);
+    vec_push(layer, bias);
+    vec_push(layer, group);
+    layer
+}
+
+/// Forward pass through an equivariant linear layer.
+///
+/// Computes: output = W * input + bias
+///
+/// Arguments:
+///   layer - handle to equivariant layer
+///   input - handle to vec of f64-as-bits (in_dim)
+///
+/// Returns: handle to vec of f64-as-bits (out_dim)
+fn equiv_linear_forward(layer: i64, input: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, EQ_IN_DIM());
+    let out_dim: i64 = vec_get(layer, EQ_OUT_DIM());
+    let w: i64 = vec_get(layer, EQ_WEIGHTS());
+    let bias: i64 = vec_get(layer, EQ_BIAS());
+
+    let result = vec_new();
+    var i: i64 = 0;
+    while i < out_dim {
+        var sum: f64 = bits_to_f64(vec_get(bias, i));
+        var j: i64 = 0;
+        while j < in_dim {
+            sum = sum + eq_mat_get(w, in_dim, i, j) * bits_to_f64(vec_get(input, j));
+            j = j + 1;
+        }
+        vec_push(result, f64_to_bits(sum));
+        i = i + 1;
+    }
+    result
+}
+
+/// Check equivariance: verify that f(g·x) ≈ g·f(x).
+///
+/// Computes the L2 norm of the difference between f(g·x) and g·f(x).
+/// A small value means the layer is approximately equivariant.
+///
+/// Arguments:
+///   layer     - handle to equivariant layer
+///   input     - handle to vec of f64-as-bits (dim)
+///   transform - handle to flat vec of f64-as-bits (dim x dim, transformation matrix)
+///
+/// Returns: f64_bits equivariance error ||f(g·x) - g·f(x)||
+fn equiv_check(layer: i64, input: i64, transform: i64) -> i64 {
+    let in_dim: i64 = vec_get(layer, EQ_IN_DIM());
+    let out_dim: i64 = vec_get(layer, EQ_OUT_DIM());
+
+    // Compute g·x (transform * input)
+    let gx: i64 = eq_matvec(transform, input, in_dim, in_dim);
+
+    // Compute f(g·x)
+    let f_gx: i64 = equiv_linear_forward(layer, gx);
+
+    // Compute f(x)
+    let fx: i64 = equiv_linear_forward(layer, input);
+
+    // Compute g·f(x) (transform * fx)
+    // Use output-space transform (same dim for equivariance check)
+    let g_fx: i64 = eq_matvec(transform, fx, out_dim, out_dim);
+
+    // Error = ||f(g·x) - g·f(x)||
+    var error_sq: f64 = 0.0;
+    var i: i64 = 0;
+    while i < out_dim {
+        let diff: f64 = bits_to_f64(vec_get(f_gx, i)) - bits_to_f64(vec_get(g_fx, i));
+        error_sq = error_sq + diff * diff;
+        i = i + 1;
+    }
+
+    f64_to_bits(eq_sqrt(error_sq))
+}
+
+// =============================================================================
+// Graph Neural Network Layers
+// =============================================================================
+//
+// GNN message passing is inherently permutation equivariant:
+// reordering nodes produces the same result (reordered).
+//
+// Message passing: h_i^{l+1} = σ(W · Σ_j a_ij · h_j^l)
+//
+// GNN Layer layout:
+//   [0] node_dim    i64 (input node feature dimension)
+//   [1] edge_dim    i64 (edge feature dimension, unused in basic version)
+//   [2] output_dim  i64 (output node feature dimension)
+//   [3] weights     i64 (handle: output_dim x node_dim, f64-as-bits)
+//   [4] bias        i64 (handle: output_dim, f64-as-bits)
+
+fn GNN_NODE_DIM() -> i64   { 0 }
+fn GNN_EDGE_DIM() -> i64   { 1 }
+fn GNN_OUT_DIM() -> i64    { 2 }
+fn GNN_WEIGHTS() -> i64    { 3 }
+fn GNN_BIAS() -> i64       { 4 }
+fn GNN_FIELDS() -> i64     { 5 }
+
+/// Create a new GNN message passing layer.
+///
+/// Arguments:
+///   node_dim   - input node feature dimension
+///   edge_dim   - edge feature dimension (stored for future use)
+///   output_dim - output node feature dimension
+///
+/// Returns: handle to GNN layer vec
+fn gnn_layer_new(node_dim: i64, edge_dim: i64, output_dim: i64) -> i64 {
+    let w: i64 = eq_mat_zeros(output_dim, node_dim);
+    let scale: f64 = 1.0 / eq_sqrt((node_dim as f64));
+
+    // Initialize weights
+    var i: i64 = 0;
+    while i < output_dim {
+        var j: i64 = 0;
+        while j < node_dim {
+            let seed: i64 = ((i * 11 + j * 7) % 7) + 1;
+            let val: f64 = scale * (seed as f64) / 7.0;
+            if (i + j) % 2 == 0 {
+                eq_mat_set(w, node_dim, i, j, val);
+            } else {
+                eq_mat_set(w, node_dim, i, j, 0.0 - val);
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    let bias: i64 = eq_vec_zeros(output_dim);
+
+    let layer = vec_new();
+    vec_push(layer, node_dim);
+    vec_push(layer, edge_dim);
+    vec_push(layer, output_dim);
+    vec_push(layer, w);
+    vec_push(layer, bias);
+    layer
+}
+
+/// Aggregate messages for a node by summing neighbor features
+/// weighted by adjacency values.
+///
+/// For node i: aggregated = Σ_j a_ij * h_j
+///
+/// Arguments:
+///   node_features - handle to flat vec of f64-as-bits (n_nodes x node_dim, row-major)
+///   adjacency     - handle to flat vec of f64-as-bits (n_nodes x n_nodes, row-major)
+///   n_nodes       - number of nodes
+///   node_dim      - dimension of each node's features
+///   node_idx      - index of the node to aggregate for
+///
+/// Returns: handle to vec of f64-as-bits (node_dim)
+fn gnn_aggregate_node(node_features: i64, adjacency: i64, n_nodes: i64, node_dim: i64, node_idx: i64) -> i64 {
+    let result: i64 = eq_vec_zeros(node_dim);
+
+    var j: i64 = 0;
+    while j < n_nodes {
+        let a_ij: f64 = eq_mat_get(adjacency, n_nodes, node_idx, j);
+        if eq_abs(a_ij) > 0.0000000001 {
+            var d: i64 = 0;
+            while d < node_dim {
+                let feat: f64 = eq_mat_get(node_features, node_dim, j, d);
+                let curr: f64 = bits_to_f64(vec_get(result, d));
+                vec_set(result, d, f64_to_bits(curr + a_ij * feat));
+                d = d + 1;
+            }
+        }
+        j = j + 1;
+    }
+
+    result
+}
+
+/// GNN message passing forward pass.
+///
+/// For each node i: h_i' = ReLU(W · Σ_j a_ij · h_j + b)
+///
+/// Arguments:
+///   layer         - handle to GNN layer
+///   node_features - handle to flat vec of f64-as-bits (n_nodes x node_dim)
+///   adjacency     - handle to flat vec of f64-as-bits (n_nodes x n_nodes)
+///   n_nodes       - number of nodes
+///
+/// Returns: handle to flat vec of f64-as-bits (n_nodes x output_dim)
+fn gnn_message_pass(layer: i64, node_features: i64, adjacency: i64, n_nodes: i64) -> i64 {
+    let node_dim: i64 = vec_get(layer, GNN_NODE_DIM());
+    let output_dim: i64 = vec_get(layer, GNN_OUT_DIM());
+    let w: i64 = vec_get(layer, GNN_WEIGHTS());
+    let bias: i64 = vec_get(layer, GNN_BIAS());
+
+    let result: i64 = eq_mat_zeros(n_nodes, output_dim);
+
+    var i: i64 = 0;
+    while i < n_nodes {
+        // Step 1: Aggregate neighbor features
+        let agg: i64 = gnn_aggregate_node(node_features, adjacency, n_nodes, node_dim, i);
+
+        // Step 2: Linear transform + bias + ReLU
+        var d: i64 = 0;
+        while d < output_dim {
+            var sum: f64 = bits_to_f64(vec_get(bias, d));
+            var k: i64 = 0;
+            while k < node_dim {
+                sum = sum + eq_mat_get(w, node_dim, d, k) * bits_to_f64(vec_get(agg, k));
+                k = k + 1;
+            }
+            // ReLU activation
+            let activated: f64 = eq_relu(sum);
+            eq_mat_set(result, output_dim, i, d, activated);
+            d = d + 1;
+        }
+
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Aggregate node features across all nodes.
+///
+/// Computes either sum or mean aggregation over all nodes.
+/// This produces a graph-level representation from node-level features.
+///
+/// Arguments:
+///   messages - handle to flat vec of f64-as-bits (n_nodes x dim)
+///   n_nodes  - number of nodes
+///
+/// Returns: handle to vec of f64-as-bits (dim) — mean-aggregated
+fn gnn_aggregate(messages: i64, n_nodes: i64) -> i64 {
+    if n_nodes == 0 { return vec_new(); }
+
+    let total_len: i64 = vec_len(messages);
+    let dim: i64 = total_len / n_nodes;
+
+    let result: i64 = eq_vec_zeros(dim);
+
+    var i: i64 = 0;
+    while i < n_nodes {
+        var d: i64 = 0;
+        while d < dim {
+            let val: f64 = eq_mat_get(messages, dim, i, d);
+            let curr: f64 = bits_to_f64(vec_get(result, d));
+            vec_set(result, d, f64_to_bits(curr + val));
+            d = d + 1;
+        }
+        i = i + 1;
+    }
+
+    // Divide by n_nodes for mean
+    let n_f: f64 = (n_nodes as f64);
+    var d: i64 = 0;
+    while d < dim {
+        let val: f64 = bits_to_f64(vec_get(result, d));
+        vec_set(result, d, f64_to_bits(val / n_f));
+        d = d + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Spherical Harmonics (Basic)
+// =============================================================================
+//
+// Spherical harmonics Y_l^m(θ, φ) are the angular portion of solutions to
+// Laplace's equation on the sphere. They are the natural basis for SO(3)-
+// equivariant networks.
+//
+// We implement the real spherical harmonics for low orders (l=0, l=1).
+
+/// Y_0^0 = 1 / sqrt(4π) ≈ 0.28209479
+///
+/// Returns: f64_bits constant value
+fn spherical_harmonic_y00() -> i64 {
+    let pi: f64 = 3.14159265358979;
+    let val: f64 = 1.0 / eq_sqrt(4.0 * pi);
+    f64_to_bits(val)
+}
+
+/// Y_1^0(θ) = sqrt(3/4π) · cos(θ)
+///
+/// Arguments:
+///   theta - f64_bits polar angle in radians
+///
+/// Returns: f64_bits spherical harmonic value
+fn spherical_harmonic_y10(theta: i64) -> i64 {
+    let pi: f64 = 3.14159265358979;
+    let coeff: f64 = eq_sqrt(3.0 / (4.0 * pi));
+    let th: f64 = bits_to_f64(theta);
+    f64_to_bits(coeff * eq_cos(th))
+}
+
+/// Y_1^{-1}(θ, φ) = sqrt(3/4π) · sin(θ) · sin(φ)
+///
+/// Arguments:
+///   theta - f64_bits polar angle
+///   phi   - f64_bits azimuthal angle
+///
+/// Returns: f64_bits spherical harmonic value
+fn spherical_harmonic_y1m1(theta: i64, phi: i64) -> i64 {
+    let pi: f64 = 3.14159265358979;
+    let coeff: f64 = eq_sqrt(3.0 / (4.0 * pi));
+    let th: f64 = bits_to_f64(theta);
+    let ph: f64 = bits_to_f64(phi);
+    f64_to_bits(coeff * eq_sin(th) * eq_sin(ph))
+}
+
+/// Y_1^{1}(θ, φ) = sqrt(3/4π) · sin(θ) · cos(φ)
+///
+/// Arguments:
+///   theta - f64_bits polar angle
+///   phi   - f64_bits azimuthal angle
+///
+/// Returns: f64_bits spherical harmonic value
+fn spherical_harmonic_y1p1(theta: i64, phi: i64) -> i64 {
+    let pi: f64 = 3.14159265358979;
+    let coeff: f64 = eq_sqrt(3.0 / (4.0 * pi));
+    let th: f64 = bits_to_f64(theta);
+    let ph: f64 = bits_to_f64(phi);
+    f64_to_bits(coeff * eq_sin(th) * eq_cos(ph))
+}
+
+/// Evaluate all l=0 and l=1 spherical harmonics at a point.
+///
+/// Arguments:
+///   theta - f64_bits polar angle
+///   phi   - f64_bits azimuthal angle
+///
+/// Returns: handle to vec of 4 f64-as-bits [Y00, Y1m1, Y10, Y1p1]
+fn spherical_harmonics_l01(theta: i64, phi: i64) -> i64 {
+    let result = vec_new();
+    vec_push(result, spherical_harmonic_y00());
+    vec_push(result, spherical_harmonic_y1m1(theta, phi));
+    vec_push(result, spherical_harmonic_y10(theta));
+    vec_push(result, spherical_harmonic_y1p1(theta, phi));
+    result
+}
+
+// =============================================================================
+// Invariant Pooling
+// =============================================================================
+//
+// Invariant pooling operations produce outputs that do not change under
+// the group action. Common examples:
+//   - Mean pooling: invariant under permutation and translation
+//   - Max pooling: invariant under permutation
+//   - Norm-based: invariant under rotation (SO(n))
+
+/// Mean pooling: compute the mean of each feature across n samples.
+///
+/// Given features (n x dim), produce (dim) mean vector.
+///
+/// Arguments:
+///   features - handle to flat vec of f64-as-bits (n x dim)
+///   n        - number of samples
+///   dim      - feature dimension
+///
+/// Returns: handle to vec of f64-as-bits (dim) — mean per feature
+fn invariant_mean(features: i64, n: i64, dim: i64) -> i64 {
+    let result: i64 = eq_vec_zeros(dim);
+
+    var i: i64 = 0;
+    while i < n {
+        var d: i64 = 0;
+        while d < dim {
+            let val: f64 = eq_mat_get(features, dim, i, d);
+            let curr: f64 = bits_to_f64(vec_get(result, d));
+            vec_set(result, d, f64_to_bits(curr + val));
+            d = d + 1;
+        }
+        i = i + 1;
+    }
+
+    // Divide by n
+    if n > 0 {
+        let n_f: f64 = (n as f64);
+        var d: i64 = 0;
+        while d < dim {
+            let val: f64 = bits_to_f64(vec_get(result, d));
+            vec_set(result, d, f64_to_bits(val / n_f));
+            d = d + 1;
+        }
+    }
+
+    result
+}
+
+/// Max pooling: compute the max of each feature across n samples.
+///
+/// Given features (n x dim), produce (dim) max vector.
+///
+/// Arguments:
+///   features - handle to flat vec of f64-as-bits (n x dim)
+///   n        - number of samples
+///   dim      - feature dimension
+///
+/// Returns: handle to vec of f64-as-bits (dim) — max per feature
+fn invariant_max(features: i64, n: i64, dim: i64) -> i64 {
+    if n == 0 { return eq_vec_zeros(dim); }
+
+    // Initialize with first sample
+    let result = vec_new();
+    var d: i64 = 0;
+    while d < dim {
+        vec_push(result, vec_get(features, d));
+        d = d + 1;
+    }
+
+    // Scan remaining samples
+    var i: i64 = 1;
+    while i < n {
+        d = 0;
+        while d < dim {
+            let val: f64 = eq_mat_get(features, dim, i, d);
+            let curr: f64 = bits_to_f64(vec_get(result, d));
+            if val > curr {
+                vec_set(result, d, f64_to_bits(val));
+            }
+            d = d + 1;
+        }
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Norm-based invariant: compute the L2 norm of each sample's features.
+///
+/// Given features (n x dim), produce (n) norms.
+/// The norm is rotationally invariant: ||Rx|| = ||x|| for rotation R.
+///
+/// Arguments:
+///   features - handle to flat vec of f64-as-bits (n x dim)
+///   n        - number of samples
+///   dim      - feature dimension
+///
+/// Returns: handle to vec of f64-as-bits (n) — norm per sample
+fn invariant_norm(features: i64, n: i64, dim: i64) -> i64 {
+    let result = vec_new();
+
+    var i: i64 = 0;
+    while i < n {
+        var sum_sq: f64 = 0.0;
+        var d: i64 = 0;
+        while d < dim {
+            let val: f64 = eq_mat_get(features, dim, i, d);
+            sum_sq = sum_sq + val * val;
+            d = d + 1;
+        }
+        vec_push(result, f64_to_bits(eq_sqrt(sum_sq)));
+        i = i + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Additional Equivariant Operations
+// =============================================================================
+
+/// Apply a transformation matrix to a batch of vectors.
+///
+/// Arguments:
+///   transform - handle to flat vec of f64-as-bits (dim x dim)
+///   features  - handle to flat vec of f64-as-bits (n x dim)
+///   n         - number of vectors
+///   dim       - dimension
+///
+/// Returns: handle to flat vec of f64-as-bits (n x dim)
+fn apply_transform_batch(transform: i64, features: i64, n: i64, dim: i64) -> i64 {
+    let result: i64 = eq_mat_zeros(n, dim);
+
+    var i: i64 = 0;
+    while i < n {
+        var d: i64 = 0;
+        while d < dim {
+            var sum: f64 = 0.0;
+            var k: i64 = 0;
+            while k < dim {
+                sum = sum + eq_mat_get(transform, dim, d, k) * eq_mat_get(features, dim, i, k);
+                k = k + 1;
+            }
+            eq_mat_set(result, dim, i, d, sum);
+            d = d + 1;
+        }
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Verify that a matrix is orthogonal: M^T M ≈ I.
+///
+/// Returns the Frobenius norm of (M^T M - I).
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (n x n)
+///   n      - dimension
+///
+/// Returns: f64_bits orthogonality error
+fn orthogonality_error(matrix: i64, n: i64) -> i64 {
+    // Compute M^T M
+    let mt: i64 = eq_mat_transpose(matrix, n, n);
+    let mtm: i64 = eq_mat_mul(mt, matrix, n, n, n);
+
+    // Compute ||M^T M - I||_F
+    var error_sq: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < n {
+            let val: f64 = eq_mat_get(mtm, n, i, j);
+            if i == j {
+                let diff: f64 = val - 1.0;
+                error_sq = error_sq + diff * diff;
+            } else {
+                error_sq = error_sq + val * val;
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    f64_to_bits(eq_sqrt(error_sq))
+}
+
+/// Compute the determinant of a 2x2 matrix.
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (2 x 2)
+///
+/// Returns: f64_bits determinant
+fn det_2x2(matrix: i64) -> i64 {
+    let a: f64 = bits_to_f64(vec_get(matrix, 0));
+    let b: f64 = bits_to_f64(vec_get(matrix, 1));
+    let c: f64 = bits_to_f64(vec_get(matrix, 2));
+    let d: f64 = bits_to_f64(vec_get(matrix, 3));
+    f64_to_bits(a * d - b * c)
+}
+
+/// Compute the determinant of a 3x3 matrix.
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (3 x 3)
+///
+/// Returns: f64_bits determinant
+fn det_3x3(matrix: i64) -> i64 {
+    let a: f64 = eq_mat_get(matrix, 3, 0, 0);
+    let b: f64 = eq_mat_get(matrix, 3, 0, 1);
+    let c: f64 = eq_mat_get(matrix, 3, 0, 2);
+    let d: f64 = eq_mat_get(matrix, 3, 1, 0);
+    let e: f64 = eq_mat_get(matrix, 3, 1, 1);
+    let f: f64 = eq_mat_get(matrix, 3, 1, 2);
+    let g: f64 = eq_mat_get(matrix, 3, 2, 0);
+    let h: f64 = eq_mat_get(matrix, 3, 2, 1);
+    let k: f64 = eq_mat_get(matrix, 3, 2, 2);
+
+    let det: f64 = a * (e * k - f * h) - b * (d * k - f * g) + c * (d * h - e * g);
+    f64_to_bits(det)
+}
+
+/// Compute the inner product of two vectors, invariant under rotation.
+///
+/// <x, y> = Σ x_i * y_i
+///
+/// Arguments:
+///   x - handle to vec of f64-as-bits (dim)
+///   y - handle to vec of f64-as-bits (dim)
+///
+/// Returns: f64_bits inner product
+fn invariant_inner_product(x: i64, y: i64) -> i64 {
+    let n: i64 = vec_len(x);
+    var sum: f64 = 0.0;
+    var i: i64 = 0;
+    while i < n {
+        sum = sum + bits_to_f64(vec_get(x, i)) * bits_to_f64(vec_get(y, i));
+        i = i + 1;
+    }
+    f64_to_bits(sum)
+}
+
+/// Compute the cross product of two 3D vectors.
+/// The cross product is equivariant under SO(3): R(a × b) = (Ra) × (Rb).
+///
+/// Arguments:
+///   a - handle to vec of f64-as-bits (3)
+///   b - handle to vec of f64-as-bits (3)
+///
+/// Returns: handle to vec of f64-as-bits (3)
+fn cross_product(a: i64, b: i64) -> i64 {
+    let a0: f64 = bits_to_f64(vec_get(a, 0));
+    let a1: f64 = bits_to_f64(vec_get(a, 1));
+    let a2: f64 = bits_to_f64(vec_get(a, 2));
+    let b0: f64 = bits_to_f64(vec_get(b, 0));
+    let b1: f64 = bits_to_f64(vec_get(b, 1));
+    let b2: f64 = bits_to_f64(vec_get(b, 2));
+
+    let result = vec_new();
+    vec_push(result, f64_to_bits(a1 * b2 - a2 * b1));
+    vec_push(result, f64_to_bits(a2 * b0 - a0 * b2));
+    vec_push(result, f64_to_bits(a0 * b1 - a1 * b0));
+    result
+}
+
+/// Tensor product of two vectors: a ⊗ b = outer product.
+///
+/// Arguments:
+///   a - handle to vec of f64-as-bits (m)
+///   b - handle to vec of f64-as-bits (n)
+///
+/// Returns: handle to flat vec of f64-as-bits (m x n)
+fn tensor_product(a: i64, b: i64) -> i64 {
+    let m: i64 = vec_len(a);
+    let n: i64 = vec_len(b);
+    let result: i64 = eq_mat_zeros(m, n);
+
+    var i: i64 = 0;
+    while i < m {
+        let ai: f64 = bits_to_f64(vec_get(a, i));
+        var j: i64 = 0;
+        while j < n {
+            let bj: f64 = bits_to_f64(vec_get(b, j));
+            eq_mat_set(result, n, i, j, ai * bj);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+
+    result
+}
+
+/// Symmetrize a matrix: S = (M + M^T) / 2
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (n x n)
+///   n      - dimension
+///
+/// Returns: handle to flat vec of f64-as-bits (n x n)
+fn symmetrize(matrix: i64, n: i64) -> i64 {
+    let result: i64 = eq_mat_zeros(n, n);
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < n {
+            let mij: f64 = eq_mat_get(matrix, n, i, j);
+            let mji: f64 = eq_mat_get(matrix, n, j, i);
+            eq_mat_set(result, n, i, j, (mij + mji) / 2.0);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    result
+}
+
+/// Anti-symmetrize a matrix: A = (M - M^T) / 2
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (n x n)
+///   n      - dimension
+///
+/// Returns: handle to flat vec of f64-as-bits (n x n)
+fn antisymmetrize(matrix: i64, n: i64) -> i64 {
+    let result: i64 = eq_mat_zeros(n, n);
+    var i: i64 = 0;
+    while i < n {
+        var j: i64 = 0;
+        while j < n {
+            let mij: f64 = eq_mat_get(matrix, n, i, j);
+            let mji: f64 = eq_mat_get(matrix, n, j, i);
+            eq_mat_set(result, n, i, j, (mij - mji) / 2.0);
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Multi-layer GNN
+// =============================================================================
+
+/// Stack of GNN layers layout:
+///   vec of layer handles
+///
+/// Create a multi-layer GNN (stack of message passing layers).
+///
+/// Arguments:
+///   dims     - handle to vec of dimensions [d0, d1, ..., d_L]
+///              d0 is input, d_L is output, intermediate are hidden
+///   edge_dim - edge feature dimension
+///
+/// Returns: handle to vec of GNN layer handles
+fn gnn_stack_new(dims: i64, edge_dim: i64) -> i64 {
+    let n_layers: i64 = vec_len(dims) - 1;
+    let stack = vec_new();
+
+    var i: i64 = 0;
+    while i < n_layers {
+        let in_d: i64 = vec_get(dims, i);
+        let out_d: i64 = vec_get(dims, i + 1);
+        let layer: i64 = gnn_layer_new(in_d, edge_dim, out_d);
+        vec_push(stack, layer);
+        i = i + 1;
+    }
+
+    stack
+}
+
+/// Forward pass through a multi-layer GNN stack.
+///
+/// Arguments:
+///   stack         - handle to vec of GNN layer handles
+///   node_features - handle to flat vec of f64-as-bits (n_nodes x input_dim)
+///   adjacency     - handle to flat vec of f64-as-bits (n_nodes x n_nodes)
+///   n_nodes       - number of nodes
+///
+/// Returns: handle to flat vec of f64-as-bits (n_nodes x output_dim)
+fn gnn_stack_forward(stack: i64, node_features: i64, adjacency: i64, n_nodes: i64) -> i64 {
+    let n_layers: i64 = vec_len(stack);
+    var current: i64 = node_features;
+
+    var i: i64 = 0;
+    while i < n_layers {
+        let layer: i64 = vec_get(stack, i);
+        current = gnn_message_pass(layer, current, adjacency, n_nodes);
+        i = i + 1;
+    }
+
+    current
+}
+
+/// Compute graph-level representation by aggregating node features.
+///
+/// Arguments:
+///   node_features - handle to flat vec of f64-as-bits (n_nodes x dim)
+///   n_nodes       - number of nodes
+///   dim           - feature dimension
+///
+/// Returns: handle to vec of f64-as-bits (dim) — graph embedding
+fn graph_readout(node_features: i64, n_nodes: i64, dim: i64) -> i64 {
+    invariant_mean(node_features, n_nodes, dim)
+}
+
+// =============================================================================
+// Equivariant utilities
+// =============================================================================
+
+/// Check if a matrix is a valid rotation matrix (det ≈ 1 and orthogonal).
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (n x n)
+///   n      - dimension (2 or 3)
+///
+/// Returns: 1 if valid rotation, 0 otherwise
+fn is_rotation_matrix(matrix: i64, n: i64) -> i64 {
+    // Check orthogonality
+    let orth_err: f64 = bits_to_f64(orthogonality_error(matrix, n));
+    if orth_err > 0.01 { return 0; }
+
+    // Check determinant ≈ 1
+    var det: f64 = 0.0;
+    if n == 2 {
+        det = bits_to_f64(det_2x2(matrix));
+    }
+    if n == 3 {
+        det = bits_to_f64(det_3x3(matrix));
+    }
+
+    if eq_abs(det - 1.0) > 0.01 { return 0; }
+    1
+}
+
+/// Check if a matrix is a valid permutation matrix.
+/// Each row and column should have exactly one entry equal to 1.
+///
+/// Arguments:
+///   matrix - handle to flat vec of f64-as-bits (n x n)
+///   n      - dimension
+///
+/// Returns: 1 if valid permutation matrix, 0 otherwise
+fn is_permutation_matrix(matrix: i64, n: i64) -> i64 {
+    // Check each row: exactly one 1.0, rest 0.0
+    var i: i64 = 0;
+    while i < n {
+        var row_sum: f64 = 0.0;
+        var ones_count: i64 = 0;
+        var j: i64 = 0;
+        while j < n {
+            let val: f64 = eq_mat_get(matrix, n, i, j);
+            row_sum = row_sum + val;
+            if eq_abs(val - 1.0) < 0.001 {
+                ones_count = ones_count + 1;
+            }
+            if eq_abs(val) > 0.001 {
+                if eq_abs(val - 1.0) > 0.001 {
+                    return 0;  // Not 0 or 1
+                }
+            }
+            j = j + 1;
+        }
+        if ones_count != 1 { return 0; }
+        i = i + 1;
+    }
+
+    // Check each column: exactly one 1.0
+    var j: i64 = 0;
+    while j < n {
+        var ones_count: i64 = 0;
+        i = 0;
+        while i < n {
+            let val: f64 = eq_mat_get(matrix, n, i, j);
+            if eq_abs(val - 1.0) < 0.001 {
+                ones_count = ones_count + 1;
+            }
+            i = i + 1;
+        }
+        if ones_count != 1 { return 0; }
+        j = j + 1;
+    }
+
+    1
+}

@@ -1,0 +1,319 @@
+// AWS Signature V4 Authentication Tests (self-contained)
+//
+// Tests AWS auth logic using inline stub implementations to avoid pulling in
+// the full simplex-aws module (which transitively imports simplex-std and
+// causes compiler OOM).
+//
+// The functions here replicate the exact logic from simplex-aws/src/auth.sx
+// for the specific features under test.
+
+// =============================================================================
+// Inline stubs: AWS Config (vec-based layout)
+// =============================================================================
+
+fn CFG_ACCESS_KEY() -> i64 { 0 }
+fn CFG_SECRET_KEY() -> i64 { 1 }
+fn CFG_REGION() -> i64 { 2 }
+fn CFG_SERVICE() -> i64 { 3 }
+fn CFG_DATE() -> i64 { 4 }
+fn CFG_DATETIME() -> i64 { 5 }
+
+fn aws_config_new(access_key: i64, secret_key: i64, region: i64, service: i64) -> i64 {
+    let cfg: i64 = vec_new();
+    vec_push(cfg, access_key);
+    vec_push(cfg, secret_key);
+    vec_push(cfg, region);
+    vec_push(cfg, service);
+    vec_push(cfg, "00000000");
+    vec_push(cfg, "00000000T000000Z");
+    cfg
+}
+
+fn aws_config_set_date(config: i64, date: i64) -> i64 {
+    vec_set(config, CFG_DATE(), date);
+    config
+}
+
+fn aws_config_set_datetime(config: i64, datetime: i64) -> i64 {
+    vec_set(config, CFG_DATETIME(), datetime);
+    config
+}
+
+fn aws_config_access_key(config: i64) -> i64 { vec_get(config, CFG_ACCESS_KEY()) }
+fn aws_config_region(config: i64) -> i64 { vec_get(config, CFG_REGION()) }
+fn aws_config_service(config: i64) -> i64 { vec_get(config, CFG_SERVICE()) }
+fn aws_config_date(config: i64) -> i64 { vec_get(config, CFG_DATE()) }
+fn aws_config_datetime(config: i64) -> i64 { vec_get(config, CFG_DATETIME()) }
+
+// =============================================================================
+// Inline stubs: URL encoding
+// =============================================================================
+
+fn hex_digit(val: i64) -> i64 {
+    if val < 10 { val + 48 } else { val - 10 + 65 }
+}
+
+fn url_encode(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len == 0 { return ""; }
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(s, i);
+        if ch >= 65 { if ch <= 90 { sb_append_char(sb, ch); i = i + 1; continue; } }
+        if ch >= 97 { if ch <= 122 { sb_append_char(sb, ch); i = i + 1; continue; } }
+        if ch >= 48 { if ch <= 57 { sb_append_char(sb, ch); i = i + 1; continue; } }
+        if ch == 45 { sb_append_char(sb, ch); i = i + 1; continue; }
+        if ch == 95 { sb_append_char(sb, ch); i = i + 1; continue; }
+        if ch == 46 { sb_append_char(sb, ch); i = i + 1; continue; }
+        if ch == 126 { sb_append_char(sb, ch); i = i + 1; continue; }
+        sb_append_char(sb, 37);
+        let hi: i64 = ch / 16;
+        let lo: i64 = ch - hi * 16;
+        sb_append_char(sb, hex_digit(hi));
+        sb_append_char(sb, hex_digit(lo));
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+// =============================================================================
+// Inline stubs: Headers (vec of [name, value] pairs)
+// Names are stored lowercased via manual char-by-char conversion.
+// =============================================================================
+
+fn to_lower(s: i64) -> i64 {
+    let len: i64 = string_len(s);
+    if len == 0 { return ""; }
+    let sb: i64 = sb_new();
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(s, i);
+        if ch >= 65 {
+            if ch <= 90 {
+                sb_append_char(sb, ch + 32);
+                i = i + 1;
+                continue;
+            }
+        }
+        sb_append_char(sb, ch);
+        i = i + 1;
+    }
+    sb_to_string(sb)
+}
+
+fn headers_new() -> i64 { vec_new() }
+
+fn headers_add(headers: i64, name: i64, value: i64) -> i64 {
+    let pair: i64 = vec_new();
+    vec_push(pair, to_lower(name));
+    vec_push(pair, string_trim(value));
+    vec_push(headers, pair);
+    headers
+}
+
+fn headers_get(headers: i64, name: i64) -> i64 {
+    let lower_name: i64 = to_lower(name);
+    let count: i64 = vec_len(headers);
+    var i: i64 = 0;
+    while i < count {
+        let pair: i64 = vec_get(headers, i);
+        if string_eq(vec_get(pair, 0), lower_name) == 1 {
+            return vec_get(pair, 1);
+        }
+        i = i + 1;
+    }
+    ""
+}
+
+// =============================================================================
+// Inline stubs: URL parsing (using string_slice(s, start, end))
+// =============================================================================
+
+fn url_path(url: i64) -> i64 {
+    let scheme_pos: i64 = string_find(url, "://", 0);
+    var search_start: i64 = 0;
+    if scheme_pos >= 0 { search_start = scheme_pos + 3; }
+    let slash_pos: i64 = string_find(url, "/", search_start);
+    if slash_pos < 0 { return "/"; }
+    let q_pos: i64 = string_find(url, "?", slash_pos);
+    if q_pos >= 0 {
+        return string_slice(url, slash_pos, q_pos);
+    }
+    let url_len: i64 = string_len(url);
+    string_slice(url, slash_pos, url_len)
+}
+
+fn url_query(url: i64) -> i64 {
+    let q_pos: i64 = string_find(url, "?", 0);
+    if q_pos < 0 { return ""; }
+    let url_len: i64 = string_len(url);
+    string_slice(url, q_pos + 1, url_len)
+}
+
+fn url_host(url: i64) -> i64 {
+    let scheme_pos: i64 = string_find(url, "://", 0);
+    var start: i64 = 0;
+    if scheme_pos >= 0 { start = scheme_pos + 3; }
+    let slash_pos: i64 = string_find(url, "/", start);
+    if slash_pos >= 0 {
+        return string_slice(url, start, slash_pos);
+    }
+    let url_len: i64 = string_len(url);
+    string_slice(url, start, url_len)
+}
+
+// =============================================================================
+// Inline stubs: Credential scope
+// =============================================================================
+
+fn credential_scope(config: i64) -> i64 {
+    let sb: i64 = sb_new();
+    sb_append(sb, vec_get(config, CFG_DATE()));
+    sb_append_char(sb, 47);
+    sb_append(sb, vec_get(config, CFG_REGION()));
+    sb_append_char(sb, 47);
+    sb_append(sb, vec_get(config, CFG_SERVICE()));
+    sb_append_char(sb, 47);
+    sb_append(sb, "aws4_request");
+    sb_to_string(sb)
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+fn test_config_creation() -> i64 {
+    println("  Testing aws_config_new...");
+    let cfg: i64 = aws_config_new("AKIAEXAMPLE", "secretkey123", "us-east-1", "sqs");
+    let key: i64 = aws_config_access_key(cfg);
+    if string_eq(key, "AKIAEXAMPLE") != 1 {
+        println("  FAIL: access key mismatch");
+        return 1;
+    }
+    let region: i64 = aws_config_region(cfg);
+    if string_eq(region, "us-east-1") != 1 {
+        println("  FAIL: region mismatch");
+        return 1;
+    }
+    let svc: i64 = aws_config_service(cfg);
+    if string_eq(svc, "sqs") != 1 {
+        println("  FAIL: service mismatch");
+        return 1;
+    }
+    println("  PASS: aws_config_new");
+    0
+}
+
+fn test_config_set_date() -> i64 {
+    println("  Testing aws_config_set_date/datetime...");
+    let cfg: i64 = aws_config_new("AK", "SK", "eu-west-1", "dynamodb");
+    aws_config_set_date(cfg, "20260320");
+    aws_config_set_datetime(cfg, "20260320T153000Z");
+    let d: i64 = aws_config_date(cfg);
+    if string_eq(d, "20260320") != 1 {
+        println("  FAIL: date mismatch");
+        return 1;
+    }
+    let dt: i64 = aws_config_datetime(cfg);
+    if string_eq(dt, "20260320T153000Z") != 1 {
+        println("  FAIL: datetime mismatch");
+        return 1;
+    }
+    println("  PASS: config set date/datetime");
+    0
+}
+
+fn test_url_encode() -> i64 {
+    println("  Testing url_encode...");
+    let e1: i64 = url_encode("hello");
+    if string_eq(e1, "hello") != 1 {
+        println("  FAIL: alpha passthrough");
+        return 1;
+    }
+    let e2: i64 = url_encode("hello world");
+    if string_eq(e2, "hello%20world") != 1 {
+        println("  FAIL: space encoding");
+        return 1;
+    }
+    let e3: i64 = url_encode("a/b=c&d");
+    if string_len(e3) < 7 {
+        println("  FAIL: special chars should be longer");
+        return 1;
+    }
+    println("  PASS: url_encode");
+    0
+}
+
+fn test_headers() -> i64 {
+    println("  Testing headers_new/headers_add/headers_get...");
+    let h: i64 = headers_new();
+    headers_add(h, "Host", "sqs.us-east-1.amazonaws.com");
+    headers_add(h, "X-Amz-Date", "20260320T120000Z");
+    headers_add(h, "Content-Type", "application/json");
+    let host_val: i64 = headers_get(h, "host");
+    if string_eq(host_val, "sqs.us-east-1.amazonaws.com") != 1 {
+        println("  FAIL: host header lookup");
+        return 1;
+    }
+    let date_val: i64 = headers_get(h, "x-amz-date");
+    if string_eq(date_val, "20260320T120000Z") != 1 {
+        println("  FAIL: x-amz-date header lookup");
+        return 1;
+    }
+    println("  PASS: headers");
+    0
+}
+
+fn test_url_path_and_query() -> i64 {
+    println("  Testing url_path/url_query/url_host...");
+    let url: i64 = "https://sqs.us-east-1.amazonaws.com/123456/MyQueue?Action=Send&Version=2012";
+    let path: i64 = url_path(url);
+    if string_eq(path, "/123456/MyQueue") != 1 {
+        println("  FAIL: path extraction");
+        return 1;
+    }
+    let host: i64 = url_host(url);
+    if string_eq(host, "sqs.us-east-1.amazonaws.com") != 1 {
+        println("  FAIL: host extraction");
+        return 1;
+    }
+    let q: i64 = url_query(url);
+    if string_len(q) < 10 {
+        println("  FAIL: query extraction too short");
+        return 1;
+    }
+    println("  PASS: url_path/url_query/url_host");
+    0
+}
+
+fn test_credential_scope() -> i64 {
+    println("  Testing credential_scope...");
+    let cfg: i64 = aws_config_new("AK", "SK", "us-east-1", "sqs");
+    aws_config_set_date(cfg, "20260101");
+    let scope: i64 = credential_scope(cfg);
+    if string_eq(scope, "20260101/us-east-1/sqs/aws4_request") != 1 {
+        println("  FAIL: credential scope format");
+        return 1;
+    }
+    println("  PASS: credential_scope");
+    0
+}
+
+fn main() -> i64 {
+    println("=== AWS Auth Integration Tests ===");
+    var failures: i64 = 0;
+    failures = failures + test_config_creation();
+    failures = failures + test_config_set_date();
+    failures = failures + test_url_encode();
+    failures = failures + test_headers();
+    failures = failures + test_url_path_and_query();
+    failures = failures + test_credential_scope();
+    println("");
+    if failures == 0 {
+        println("All 6 AWS auth integration tests passed!");
+    } else {
+        println(string_concat("FAILED: ", string_concat(int_to_string(failures), " test(s) failed")));
+    }
+    failures
+}

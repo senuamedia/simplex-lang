@@ -1,0 +1,290 @@
+// simplex-kafka - Apache Kafka Client Library
+//
+// Pure Simplex implementation of the Kafka binary wire protocol.
+// Supports producer and consumer operations over TCP connections.
+//
+// # Modules
+//
+// - `protocol`: Wire protocol encoding/decoding (request/response framing)
+// - `producer`: Kafka producer with record batching
+// - `consumer`: Kafka consumer with group coordination
+//
+// # Wire Protocol
+//
+// Kafka uses a binary protocol over TCP with the following framing:
+//   Request:  [size:4][api_key:2][api_version:2][correlation_id:4][client_id][payload]
+//   Response: [size:4][correlation_id:4][payload]
+//
+// # Usage
+//
+// ```simplex
+// use simplex_kafka::{kafka_producer_new, kafka_produce};
+// use simplex_kafka::{kafka_consumer_new, kafka_poll};
+//
+// // Producer
+// let producer = kafka_producer_new("localhost:9092", "my-client");
+// kafka_produce(producer, "my-topic", "key", "value");
+//
+// // Consumer
+// let consumer = kafka_consumer_new("localhost:9092", "my-group", "my-client");
+// let records = kafka_poll(consumer, 1000);
+// ```
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Public API - Module Exports
+// =============================================================================
+
+pub mod protocol;
+pub mod producer;
+pub mod consumer;
+
+// =============================================================================
+// Re-exports for convenience
+// =============================================================================
+
+pub use protocol::{kafka_encode_i32, kafka_encode_i16, kafka_encode_string};
+pub use protocol::{kafka_decode_i32, kafka_decode_i16, kafka_decode_string};
+pub use protocol::{kafka_encode_varint, kafka_decode_varint};
+pub use protocol::{kafka_request_header, kafka_response_parse};
+pub use producer::{kafka_producer_new, kafka_produce, kafka_produce_batch, kafka_producer_flush};
+pub use consumer::{kafka_consumer_new, kafka_poll, kafka_commit, kafka_subscribe};
+
+// =============================================================================
+// Kafka API Keys
+// =============================================================================
+
+/// Produce API (key 0)
+fn API_PRODUCE() -> i64 { 0 }
+
+/// Fetch API (key 1)
+fn API_FETCH() -> i64 { 1 }
+
+/// ListOffsets API (key 2)
+fn API_LIST_OFFSETS() -> i64 { 2 }
+
+/// Metadata API (key 3)
+fn API_METADATA() -> i64 { 3 }
+
+/// OffsetCommit API (key 8)
+fn API_OFFSET_COMMIT() -> i64 { 8 }
+
+/// OffsetFetch API (key 9)
+fn API_OFFSET_FETCH() -> i64 { 9 }
+
+/// FindCoordinator API (key 10)
+fn API_FIND_COORDINATOR() -> i64 { 10 }
+
+/// JoinGroup API (key 11)
+fn API_JOIN_GROUP() -> i64 { 11 }
+
+/// Heartbeat API (key 12)
+fn API_HEARTBEAT() -> i64 { 12 }
+
+/// LeaveGroup API (key 13)
+fn API_LEAVE_GROUP() -> i64 { 13 }
+
+/// SyncGroup API (key 14)
+fn API_SYNC_GROUP() -> i64 { 14 }
+
+/// ApiVersions API (key 18)
+fn API_VERSIONS() -> i64 { 18 }
+
+// =============================================================================
+// Kafka Record Layout
+// =============================================================================
+//
+// record = [topic, partition, offset, key, value, timestamp, headers_vec]
+//   index 0: topic (string handle)
+//   index 1: partition (i64)
+//   index 2: offset (i64)
+//   index 3: key (string handle, or 0 for null)
+//   index 4: value (string handle)
+//   index 5: timestamp (i64, milliseconds)
+//   index 6: headers_vec (vec of [name, value] pairs)
+
+fn REC_TOPIC() -> i64 { 0 }
+fn REC_PARTITION() -> i64 { 1 }
+fn REC_OFFSET() -> i64 { 2 }
+fn REC_KEY() -> i64 { 3 }
+fn REC_VALUE() -> i64 { 4 }
+fn REC_TIMESTAMP() -> i64 { 5 }
+fn REC_HEADERS() -> i64 { 6 }
+
+// =============================================================================
+// Record Constructors and Accessors
+// =============================================================================
+
+/// Create a new Kafka record
+pub fn kafka_record_new(topic: i64, partition: i64, offset: i64, key: i64, value: i64, timestamp: i64) -> i64 {
+    let rec: i64 = vec_new();
+    vec_push(rec, topic);
+    vec_push(rec, partition);
+    vec_push(rec, offset);
+    vec_push(rec, key);
+    vec_push(rec, value);
+    vec_push(rec, timestamp);
+    vec_push(rec, vec_new());  // empty headers
+    rec
+}
+
+/// Get topic from a record
+pub fn kafka_record_topic(rec: i64) -> i64 {
+    vec_get(rec, REC_TOPIC())
+}
+
+/// Get partition from a record
+pub fn kafka_record_partition(rec: i64) -> i64 {
+    vec_get(rec, REC_PARTITION())
+}
+
+/// Get offset from a record
+pub fn kafka_record_offset(rec: i64) -> i64 {
+    vec_get(rec, REC_OFFSET())
+}
+
+/// Get key from a record (0 for null key)
+pub fn kafka_record_key(rec: i64) -> i64 {
+    vec_get(rec, REC_KEY())
+}
+
+/// Get value from a record
+pub fn kafka_record_value(rec: i64) -> i64 {
+    vec_get(rec, REC_VALUE())
+}
+
+/// Get timestamp from a record
+pub fn kafka_record_timestamp(rec: i64) -> i64 {
+    vec_get(rec, REC_TIMESTAMP())
+}
+
+/// Get headers from a record
+pub fn kafka_record_headers(rec: i64) -> i64 {
+    vec_get(rec, REC_HEADERS())
+}
+
+/// Add a header to a record
+pub fn kafka_record_add_header(rec: i64, name: i64, value: i64) -> i64 {
+    let headers: i64 = vec_get(rec, REC_HEADERS());
+    let pair: i64 = vec_new();
+    vec_push(pair, name);
+    vec_push(pair, value);
+    vec_push(headers, pair);
+    rec
+}
+
+// =============================================================================
+// Result Layout
+// =============================================================================
+
+fn RES_STATUS() -> i64 { 0 }
+fn RES_DATA() -> i64 { 1 }
+fn RES_ERROR_CODE() -> i64 { 2 }
+fn RES_ERROR_MSG() -> i64 { 3 }
+
+/// Check if result indicates success
+pub fn kafka_result_ok(result: i64) -> i64 {
+    vec_get(result, RES_STATUS())
+}
+
+/// Get result data
+pub fn kafka_result_data(result: i64) -> i64 {
+    vec_get(result, RES_DATA())
+}
+
+/// Get error code
+pub fn kafka_result_error_code(result: i64) -> i64 {
+    vec_get(result, RES_ERROR_CODE())
+}
+
+/// Get error message
+pub fn kafka_result_error_msg(result: i64) -> i64 {
+    vec_get(result, RES_ERROR_MSG())
+}
+
+fn result_ok(data: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 1);
+    vec_push(r, data);
+    vec_push(r, 0);
+    vec_push(r, "");
+    r
+}
+
+fn result_err(code: i64, msg: i64) -> i64 {
+    let r: i64 = vec_new();
+    vec_push(r, 0);
+    vec_push(r, 0);
+    vec_push(r, code);
+    vec_push(r, msg);
+    r
+}
+
+// =============================================================================
+// Kafka Error Codes
+// =============================================================================
+
+/// No error
+fn ERR_NONE() -> i64 { 0 }
+
+/// Unknown error
+fn ERR_UNKNOWN() -> i64 { -1 }
+
+/// Offset out of range
+fn ERR_OFFSET_OUT_OF_RANGE() -> i64 { 1 }
+
+/// Invalid message (corrupt CRC)
+fn ERR_CORRUPT_MESSAGE() -> i64 { 2 }
+
+/// Unknown topic or partition
+fn ERR_UNKNOWN_TOPIC() -> i64 { 3 }
+
+/// Invalid message size
+fn ERR_INVALID_MSG_SIZE() -> i64 { 4 }
+
+/// Leader not available
+fn ERR_LEADER_NOT_AVAILABLE() -> i64 { 5 }
+
+/// Not leader for partition
+fn ERR_NOT_LEADER() -> i64 { 6 }
+
+/// Request timed out
+fn ERR_REQUEST_TIMED_OUT() -> i64 { 7 }
+
+/// Group coordinator not available
+fn ERR_COORDINATOR_NOT_AVAILABLE() -> i64 { 15 }
+
+/// Not coordinator for group
+fn ERR_NOT_COORDINATOR() -> i64 { 16 }
+
+/// Rebalance in progress
+fn ERR_REBALANCE_IN_PROGRESS() -> i64 { 27 }
+
+/// Convert error code to human-readable message
+pub fn kafka_error_name(code: i64) -> i64 {
+    if code == 0 { return "No error"; }
+    if code == -1 { return "Unknown error"; }
+    if code == 1 { return "Offset out of range"; }
+    if code == 2 { return "Corrupt message"; }
+    if code == 3 { return "Unknown topic or partition"; }
+    if code == 4 { return "Invalid message size"; }
+    if code == 5 { return "Leader not available"; }
+    if code == 6 { return "Not leader for partition"; }
+    if code == 7 { return "Request timed out"; }
+    if code == 15 { return "Group coordinator not available"; }
+    if code == 16 { return "Not coordinator for group"; }
+    if code == 27 { return "Rebalance in progress"; }
+    string_concat("Error code ", int_to_string(code))
+}
+
+// =============================================================================
+// Version
+// =============================================================================
+
+fn VERSION() -> i64 { "0.17.0" }
+
+pub fn kafka_version() -> i64 {
+    VERSION()
+}

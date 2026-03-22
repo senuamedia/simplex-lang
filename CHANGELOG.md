@@ -5,6 +5,47 @@ All notable changes to Simplex will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-03-20
+
+### Highlights
+
+**Cloud Infrastructure & Mathematical Intelligence** — AWS services, developer toolchain, and 8 advanced ML modules. ~26,000 lines of new pure Simplex code.
+
+### Added
+
+#### Cloud Infrastructure (TASK-027)
+- simplex-aws: AWS Signature V4 authentication
+- simplex-sqs: Amazon SQS message queues
+- simplex-dynamodb: Amazon DynamoDB NoSQL
+- simplex-kafka: Apache Kafka event streaming
+
+#### Developer Experience (TASK-030)
+- Test framework with assertions, suites, timing, groups
+- Benchmarking with nanosecond precision and statistics
+- File system module: read, write, list, walk, path helpers
+- Process module: spawn, wait, kill, output capture
+- REPL: interactive expression evaluation with variable persistence
+
+#### Mathematical Intelligence (TASKS 036-043)
+- Conformal prediction: calibration, adaptive thresholds, CQR
+- Mixture of Experts: top-k routing, load balancing, collapse detection
+- State Space Models: S4 layers, Mamba selective SSM, parallel scan
+- Information geometry: Fisher matrix, natural gradients, K-FAC, KL divergence
+- Kolmogorov-Arnold Networks: B-spline edges, symbolic simplification
+- Causal inference: DAGs, d-separation, do-calculus, backdoor criterion
+- Mechanistic interpretability: activations, probes, ablation, saliency
+- Neural ODEs: Euler/RK4/adaptive solvers, continuous depth networks
+- Liquid Neural Networks: dynamic weights, NCP, CfC cells
+- Hyperbolic Embeddings: Poincare ball, Mobius operations, Riemannian SGD
+- Neuro-Symbolic Reasoning: knowledge base, forward/backward chaining, do-calculus bridge
+- Modern Hopfield Memory: exponential capacity, softmax retrieval, Hopfield attention
+- Tensor Network Compression: TT decomposition, truncated SVD, Tucker
+- Geometric Equivariant Layers: rotation/permutation equivariance, GNN message passing
+- Sparse Distributed Memory: binary vectors, Hamming distance, HDC, online learning
+- Diffusion Language Generation: discrete diffusion, parallel denoising, nucleus sampling
+
+---
+
 ## [0.16.0] - 2026-03-19
 
 ### Highlights

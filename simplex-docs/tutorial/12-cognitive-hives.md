@@ -801,7 +801,7 @@ fn batch_analyze(documents: Vec<String>) -> Vec<Analysis> {
 
 ## Self-Learning Optimization (v0.13.0)
 
-Specialists can now learn optimal schedules for their operation through meta-gradients.
+Specialists can now learn adaptive schedules for their operation through meta-gradients.
 
 ### Self-Learning Annealing for Hyperparameters
 

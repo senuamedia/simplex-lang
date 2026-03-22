@@ -1,6 +1,6 @@
 # Simplex Programming Language
 
-**Version 0.16.0**
+**Version 0.17.0**
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
@@ -319,15 +319,24 @@ simplex-lang/
 
 | Tool | Version | Description |
 |------|---------|-------------|
-| **sxc** | 0.16.0 | Simplex Compiler — collection iteration, keyword methods, where clauses, circuit optimization |
-| **sxpm** | 0.16.0 | Package Manager with SLM provisioning |
-| **cursus** | 0.16.0 | Bytecode Virtual Machine |
-| **sxdoc** | 0.16.0 | Documentation Generator |
-| **sxlsp** | 0.16.0 | Language Server Protocol |
-| **sxfmt** | 0.16.0 | Code Formatter |
-| **sxlint** | 0.16.0 | Static Linter |
+| **sxc** | 0.17.0 | Simplex Compiler — collection iteration, keyword methods, where clauses, circuit optimization |
+| **sxpm** | 0.17.0 | Package Manager with SLM provisioning |
+| **cursus** | 0.17.0 | Bytecode Virtual Machine |
+| **sxdoc** | 0.17.0 | Documentation Generator |
+| **sxlsp** | 0.17.0 | Language Server Protocol |
+| **sxfmt** | 0.17.0 | Code Formatter |
+| **sxlint** | 0.17.0 | Static Linter |
 
 ## Release History
+
+### v0.17.0 (2026-03-20) - Cloud Infrastructure & Mathematical Intelligence
+
+**25 tasks completed (TASK-027 through TASK-051):**
+- Cloud: AWS auth, SQS, DynamoDB, Kafka
+- DevEx: Test framework, benchmarks, file system, process, REPL
+- ML Primitives: Conformal prediction, MoE, SSM/Mamba, information geometry, KAN, causal inference, interpretability, Neural ODEs, liquid neural nets, hyperbolic embeddings, neuro-symbolic reasoning, Hopfield memory, tensor networks, geometric equivariance, sparse distributed memory, diffusion generation
+
+See [RELEASE-0.17.0.md](simplex-docs/RELEASE-0.17.0.md) for details.
 
 ### v0.16.0 (2026-03-19) - Enterprise Libraries & Hive Intelligence
 

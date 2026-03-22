@@ -31,13 +31,10 @@ fn hive_mnemonic_load(path: i64) -> i64;
 fn hive_mnemonic_close(mnemonic: i64);
 
 fn file_exists(path: i64) -> i64;
-fn file_delete(path: i64) -> i64;
 
 fn vec_len(v: i64) -> i64;
-fn string_from(s: i64) -> i64;
 fn print(s: i64);
 fn println(s: i64);
-fn print_i64(n: i64);
 fn print_string(s: i64);
 
 fn main() {

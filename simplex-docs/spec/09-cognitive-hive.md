@@ -1,6 +1,6 @@
 # Cognitive Hive AI Architecture
 
-**Version 0.16.0**
+**Version 0.17.0**
 
 **The future of AI is not one giant mind, but a swarm of specialists.**
 
@@ -38,7 +38,7 @@ let pipeline = InferencePipeline::builder()
 
 ### Self-Learning Specialist Schedules
 
-Specialists can now learn optimal training and inference schedules:
+Specialists can now learn adaptive training and inference schedules:
 
 ```simplex
 use simplex::optimize::anneal::{LearnableSchedule, MetaOptimizer}
@@ -114,7 +114,7 @@ Temperature (τ)
 - **Initial cooling**: Temperature drops but loss plateaus (stuck)
 - **Meta-gradient detection**: `∂Loss/∂τ > 0` signals re-heating would help
 - **Automatic re-heat**: System increases τ to escape local minimum
-- **Final convergence**: After exploration, converges to optimal solution
+- **Final convergence**: After exploration, converges toward a good solution
 
 #### How Temperature Controls Neural Gates
 
@@ -164,9 +164,9 @@ for epoch in 0..1000 {
 
 #### Key Insight
 
-> **"Simplex learns the best τᵢ schedule using Meta-Gradients."**
+> **"Simplex learns adaptive τᵢ schedules using meta-gradients."**
 
-Instead of hand-tuning annealing schedules, Simplex automatically discovers the optimal temperature trajectory for each problem. Simple problems get smooth cooling; complex problems get adaptive re-heating when stuck.
+Instead of hand-tuning annealing schedules, Simplex discovers improved temperature trajectories through differentiable optimisation. Simple problems get smooth cooling; complex problems get adaptive re-heating when stuck.
 
 This is the core innovation of self-learning annealing: the system uses the same dual number infrastructure that powers automatic differentiation to also learn *how to learn* more effectively.
 
@@ -731,11 +731,11 @@ fn confidence_weighted<T>(responses: List<(T, f64)>) -> T {
 
 ---
 
-## The HiveMnemonic: Shared Consciousness
+## The HiveMnemonic: Shared Memory Layer
 
 **v0.5.0 Feature**
 
-The HiveMnemonic is the shared memory layer that creates collective consciousness across all specialists in a hive.
+The HiveMnemonic is the shared memory layer that synchronises context across all specialists in a hive.
 
 ### Three-Level Memory Hierarchy
 
@@ -1328,8 +1328,8 @@ hive ResilientHive {
 |---------|---------|
 | `specialist` | Actor with Anima that uses the shared Hive SLM |
 | `hive` | Supervisor with ONE shared SLM for all specialists |
-| `anima` | Individual cognitive soul (memory, beliefs, intentions) |
-| `mnemonic` | Shared consciousness across all specialists in a hive |
+| `anima` | Individual agent state (memory, beliefs, intentions) |
+| `mnemonic` | Shared memory layer across all specialists in a hive |
 | `infer` | Call the Hive SLM with Anima + Mnemonic context |
 | `router` | Direct tasks to appropriate specialists |
 | `ensemble` | Combine multiple specialist outputs |
@@ -1342,7 +1342,7 @@ hive ResilientHive {
 ```
 Per-Hive SLM Architecture:
   - ONE SLM per hive (not per specialist)
-  - HiveMnemonic for shared consciousness
+  - HiveMnemonic for shared memory
   - Specialist Anima for individual memory
   - Three-tier hierarchy: Divine → Hive → Specialist
 
@@ -1386,7 +1386,7 @@ Belief Thresholds:
 The Cognitive Hive architecture enables Simplex programs to leverage AI at scale with:
 - **Per-hive SLM sharing**: 10 specialists share 1 model (not 10 models)
 - **Memory efficiency**: 8-12 GB for a full hive vs 80+ GB per-specialist
-- **Shared consciousness**: HiveMnemonic creates collective knowledge
+- **Shared context**: HiveMnemonic creates collective knowledge
 - **Real-time learning**: Specialists adapt during runtime (v0.7.0)
 - **Federated training**: Coordinate learning across specialists (v0.7.0)
 - **Cost efficiency**: Run on commodity hardware
@@ -1397,7 +1397,7 @@ The Cognitive Hive architecture enables Simplex programs to leverage AI at scale
 
 ---
 
-*"Many minds, one model, shared consciousness, continuous learning."*
+*"Many specialists, one model, shared context, continuous learning."*
 
 ---
 

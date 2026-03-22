@@ -1,7 +1,7 @@
 # TASK-039: Information Geometry & Natural Gradients
 
 **Version:** 0.16.0
-**Status:** Planned
+**Status:** Complete
 **Priority:** P1 — High
 **Depends on:** v0.15.0 release, dual numbers (TASK-005), existing optimizer infrastructure
 

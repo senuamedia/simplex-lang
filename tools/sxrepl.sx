@@ -1,0 +1,1223 @@
+// sxrepl - Simplex Read-Eval-Print Loop
+//
+// An interactive REPL for evaluating Simplex expressions, exploring types,
+// viewing ASTs, and loading files. Provides variable persistence across
+// lines and multi-line input detection.
+//
+// # Usage
+//
+//   sxrepl [options]
+//
+// # Options
+//
+//   --no-banner     Skip the welcome banner
+//   --history N     Set history size (default: 100)
+//   --load FILE     Load a file on startup
+//
+// # Special Commands
+//
+//   :help           Show help text
+//   :quit / :q      Exit the REPL
+//   :type EXPR      Show the type of an expression
+//   :ast EXPR       Show the AST of an expression
+//   :load FILE      Load and execute a file
+//   :reset          Clear all variables and state
+//   :env            Show defined variables
+//   :history        Show expression history
+//   :clear          Clear the screen
+//   :version        Show version info
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0 - see LICENSE file
+// https://github.com/senuamedia/simplex-lang
+
+// Extern declarations for runtime functions used directly
+extern fn string_index_of(s: i64, needle: i64) -> i64;
+extern fn string_join_vec(v: i64, sep: i64) -> i64;
+extern fn string_last_index_of(s: i64, needle: i64) -> i64;
+extern fn string_substr(s: i64, start: i64, end_pos: i64) -> i64;
+
+// Version (synced with simplex-core/src/version.sx)
+fn VERSION() -> i64 { string_from("0.17.0") }
+
+// =============================================================================
+// REPL State Fields
+// =============================================================================
+
+fn STATE_VARS() -> i64 { 0 }
+fn STATE_HISTORY() -> i64 { 1 }
+fn STATE_HISTORY_MAX() -> i64 { 2 }
+fn STATE_LINE_NUM() -> i64 { 3 }
+fn STATE_PENDING() -> i64 { 4 }
+fn STATE_RUNNING() -> i64 { 5 }
+fn STATE_SHOW_BANNER() -> i64 { 6 }
+
+// Variable entry fields
+fn VAR_NAME() -> i64 { 0 }
+fn VAR_VALUE() -> i64 { 1 }
+fn VAR_TYPE() -> i64 { 2 }
+
+// =============================================================================
+// REPL State Management
+// =============================================================================
+
+/// Create a new REPL state.
+///
+/// Returns a state handle vec:
+///   [vars, history, history_max, line_num, pending_input, running, show_banner]
+fn repl_state_new() -> i64 {
+    let state: i64 = vec_new();
+    let vars: i64 = vec_new();
+    vec_push(state, vars);              // 0: variables
+    let history: i64 = vec_new();
+    vec_push(state, history);           // 1: history
+    vec_push(state, 100);               // 2: history max
+    vec_push(state, 1);                 // 3: line number
+    vec_push(state, string_from(""));   // 4: pending multi-line input
+    vec_push(state, 1);                 // 5: running flag
+    vec_push(state, 1);                 // 6: show banner
+    state
+}
+
+/// Set a variable in the REPL state.
+///
+/// # Arguments
+/// * `state` - REPL state handle
+/// * `name` - i64 string handle for variable name
+/// * `value` - i64 value handle
+/// * `type_str` - i64 string handle for the type
+fn repl_set_var(state: i64, name: i64, value: i64, type_str: i64) -> i64 {
+    let vars: i64 = vec_get(state, STATE_VARS());
+    let count: i64 = vec_len(vars);
+
+    // Check if variable already exists
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(vars, i);
+        let existing_name: i64 = vec_get(entry, VAR_NAME());
+        if intrinsic_string_eq(existing_name, name) == 1 {
+            // Update existing
+            vec_set(entry, VAR_VALUE(), value);
+            vec_set(entry, VAR_TYPE(), type_str);
+            return 1;
+        }
+        i = i + 1;
+    }
+
+    // Add new variable
+    let entry: i64 = vec_new();
+    vec_push(entry, name);
+    vec_push(entry, value);
+    vec_push(entry, type_str);
+    vec_push(vars, entry);
+    1
+}
+
+/// Get a variable from the REPL state.
+///
+/// # Returns
+/// i64 value handle, or 0 if not found
+fn repl_get_var(state: i64, name: i64) -> i64 {
+    let vars: i64 = vec_get(state, STATE_VARS());
+    let count: i64 = vec_len(vars);
+
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(vars, i);
+        let existing_name: i64 = vec_get(entry, VAR_NAME());
+        if intrinsic_string_eq(existing_name, name) == 1 {
+            return vec_get(entry, VAR_VALUE());
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Check if a variable exists.
+fn repl_has_var(state: i64, name: i64) -> i64 {
+    let val: i64 = repl_get_var(state, name);
+    if val == 0 { 0 } else { 1 }
+}
+
+/// Clear all variables and reset state.
+fn repl_reset(state: i64) -> i64 {
+    let vars: i64 = vec_get(state, STATE_VARS());
+    vec_clear(vars);
+    vec_set(state, STATE_PENDING(), string_from(""));
+    vec_set(state, STATE_LINE_NUM(), 1);
+    println(string_from("State reset."));
+    0
+}
+
+// =============================================================================
+// History Management
+// =============================================================================
+
+/// Add an expression to history.
+fn repl_history_add(state: i64, expr: i64) -> i64 {
+    let history: i64 = vec_get(state, STATE_HISTORY());
+    let max_size: i64 = vec_get(state, STATE_HISTORY_MAX());
+
+    // Don't add empty or duplicate of last entry
+    if string_len(expr) == 0 {
+        return 0;
+    }
+
+    let count: i64 = vec_len(history);
+    if count > 0 {
+        let last: i64 = vec_get(history, count - 1);
+        if intrinsic_string_eq(last, expr) == 1 {
+            return 0; // skip duplicate
+        }
+    }
+
+    vec_push(history, expr);
+
+    // Trim if over max size
+    while vec_len(history) > max_size {
+        vec_remove(history, 0);
+    }
+    1
+}
+
+/// Print expression history.
+fn repl_history_print(state: i64) -> i64 {
+    let history: i64 = vec_get(state, STATE_HISTORY());
+    let count: i64 = vec_len(history);
+
+    if count == 0 {
+        println(string_from("No history."));
+        return 0;
+    }
+
+    println(string_from("--- History ---"));
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(history, i);
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("  ["));
+        vec_push(parts, int_to_string(i + 1));
+        vec_push(parts, string_from("] "));
+        vec_push(parts, entry);
+        println(string_join_vec(parts, string_from("")));
+        i = i + 1;
+    }
+    0
+}
+
+/// Get the last N history entries as a vec.
+fn repl_history_last(state: i64, n: i64) -> i64 {
+    let history: i64 = vec_get(state, STATE_HISTORY());
+    let count: i64 = vec_len(history);
+    let result: i64 = vec_new();
+
+    var start: i64 = count - n;
+    if start < 0 {
+        start = 0;
+    }
+
+    var i: i64 = start;
+    while i < count {
+        vec_push(result, vec_get(history, i));
+        i = i + 1;
+    }
+    result
+}
+
+// =============================================================================
+// Multi-line Detection
+// =============================================================================
+
+/// Check if input has unclosed braces, brackets, or parentheses.
+///
+/// Returns 1 if the input is incomplete (needs more lines), 0 if complete.
+///
+/// # Arguments
+/// * `input` - i64 string handle
+///
+/// # Returns
+/// 1 if incomplete, 0 if complete
+fn repl_is_incomplete(input: i64) -> i64 {
+    let len: i64 = string_len(input);
+    var paren_depth: i64 = 0;
+    var brace_depth: i64 = 0;
+    var bracket_depth: i64 = 0;
+    var in_string: i64 = 0;
+    var escape_next: i64 = 0;
+
+    var i: i64 = 0;
+    while i < len {
+        let ch: i64 = string_char_at(input, i);
+
+        if escape_next == 1 {
+            escape_next = 0;
+            i = i + 1;
+            continue;
+        }
+
+        // Check for backslash escape
+        let backslash: i64 = string_char_at(string_from("\\"), 0);
+        if ch == backslash {
+            escape_next = 1;
+            i = i + 1;
+            continue;
+        }
+
+        // Check for string delimiters
+        let double_quote: i64 = string_char_at(string_from("\""), 0);
+        if ch == double_quote {
+            if in_string == 1 {
+                in_string = 0;
+            } else {
+                in_string = 1;
+            }
+            i = i + 1;
+            continue;
+        }
+
+        // Skip characters inside strings
+        if in_string == 1 {
+            i = i + 1;
+            continue;
+        }
+
+        let lparen: i64 = string_char_at(string_from("("), 0);
+        let rparen: i64 = string_char_at(string_from(")"), 0);
+        let lbrace: i64 = string_char_at(string_from("{"), 0);
+        let rbrace: i64 = string_char_at(string_from("}"), 0);
+        let lbracket: i64 = string_char_at(string_from("["), 0);
+        let rbracket: i64 = string_char_at(string_from("]"), 0);
+
+        if ch == lparen {
+            paren_depth = paren_depth + 1;
+        } else if ch == rparen {
+            paren_depth = paren_depth - 1;
+        } else if ch == lbrace {
+            brace_depth = brace_depth + 1;
+        } else if ch == rbrace {
+            brace_depth = brace_depth - 1;
+        } else if ch == lbracket {
+            bracket_depth = bracket_depth + 1;
+        } else if ch == rbracket {
+            bracket_depth = bracket_depth - 1;
+        }
+
+        i = i + 1;
+    }
+
+    // Incomplete if any delimiter is unclosed or string is open
+    if in_string == 1 {
+        return 1;
+    }
+    if paren_depth > 0 {
+        return 1;
+    }
+    if brace_depth > 0 {
+        return 1;
+    }
+    if bracket_depth > 0 {
+        return 1;
+    }
+    0
+}
+
+// =============================================================================
+// Command Parsing
+// =============================================================================
+
+/// Check if input is a special command (starts with ':').
+///
+/// # Returns
+/// 1 if it's a command, 0 otherwise
+fn repl_is_command(input: i64) -> i64 {
+    let len: i64 = string_len(input);
+    if len == 0 {
+        return 0;
+    }
+    let first: i64 = string_char_at(input, 0);
+    let colon: i64 = string_char_at(string_from(":"), 0);
+    if first == colon {
+        1
+    } else {
+        0
+    }
+}
+
+/// Parse a command and return [command_name, argument].
+///
+/// # Arguments
+/// * `input` - i64 string handle starting with ':'
+///
+/// # Returns
+/// vec [command_name, argument] (argument may be empty string)
+fn repl_parse_command(input: i64) -> i64 {
+    let len: i64 = string_len(input);
+
+    // Skip the leading ':'
+    let rest: i64 = string_substr(input, 1, len);
+    let trimmed: i64 = string_trim(rest);
+    let trimmed_len: i64 = string_len(trimmed);
+
+    // Find first space
+    let space_idx: i64 = string_index_of(trimmed, string_from(" "));
+
+    let result: i64 = vec_new();
+    if space_idx < 0 {
+        // No argument
+        vec_push(result, trimmed);
+        vec_push(result, string_from(""));
+    } else {
+        let cmd: i64 = string_substr(trimmed, 0, space_idx);
+        let arg: i64 = string_trim(string_substr(trimmed, space_idx + 1, trimmed_len));
+        vec_push(result, cmd);
+        vec_push(result, arg);
+    }
+    result
+}
+
+/// Handle a special command.
+///
+/// # Arguments
+/// * `state` - REPL state handle
+/// * `input` - i64 string handle for the command
+///
+/// # Returns
+/// 0 to continue, -1 to quit
+fn repl_handle_command(state: i64, input: i64) -> i64 {
+    let parsed: i64 = repl_parse_command(input);
+    let cmd: i64 = vec_get(parsed, 0);
+    let arg: i64 = vec_get(parsed, 1);
+
+    // :quit / :q
+    if intrinsic_string_eq(cmd, string_from("quit")) == 1 {
+        return -1;
+    }
+    if intrinsic_string_eq(cmd, string_from("q")) == 1 {
+        return -1;
+    }
+
+    // :help
+    if intrinsic_string_eq(cmd, string_from("help")) == 1 {
+        repl_print_help();
+        return 0;
+    }
+
+    // :reset
+    if intrinsic_string_eq(cmd, string_from("reset")) == 1 {
+        repl_reset(state);
+        return 0;
+    }
+
+    // :env
+    if intrinsic_string_eq(cmd, string_from("env")) == 1 {
+        repl_print_env(state);
+        return 0;
+    }
+
+    // :history
+    if intrinsic_string_eq(cmd, string_from("history")) == 1 {
+        repl_history_print(state);
+        return 0;
+    }
+
+    // :clear
+    if intrinsic_string_eq(cmd, string_from("clear")) == 1 {
+        repl_clear_screen();
+        return 0;
+    }
+
+    // :version
+    if intrinsic_string_eq(cmd, string_from("version")) == 1 {
+        repl_print_version();
+        return 0;
+    }
+
+    // :type EXPR
+    if intrinsic_string_eq(cmd, string_from("type")) == 1 {
+        if string_len(arg) > 0 {
+            repl_show_type(state, arg);
+        } else {
+            println(string_from("Usage: :type EXPRESSION"));
+        }
+        return 0;
+    }
+
+    // :ast EXPR
+    if intrinsic_string_eq(cmd, string_from("ast")) == 1 {
+        if string_len(arg) > 0 {
+            repl_show_ast(state, arg);
+        } else {
+            println(string_from("Usage: :ast EXPRESSION"));
+        }
+        return 0;
+    }
+
+    // :load FILE
+    if intrinsic_string_eq(cmd, string_from("load")) == 1 {
+        if string_len(arg) > 0 {
+            repl_load_file(state, arg);
+        } else {
+            println(string_from("Usage: :load FILENAME"));
+        }
+        return 0;
+    }
+
+    // Unknown command
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("Unknown command: :"));
+    vec_push(parts, cmd);
+    vec_push(parts, string_from("  (type :help for available commands)"));
+    println(string_join_vec(parts, string_from("")));
+    0
+}
+
+// =============================================================================
+// Command Implementations
+// =============================================================================
+
+/// Print help text.
+fn repl_print_help() -> i64 {
+    println(string_from(""));
+    println(string_from("Simplex REPL Commands:"));
+    println(string_from(""));
+    println(string_from("  :help             Show this help text"));
+    println(string_from("  :quit / :q        Exit the REPL"));
+    println(string_from("  :type EXPR        Show the type of an expression"));
+    println(string_from("  :ast EXPR         Show the AST of an expression"));
+    println(string_from("  :load FILE        Load and execute a file"));
+    println(string_from("  :reset            Clear all variables and state"));
+    println(string_from("  :env              Show defined variables"));
+    println(string_from("  :history          Show expression history"));
+    println(string_from("  :clear            Clear the screen"));
+    println(string_from("  :version          Show version info"));
+    println(string_from(""));
+    println(string_from("Tips:"));
+    println(string_from("  - Multi-line input: unclosed { or ( continues to next line"));
+    println(string_from("  - Variables persist across lines"));
+    println(string_from("  - Use let x = EXPR to define variables"));
+    println(string_from(""));
+    0
+}
+
+/// Print version information.
+fn repl_print_version() -> i64 {
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("Simplex REPL v"));
+    vec_push(parts, VERSION());
+    println(string_join_vec(parts, string_from("")));
+    println(string_from("Copyright (c) 2025-2026 Rod Higgins"));
+    println(string_from("Licensed under AGPL-3.0"));
+    0
+}
+
+/// Print the welcome banner.
+fn repl_print_banner() -> i64 {
+    println(string_from(""));
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("Welcome to the Simplex REPL v"));
+    vec_push(parts, VERSION());
+    println(string_join_vec(parts, string_from("")));
+    println(string_from("Type :help for available commands, :quit to exit."));
+    println(string_from(""));
+    0
+}
+
+/// Print environment (defined variables).
+fn repl_print_env(state: i64) -> i64 {
+    let vars: i64 = vec_get(state, STATE_VARS());
+    let count: i64 = vec_len(vars);
+
+    if count == 0 {
+        println(string_from("No variables defined."));
+        return 0;
+    }
+
+    println(string_from("--- Variables ---"));
+    var i: i64 = 0;
+    while i < count {
+        let entry: i64 = vec_get(vars, i);
+        let name: i64 = vec_get(entry, VAR_NAME());
+        let value: i64 = vec_get(entry, VAR_VALUE());
+        let type_str: i64 = vec_get(entry, VAR_TYPE());
+
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("  "));
+        vec_push(parts, name);
+        vec_push(parts, string_from(": "));
+        vec_push(parts, type_str);
+        vec_push(parts, string_from(" = "));
+        vec_push(parts, int_to_string(value));
+        println(string_join_vec(parts, string_from("")));
+        i = i + 1;
+    }
+    0
+}
+
+/// Clear the screen (ANSI escape).
+fn repl_clear_screen() -> i64 {
+    // ANSI escape: clear screen and move cursor to top-left
+    print(string_from("\x1b[2J\x1b[H"));
+    0
+}
+
+/// Show the type of an expression.
+fn repl_show_type(state: i64, expr: i64) -> i64 {
+    // Type inference via the compiler toolchain
+    // This is a simplified version that checks known patterns
+    let type_str: i64 = repl_infer_type(expr);
+    let parts: i64 = vec_new();
+    vec_push(parts, expr);
+    vec_push(parts, string_from(" : "));
+    vec_push(parts, type_str);
+    println(string_join_vec(parts, string_from("")));
+    0
+}
+
+/// Show the AST of an expression.
+fn repl_show_ast(state: i64, expr: i64) -> i64 {
+    // Parse the expression into tokens and show AST representation
+    let ast: i64 = repl_parse_to_ast(expr);
+    println(string_from("AST:"));
+    println(ast);
+    0
+}
+
+/// Load and execute a file.
+fn repl_load_file(state: i64, path: i64) -> i64 {
+    let content: i64 = intrinsic_file_read(path);
+    if content == 0 {
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("Error: could not read file '"));
+        vec_push(parts, path);
+        vec_push(parts, string_from("'"));
+        println(string_join_vec(parts, string_from("")));
+        return 1;
+    }
+
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("Loaded: "));
+    vec_push(parts, path);
+    println(string_join_vec(parts, string_from("")));
+
+    // Split into lines and evaluate each
+    let lines: i64 = string_split(content, string_from("\n"));
+    let count: i64 = vec_len(lines);
+    var i: i64 = 0;
+    while i < count {
+        let line: i64 = string_trim(vec_get(lines, i));
+        if string_len(line) > 0 {
+            // Skip comments
+            let first_ch: i64 = string_char_at(line, 0);
+            let slash: i64 = string_char_at(string_from("/"), 0);
+            if first_ch != slash {
+                repl_eval_line(state, line);
+            }
+        }
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Expression Evaluation
+// =============================================================================
+
+/// Evaluate a single line of input.
+///
+/// Handles:
+/// - let bindings (persist variables)
+/// - expression evaluation
+/// - multi-line accumulation
+///
+/// # Arguments
+/// * `state` - REPL state handle
+/// * `input` - i64 string handle for the input line
+///
+/// # Returns
+/// 0 to continue, -1 to quit
+fn repl_eval_line(state: i64, input: i64) -> i64 {
+    let trimmed: i64 = string_trim(input);
+    let len: i64 = string_len(trimmed);
+
+    if len == 0 {
+        return 0;
+    }
+
+    // Check for special commands
+    if repl_is_command(trimmed) == 1 {
+        return repl_handle_command(state, trimmed);
+    }
+
+    // Add to history
+    repl_history_add(state, trimmed);
+
+    // Handle multi-line input
+    let pending: i64 = vec_get(state, STATE_PENDING());
+    let pending_len: i64 = string_len(pending);
+    var full_input: i64 = trimmed;
+
+    if pending_len > 0 {
+        // Append to pending input
+        full_input = string_concat(
+            string_concat(pending, string_from("\n")),
+            trimmed
+        );
+    }
+
+    // Check if input is still incomplete
+    if repl_is_incomplete(full_input) == 1 {
+        vec_set(state, STATE_PENDING(), full_input);
+        return 0;
+    }
+
+    // Clear pending
+    vec_set(state, STATE_PENDING(), string_from(""));
+
+    // Check if it's a let binding
+    if repl_is_let_binding(full_input) == 1 {
+        repl_eval_let(state, full_input);
+        return 0;
+    }
+
+    // Evaluate expression
+    repl_eval_expr(state, full_input);
+
+    // Increment line number
+    let line_num: i64 = vec_get(state, STATE_LINE_NUM());
+    vec_set(state, STATE_LINE_NUM(), line_num + 1);
+
+    0
+}
+
+/// Check if input is a let binding.
+fn repl_is_let_binding(input: i64) -> i64 {
+    if string_starts_with(input, string_from("let ")) == 1 {
+        return 1;
+    }
+    if string_starts_with(input, string_from("var ")) == 1 {
+        return 1;
+    }
+    0
+}
+
+/// Evaluate a let binding.
+fn repl_eval_let(state: i64, input: i64) -> i64 {
+    // Parse: "let NAME = EXPR" or "let NAME: TYPE = EXPR"
+    // Skip "let " or "var "
+    let rest: i64 = string_substr(input, 4, string_len(input));
+    let trimmed: i64 = string_trim(rest);
+
+    // Find the '=' sign
+    let eq_idx: i64 = string_index_of(trimmed, string_from("="));
+    if eq_idx < 0 {
+        println(string_from("Error: let binding requires '='"));
+        return 1;
+    }
+
+    let name_part: i64 = string_trim(string_substr(trimmed, 0, eq_idx));
+    let expr_part: i64 = string_trim(string_substr(trimmed, eq_idx + 1, string_len(trimmed)));
+
+    // Extract name (strip type annotation if present)
+    let colon_idx: i64 = string_index_of(name_part, string_from(":"));
+    var name: i64 = name_part;
+    var type_str: i64 = string_from("i64");
+
+    if colon_idx >= 0 {
+        name = string_trim(string_substr(name_part, 0, colon_idx));
+        type_str = string_trim(string_substr(name_part, colon_idx + 1, string_len(name_part)));
+    }
+
+    // Evaluate the expression
+    let value: i64 = repl_eval_simple_expr(state, expr_part);
+
+    // Store the variable
+    repl_set_var(state, name, value, type_str);
+
+    // Print result
+    let parts: i64 = vec_new();
+    vec_push(parts, name);
+    vec_push(parts, string_from(" = "));
+    vec_push(parts, int_to_string(value));
+    println(string_join_vec(parts, string_from("")));
+    0
+}
+
+/// Evaluate an expression and print the result.
+fn repl_eval_expr(state: i64, input: i64) -> i64 {
+    let value: i64 = repl_eval_simple_expr(state, input);
+
+    // Print result with line number
+    let line_num: i64 = vec_get(state, STATE_LINE_NUM());
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("$"));
+    vec_push(parts, int_to_string(line_num));
+    vec_push(parts, string_from(" = "));
+    vec_push(parts, int_to_string(value));
+    println(string_join_vec(parts, string_from("")));
+
+    // Store as $N
+    let result_name: i64 = string_concat(string_from("$"), int_to_string(line_num));
+    repl_set_var(state, result_name, value, string_from("i64"));
+
+    0
+}
+
+/// Evaluate a simple expression.
+///
+/// Handles integer literals, variable references, and basic arithmetic.
+///
+/// # Arguments
+/// * `state` - REPL state handle
+/// * `expr` - i64 string handle for the expression
+///
+/// # Returns
+/// i64 result value
+fn repl_eval_simple_expr(state: i64, expr: i64) -> i64 {
+    let trimmed: i64 = string_trim(expr);
+    let len: i64 = string_len(trimmed);
+
+    if len == 0 {
+        return 0;
+    }
+
+    // Try to parse as integer
+    let int_result: i64 = string_to_int(trimmed);
+    if int_result != -9999999 {
+        return int_result;
+    }
+    // Handle "0" explicitly since string_to_int might return 0
+    if intrinsic_string_eq(trimmed, string_from("0")) == 1 {
+        return 0;
+    }
+
+    // Check for string literal
+    let first_ch: i64 = string_char_at(trimmed, 0);
+    let dquote: i64 = string_char_at(string_from("\""), 0);
+    if first_ch == dquote {
+        return string_from(trimmed);
+    }
+
+    // Check for boolean
+    if intrinsic_string_eq(trimmed, string_from("true")) == 1 {
+        return 1;
+    }
+    if intrinsic_string_eq(trimmed, string_from("false")) == 1 {
+        return 0;
+    }
+
+    // Check for binary operations (+, -, *, /)
+    let add_result: i64 = repl_try_binary_op(state, trimmed, string_from("+"));
+    if add_result != -9999999 {
+        return add_result;
+    }
+    let sub_result: i64 = repl_try_binary_op(state, trimmed, string_from("-"));
+    if sub_result != -9999999 {
+        return sub_result;
+    }
+    let mul_result: i64 = repl_try_binary_op(state, trimmed, string_from("*"));
+    if mul_result != -9999999 {
+        return mul_result;
+    }
+    let div_result: i64 = repl_try_binary_op(state, trimmed, string_from("/"));
+    if div_result != -9999999 {
+        return div_result;
+    }
+    let mod_result: i64 = repl_try_binary_op(state, trimmed, string_from("%"));
+    if mod_result != -9999999 {
+        return mod_result;
+    }
+
+    // Check for variable reference
+    let var_val: i64 = repl_get_var(state, trimmed);
+    if var_val != 0 {
+        return var_val;
+    }
+
+    // Unknown expression - try to evaluate via the compiler
+    let result: i64 = repl_compile_eval(trimmed);
+    result
+}
+
+/// Try to evaluate a binary operation.
+///
+/// # Returns
+/// result value, or -9999999 if not a binary op of this type
+fn repl_try_binary_op(state: i64, expr: i64, op: i64) -> i64 {
+    let idx: i64 = string_last_index_of(expr, op);
+    if idx <= 0 {
+        return -9999999;
+    }
+
+    let lhs_str: i64 = string_trim(string_substr(expr, 0, idx));
+    let rhs_str: i64 = string_trim(string_substr(expr, idx + 1, string_len(expr)));
+
+    if string_len(lhs_str) == 0 {
+        return -9999999;
+    }
+    if string_len(rhs_str) == 0 {
+        return -9999999;
+    }
+
+    let lhs: i64 = repl_eval_simple_expr(state, lhs_str);
+    let rhs: i64 = repl_eval_simple_expr(state, rhs_str);
+
+    if intrinsic_string_eq(op, string_from("+")) == 1 {
+        return lhs + rhs;
+    }
+    if intrinsic_string_eq(op, string_from("-")) == 1 {
+        return lhs - rhs;
+    }
+    if intrinsic_string_eq(op, string_from("*")) == 1 {
+        return lhs * rhs;
+    }
+    if intrinsic_string_eq(op, string_from("/")) == 1 {
+        if rhs == 0 {
+            println(string_from("Error: division by zero"));
+            return 0;
+        }
+        return lhs / rhs;
+    }
+    if intrinsic_string_eq(op, string_from("%")) == 1 {
+        if rhs == 0 {
+            println(string_from("Error: modulo by zero"));
+            return 0;
+        }
+        return lhs % rhs;
+    }
+    -9999999
+}
+
+/// Compile and evaluate an expression via the compiler toolchain.
+///
+/// Falls back to printing an error if the expression can't be evaluated.
+fn repl_compile_eval(expr: i64) -> i64 {
+    // Wrap expression in a minimal program and compile
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("fn main() -> i64 { "));
+    vec_push(parts, expr);
+    vec_push(parts, string_from(" }"));
+    let program: i64 = string_join_vec(parts, string_from(""));
+
+    // Try to compile and run via the runtime
+    let result: i64 = intrinsic_eval(program);
+    if result == -9999999 {
+        let err_parts: i64 = vec_new();
+        vec_push(err_parts, string_from("Error: cannot evaluate '"));
+        vec_push(err_parts, expr);
+        vec_push(err_parts, string_from("'"));
+        println(string_join_vec(err_parts, string_from("")));
+        return 0;
+    }
+    result
+}
+
+// =============================================================================
+// Type Inference (Simplified)
+// =============================================================================
+
+/// Infer the type of an expression (simplified heuristic).
+///
+/// # Returns
+/// i64 string handle for the type name
+fn repl_infer_type(expr: i64) -> i64 {
+    let trimmed: i64 = string_trim(expr);
+    let len: i64 = string_len(trimmed);
+
+    if len == 0 {
+        return string_from("()");
+    }
+
+    // Integer literal
+    let first_ch: i64 = string_char_at(trimmed, 0);
+    let zero_ch: i64 = string_char_at(string_from("0"), 0);
+    let nine_ch: i64 = string_char_at(string_from("9"), 0);
+    let minus_ch: i64 = string_char_at(string_from("-"), 0);
+
+    if first_ch >= zero_ch {
+        if first_ch <= nine_ch {
+            // Check for decimal point
+            if string_contains(trimmed, string_from(".")) == 1 {
+                return string_from("f64");
+            }
+            return string_from("i64");
+        }
+    }
+    if first_ch == minus_ch {
+        if len > 1 {
+            let second: i64 = string_char_at(trimmed, 1);
+            if second >= zero_ch {
+                if second <= nine_ch {
+                    if string_contains(trimmed, string_from(".")) == 1 {
+                        return string_from("f64");
+                    }
+                    return string_from("i64");
+                }
+            }
+        }
+    }
+
+    // String literal
+    let dquote: i64 = string_char_at(string_from("\""), 0);
+    if first_ch == dquote {
+        return string_from("String");
+    }
+
+    // Boolean
+    if intrinsic_string_eq(trimmed, string_from("true")) == 1 {
+        return string_from("bool");
+    }
+    if intrinsic_string_eq(trimmed, string_from("false")) == 1 {
+        return string_from("bool");
+    }
+
+    // Binary expression - check for operators
+    if string_contains(trimmed, string_from("+")) == 1 {
+        return string_from("i64");
+    }
+    if string_contains(trimmed, string_from("-")) == 1 {
+        return string_from("i64");
+    }
+    if string_contains(trimmed, string_from("*")) == 1 {
+        return string_from("i64");
+    }
+    if string_contains(trimmed, string_from("/")) == 1 {
+        return string_from("i64");
+    }
+
+    // Function call
+    if string_contains(trimmed, string_from("(")) == 1 {
+        return string_from("i64");
+    }
+
+    // Default: unknown
+    string_from("unknown")
+}
+
+// =============================================================================
+// AST Visualization (Simplified)
+// =============================================================================
+
+/// Parse an expression into a simplified AST string.
+fn repl_parse_to_ast(expr: i64) -> i64 {
+    let trimmed: i64 = string_trim(expr);
+    let len: i64 = string_len(trimmed);
+
+    if len == 0 {
+        return string_from("(empty)");
+    }
+
+    // Integer literal
+    let first_ch: i64 = string_char_at(trimmed, 0);
+    let zero_ch: i64 = string_char_at(string_from("0"), 0);
+    let nine_ch: i64 = string_char_at(string_from("9"), 0);
+
+    if first_ch >= zero_ch {
+        if first_ch <= nine_ch {
+            let parts: i64 = vec_new();
+            vec_push(parts, string_from("  (IntLiteral "));
+            vec_push(parts, trimmed);
+            vec_push(parts, string_from(")"));
+            return string_join_vec(parts, string_from(""));
+        }
+    }
+
+    // String literal
+    let dquote: i64 = string_char_at(string_from("\""), 0);
+    if first_ch == dquote {
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("  (StringLiteral "));
+        vec_push(parts, trimmed);
+        vec_push(parts, string_from(")"));
+        return string_join_vec(parts, string_from(""));
+    }
+
+    // Boolean
+    if intrinsic_string_eq(trimmed, string_from("true")) == 1 {
+        return string_from("  (BoolLiteral true)");
+    }
+    if intrinsic_string_eq(trimmed, string_from("false")) == 1 {
+        return string_from("  (BoolLiteral false)");
+    }
+
+    // Binary operations
+    let add_idx: i64 = string_last_index_of(trimmed, string_from("+"));
+    if add_idx > 0 {
+        return repl_format_binop_ast(trimmed, string_from("+"), add_idx);
+    }
+    let sub_idx: i64 = string_last_index_of(trimmed, string_from("-"));
+    if sub_idx > 0 {
+        return repl_format_binop_ast(trimmed, string_from("-"), sub_idx);
+    }
+    let mul_idx: i64 = string_last_index_of(trimmed, string_from("*"));
+    if mul_idx > 0 {
+        return repl_format_binop_ast(trimmed, string_from("*"), mul_idx);
+    }
+    let div_idx: i64 = string_last_index_of(trimmed, string_from("/"));
+    if div_idx > 0 {
+        return repl_format_binop_ast(trimmed, string_from("/"), div_idx);
+    }
+
+    // Identifier
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("  (Ident "));
+    vec_push(parts, trimmed);
+    vec_push(parts, string_from(")"));
+    string_join_vec(parts, string_from(""))
+}
+
+/// Format a binary operation as AST.
+fn repl_format_binop_ast(expr: i64, op: i64, op_idx: i64) -> i64 {
+    let lhs: i64 = string_trim(string_substr(expr, 0, op_idx));
+    let rhs: i64 = string_trim(string_substr(expr, op_idx + 1, string_len(expr)));
+
+    let parts: i64 = vec_new();
+    vec_push(parts, string_from("  (BinaryOp "));
+    vec_push(parts, op);
+    vec_push(parts, string_from("\n"));
+    vec_push(parts, string_from("    (lhs "));
+    vec_push(parts, lhs);
+    vec_push(parts, string_from(")\n"));
+    vec_push(parts, string_from("    (rhs "));
+    vec_push(parts, rhs);
+    vec_push(parts, string_from("))"));
+    string_join_vec(parts, string_from(""))
+}
+
+// =============================================================================
+// Prompt Display
+// =============================================================================
+
+/// Get the prompt string for the current state.
+///
+/// Shows "sx>" for normal input, "..>" for continuation lines.
+///
+/// # Returns
+/// i64 string handle for the prompt
+fn repl_prompt(state: i64) -> i64 {
+    let pending: i64 = vec_get(state, STATE_PENDING());
+    let pending_len: i64 = string_len(pending);
+
+    if pending_len > 0 {
+        // Continuation prompt
+        string_from("..> ")
+    } else {
+        // Normal prompt
+        let line_num: i64 = vec_get(state, STATE_LINE_NUM());
+        let parts: i64 = vec_new();
+        vec_push(parts, string_from("sx["));
+        vec_push(parts, int_to_string(line_num));
+        vec_push(parts, string_from("]> "));
+        string_join_vec(parts, string_from(""))
+    }
+}
+
+// =============================================================================
+// Main REPL Loop
+// =============================================================================
+
+/// Run the main REPL loop.
+///
+/// Reads input from stdin, evaluates, and prints results until :quit.
+///
+/// # Arguments
+/// * `state` - REPL state handle
+///
+/// # Returns
+/// 0 on normal exit
+fn repl_loop(state: i64) -> i64 {
+    let show_banner: i64 = vec_get(state, STATE_SHOW_BANNER());
+    if show_banner == 1 {
+        repl_print_banner();
+    }
+
+    while vec_get(state, STATE_RUNNING()) == 1 {
+        // Display prompt
+        let prompt: i64 = repl_prompt(state);
+        print(prompt);
+
+        // Read input
+        let input: i64 = intrinsic_read_line();
+        if input == 0 {
+            // EOF
+            println(string_from(""));
+            return 0;
+        }
+
+        let trimmed: i64 = string_trim(input);
+        if string_len(trimmed) == 0 {
+            continue;
+        }
+
+        // Evaluate
+        let result: i64 = repl_eval_line(state, trimmed);
+        if result == -1 {
+            println(string_from("Goodbye!"));
+            vec_set(state, STATE_RUNNING(), 0);
+        }
+    }
+    0
+}
+
+// =============================================================================
+// CLI Argument Parsing
+// =============================================================================
+
+/// Parse command-line arguments and configure REPL state.
+fn repl_parse_args(state: i64) -> i64 {
+    let args: i64 = get_args();
+    let argc: i64 = vec_len(args);
+    var i: i64 = 1; // skip program name
+
+    while i < argc {
+        let arg: i64 = vec_get(args, i);
+
+        if intrinsic_string_eq(arg, string_from("--no-banner")) == 1 {
+            vec_set(state, STATE_SHOW_BANNER(), 0);
+        } else if intrinsic_string_eq(arg, string_from("--history")) == 1 {
+            i = i + 1;
+            if i < argc {
+                let size: i64 = string_to_int(vec_get(args, i));
+                if size > 0 {
+                    vec_set(state, STATE_HISTORY_MAX(), size);
+                }
+            }
+        } else if intrinsic_string_eq(arg, string_from("--load")) == 1 {
+            i = i + 1;
+            if i < argc {
+                let file: i64 = vec_get(args, i);
+                repl_load_file(state, file);
+            }
+        } else if intrinsic_string_eq(arg, string_from("--help")) == 1 {
+            println(string_from("Usage: sxrepl [options]"));
+            println(string_from(""));
+            println(string_from("Options:"));
+            println(string_from("  --no-banner     Skip the welcome banner"));
+            println(string_from("  --history N     Set history size (default: 100)"));
+            println(string_from("  --load FILE     Load a file on startup"));
+            println(string_from("  --help          Show this help"));
+            println(string_from("  --version       Show version"));
+            return -1;
+        } else if intrinsic_string_eq(arg, string_from("--version")) == 1 {
+            repl_print_version();
+            return -1;
+        }
+
+        i = i + 1;
+    }
+    0
+}
+
+// =============================================================================
+// Main Entry Point
+// =============================================================================
+
+fn sxrepl_main() -> i64 {
+    let state: i64 = repl_state_new();
+
+    let arg_result: i64 = repl_parse_args(state);
+    if arg_result == -1 {
+        return 0;
+    }
+
+    repl_loop(state)
+}

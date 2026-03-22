@@ -32,7 +32,7 @@
 // Licensed under AGPL-3.0
 
 // =============================================================================
-// Runtime Extern Declarations
+// Runtime Extern Declarations (non-built-in functions only)
 // =============================================================================
 
 /// SHA-256 hash returning hex string
@@ -40,45 +40,6 @@ extern fn sha256_hex(data: i64) -> i64;
 
 /// Generate cryptographic random token (hex string)
 extern fn generate_token(len: i64) -> i64;
-
-/// String concatenation
-extern fn string_concat(a: i64, b: i64) -> i64;
-
-/// String equality check
-extern fn intrinsic_string_eq(a: i64, b: i64) -> i64;
-
-/// String length
-extern fn string_length(s: i64) -> i64;
-
-/// Get character at position (returns ASCII code)
-extern fn string_char_at(s: i64, idx: i64) -> i64;
-
-/// Get substring
-extern fn string_substring(s: i64, start: i64, len: i64) -> i64;
-
-/// Print to stdout
-extern fn println(s: i64) -> i64;
-
-/// Create a vec (runtime handle)
-extern fn vec_new() -> i64;
-
-/// Push value to vec
-extern fn vec_push(v: i64, val: i64) -> i64;
-
-/// Get vec element
-extern fn vec_get(v: i64, idx: i64) -> i64;
-
-/// Get vec length
-extern fn vec_len(v: i64) -> i64;
-
-/// Integer to string
-extern fn int_to_string(n: i64) -> i64;
-
-/// String to integer
-extern fn string_to_int(s: i64) -> i64;
-
-/// Create a single-character string from ASCII code
-extern fn string_char_create(code: i64) -> i64;
 
 /// HTTP POST request
 extern fn http_request_new(method: i64, url: i64) -> i64;
@@ -90,15 +51,15 @@ extern fn http_response_status(resp: i64) -> i64;
 extern fn http_response_body(resp: i64) -> i64;
 extern fn http_response_free(resp: i64) -> i64;
 
-/// JSON functions
-extern fn json_parse_simple(s: i64) -> i64;
-extern fn json_get_sx(obj: i64, key: i64) -> i64;
-extern fn json_as_string(val: i64) -> i64;
-extern fn json_as_i64(val: i64) -> i64;
-extern fn json_is_string(val: i64) -> i64;
-extern fn json_is_number(val: i64) -> i64;
-extern fn json_is_null(val: i64) -> i64;
-extern fn json_stringify(val: i64) -> i64;
+// Wrapper for string_substring using built-in intrinsic_string_slice
+fn oauth_substr(s: i64, start: i64, length: i64) -> i64 {
+    intrinsic_string_slice(s, start, start + length)
+}
+
+// Wrapper for string_char_create using built-in intrinsic_string_from_char
+fn local_char_create(code: i64) -> i64 {
+    intrinsic_string_from_char(code)
+}
 
 // =============================================================================
 // URL Encoding
@@ -121,15 +82,15 @@ extern fn json_stringify(val: i64) -> i64;
 /// // encoded = "hello%20world"
 /// ```
 pub fn url_encode(s: i64) -> i64 {
-    let len: i64 = string_length(s);
-    let mut result: i64 = "";
-    let mut i: i64 = 0;
+    let len: i64 = string_len(s);
+    var result: i64 = "";
+    var i: i64 = 0;
 
     while i < len {
         let ch: i64 = string_char_at(s, i);
 
         if is_unreserved_char(ch) == 1 {
-            result = string_concat(result, string_char_create(ch));
+            result = string_concat(result, local_char_create(ch));
         } else if ch == 32 {
             // Space -> %20
             result = string_concat(result, "%20");
@@ -137,7 +98,7 @@ pub fn url_encode(s: i64) -> i64 {
             // Percent-encode: %XX
             let hi: i64 = ch / 16;
             let lo: i64 = ch - hi * 16;
-            let mut enc: i64 = "%";
+            var enc: i64 = "%";
             enc = string_concat(enc, hex_digit(hi));
             enc = string_concat(enc, hex_digit(lo));
             result = string_concat(result, enc);
@@ -186,10 +147,10 @@ fn is_unreserved_char(ch: i64) -> i64 {
 fn hex_digit(val: i64) -> i64 {
     if val < 10 {
         // 0-9 -> ASCII 48-57
-        string_char_create(val + 48)
+        local_char_create(val + 48)
     } else {
         // A-F -> ASCII 65-70
-        string_char_create(val - 10 + 65)
+        local_char_create(val - 10 + 65)
     }
 }
 
@@ -201,9 +162,9 @@ fn hex_digit(val: i64) -> i64 {
 /// # Returns
 /// Decoded string handle
 pub fn url_decode(s: i64) -> i64 {
-    let len: i64 = string_length(s);
-    let mut result: i64 = "";
-    let mut i: i64 = 0;
+    let len: i64 = string_len(s);
+    var result: i64 = "";
+    var i: i64 = 0;
 
     while i < len {
         let ch: i64 = string_char_at(s, i);
@@ -216,7 +177,7 @@ pub fn url_decode(s: i64) -> i64 {
                 if hi >= 0 {
                     if lo >= 0 {
                         let byte_val: i64 = hi * 16 + lo;
-                        result = string_concat(result, string_char_create(byte_val));
+                        result = string_concat(result, local_char_create(byte_val));
                         i = i + 3;
                         continue;
                     }
@@ -230,7 +191,7 @@ pub fn url_decode(s: i64) -> i64 {
             result = string_concat(result, " ");
             i = i + 1;
         } else {
-            result = string_concat(result, string_char_create(ch));
+            result = string_concat(result, local_char_create(ch));
             i = i + 1;
         }
     }
@@ -288,9 +249,9 @@ fn b64url_char(val: i64) -> i64 {
 }
 
 fn base64url_encode_internal(data: i64) -> i64 {
-    let len: i64 = string_length(data);
-    let mut result: i64 = "";
-    let mut i: i64 = 0;
+    let len: i64 = string_len(data);
+    var result: i64 = "";
+    var i: i64 = 0;
 
     while i + 3 <= len {
         let b0: i64 = string_char_at(data, i);
@@ -302,10 +263,10 @@ fn base64url_encode_internal(data: i64) -> i64 {
         let c2: i64 = (b1 - (b1 / 16) * 16) * 4 + b2 / 64;
         let c3: i64 = b2 - (b2 / 64) * 64;
 
-        result = string_concat(result, string_char_create(b64url_char(c0)));
-        result = string_concat(result, string_char_create(b64url_char(c1)));
-        result = string_concat(result, string_char_create(b64url_char(c2)));
-        result = string_concat(result, string_char_create(b64url_char(c3)));
+        result = string_concat(result, local_char_create(b64url_char(c0)));
+        result = string_concat(result, local_char_create(b64url_char(c1)));
+        result = string_concat(result, local_char_create(b64url_char(c2)));
+        result = string_concat(result, local_char_create(b64url_char(c3)));
 
         i = i + 3;
     }
@@ -315,17 +276,17 @@ fn base64url_encode_internal(data: i64) -> i64 {
         let b0: i64 = string_char_at(data, i);
         let c0: i64 = b0 / 4;
         let c1: i64 = (b0 - c0 * 4) * 16;
-        result = string_concat(result, string_char_create(b64url_char(c0)));
-        result = string_concat(result, string_char_create(b64url_char(c1)));
+        result = string_concat(result, local_char_create(b64url_char(c0)));
+        result = string_concat(result, local_char_create(b64url_char(c1)));
     } else if remaining == 2 {
         let b0: i64 = string_char_at(data, i);
         let b1: i64 = string_char_at(data, i + 1);
         let c0: i64 = b0 / 4;
         let c1: i64 = (b0 - c0 * 4) * 16 + b1 / 16;
         let c2: i64 = (b1 - (b1 / 16) * 16) * 4;
-        result = string_concat(result, string_char_create(b64url_char(c0)));
-        result = string_concat(result, string_char_create(b64url_char(c1)));
-        result = string_concat(result, string_char_create(b64url_char(c2)));
+        result = string_concat(result, local_char_create(b64url_char(c0)));
+        result = string_concat(result, local_char_create(b64url_char(c1)));
+        result = string_concat(result, local_char_create(b64url_char(c2)));
     }
 
     result
@@ -451,8 +412,8 @@ pub fn oauth_add_scope(config: i64, scope: i64) -> i64 {
 fn oauth_scopes_string(config: i64) -> i64 {
     let scopes: i64 = vec_get(config, 5);
     let count: i64 = vec_len(scopes);
-    let mut result: i64 = "";
-    let mut i: i64 = 0;
+    var result: i64 = "";
+    var i: i64 = 0;
 
     while i < count {
         if i > 0 {
@@ -493,7 +454,7 @@ pub fn oauth_auth_url(config: i64, state: i64) -> i64 {
     let verifier: i64 = vec_get(config, 6);
 
     // Build query parameters
-    let mut url: i64 = auth_url;
+    var url: i64 = auth_url;
     url = string_concat(url, "?response_type=code");
     url = string_concat(url, "&client_id=");
     url = string_concat(url, url_encode(client_id));
@@ -504,7 +465,7 @@ pub fn oauth_auth_url(config: i64, state: i64) -> i64 {
 
     // Add scopes if any
     let scopes_str: i64 = oauth_scopes_string(config);
-    let scopes_len: i64 = string_length(scopes_str);
+    let scopes_len: i64 = string_len(scopes_str);
     if scopes_len > 0 {
         url = string_concat(url, "&scope=");
         url = string_concat(url, url_encode(scopes_str));
@@ -567,7 +528,7 @@ pub fn oauth_exchange_code(config: i64, code: i64) -> i64 {
     let verifier: i64 = vec_get(config, 6);
 
     // Build POST body (application/x-www-form-urlencoded)
-    let mut body: i64 = "grant_type=authorization_code";
+    var body: i64 = "grant_type=authorization_code";
     body = string_concat(body, "&code=");
     body = string_concat(body, url_encode(code));
     body = string_concat(body, "&redirect_uri=");
@@ -616,7 +577,7 @@ pub fn oauth_refresh_token(config: i64, refresh_token: i64) -> i64 {
     let client_secret: i64 = vec_get(config, 1);
 
     // Build POST body
-    let mut body: i64 = "grant_type=refresh_token";
+    var body: i64 = "grant_type=refresh_token";
     body = string_concat(body, "&refresh_token=");
     body = string_concat(body, url_encode(refresh_token));
     body = string_concat(body, "&client_id=");
@@ -719,7 +680,7 @@ pub fn oauth_token_refresh(token: i64) -> i64 {
 /// Expires-in value as integer (seconds), or 0 if not available
 pub fn oauth_token_expires_in(token: i64) -> i64 {
     let expires_str: i64 = vec_get(token, 2);
-    let len: i64 = string_length(expires_str);
+    let len: i64 = string_len(expires_str);
     if len == 0 {
         return 0;
     }
@@ -812,7 +773,7 @@ pub fn oauth_token_error(token: i64) -> i64 {
 pub fn oauth_auth_header(token: i64) -> i64 {
     let token_type: i64 = oauth_token_type(token);
     let access: i64 = oauth_token_access(token);
-    let mut header: i64 = token_type;
+    var header: i64 = token_type;
     header = string_concat(header, " ");
     header = string_concat(header, access);
     header
@@ -887,11 +848,11 @@ pub fn oauth_google(client_id: i64, client_secret: i64) -> i64 {
 /// # Returns
 /// Configuration vec handle with Microsoft endpoints
 pub fn oauth_microsoft(client_id: i64, client_secret: i64, tenant: i64) -> i64 {
-    let mut auth_url: i64 = "https://login.microsoftonline.com/";
+    var auth_url: i64 = "https://login.microsoftonline.com/";
     auth_url = string_concat(auth_url, tenant);
     auth_url = string_concat(auth_url, "/oauth2/v2.0/authorize");
 
-    let mut token_url: i64 = "https://login.microsoftonline.com/";
+    var token_url: i64 = "https://login.microsoftonline.com/";
     token_url = string_concat(token_url, tenant);
     token_url = string_concat(token_url, "/oauth2/v2.0/token");
 
@@ -925,7 +886,7 @@ pub fn oauth_generate_state() -> i64 {
 /// # Returns
 /// 1 if states match, 0 otherwise
 pub fn oauth_validate_state(expected: i64, received: i64) -> i64 {
-    intrinsic_string_eq(expected, received)
+    string_eq(expected, received)
 }
 
 // =============================================================================
@@ -941,8 +902,8 @@ pub fn oauth_validate_state(expected: i64, received: i64) -> i64 {
 /// URL-encoded query string (without leading ?)
 pub fn build_query_string(params: i64) -> i64 {
     let len: i64 = vec_len(params);
-    let mut result: i64 = "";
-    let mut i: i64 = 0;
+    var result: i64 = "";
+    var i: i64 = 0;
 
     while i < len {
         if i > 0 {
@@ -968,11 +929,11 @@ pub fn build_query_string(params: i64) -> i64 {
 /// Vec handle where even indices are keys and odd indices are values
 pub fn parse_query_string(query: i64) -> i64 {
     let result: i64 = vec_new();
-    let len: i64 = string_length(query);
-    let mut start: i64 = 0;
-    let mut i: i64 = 0;
-    let mut key: i64 = "";
-    let mut in_value: i64 = 0;
+    let len: i64 = string_len(query);
+    var start: i64 = 0;
+    var i: i64 = 0;
+    var key: i64 = "";
+    var in_value: i64 = 0;
 
     while i <= len {
         let at_end: i64 = if i == len { 1 } else { 0 };
@@ -981,13 +942,13 @@ pub fn parse_query_string(query: i64) -> i64 {
         if ch == 61 {
             // = sign: end of key
             if in_value == 0 {
-                key = url_decode(string_substring(query, start, i - start));
+                key = url_decode(oauth_substr(query, start, i - start));
                 start = i + 1;
                 in_value = 1;
             }
         } else if ch == 38 {
             // & sign: end of pair
-            let val: i64 = url_decode(string_substring(query, start, i - start));
+            let val: i64 = url_decode(oauth_substr(query, start, i - start));
             vec_push(result, key);
             vec_push(result, val);
             start = i + 1;
@@ -996,12 +957,12 @@ pub fn parse_query_string(query: i64) -> i64 {
         } else if at_end == 1 {
             // End of string: save last pair
             if in_value == 1 {
-                let val2: i64 = url_decode(string_substring(query, start, i - start));
+                let val2: i64 = url_decode(oauth_substr(query, start, i - start));
                 vec_push(result, key);
                 vec_push(result, val2);
             } else if i > start {
                 // Key without value
-                let key2: i64 = url_decode(string_substring(query, start, i - start));
+                let key2: i64 = url_decode(oauth_substr(query, start, i - start));
                 vec_push(result, key2);
                 vec_push(result, "");
             }
@@ -1023,9 +984,9 @@ pub fn parse_query_string(query: i64) -> i64 {
 /// Value string handle, or empty string if not found
 pub fn query_get(params: i64, key: i64) -> i64 {
     let len: i64 = vec_len(params);
-    let mut i: i64 = 0;
+    var i: i64 = 0;
     while i < len {
-        if intrinsic_string_eq(vec_get(params, i), key) == 1 {
+        if string_eq(vec_get(params, i), key) == 1 {
             return vec_get(params, i + 1);
         }
         i = i + 2;

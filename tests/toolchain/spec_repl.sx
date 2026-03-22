@@ -1,0 +1,172 @@
+// REPL Integration Tests
+// Tests real functions from tools/sxrepl.sx via use import
+
+use sxrepl;
+
+fn test_state_creation() -> i64 {
+    println("  Testing repl_state_new...");
+    let state: i64 = repl_state_new();
+    // State: [vars, history, history_max, line_num, pending, running, show_banner]
+    let vars: i64 = vec_get(state, 0);
+    if vec_len(vars) != 0 {
+        println("  FAIL: new state should have 0 variables");
+        return 1;
+    }
+    let line_num: i64 = vec_get(state, 3);
+    if line_num != 1 {
+        println("  FAIL: line number should start at 1");
+        return 1;
+    }
+    let running: i64 = vec_get(state, 5);
+    if running != 1 {
+        println("  FAIL: running should be 1");
+        return 1;
+    }
+    println("  PASS: repl_state_new");
+    0
+}
+
+fn test_command_detection() -> i64 {
+    println("  Testing repl_is_command...");
+    if repl_is_command(":help") != 1 {
+        println("  FAIL: :help is a command");
+        return 1;
+    }
+    if repl_is_command(":quit") != 1 {
+        println("  FAIL: :quit is a command");
+        return 1;
+    }
+    if repl_is_command("let x = 5") != 0 {
+        println("  FAIL: let x = 5 is not a command");
+        return 1;
+    }
+    if repl_is_command("42") != 0 {
+        println("  FAIL: 42 is not a command");
+        return 1;
+    }
+    if repl_is_command("") != 0 {
+        println("  FAIL: empty is not a command");
+        return 1;
+    }
+    println("  PASS: repl_is_command");
+    0
+}
+
+fn test_command_parsing() -> i64 {
+    println("  Testing repl_parse_command...");
+    let parsed: i64 = repl_parse_command(":type x + 1");
+    let cmd: i64 = vec_get(parsed, 0);
+    let arg: i64 = vec_get(parsed, 1);
+    if string_eq(cmd, "type") != 1 {
+        println("  FAIL: command should be 'type'");
+        return 1;
+    }
+    if string_len(arg) < 1 {
+        println("  FAIL: arg should not be empty");
+        return 1;
+    }
+    let parsed2: i64 = repl_parse_command(":quit");
+    let cmd2: i64 = vec_get(parsed2, 0);
+    let arg2: i64 = vec_get(parsed2, 1);
+    if string_eq(cmd2, "quit") != 1 {
+        println("  FAIL: command should be 'quit'");
+        return 1;
+    }
+    if string_len(arg2) != 0 {
+        println("  FAIL: quit should have empty arg");
+        return 1;
+    }
+    println("  PASS: repl_parse_command");
+    0
+}
+
+fn test_variable_storage() -> i64 {
+    println("  Testing repl_set_var/repl_get_var/repl_has_var...");
+    let state: i64 = repl_state_new();
+    repl_set_var(state, "x", 42, "i64");
+    repl_set_var(state, "name", 100, "String");
+    let x_val: i64 = repl_get_var(state, "x");
+    if x_val != 42 {
+        println("  FAIL: x should be 42");
+        return 1;
+    }
+    if repl_has_var(state, "x") != 1 {
+        println("  FAIL: should have var x");
+        return 1;
+    }
+    if repl_has_var(state, "z") != 0 {
+        println("  FAIL: should not have var z");
+        return 1;
+    }
+    // Update existing variable
+    repl_set_var(state, "x", 99, "i64");
+    let x_updated: i64 = repl_get_var(state, "x");
+    if x_updated != 99 {
+        println("  FAIL: x should be updated to 99");
+        return 1;
+    }
+    println("  PASS: variable storage");
+    0
+}
+
+fn test_multiline_detection() -> i64 {
+    println("  Testing repl_is_incomplete...");
+    if repl_is_incomplete("fn foo() {") != 1 {
+        println("  FAIL: unclosed brace should be incomplete");
+        return 1;
+    }
+    if repl_is_incomplete("let x = 5;") != 0 {
+        println("  FAIL: complete statement should not be incomplete");
+        return 1;
+    }
+    if repl_is_incomplete("(1 + 2") != 1 {
+        println("  FAIL: unclosed paren should be incomplete");
+        return 1;
+    }
+    if repl_is_incomplete("(1 + 2)") != 0 {
+        println("  FAIL: balanced parens should be complete");
+        return 1;
+    }
+    println("  PASS: repl_is_incomplete");
+    0
+}
+
+fn test_let_binding_detection() -> i64 {
+    println("  Testing repl_is_let_binding...");
+    if repl_is_let_binding("let x = 5") != 1 {
+        println("  FAIL: 'let x = 5' is a let binding");
+        return 1;
+    }
+    if repl_is_let_binding("var y = 10") != 1 {
+        println("  FAIL: 'var y = 10' is a let binding");
+        return 1;
+    }
+    if repl_is_let_binding("x + 1") != 0 {
+        println("  FAIL: 'x + 1' is not a let binding");
+        return 1;
+    }
+    if repl_is_let_binding(":help") != 0 {
+        println("  FAIL: ':help' is not a let binding");
+        return 1;
+    }
+    println("  PASS: repl_is_let_binding");
+    0
+}
+
+fn main() -> i64 {
+    println("=== REPL Integration Tests ===");
+    var failures: i64 = 0;
+    failures = failures + test_state_creation();
+    failures = failures + test_command_detection();
+    failures = failures + test_command_parsing();
+    failures = failures + test_variable_storage();
+    failures = failures + test_multiline_detection();
+    failures = failures + test_let_binding_detection();
+    println("");
+    if failures == 0 {
+        println("All 6 REPL integration tests passed!");
+    } else {
+        println(string_concat("FAILED: ", string_concat(int_to_string(failures), " test(s) failed")));
+    }
+    failures
+}

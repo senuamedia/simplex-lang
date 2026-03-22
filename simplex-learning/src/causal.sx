@@ -1,0 +1,965 @@
+// simplex-learning::causal - Causal Inference Primitives
+//
+// Implements the structural causal model (SCM) framework for reasoning about
+// cause and effect. Provides directed acyclic graphs (DAGs), do-calculus,
+// d-separation, adjustment sets, and treatment effect estimation.
+//
+// # Causal Graph Layout (vec handles)
+//
+// Graph vec: [n_vars, edges_vec, names_vec]
+//   edges_vec: vec of (from, to) pairs stored as [from0, to0, from1, to1, ...]
+//   names_vec: vec of string handles (optional labels for variables)
+//
+// # Theory
+//
+// Pearl's causal hierarchy:
+//   1. Association (seeing): P(Y | X)
+//   2. Intervention (doing): P(Y | do(X))
+//   3. Counterfactuals (imagining): P(Y_x | X', Y')
+//
+// This module provides tools for levels 1 and 2, with d-separation
+// answering conditional independence queries (level 1) and do-calculus
+// enabling interventional reasoning (level 2).
+//
+// # References
+//
+// Pearl, "Causality" (2009)
+// Pearl, "The Do-Calculus Revisited" (2012)
+//
+// Copyright (c) 2025-2026 Rod Higgins
+// Licensed under AGPL-3.0
+
+// =============================================================================
+// Constants (as functions)
+// =============================================================================
+
+fn GRAPH_N_VARS() -> i64 { 0 }
+fn GRAPH_EDGES() -> i64 { 1 }
+fn GRAPH_NAMES() -> i64 { 2 }
+
+// =============================================================================
+// Floating-point helpers
+// =============================================================================
+
+fn causal_f64_abs(x: f64) -> f64 {
+    if x < 0.0 { 0.0 - x } else { x }
+}
+
+// =============================================================================
+// Causal Graph Construction
+// =============================================================================
+
+/// Create an empty causal DAG with n_variables nodes.
+///
+/// Nodes are numbered 0..n_variables-1.
+///
+/// Graph vec layout: [n_vars, edges_vec, names_vec]
+///   edges_vec: initially empty, stores [from0, to0, from1, to1, ...]
+///   names_vec: vec of string handles for variable names (optional)
+///
+/// Arguments:
+///   n_variables - number of variables in the causal model
+///
+/// Returns: handle to graph vec
+fn causal_graph_new(n_variables: i64) -> i64 {
+    let graph: i64 = vec_new();
+    vec_push(graph, n_variables);  // [0] n_vars
+    vec_push(graph, vec_new());    // [1] edges (empty)
+    vec_push(graph, vec_new());    // [2] names (empty)
+    graph
+}
+
+/// Add a directed edge (cause -> effect) to the causal graph.
+///
+/// The edge represents a direct causal relationship: changes to
+/// variable `from` can directly cause changes in variable `to`.
+///
+/// Arguments:
+///   graph - graph handle
+///   from  - cause variable index
+///   to    - effect variable index
+///
+/// Returns: 0 on success, -1 if indices out of range
+fn causal_add_edge(graph: i64, from: i64, to: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+    if from < 0 || from >= n_vars || to < 0 || to >= n_vars {
+        return -1;
+    }
+    if from == to {
+        return -1;  // No self-loops
+    }
+
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    vec_push(edges, from);
+    vec_push(edges, to);
+    0
+}
+
+/// Check if a specific edge exists in the graph.
+///
+/// Returns: 1 if edge exists, 0 otherwise
+fn causal_has_edge(graph: i64, from: i64, to: i64) -> i64 {
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    let n_edges: i64 = vec_len(edges) / 2;
+
+    var i: i64 = 0;
+    while i < n_edges {
+        let e_from: i64 = vec_get(edges, i * 2);
+        let e_to: i64 = vec_get(edges, i * 2 + 1);
+        if e_from == from && e_to == to {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Get the number of edges in the graph.
+///
+/// Returns: edge count
+fn causal_edge_count(graph: i64) -> i64 {
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    vec_len(edges) / 2
+}
+
+/// Get the parent nodes of a given node (direct causes).
+///
+/// Parents of node X are all nodes Y such that Y -> X exists.
+///
+/// Arguments:
+///   graph - graph handle
+///   node  - variable index
+///
+/// Returns: handle to vec of parent indices
+fn causal_parents(graph: i64, node: i64) -> i64 {
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    let n_edges: i64 = vec_len(edges) / 2;
+    let parents: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < n_edges {
+        let e_from: i64 = vec_get(edges, i * 2);
+        let e_to: i64 = vec_get(edges, i * 2 + 1);
+        if e_to == node {
+            vec_push(parents, e_from);
+        }
+        i = i + 1;
+    }
+
+    parents
+}
+
+/// Get the child nodes of a given node (direct effects).
+///
+/// Children of node X are all nodes Y such that X -> Y exists.
+///
+/// Arguments:
+///   graph - graph handle
+///   node  - variable index
+///
+/// Returns: handle to vec of child indices
+fn causal_children(graph: i64, node: i64) -> i64 {
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    let n_edges: i64 = vec_len(edges) / 2;
+    let children: i64 = vec_new();
+
+    var i: i64 = 0;
+    while i < n_edges {
+        let e_from: i64 = vec_get(edges, i * 2);
+        let e_to: i64 = vec_get(edges, i * 2 + 1);
+        if e_from == node {
+            vec_push(children, e_to);
+        }
+        i = i + 1;
+    }
+
+    children
+}
+
+/// Check if node `a` is an ancestor of node `b`.
+///
+/// Uses breadth-first search from `a` following directed edges.
+/// Node a is an ancestor of b if there is a directed path a -> ... -> b.
+///
+/// Arguments:
+///   graph - graph handle
+///   a     - potential ancestor
+///   b     - potential descendant
+///
+/// Returns: 1 if a is ancestor of b, 0 otherwise
+fn causal_is_ancestor(graph: i64, a: i64, b: i64) -> i64 {
+    if a == b { return 0; }  // A node is not its own ancestor
+
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+
+    // BFS queue
+    let queue: i64 = vec_new();
+    vec_push(queue, a);
+
+    // Visited set (vec of 0/1 flags)
+    let visited: i64 = vec_new();
+    var v: i64 = 0;
+    while v < n_vars {
+        vec_push(visited, 0);
+        v = v + 1;
+    }
+    vec_set(visited, a, 1);
+
+    var head: i64 = 0;
+    while head < vec_len(queue) {
+        let current: i64 = vec_get(queue, head);
+        head = head + 1;
+
+        let ch: i64 = causal_children(graph, current);
+        let n_ch: i64 = vec_len(ch);
+        var ci: i64 = 0;
+        while ci < n_ch {
+            let child: i64 = vec_get(ch, ci);
+            if child == b {
+                return 1;
+            }
+            if vec_get(visited, child) == 0 {
+                vec_set(visited, child, 1);
+                vec_push(queue, child);
+            }
+            ci = ci + 1;
+        }
+    }
+
+    0
+}
+
+/// Get all ancestors of a node.
+///
+/// Returns: handle to vec of ancestor indices
+fn causal_ancestors(graph: i64, node: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+    let result: i64 = vec_new();
+
+    var v: i64 = 0;
+    while v < n_vars {
+        if v != node {
+            if causal_is_ancestor(graph, v, node) == 1 {
+                vec_push(result, v);
+            }
+        }
+        v = v + 1;
+    }
+
+    result
+}
+
+/// Get all descendants of a node.
+///
+/// Returns: handle to vec of descendant indices
+fn causal_descendants(graph: i64, node: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+    let result: i64 = vec_new();
+
+    var v: i64 = 0;
+    while v < n_vars {
+        if v != node {
+            if causal_is_ancestor(graph, node, v) == 1 {
+                vec_push(result, v);
+            }
+        }
+        v = v + 1;
+    }
+
+    result
+}
+
+// =============================================================================
+// Topological Sort
+// =============================================================================
+
+/// Compute a topological ordering of the causal graph.
+///
+/// Uses Kahn's algorithm: repeatedly remove nodes with no incoming
+/// edges (in the remaining graph).
+///
+/// Returns: handle to vec of node indices in topological order,
+///          or empty vec if graph has a cycle
+fn causal_topological_sort(graph: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    let n_edges: i64 = vec_len(edges) / 2;
+
+    // Compute in-degrees
+    let in_degree: i64 = vec_new();
+    var v: i64 = 0;
+    while v < n_vars {
+        vec_push(in_degree, 0);
+        v = v + 1;
+    }
+
+    var e: i64 = 0;
+    while e < n_edges {
+        let to: i64 = vec_get(edges, e * 2 + 1);
+        let old_deg: i64 = vec_get(in_degree, to);
+        vec_set(in_degree, to, old_deg + 1);
+        e = e + 1;
+    }
+
+    // Initialize queue with zero-degree nodes
+    let queue: i64 = vec_new();
+    v = 0;
+    while v < n_vars {
+        if vec_get(in_degree, v) == 0 {
+            vec_push(queue, v);
+        }
+        v = v + 1;
+    }
+
+    // Process
+    let result: i64 = vec_new();
+    var head: i64 = 0;
+    while head < vec_len(queue) {
+        let node: i64 = vec_get(queue, head);
+        head = head + 1;
+        vec_push(result, node);
+
+        // Reduce in-degree of all children
+        let ch: i64 = causal_children(graph, node);
+        let n_ch: i64 = vec_len(ch);
+        var ci: i64 = 0;
+        while ci < n_ch {
+            let child: i64 = vec_get(ch, ci);
+            let new_deg: i64 = vec_get(in_degree, child) - 1;
+            vec_set(in_degree, child, new_deg);
+            if new_deg == 0 {
+                vec_push(queue, child);
+            }
+            ci = ci + 1;
+        }
+    }
+
+    // If we didn't process all nodes, there's a cycle
+    if vec_len(result) != n_vars {
+        return vec_new();  // Empty = cycle detected
+    }
+
+    result
+}
+
+// =============================================================================
+// d-Separation (Bayes-Ball Algorithm)
+// =============================================================================
+
+/// Helper: check if a node is in a given set (vec of i64).
+fn set_contains(set: i64, node: i64) -> i64 {
+    let n: i64 = vec_len(set);
+    var i: i64 = 0;
+    while i < n {
+        if vec_get(set, i) == node {
+            return 1;
+        }
+        i = i + 1;
+    }
+    0
+}
+
+/// Check if X and Y are d-separated given conditioning set Z.
+///
+/// Uses the Bayes-Ball algorithm (Shachter, 1998):
+/// X and Y are d-separated given Z if and only if no "active path"
+/// exists between X and Y. A path is active when:
+///   - Chain (A -> B -> C) or Fork (A <- B -> C): B is NOT in Z
+///   - Collider (A -> B <- C): B or a descendant of B IS in Z
+///
+/// Implementation: BFS through (node, direction) pairs, tracking
+/// whether the ball can pass through each node.
+///
+/// Arguments:
+///   graph - graph handle
+///   x     - source variable
+///   y     - target variable
+///   z_set - handle to vec of conditioning variable indices
+///
+/// Returns: 1 if d-separated, 0 if d-connected
+fn d_separated(graph: i64, x: i64, y: i64, z_set: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+
+    // Precompute: which nodes are ancestors of Z?
+    // (needed for collider activation)
+    let z_or_desc_of_z: i64 = vec_new();
+    var v: i64 = 0;
+    while v < n_vars {
+        vec_push(z_or_desc_of_z, 0);
+        v = v + 1;
+    }
+
+    // Mark Z nodes and their ancestors
+    let n_z: i64 = vec_len(z_set);
+    var zi: i64 = 0;
+    while zi < n_z {
+        let z_node: i64 = vec_get(z_set, zi);
+        vec_set(z_or_desc_of_z, z_node, 1);
+        // Also mark all ancestors of z_node
+        let anc: i64 = causal_ancestors(graph, z_node);
+        let n_anc: i64 = vec_len(anc);
+        var ai: i64 = 0;
+        while ai < n_anc {
+            vec_set(z_or_desc_of_z, vec_get(anc, ai), 1);
+            ai = ai + 1;
+        }
+        zi = zi + 1;
+    }
+
+    // BFS with (node, direction) states
+    // direction: 0 = "going up" (came from child), 1 = "going down" (came from parent)
+    // We encode state as node * 2 + direction
+    let queue: i64 = vec_new();
+    let visited: i64 = vec_new();
+
+    // Initialize visited set (2 * n_vars entries: one per direction per node)
+    v = 0;
+    while v < n_vars * 2 {
+        vec_push(visited, 0);
+        v = v + 1;
+    }
+
+    // Start from x, going both up and down
+    vec_push(queue, x * 2 + 0);  // x, going up
+    vec_push(queue, x * 2 + 1);  // x, going down
+    vec_set(visited, x * 2 + 0, 1);
+    vec_set(visited, x * 2 + 1, 1);
+
+    var head: i64 = 0;
+    while head < vec_len(queue) {
+        let state: i64 = vec_get(queue, head);
+        head = head + 1;
+
+        let node: i64 = state / 2;
+        let direction: i64 = state - node * 2;  // 0=up, 1=down
+
+        if node == y {
+            return 0;  // d-connected: ball reached y
+        }
+
+        let in_z: i64 = set_contains(z_set, node);
+
+        if direction == 1 {
+            // Ball going down (from parent to this node)
+            if in_z == 0 {
+                // Not conditioned: ball passes through
+                // Continue down to children
+                let ch: i64 = causal_children(graph, node);
+                let n_ch: i64 = vec_len(ch);
+                var ci: i64 = 0;
+                while ci < n_ch {
+                    let child: i64 = vec_get(ch, ci);
+                    let new_state: i64 = child * 2 + 1;
+                    if vec_get(visited, new_state) == 0 {
+                        vec_set(visited, new_state, 1);
+                        vec_push(queue, new_state);
+                    }
+                    ci = ci + 1;
+                }
+                // Continue up to parents (fork)
+                let pa: i64 = causal_parents(graph, node);
+                let n_pa: i64 = vec_len(pa);
+                var pi: i64 = 0;
+                while pi < n_pa {
+                    let parent: i64 = vec_get(pa, pi);
+                    let new_state: i64 = parent * 2 + 0;
+                    if vec_get(visited, new_state) == 0 {
+                        vec_set(visited, new_state, 1);
+                        vec_push(queue, new_state);
+                    }
+                    pi = pi + 1;
+                }
+            }
+            // If in Z and going down: blocked (chain/fork blocked by conditioning)
+            // But if it's a collider, we check differently (handled in up direction)
+        } else {
+            // Ball going up (from child to this node)
+            if in_z == 1 {
+                // Conditioned on: ball can go up to parents (explaining away)
+                let pa: i64 = causal_parents(graph, node);
+                let n_pa: i64 = vec_len(pa);
+                var pi: i64 = 0;
+                while pi < n_pa {
+                    let parent: i64 = vec_get(pa, pi);
+                    let new_state: i64 = parent * 2 + 0;
+                    if vec_get(visited, new_state) == 0 {
+                        vec_set(visited, new_state, 1);
+                        vec_push(queue, new_state);
+                    }
+                    pi = pi + 1;
+                }
+            }
+            if vec_get(z_or_desc_of_z, node) == 1 {
+                // Node or descendant is in Z: collider activated
+                // Ball can go up to parents
+                let pa: i64 = causal_parents(graph, node);
+                let n_pa: i64 = vec_len(pa);
+                var pi: i64 = 0;
+                while pi < n_pa {
+                    let parent: i64 = vec_get(pa, pi);
+                    let new_state: i64 = parent * 2 + 0;
+                    if vec_get(visited, new_state) == 0 {
+                        vec_set(visited, new_state, 1);
+                        vec_push(queue, new_state);
+                    }
+                    pi = pi + 1;
+                }
+            }
+            // If not in Z and not ancestor of Z: collider blocks
+        }
+    }
+
+    1  // d-separated: ball never reached y
+}
+
+// =============================================================================
+// do-Calculus: Intervention
+// =============================================================================
+
+/// Create a mutilated graph from do(variable = value).
+///
+/// In a do-intervention, we:
+///   1. Remove all incoming edges to the intervention variable
+///   2. The variable is set to the specified value (recorded but not
+///      stored in graph structure)
+///
+/// This transforms P(Y | X) into P(Y | do(X = x)) by breaking
+/// the causal mechanism that normally determines X.
+///
+/// Arguments:
+///   graph    - original graph handle
+///   variable - variable being intervened on
+///   value    - intervention value (f64_to_bits, stored for reference)
+///
+/// Returns: handle to new mutilated graph
+fn do_intervention(graph: i64, variable: i64, value: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    let n_edges: i64 = vec_len(edges) / 2;
+
+    // Create new graph with same number of variables
+    let new_graph: i64 = causal_graph_new(n_vars);
+
+    // Copy all edges EXCEPT those pointing to the intervention variable
+    var e: i64 = 0;
+    while e < n_edges {
+        let e_from: i64 = vec_get(edges, e * 2);
+        let e_to: i64 = vec_get(edges, e * 2 + 1);
+        if e_to != variable {
+            causal_add_edge(new_graph, e_from, e_to);
+        }
+        e = e + 1;
+    }
+
+    new_graph
+}
+
+/// Check if a causal effect is identifiable from observational data.
+///
+/// A causal effect P(Y | do(X)) is identifiable if it can be computed
+/// from observational data P(V) alone. This is the case when the
+/// back-door criterion can be satisfied, i.e., there exists a set Z
+/// that blocks all back-door paths from X to Y.
+///
+/// Simple sufficient condition: if there are no unblocked back-door
+/// paths (no common causes), the effect is identifiable.
+///
+/// Arguments:
+///   graph        - graph handle
+///   target       - outcome variable
+///   intervention - treatment variable
+///
+/// Returns: 1 if identifiable, 0 if not
+fn is_identifiable(graph: i64, target: i64, intervention: i64) -> i64 {
+    // Try the parent adjustment set (always works if it satisfies back-door)
+    let adj: i64 = find_adjustment_set(graph, intervention, target);
+    if vec_len(adj) >= 0 {
+        // Check if this adjustment set satisfies the back-door criterion
+        return backdoor_criterion(graph, intervention, target, adj);
+    }
+    0
+}
+
+// =============================================================================
+// Adjustment Sets
+// =============================================================================
+
+/// Check if an adjustment set Z satisfies the back-door criterion.
+///
+/// The back-door criterion is satisfied when Z:
+///   1. No node in Z is a descendant of the treatment X
+///   2. Z blocks every back-door path from X to Y
+///      (a back-door path starts with an edge INTO X)
+///
+/// Condition 2 is equivalent to: X and Y are d-separated by Z
+/// in the graph where all outgoing edges from X are removed.
+///
+/// Arguments:
+///   graph      - graph handle
+///   treatment  - treatment variable X
+///   outcome    - outcome variable Y
+///   adjustment - handle to vec of adjustment set Z indices
+///
+/// Returns: 1 if criterion satisfied, 0 otherwise
+fn backdoor_criterion(graph: i64, treatment: i64, outcome: i64, adjustment: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+
+    // Condition 1: No node in Z is a descendant of X
+    let n_adj: i64 = vec_len(adjustment);
+    var ai: i64 = 0;
+    while ai < n_adj {
+        let z_node: i64 = vec_get(adjustment, ai);
+        if causal_is_ancestor(graph, treatment, z_node) == 1 {
+            return 0;  // z_node is a descendant of treatment
+        }
+        ai = ai + 1;
+    }
+
+    // Condition 2: Z d-separates X and Y in the graph with outgoing edges from X removed
+    // Build modified graph: remove outgoing edges from treatment
+    let mod_graph: i64 = causal_graph_new(n_vars);
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    let n_edges: i64 = vec_len(edges) / 2;
+
+    var e: i64 = 0;
+    while e < n_edges {
+        let e_from: i64 = vec_get(edges, e * 2);
+        let e_to: i64 = vec_get(edges, e * 2 + 1);
+        if e_from != treatment {
+            causal_add_edge(mod_graph, e_from, e_to);
+        }
+        e = e + 1;
+    }
+
+    // Check d-separation in modified graph
+    d_separated(mod_graph, treatment, outcome, adjustment)
+}
+
+/// Find a minimal adjustment set for estimating P(Y | do(X)).
+///
+/// Strategy: use the parents of the treatment variable as the
+/// adjustment set. This satisfies the back-door criterion when
+/// the graph is a DAG with no hidden confounders.
+///
+/// Arguments:
+///   graph     - graph handle
+///   treatment - treatment variable X
+///   outcome   - outcome variable Y
+///
+/// Returns: handle to vec of adjustment variable indices
+fn find_adjustment_set(graph: i64, treatment: i64, outcome: i64) -> i64 {
+    // Start with parents of treatment (classic back-door adjustment)
+    let parents: i64 = causal_parents(graph, treatment);
+
+    // Filter out any parents that are descendants of treatment
+    // (shouldn't happen in a DAG, but be safe)
+    let adj: i64 = vec_new();
+    let n_pa: i64 = vec_len(parents);
+    var pi: i64 = 0;
+    while pi < n_pa {
+        let p: i64 = vec_get(parents, pi);
+        if p != outcome {
+            // Don't include the outcome itself
+            if causal_is_ancestor(graph, treatment, p) == 0 {
+                vec_push(adj, p);
+            }
+        }
+        pi = pi + 1;
+    }
+
+    adj
+}
+
+// =============================================================================
+// Treatment Effect Estimation
+// =============================================================================
+
+/// Estimate Average Treatment Effect using difference in means.
+///
+/// ATE = E[Y | T=1] - E[Y | T=0]
+///
+/// This is the simplest estimator, valid when treatment is
+/// randomly assigned (no confounders) or after appropriate
+/// adjustment.
+///
+/// Arguments:
+///   treatment - handle to vec of n treatment values (0 or 1, as i64)
+///   outcome   - handle to vec of n outcome values (f64_to_bits)
+///   n         - number of observations
+///
+/// Returns: ATE estimate (f64_to_bits)
+fn ate_estimate(treatment: i64, outcome: i64, n: i64) -> i64 {
+    var sum_treated: f64 = 0.0;
+    var sum_control: f64 = 0.0;
+    var n_treated: i64 = 0;
+    var n_control: i64 = 0;
+
+    var i: i64 = 0;
+    while i < n {
+        let t: i64 = vec_get(treatment, i);
+        let y: f64 = bits_to_f64(vec_get(outcome, i));
+
+        if t == 1 {
+            sum_treated = sum_treated + y;
+            n_treated = n_treated + 1;
+        } else {
+            sum_control = sum_control + y;
+            n_control = n_control + 1;
+        }
+        i = i + 1;
+    }
+
+    // Avoid division by zero
+    if n_treated == 0 || n_control == 0 {
+        return f64_to_bits(0.0);
+    }
+
+    let mean_treated: f64 = sum_treated / bits_to_f64(f64_to_bits(n_treated));
+    let mean_control: f64 = sum_control / bits_to_f64(f64_to_bits(n_control));
+    let ate: f64 = mean_treated - mean_control;
+
+    f64_to_bits(ate)
+}
+
+/// Estimate Average Treatment Effect on the Treated (ATT).
+///
+/// ATT = E[Y(1) - Y(0) | T=1]
+/// Estimated as: E[Y | T=1] - E[Y | T=0] (same as ATE for randomized)
+///
+/// For observational data, this differs from ATE when treatment
+/// effect varies with covariates.
+///
+/// Arguments:
+///   treatment - handle to vec of n treatment values (0 or 1)
+///   outcome   - handle to vec of n outcome values (f64_to_bits)
+///   n         - number of observations
+///
+/// Returns: ATT estimate (f64_to_bits)
+fn att_estimate(treatment: i64, outcome: i64, n: i64) -> i64 {
+    // For randomized experiments, ATT = ATE
+    ate_estimate(treatment, outcome, n)
+}
+
+/// Weighted ATE with Inverse Probability Weighting (IPW).
+///
+/// Each unit is weighted by the inverse of its probability of receiving
+/// the treatment it actually received:
+///   ATE_IPW = (1/n) * Σ_i [ T_i * Y_i / P(T=1) - (1-T_i) * Y_i / P(T=0) ]
+///
+/// Arguments:
+///   treatment   - handle to vec of n treatment values (0 or 1)
+///   outcome     - handle to vec of n outcome values (f64_to_bits)
+///   propensity  - handle to vec of n propensity scores P(T=1|X) (f64_to_bits)
+///   n           - number of observations
+///
+/// Returns: IPW-ATE estimate (f64_to_bits)
+fn ate_ipw(treatment: i64, outcome: i64, propensity: i64, n: i64) -> i64 {
+    var sum: f64 = 0.0;
+
+    var i: i64 = 0;
+    while i < n {
+        let t: i64 = vec_get(treatment, i);
+        let y: f64 = bits_to_f64(vec_get(outcome, i));
+        let ps: f64 = bits_to_f64(vec_get(propensity, i));
+
+        // Clip propensity to avoid extreme weights
+        var ps_clipped: f64 = ps;
+        if ps_clipped < 0.01 { ps_clipped = 0.01; }
+        if ps_clipped > 0.99 { ps_clipped = 0.99; }
+
+        if t == 1 {
+            sum = sum + y / ps_clipped;
+        } else {
+            sum = sum - y / (1.0 - ps_clipped);
+        }
+        i = i + 1;
+    }
+
+    if n == 0 {
+        return f64_to_bits(0.0);
+    }
+
+    let n_f: f64 = bits_to_f64(f64_to_bits(n));
+    f64_to_bits(sum / n_f)
+}
+
+// =============================================================================
+// Graph Utilities
+// =============================================================================
+
+/// Remove an edge from the graph.
+///
+/// Removes the first occurrence of edge (from -> to).
+///
+/// Returns: 0 if removed, -1 if not found
+fn causal_remove_edge(graph: i64, from: i64, to: i64) -> i64 {
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    let n_edges: i64 = vec_len(edges) / 2;
+
+    var i: i64 = 0;
+    while i < n_edges {
+        let e_from: i64 = vec_get(edges, i * 2);
+        let e_to: i64 = vec_get(edges, i * 2 + 1);
+        if e_from == from && e_to == to {
+            // Shift remaining edges down
+            var j: i64 = i;
+            while j < n_edges - 1 {
+                vec_set(edges, j * 2, vec_get(edges, (j + 1) * 2));
+                vec_set(edges, j * 2 + 1, vec_get(edges, (j + 1) * 2 + 1));
+                j = j + 1;
+            }
+            // Remove last two entries by popping
+            vec_pop(edges);
+            vec_pop(edges);
+            return 0;
+        }
+        i = i + 1;
+    }
+    -1
+}
+
+/// Check if the graph is a valid DAG (no cycles).
+///
+/// A graph is a DAG if topological sort succeeds (returns all nodes).
+///
+/// Returns: 1 if DAG, 0 if has cycles
+fn causal_is_dag(graph: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+    let sorted: i64 = causal_topological_sort(graph);
+    if vec_len(sorted) == n_vars { 1 } else { 0 }
+}
+
+/// Compute the Markov blanket of a node.
+///
+/// The Markov blanket consists of:
+///   1. Parents of the node
+///   2. Children of the node
+///   3. Other parents of the node's children (co-parents)
+///
+/// A node is conditionally independent of all other nodes
+/// given its Markov blanket.
+///
+/// Returns: handle to vec of Markov blanket node indices
+fn causal_markov_blanket(graph: i64, node: i64) -> i64 {
+    let blanket: i64 = vec_new();
+
+    // 1. Parents
+    let parents: i64 = causal_parents(graph, node);
+    let n_pa: i64 = vec_len(parents);
+    var pi: i64 = 0;
+    while pi < n_pa {
+        let p: i64 = vec_get(parents, pi);
+        if set_contains(blanket, p) == 0 {
+            vec_push(blanket, p);
+        }
+        pi = pi + 1;
+    }
+
+    // 2. Children
+    let children: i64 = causal_children(graph, node);
+    let n_ch: i64 = vec_len(children);
+    var ci: i64 = 0;
+    while ci < n_ch {
+        let c: i64 = vec_get(children, ci);
+        if set_contains(blanket, c) == 0 {
+            vec_push(blanket, c);
+        }
+
+        // 3. Co-parents of each child
+        let child_parents: i64 = causal_parents(graph, c);
+        let n_cp: i64 = vec_len(child_parents);
+        var cpi: i64 = 0;
+        while cpi < n_cp {
+            let cp: i64 = vec_get(child_parents, cpi);
+            if cp != node && set_contains(blanket, cp) == 0 {
+                vec_push(blanket, cp);
+            }
+            cpi = cpi + 1;
+        }
+        ci = ci + 1;
+    }
+
+    blanket
+}
+
+/// Copy a causal graph.
+///
+/// Returns: handle to new graph with same structure
+fn causal_graph_copy(graph: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    let n_edges: i64 = vec_len(edges) / 2;
+
+    let new_graph: i64 = causal_graph_new(n_vars);
+    var e: i64 = 0;
+    while e < n_edges {
+        let e_from: i64 = vec_get(edges, e * 2);
+        let e_to: i64 = vec_get(edges, e * 2 + 1);
+        causal_add_edge(new_graph, e_from, e_to);
+        e = e + 1;
+    }
+
+    new_graph
+}
+
+// =============================================================================
+// Graph Summary
+// =============================================================================
+
+/// Print a summary of the causal graph.
+fn causal_graph_summary(graph: i64) -> i64 {
+    let n_vars: i64 = vec_get(graph, GRAPH_N_VARS());
+    let n_edges: i64 = causal_edge_count(graph);
+    let is_dag: i64 = causal_is_dag(graph);
+
+    println("Causal Graph Summary:");
+    print("  Variables: ");
+    print_i64(n_vars);
+    println("");
+    print("  Edges: ");
+    print_i64(n_edges);
+    println("");
+    print("  Is DAG: ");
+    if is_dag == 1 { println("yes"); } else { println("no"); }
+
+    // Print edges
+    let edges: i64 = vec_get(graph, GRAPH_EDGES());
+    var e: i64 = 0;
+    while e < n_edges {
+        let e_from: i64 = vec_get(edges, e * 2);
+        let e_to: i64 = vec_get(edges, e * 2 + 1);
+        print("  ");
+        print_i64(e_from);
+        print(" -> ");
+        print_i64(e_to);
+        println("");
+        e = e + 1;
+    }
+
+    // Print per-node info
+    var v: i64 = 0;
+    while v < n_vars {
+        let pa: i64 = causal_parents(graph, v);
+        let ch: i64 = causal_children(graph, v);
+        print("  Node ");
+        print_i64(v);
+        print(": parents=[");
+        var pi: i64 = 0;
+        while pi < vec_len(pa) {
+            if pi > 0 { print(","); }
+            print_i64(vec_get(pa, pi));
+            pi = pi + 1;
+        }
+        print("] children=[");
+        var ci: i64 = 0;
+        while ci < vec_len(ch) {
+            if ci > 0 { print(","); }
+            print_i64(vec_get(ch, ci));
+            ci = ci + 1;
+        }
+        println("]");
+        v = v + 1;
+    }
+
+    0
+}

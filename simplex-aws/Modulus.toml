@@ -1,0 +1,22 @@
+# simplex-aws - AWS Core Authentication Library
+#
+# Provides AWS Signature Version 4 signing for all AWS service requests.
+# Pure Simplex implementation using SHA-256 HMAC signing chain.
+#
+# Copyright (c) 2025-2026 Rod Higgins
+# Licensed under AGPL-3.0
+
+[package]
+name = "simplex-aws"
+version = "0.17.0"
+description = "AWS Signature V4 authentication and request signing"
+authors = ["Rod Higgins", "Simplex Team"]
+license = "AGPL-3.0"
+repository = "https://github.com/anthropics/simplex-lang"
+
+[dependencies]
+simplex-std = { path = "../simplex-std" }
+
+[features]
+default = ["sigv4"]
+sigv4 = []         # AWS Signature Version 4 signing
