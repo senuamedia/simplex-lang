@@ -1,6 +1,14 @@
 # Simplex Programming Language
 
-**Version 0.17.0**
+> **⚠️ ARCHIVED — July 2026.** simplex-lang was the open-source research
+> lineage of Simplex (v0.1–v0.17, 2025–2026). Development has moved to a
+> proprietary commercial product that has diverged substantially from this
+> codebase (native code generation, no LLVM, integer-only dual32 substrate).
+> This repository remains available **read-only** under its AGPL-3.0 license
+> for historical reference. It is no longer maintained and does not accept
+> issues or pull requests. Commercial enquiries: rod.higgins@gmail.com
+
+**Version 0.17.0** (final open-source release)
 
 Simplex is a modern systems programming language designed for AI-native applications, featuring first-class support for actors, cognitive agents, and distributed computing.
 
